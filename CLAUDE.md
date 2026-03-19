@@ -4,7 +4,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Docker Compose Skeleton is a portable, modular Docker service orchestration framework for managing multiple Compose stacks with dependency-ordered startup/shutdown, enhanced logging, NTFY push notifications, intelligent image updates, and a comprehensive suite of management utilities. It is a Bash-based framework (no build system, no tests) designed to be cloned and configured for any server by any user. All paths are auto-detected from the repository root.
+Docker Compose Skeleton All-In-One (AIO) is the batteries-included edition of DCS. It bundles the full DCS framework with [DCS-UI](https://github.com/scotthowson/Docker-Compose-Skeleton-UI) as a Docker container in `Stacks/core-infrastructure/`. Users run `./setup.sh` → the API + web UI start automatically → they complete setup at `http://localhost:3000`.
+
+The base DCS framework is a portable, modular Docker service orchestration framework for managing multiple Compose stacks with dependency-ordered startup/shutdown, enhanced logging, NTFY push notifications, intelligent image updates, and a comprehensive suite of management utilities. It is a Bash-based framework (no build system, no tests) designed to be cloned and configured for any server by any user. All paths are auto-detected from the repository root.
+
+### AIO-Specific Additions
+
+- `Stacks/core-infrastructure/docker-compose.yml` — includes `dcs-ui` service (GHCR image, port 3000, host.docker.internal API proxy)
+- `setup.sh` Step 7 — starts API server + core-infrastructure, waits for DCS-UI healthy, prints browser URL
+- `.env.example` — defaults `API_ENABLED=true`, `API_BIND=0.0.0.0`, adds `DCS_UI_PORT=3000`
+- `.templates/traefik/config/custom_routes/core-infrastructure/dcs-ui.yml` — Traefik route for HTTPS
 
 ## Architecture
 
