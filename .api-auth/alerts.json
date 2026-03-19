@@ -1,0 +1,11 @@
+{
+    "thresholds": {
+        "cpu_warning": 80,
+        "cpu_critical": 95,
+        "memory_warning": 80,
+        "memory_critical": 95,
+        "disk_warning": 85,
+        "disk_critical": 95,
+        "restart_threshold": 5
+    }
+}

@@ -1,0 +1,49 @@
+services:
+  nginx-proxy-manager:
+    container_name: NginxProxyManager
+    image: jc21/nginx-proxy-manager:latest
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-UTC}
+      # SQLite mode (default): leave DB_MYSQL_* vars unset
+      # MariaDB mode: set NPM_DB_PASSWORD and uncomment the db service below
+      # DB_MYSQL_HOST=npm-db
+      # DB_MYSQL_PORT=3306
+      # DB_MYSQL_USER=npm
+      # DB_MYSQL_PASSWORD=${NPM_DB_PASSWORD}
+      # DB_MYSQL_NAME=npm
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+      - "${ADMIN_PORT:-81}:81"
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/NginxProxyManager/data:/data
+      - ${APP_DATA_DIR:-./App-Data}/NginxProxyManager/letsencrypt:/etc/letsencrypt
+    # depends_on:
+    #   - npm-db
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:81/api/ || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # Optional MariaDB backend — uncomment to use MySQL instead of SQLite
+  # npm-db:
+  #   container_name: NPM-MariaDB
+  #   image: jc21/mariadb-aria:latest
+  #   restart: unless-stopped
+  #   environment:
+  #     - MYSQL_ROOT_PASSWORD=${NPM_DB_PASSWORD:-npm}
+  #     - MYSQL_DATABASE=npm
+  #     - MYSQL_USER=npm
+  #     - MYSQL_PASSWORD=${NPM_DB_PASSWORD:-npm}
+  #     - MARIADB_AUTO_UPGRADE=1
+  #   volumes:
+  #     - ${APP_DATA_DIR:-./App-Data}/NginxProxyManager/mysql:/var/lib/mysql
+  #   healthcheck:
+  #     test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+  #     interval: 30s
+  #     timeout: 5s
+  #     retries: 5
+  #     start_period: 30s

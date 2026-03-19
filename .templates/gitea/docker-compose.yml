@@ -1,0 +1,24 @@
+services:
+  gitea:
+    image: gitea/gitea:1.22.6
+    container_name: gitea
+    restart: unless-stopped
+    environment:
+      USER_UID: ${PUID:-1000}
+      USER_GID: ${PGID:-1000}
+      GITEA__server__SSH_PORT: ${SSH_PORT}
+      GITEA__server__SSH_LISTEN_PORT: "22"
+      TZ: ${TZ:-UTC}
+    ports:
+      - "${HOST_PORT}:3000"
+      - "${SSH_PORT}:22"
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Gitea:/data
+      - /etc/timezone:/etc/timezone:ro
+      - /etc/localtime:/etc/localtime:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:3000/api/v1/version || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s

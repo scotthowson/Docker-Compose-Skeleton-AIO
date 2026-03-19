@@ -1,0 +1,25 @@
+{
+  "name": "grafana",
+  "title": "Grafana",
+  "description": "Grafana open-source analytics and monitoring dashboards",
+  "category": "monitoring",
+  "target_stack": "monitoring-management",
+  "icon": "📊",
+  "tags": ["monitoring", "dashboards", "analytics", "visualization", "grafana"],
+  "variables": [
+    {
+      "name": "ADMIN_PASSWORD",
+      "label": "Admin Password",
+      "description": "Password for the default admin user",
+      "default": "changeme",
+      "required": true
+    },
+    {
+      "name": "HOST_PORT",
+      "label": "Web UI Port",
+      "description": "Port exposed on the host for the Grafana web interface",
+      "default": "3000",
+      "required": false
+    }
+  ]
+}

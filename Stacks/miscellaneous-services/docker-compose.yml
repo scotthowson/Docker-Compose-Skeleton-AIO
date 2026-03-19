@@ -1,0 +1,18 @@
+services:
+  misc:
+    container_name: skeleton-misc
+    image: alpine:latest
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-UTC}
+    command: >
+      sh -c 'while true; do
+        echo "[$$( date )] Healthcheck demo — miscellaneous-services stack";
+        sleep 30;
+      done'
+    healthcheck:
+      test: ["CMD", "true"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 5s

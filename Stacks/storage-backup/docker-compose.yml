@@ -1,0 +1,20 @@
+services:
+  storage:
+    container_name: skeleton-storage
+    image: alpine:latest
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-UTC}
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Storage:/data
+    command: >
+      sh -c 'while true; do
+        echo "[$$( date )] Storage heartbeat" >> /data/heartbeat.log;
+        echo "[$$( date )] Storage stack is alive";
+        sleep 60;
+      done'
+    healthcheck:
+      test: ["CMD", "test", "-f", "/data/heartbeat.log"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

@@ -1,0 +1,46 @@
+{
+  "name": "mysql",
+  "title": "MySQL",
+  "description": "Popular open-source relational database with comprehensive SQL support, replication, and robust data integrity.",
+  "category": "databases",
+  "target_stack": "development-tools",
+  "icon": "🐬",
+  "tags": ["sql", "relational", "database", "mysql"],
+  "variables": [
+    {
+      "name": "MYSQL_ROOT_PASSWORD",
+      "label": "Root Password",
+      "description": "Root password for MySQL authentication",
+      "default": "changeme",
+      "required": true
+    },
+    {
+      "name": "MYSQL_DATABASE",
+      "label": "Database Name",
+      "description": "Default database created on first start",
+      "default": "app",
+      "required": false
+    },
+    {
+      "name": "MYSQL_USER",
+      "label": "Database User",
+      "description": "Optional non-root user created on first start",
+      "default": "",
+      "required": false
+    },
+    {
+      "name": "MYSQL_PASSWORD",
+      "label": "Database Password",
+      "description": "Password for the optional non-root user",
+      "default": "",
+      "required": false
+    },
+    {
+      "name": "HOST_PORT",
+      "label": "Host Port",
+      "description": "Port exposed on the host for MySQL connections",
+      "default": "3306",
+      "required": false
+    }
+  ]
+}

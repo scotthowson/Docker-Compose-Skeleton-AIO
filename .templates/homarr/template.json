@@ -1,0 +1,25 @@
+{
+  "name": "homarr",
+  "title": "Homarr",
+  "description": "Homarr modern dashboard for managing and monitoring your server with Docker integration",
+  "category": "web",
+  "target_stack": "web-applications",
+  "icon": "🧭",
+  "tags": ["dashboard", "homarr", "startpage", "server-management", "docker"],
+  "variables": [
+    {
+      "name": "HOST_PORT",
+      "label": "Web UI Port",
+      "description": "Port exposed on the host for the Homarr web interface",
+      "default": "7575",
+      "required": false
+    },
+    {
+      "name": "SECRET_ENCRYPTION_KEY",
+      "label": "Encryption Key",
+      "description": "Secret key used to encrypt sensitive data (generate with: openssl rand -hex 32)",
+      "default": "",
+      "required": true
+    }
+  ]
+}

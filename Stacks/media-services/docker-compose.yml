@@ -1,0 +1,15 @@
+services:
+  media:
+    container_name: skeleton-media
+    image: nginx:alpine
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-UTC}
+    ports:
+      - "8081:80"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "--quiet", "http://localhost/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s

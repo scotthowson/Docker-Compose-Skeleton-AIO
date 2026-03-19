@@ -1,0 +1,17 @@
+services:
+  monitor:
+    container_name: skeleton-monitor
+    image: alpine:latest
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-UTC}
+    command: >
+      sh -c 'while true; do
+        echo "[$$( date )] Heartbeat — monitoring-management stack is alive";
+        sleep 60;
+      done'
+    healthcheck:
+      test: ["CMD", "true"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

@@ -1,0 +1,138 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Docker Compose Skeleton Configuration",
+  "description": "Complete configuration schema for DCS framework — used by /config/schema endpoint and the UI for dynamic form generation",
+  "type": "object",
+  "sections": {
+    "general": {
+      "title": "General",
+      "description": "Core application settings",
+      "properties": {
+        "APP_DATA_DIR": { "type": "string", "default": "./App-Data", "description": "Persistent data directory for container volumes (relative to each stack)" },
+        "PUID": { "type": "integer", "default": 1000, "description": "User ID for container file permissions", "minimum": 0, "maximum": 65534 },
+        "PGID": { "type": "integer", "default": 1000, "description": "Group ID for container file permissions", "minimum": 0, "maximum": 65534 },
+        "PROXY_DOMAIN": { "type": "string", "default": "example.com", "description": "Primary domain for reverse proxy routing" },
+        "TZ": { "type": "string", "default": "UTC", "description": "Timezone for containers (e.g., America/New_York)" },
+        "ENVIRONMENT": { "type": "string", "default": "production", "description": "Environment profile", "enum": ["production", "staging", "testing", "development"] },
+        "SERVER_NAME": { "type": "string", "default": "Docker Server", "description": "Friendly name for this server instance" }
+      }
+    },
+    "stacks": {
+      "title": "Stack Management",
+      "description": "Service stack startup and shutdown behavior",
+      "properties": {
+        "DOCKER_STACKS": { "type": "string", "default": "core-infrastructure networking-security monitoring-management development-tools media-services web-applications storage-backup communication-collaboration entertainment-personal miscellaneous-services", "description": "Space-separated stack categories (defines startup order, shutdown is reversed)" },
+        "CONTINUE_ON_FAILURE": { "type": "boolean", "default": true, "description": "Continue starting remaining stacks if one fails" },
+        "SKIP_HEALTHCHECK_WAIT": { "type": "boolean", "default": false, "description": "Skip waiting for healthchecks during startup (faster but riskier)" },
+        "SERVICE_START_DELAY": { "type": "integer", "default": 5, "description": "Seconds between starting stacks", "minimum": 0, "maximum": 60 },
+        "STACK_START_TIMEOUT": { "type": "integer", "default": 120, "description": "Max seconds to wait for a single stack to start", "minimum": 10, "maximum": 600 },
+        "SERVICE_STOP_DELAY": { "type": "integer", "default": 10, "description": "Seconds between stopping stacks", "minimum": 0, "maximum": 60 },
+        "REMOVE_VOLUMES_ON_STOP": { "type": "boolean", "default": false, "description": "Remove named volumes when stopping stacks (DESTRUCTIVE)" }
+      }
+    },
+    "docker": {
+      "title": "Docker Configuration",
+      "description": "Docker daemon and container management settings",
+      "properties": {
+        "DOCKER_COMPOSE_VERSION": { "type": "string", "default": "auto", "description": "Which Compose version to use", "enum": ["auto", "v1", "v2"] },
+        "DOCKER_TIMEOUT": { "type": "integer", "default": 300, "description": "Timeout for Docker operations (seconds)", "minimum": 30, "maximum": 3600 },
+        "REMOVE_ORPHANED_CONTAINERS": { "type": "boolean", "default": true, "description": "Remove orphaned containers during startup cleanup" },
+        "FORCE_RECREATE": { "type": "boolean", "default": false, "description": "Force recreate containers on every start" },
+        "MAX_PARALLEL_OPERATIONS": { "type": "integer", "default": 3, "description": "Max parallel Docker operations", "minimum": 1, "maximum": 10 },
+        "AGGRESSIVE_IMAGE_PRUNE": { "type": "boolean", "default": false, "description": "Prune ALL unused images after updates (vs only dangling)" }
+      }
+    },
+    "notifications": {
+      "title": "Notifications",
+      "description": "Push notification configuration via NTFY",
+      "properties": {
+        "NTFY_URL": { "type": "string", "default": "", "description": "NTFY server endpoint URL (leave empty to disable)", "pattern": "^(https?://.*)?$" },
+        "SERVER_NAME": { "type": "string", "default": "Docker Server", "description": "Server name shown in notifications" },
+        "NOTIFICATION_STACKS": { "type": "string", "default": "core-infrastructure web-applications communication-collaboration", "description": "Space-separated stacks that trigger notifications" },
+        "UPDATE_NOTIFICATION": { "type": "boolean", "default": true, "description": "Send notification after image update cycle" }
+      }
+    },
+    "logging": {
+      "title": "Logging",
+      "description": "Log output, rotation, and structured logging",
+      "properties": {
+        "LOG_LEVEL": { "type": "string", "default": "INFO", "description": "Log verbosity level", "enum": ["ERROR", "WARNING", "INFO", "DEBUG", "VERBOSE"] },
+        "COLOR_MODE": { "type": "string", "default": "auto", "description": "Color output mode for terminal", "enum": ["auto", "always", "never"] },
+        "LOG_MAX_SIZE": { "type": "string", "default": "10M", "description": "Max log file size before rotation", "pattern": "^[0-9]+[KMG]$" },
+        "LOG_BACKUP_COUNT": { "type": "integer", "default": 12, "description": "Number of rotated log files to keep", "minimum": 1, "maximum": 100 },
+        "LOG_RETENTION_DAYS": { "type": "integer", "default": 90, "description": "Days to retain log archives", "minimum": 1, "maximum": 365 },
+        "ENABLE_STRUCTURED_LOGGING": { "type": "boolean", "default": true, "description": "Enable JSONL structured log output alongside plain text" }
+      }
+    },
+    "api": {
+      "title": "REST API",
+      "description": "Built-in REST API server for remote management",
+      "properties": {
+        "API_ENABLED": { "type": "boolean", "default": false, "description": "Enable the REST API server" },
+        "API_PORT": { "type": "integer", "default": 9876, "description": "API listening port", "minimum": 1024, "maximum": 65535 },
+        "API_BIND": { "type": "string", "default": "127.0.0.1", "description": "API bind address (0.0.0.0 for all interfaces)" },
+        "API_RATE_LIMIT": { "type": "integer", "default": 120, "description": "Max requests per minute per IP (0 = disabled)", "minimum": 0, "maximum": 10000 },
+        "API_TOKEN_EXPIRY": { "type": "integer", "default": 86400, "description": "API token expiry in seconds", "minimum": 300, "maximum": 604800 }
+      }
+    },
+    "health": {
+      "title": "Health Monitoring",
+      "description": "Health checks and health scoring",
+      "properties": {
+        "ENABLE_POST_STARTUP_HEALTH_CHECK": { "type": "boolean", "default": true, "description": "Run health check after startup sequence" },
+        "HEALTH_CHECK_DELAY": { "type": "integer", "default": 10, "description": "Seconds to wait before health check (stabilization)", "minimum": 0, "maximum": 120 },
+        "INCLUDE_RESOURCE_METRICS": { "type": "boolean", "default": false, "description": "Include CPU/memory in health reports" },
+        "HEALTH_SCORE_ENABLED": { "type": "boolean", "default": true, "description": "Enable 0-100 health scoring system" }
+      }
+    },
+    "metrics": {
+      "title": "Metrics & Trending",
+      "description": "Persistent time-series metrics for historical analysis",
+      "properties": {
+        "METRICS_ENABLED": { "type": "boolean", "default": true, "description": "Enable persistent metrics collection" },
+        "METRICS_COLLECT_INTERVAL": { "type": "integer", "default": 30, "description": "Seconds between metric samples", "minimum": 10, "maximum": 300 },
+        "METRICS_RETENTION_DAYS": { "type": "integer", "default": 7, "description": "Days to retain historical metrics data", "minimum": 1, "maximum": 90 }
+      }
+    },
+    "rollback": {
+      "title": "Rollback & Snapshots",
+      "description": "Pre-operation snapshots for safe rollback",
+      "properties": {
+        "ROLLBACK_ENABLED": { "type": "boolean", "default": true, "description": "Auto-snapshot stacks before operations" },
+        "ROLLBACK_MAX_SNAPSHOTS": { "type": "integer", "default": 10, "description": "Max snapshots to keep per stack", "minimum": 1, "maximum": 50 }
+      }
+    },
+    "secrets": {
+      "title": "Secrets Management",
+      "description": "Encrypted key-value secret storage",
+      "properties": {
+        "SECRETS_ENCRYPTION": { "type": "boolean", "default": true, "description": "Encrypt secrets at rest using AES-256-CBC" }
+      }
+    },
+    "scheduler": {
+      "title": "Scheduled Operations",
+      "description": "Background scheduler for automated tasks",
+      "properties": {
+        "SCHEDULER_ENABLED": { "type": "boolean", "default": false, "description": "Enable background scheduler daemon" },
+        "SCHEDULER_CHECK_INTERVAL": { "type": "integer", "default": 60, "description": "Seconds between schedule checks", "minimum": 10, "maximum": 600 }
+      }
+    },
+    "plugins": {
+      "title": "Plugins",
+      "description": "Extension system for custom templates and hooks",
+      "properties": {
+        "PLUGINS_ENABLED": { "type": "boolean", "default": true, "description": "Enable the plugin system" },
+        "PLUGINS_HOOKS_ENABLED": { "type": "boolean", "default": true, "description": "Allow plugins to execute hooks on system events" }
+      }
+    },
+    "backup": {
+      "title": "Backup",
+      "description": "Backup and restore configuration",
+      "properties": {
+        "BACKUP_SOURCE_DIR": { "type": "string", "default": "", "description": "Source directory for backups" },
+        "BACKUP_DEST_DIR": { "type": "string", "default": "", "description": "Destination directory for backup archives" },
+        "BACKUP_RETENTION_COUNT": { "type": "integer", "default": 6, "description": "Number of backup archives to keep", "minimum": 1, "maximum": 100 }
+      }
+    }
+  }
+}

@@ -1,0 +1,42 @@
+# Environment configuration (contains secrets)
+.env
+
+# Keep the example template
+!.env.example
+
+# Keep per-stack .env files (they are templates, not secrets)
+!Stacks/*/.env
+
+# Runtime auth data (tokens.json and users.json are committed as empty templates)
+.api-auth/.setup-complete
+.api-auth/deploy-history.json
+.api-auth/terminal-auth-rate.json
+.api-auth/terminal-sessions.json
+
+# Runtime data
+.data/
+.compose-history/
+.plugins/
+
+# Logs
+logs/
+*.log
+
+# Persistent container data
+App-Data/
+
+# Backup files
+*.bak
+*.bak.*
+
+# IDE files
+.vs/
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db

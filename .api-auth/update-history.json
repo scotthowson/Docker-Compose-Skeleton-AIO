@@ -1,0 +1,87 @@
+[
+  {
+    "image": "nginx:alpine",
+    "timestamp": "2026-02-25T01:23:14Z",
+    "containers_restarted": [
+      "skeleton-webapp",
+      "skeleton-media"
+    ]
+  },
+  {
+    "image": "traefik/whoami:latest",
+    "timestamp": "2026-02-25T01:23:26Z",
+    "containers_restarted": [
+      "skeleton-whoami"
+    ]
+  },
+  {
+    "image": "alpine:latest",
+    "timestamp": "2026-02-25T01:24:19Z",
+    "containers_restarted": [
+      "skeleton-misc",
+      "skeleton-entertainment",
+      "skeleton-comms",
+      "skeleton-storage",
+      "skeleton-devtools",
+      "skeleton-monitor"
+    ]
+  },
+  {
+    "image": "traefik/whoami:latest",
+    "timestamp": "2026-02-25T01:47:48Z",
+    "containers_restarted": [
+      "skeleton-whoami"
+    ]
+  },
+  {
+    "image": "traefik/whoami:latest",
+    "timestamp": "2026-02-25T01:48:18Z",
+    "containers_restarted": [
+      "skeleton-whoami"
+    ]
+  },
+  {
+    "image": "alpine:latest",
+    "timestamp": "2026-02-25T01:48:20Z",
+    "containers_restarted": [
+      "skeleton-misc",
+      "skeleton-entertainment",
+      "skeleton-comms",
+      "skeleton-storage",
+      "skeleton-devtools",
+      "skeleton-monitor"
+    ]
+  },
+  {
+    "image": "nginx:alpine",
+    "timestamp": "2026-02-25T01:48:28Z",
+    "containers_restarted": [
+      "skeleton-webapp",
+      "skeleton-media"
+    ]
+  },
+  {
+    "image": "alpine:latest",
+    "timestamp": "2026-02-25T01:48:40Z",
+    "containers_restarted": [
+      "skeleton-misc",
+      "skeleton-entertainment",
+      "skeleton-comms",
+      "skeleton-storage",
+      "skeleton-devtools",
+      "skeleton-monitor"
+    ]
+  },
+  {
+    "image": "alpine:latest",
+    "timestamp": "2026-02-25T01:48:50Z",
+    "containers_restarted": [
+      "skeleton-misc",
+      "skeleton-entertainment",
+      "skeleton-comms",
+      "skeleton-storage",
+      "skeleton-devtools",
+      "skeleton-monitor"
+    ]
+  }
+]

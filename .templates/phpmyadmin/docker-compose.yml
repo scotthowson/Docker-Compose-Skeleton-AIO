@@ -1,0 +1,21 @@
+services:
+  phpmyadmin:
+    container_name: phpMyAdmin
+    image: phpmyadmin:latest
+    restart: always
+    environment:
+      - TZ=${TZ:-UTC}
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+      - PMA_HOST=${PMA_HOST:-mysql}
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
+    ports:
+      - "${HOST_PORT:-8090}:80"
+    mem_limit: 512M
+    cpus: 0.5
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:80/ || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

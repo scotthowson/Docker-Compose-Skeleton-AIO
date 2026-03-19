@@ -1,0 +1,387 @@
+[
+  {
+    "name": "wordpress-mysql",
+    "description": "WordPress with MySQL database backend",
+    "category": "web",
+    "url": "https://raw.githubusercontent.com/docker/awesome-compose/master/wordpress-mysql/compose.yaml",
+    "services": ["wordpress", "db"]
+  },
+  {
+    "name": "nginx-golang",
+    "description": "Nginx reverse proxy with Go backend",
+    "category": "web",
+    "url": "https://raw.githubusercontent.com/docker/awesome-compose/master/nginx-golang/compose.yaml",
+    "services": ["nginx", "backend"]
+  },
+  {
+    "name": "nginx-flask-mysql",
+    "description": "Nginx with Flask and MySQL",
+    "category": "web",
+    "url": "https://raw.githubusercontent.com/docker/awesome-compose/master/nginx-flask-mysql/compose.yaml",
+    "services": ["nginx", "backend", "db"]
+  },
+  {
+    "name": "nginx-flask-mongo",
+    "description": "Nginx with Flask and MongoDB",
+    "category": "web",
+    "url": "https://raw.githubusercontent.com/docker/awesome-compose/master/nginx-flask-mongo/compose.yaml",
+    "services": ["nginx", "backend", "mongo"]
+  },
+  {
+    "name": "apache-php",
+    "description": "Apache HTTP server with PHP",
+    "category": "web",
+    "url": "https://raw.githubusercontent.com/docker/awesome-compose/master/apache-php/compose.yaml",
+    "services": ["web"]
+  },
+  {
+    "name": "nextcloud-postgres",
+    "description": "Nextcloud with PostgreSQL backend",
+    "category": "web",
+    "url": "https://raw.githubusercontent.com/docker/awesome-compose/master/nextcloud-postgres/compose.yaml",
+    "services": ["nextcloud", "postgres"]
+  },
+  {
+    "name": "nextcloud-redis-mariadb",
+    "description": "Nextcloud with Redis cache and MariaDB",
+    "category": "web",
+    "url": "https://raw.githubusercontent.com/docker/awesome-compose/master/nextcloud-redis-mariadb/compose.yaml",
+    "services": ["nextcloud", "redis", "mariadb"]
+  },
+  {
+    "name": "gitea-postgres",
+    "description": "Gitea self-hosted Git with PostgreSQL",
+    "category": "development",
+    "url": "https://raw.githubusercontent.com/docker/awesome-compose/master/gitea-postgres/compose.yaml",
+    "services": ["gitea", "postgres"]
+  },
+  {
+    "name": "ghost",
+    "description": "Ghost publishing platform",
+    "category": "web",
+    "url": "https://raw.githubusercontent.com/docker/awesome-compose/master/ghost/compose.yaml",
+    "services": ["ghost"]
+  },
+  {
+    "name": "traefik-golang",
+    "description": "Traefik reverse proxy with Go backend",
+    "category": "networking",
+    "url": "https://raw.githubusercontent.com/docker/awesome-compose/master/traefik-golang/compose.yaml",
+    "services": ["traefik", "backend"]
+  },
+  {
+    "name": "caddy",
+    "description": "Caddy web server with automatic HTTPS",
+    "category": "networking",
+    "url": "https://raw.githubusercontent.com/docker/awesome-compose/master/caddy/compose.yaml",
+    "services": ["caddy"]
+  },
+  {
+    "name": "minio",
+    "description": "MinIO S3-compatible object storage",
+    "category": "storage",
+    "url": "https://raw.githubusercontent.com/docker/awesome-compose/master/minio/compose.yaml",
+    "services": ["minio"]
+  },
+  {
+    "name": "postgres-pgadmin",
+    "description": "PostgreSQL with pgAdmin web interface",
+    "category": "databases",
+    "url": "https://raw.githubusercontent.com/docker/awesome-compose/master/postgresql-pgadmin/compose.yaml",
+    "services": ["postgres", "pgadmin"]
+  },
+  {
+    "name": "mariadb-phpmyadmin",
+    "description": "MariaDB with phpMyAdmin web interface",
+    "category": "databases",
+    "url": "https://raw.githubusercontent.com/docker/awesome-compose/master/mariadb-phpmyadmin/compose.yaml",
+    "services": ["mariadb", "phpmyadmin"]
+  },
+  {
+    "name": "mongodb-mongo-express",
+    "description": "MongoDB with Mongo Express web UI",
+    "category": "databases",
+    "url": "https://raw.githubusercontent.com/docker/awesome-compose/master/mongodb-mongoexpress/compose.yaml",
+    "services": ["mongo", "mongo-express"]
+  },
+  {
+    "name": "redis",
+    "description": "Redis in-memory data store",
+    "category": "databases",
+    "url": "https://raw.githubusercontent.com/docker/awesome-compose/master/redis/compose.yaml",
+    "services": ["redis"]
+  },
+  {
+    "name": "elasticsearch-logstash-kibana",
+    "description": "ELK stack for log management and search",
+    "category": "monitoring",
+    "url": "https://raw.githubusercontent.com/docker/awesome-compose/master/elasticsearch-logstash-kibana/compose.yaml",
+    "services": ["elasticsearch", "logstash", "kibana"]
+  },
+  {
+    "name": "influxdb-grafana",
+    "description": "InfluxDB time-series database with Grafana",
+    "category": "monitoring",
+    "url": "https://raw.githubusercontent.com/docker/awesome-compose/master/influxdb-grafana/compose.yaml",
+    "services": ["influxdb", "grafana"]
+  },
+  {
+    "name": "prometheus-grafana",
+    "description": "Prometheus monitoring with Grafana dashboards",
+    "category": "monitoring",
+    "url": "https://raw.githubusercontent.com/docker/awesome-compose/master/prometheus-grafana/compose.yaml",
+    "services": ["prometheus", "grafana"]
+  },
+  {
+    "name": "portainer",
+    "description": "Portainer container management UI",
+    "category": "monitoring",
+    "url": "https://raw.githubusercontent.com/docker/awesome-compose/master/portainer/compose.yaml",
+    "services": ["portainer"]
+  },
+  {
+    "name": "plex",
+    "description": "Plex media server",
+    "category": "media",
+    "url": "https://raw.githubusercontent.com/docker/awesome-compose/master/plex/compose.yaml",
+    "services": ["plex"]
+  },
+  {
+    "name": "react-express-mysql",
+    "description": "React frontend with Express API and MySQL",
+    "category": "development",
+    "url": "https://raw.githubusercontent.com/docker/awesome-compose/master/react-express-mysql/compose.yaml",
+    "services": ["frontend", "backend", "db"]
+  },
+  {
+    "name": "react-express-mongodb",
+    "description": "React frontend with Express API and MongoDB",
+    "category": "development",
+    "url": "https://raw.githubusercontent.com/docker/awesome-compose/master/react-express-mongodb/compose.yaml",
+    "services": ["frontend", "backend", "mongo"]
+  },
+  {
+    "name": "spring-postgres",
+    "description": "Spring Boot application with PostgreSQL",
+    "category": "development",
+    "url": "https://raw.githubusercontent.com/docker/awesome-compose/master/spring-postgres/compose.yaml",
+    "services": ["backend", "db"]
+  },
+  {
+    "name": "django",
+    "description": "Django web framework application",
+    "category": "development",
+    "url": "https://raw.githubusercontent.com/docker/awesome-compose/master/django/compose.yaml",
+    "services": ["web"]
+  },
+  {
+    "name": "fastapi",
+    "description": "FastAPI Python web framework",
+    "category": "development",
+    "url": "https://raw.githubusercontent.com/docker/awesome-compose/master/fastapi/compose.yaml",
+    "services": ["api"]
+  },
+  {
+    "name": "react-java-mysql",
+    "description": "React with Java backend and MySQL",
+    "category": "development",
+    "url": "https://raw.githubusercontent.com/docker/awesome-compose/master/react-java-mysql/compose.yaml",
+    "services": ["frontend", "backend", "db"]
+  },
+  {
+    "name": "angular-nodejs-mongodb",
+    "description": "Angular frontend with Node.js and MongoDB",
+    "category": "development",
+    "url": "https://raw.githubusercontent.com/docker/awesome-compose/master/angular/compose.yaml",
+    "services": ["frontend", "backend", "db"]
+  },
+  {
+    "name": "vue-nodejs",
+    "description": "Vue.js frontend with Node.js backend",
+    "category": "development",
+    "url": "https://raw.githubusercontent.com/docker/awesome-compose/master/vuejs/compose.yaml",
+    "services": ["frontend", "backend"]
+  },
+  {
+    "name": "uptime-kuma",
+    "description": "Self-hosted uptime monitoring tool",
+    "category": "monitoring",
+    "url": "https://raw.githubusercontent.com/louislam/uptime-kuma/master/docker/docker-compose.yml",
+    "services": ["uptime-kuma"]
+  },
+  {
+    "name": "netdata",
+    "description": "Real-time performance and health monitoring",
+    "category": "monitoring",
+    "url": "https://raw.githubusercontent.com/netdata/netdata/master/packaging/docker/docker-compose.yml",
+    "services": ["netdata"]
+  },
+  {
+    "name": "dozzle",
+    "description": "Real-time Docker log viewer",
+    "category": "monitoring",
+    "url": "https://raw.githubusercontent.com/amir20/dozzle/master/docker-compose.yml",
+    "services": ["dozzle"]
+  },
+  {
+    "name": "loki-promtail-grafana",
+    "description": "Loki log aggregation with Promtail and Grafana",
+    "category": "monitoring",
+    "url": "https://raw.githubusercontent.com/grafana/loki/main/production/docker-compose.yaml",
+    "services": ["loki", "promtail", "grafana"]
+  },
+  {
+    "name": "jellyfin",
+    "description": "Jellyfin open-source media server",
+    "category": "media",
+    "url": "https://raw.githubusercontent.com/jellyfin/jellyfin/master/docker-compose.yml",
+    "services": ["jellyfin"]
+  },
+  {
+    "name": "sonarr",
+    "description": "Sonarr TV series management and download automation",
+    "category": "media",
+    "url": "https://raw.githubusercontent.com/linuxserver/docker-sonarr/main/docker-compose.yml",
+    "services": ["sonarr"]
+  },
+  {
+    "name": "radarr",
+    "description": "Radarr movie management and download automation",
+    "category": "media",
+    "url": "https://raw.githubusercontent.com/linuxserver/docker-radarr/main/docker-compose.yml",
+    "services": ["radarr"]
+  },
+  {
+    "name": "qbittorrent",
+    "description": "qBittorrent torrent client with web UI",
+    "category": "media",
+    "url": "https://raw.githubusercontent.com/linuxserver/docker-qbittorrent/main/docker-compose.yml",
+    "services": ["qbittorrent"]
+  },
+  {
+    "name": "jackett",
+    "description": "Jackett torrent indexer proxy",
+    "category": "media",
+    "url": "https://raw.githubusercontent.com/linuxserver/docker-jackett/main/docker-compose.yml",
+    "services": ["jackett"]
+  },
+  {
+    "name": "gitlab",
+    "description": "GitLab self-hosted DevOps platform",
+    "category": "development",
+    "url": "https://raw.githubusercontent.com/docker/awesome-compose/master/gitlab/compose.yaml",
+    "services": ["gitlab"]
+  },
+  {
+    "name": "jenkins",
+    "description": "Jenkins CI/CD automation server",
+    "category": "development",
+    "url": "https://raw.githubusercontent.com/docker/awesome-compose/master/jenkins/compose.yaml",
+    "services": ["jenkins"]
+  },
+  {
+    "name": "code-server",
+    "description": "VS Code in the browser",
+    "category": "development",
+    "url": "https://raw.githubusercontent.com/linuxserver/docker-code-server/main/docker-compose.yml",
+    "services": ["code-server"]
+  },
+  {
+    "name": "adminer",
+    "description": "Adminer lightweight database management UI",
+    "category": "development",
+    "url": "https://raw.githubusercontent.com/docker/awesome-compose/master/adminer/compose.yaml",
+    "services": ["adminer"]
+  },
+  {
+    "name": "filebrowser",
+    "description": "FileBrowser web-based file manager",
+    "category": "storage",
+    "url": "https://raw.githubusercontent.com/filebrowser/filebrowser/master/docker-compose.yml",
+    "services": ["filebrowser"]
+  },
+  {
+    "name": "syncthing",
+    "description": "Syncthing continuous file synchronization",
+    "category": "storage",
+    "url": "https://raw.githubusercontent.com/linuxserver/docker-syncthing/main/docker-compose.yml",
+    "services": ["syncthing"]
+  },
+  {
+    "name": "duplicati",
+    "description": "Duplicati encrypted cloud backup",
+    "category": "storage",
+    "url": "https://raw.githubusercontent.com/linuxserver/docker-duplicati/main/docker-compose.yml",
+    "services": ["duplicati"]
+  },
+  {
+    "name": "rocketchat",
+    "description": "Rocket.Chat team communication platform",
+    "category": "communication",
+    "url": "https://raw.githubusercontent.com/docker/awesome-compose/master/rocketchat/compose.yaml",
+    "services": ["rocketchat", "mongo"]
+  },
+  {
+    "name": "matrix-synapse",
+    "description": "Matrix Synapse decentralized messaging server",
+    "category": "communication",
+    "url": "https://raw.githubusercontent.com/element-hq/synapse/develop/docker/docker-compose.yaml",
+    "services": ["synapse"]
+  },
+  {
+    "name": "mattermost",
+    "description": "Mattermost open-source team messaging",
+    "category": "communication",
+    "url": "https://raw.githubusercontent.com/mattermost/docker/main/docker-compose.yml",
+    "services": ["mattermost", "postgres"]
+  },
+  {
+    "name": "n8n",
+    "description": "n8n workflow automation platform",
+    "category": "automation",
+    "url": "https://raw.githubusercontent.com/n8n-io/n8n/master/docker/compose/withPostgres/docker-compose.yml",
+    "services": ["n8n", "postgres"]
+  },
+  {
+    "name": "node-red",
+    "description": "Node-RED low-code event-driven automation",
+    "category": "automation",
+    "url": "https://raw.githubusercontent.com/node-red/node-red-docker/master/docker-compose.yml",
+    "services": ["node-red"]
+  },
+  {
+    "name": "home-assistant",
+    "description": "Home Assistant smart home automation",
+    "category": "automation",
+    "url": "https://raw.githubusercontent.com/home-assistant/core/dev/docker-compose.yml",
+    "services": ["homeassistant"]
+  },
+  {
+    "name": "wikijs",
+    "description": "Wiki.js modern documentation wiki",
+    "category": "web",
+    "url": "https://raw.githubusercontent.com/requarks/wiki/main/dev/docker-compose.yml",
+    "services": ["wiki", "db"]
+  },
+  {
+    "name": "mysql",
+    "description": "MySQL standalone database server",
+    "category": "databases",
+    "url": "https://raw.githubusercontent.com/docker/awesome-compose/master/mysql/compose.yaml",
+    "services": ["mysql"]
+  },
+  {
+    "name": "pihole",
+    "description": "Pi-hole DNS-level ad blocking",
+    "category": "networking",
+    "url": "https://raw.githubusercontent.com/pi-hole/docker-pi-hole/master/docker-compose.yml.example",
+    "services": ["pihole"]
+  },
+  {
+    "name": "wireguard",
+    "description": "WireGuard VPN server",
+    "category": "networking",
+    "url": "https://raw.githubusercontent.com/linuxserver/docker-wireguard/main/docker-compose.yml",
+    "services": ["wireguard"]
+  }
+]

@@ -1,0 +1,18 @@
+services:
+  devtools:
+    container_name: skeleton-devtools
+    image: alpine:latest
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-UTC}
+    command: >
+      sh -c 'COUNTER=0; while true; do
+        COUNTER=$$((COUNTER + 1));
+        echo "[$$( date )] Uptime counter: $$COUNTER minutes";
+        sleep 60;
+      done'
+    healthcheck:
+      test: ["CMD", "true"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

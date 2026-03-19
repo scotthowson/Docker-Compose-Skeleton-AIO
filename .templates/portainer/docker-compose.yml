@@ -1,0 +1,22 @@
+services:
+  portainer:
+    container_name: Portainer
+    image: portainer/portainer-ce:latest
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-UTC}
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+    ports:
+      - "${HOST_PORT:-9443}:9443"
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Portainer/data:/data
+      - /var/run/docker.sock:/var/run/docker.sock
+    mem_limit: 1G
+    cpus: 1
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider https://localhost:9443/api/status || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s

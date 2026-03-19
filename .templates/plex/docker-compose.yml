@@ -1,0 +1,22 @@
+services:
+  plex:
+    image: plexinc/pms-docker:1.41.3
+    container_name: plex
+    restart: unless-stopped
+    environment:
+      PLEX_CLAIM: ${PLEX_CLAIM}
+      TZ: ${TZ:-UTC}
+      PUID: ${PUID:-1000}
+      PGID: ${PGID:-1000}
+    ports:
+      - "${HOST_PORT}:32400"
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Plex/config:/config
+      - ${APP_DATA_DIR:-./App-Data}/Plex/transcode:/transcode
+      - ${MEDIA_PATH}:/data:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:32400/identity || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s

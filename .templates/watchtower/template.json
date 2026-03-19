@@ -1,0 +1,25 @@
+{
+  "name": "watchtower",
+  "title": "Watchtower",
+  "description": "Automatic Docker container updater that monitors running containers, pulls new images, and gracefully restarts services with the latest version.",
+  "category": "automation",
+  "target_stack": "core-infrastructure",
+  "icon": "\ud83d\uddfc\ufe0f",
+  "tags": ["docker", "updates", "automation", "watchtower", "containers"],
+  "variables": [
+    {
+      "name": "WATCHTOWER_POLL_INTERVAL",
+      "label": "Poll Interval",
+      "description": "Seconds between update checks (default: 7200 = 2 hours)",
+      "default": "7200",
+      "required": false
+    },
+    {
+      "name": "WATCHTOWER_TOKEN",
+      "label": "HTTP API Token",
+      "description": "Token for authenticating HTTP API requests (metrics and manual update triggers)",
+      "default": "",
+      "required": false
+    }
+  ]
+}

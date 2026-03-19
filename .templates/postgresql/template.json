@@ -1,0 +1,39 @@
+{
+  "name": "postgresql",
+  "title": "PostgreSQL 16",
+  "description": "PostgreSQL 16 relational database with persistent storage and health checks",
+  "category": "databases",
+  "target_stack": "development-tools",
+  "icon": "🐘",
+  "tags": ["database", "sql", "relational", "postgres"],
+  "variables": [
+    {
+      "name": "POSTGRES_USER",
+      "label": "Database User",
+      "description": "The superuser name for PostgreSQL",
+      "default": "postgres",
+      "required": true
+    },
+    {
+      "name": "POSTGRES_PASSWORD",
+      "label": "Database Password",
+      "description": "Password for the PostgreSQL superuser",
+      "default": "changeme",
+      "required": true
+    },
+    {
+      "name": "POSTGRES_DB",
+      "label": "Database Name",
+      "description": "Default database created on first start",
+      "default": "app",
+      "required": true
+    },
+    {
+      "name": "HOST_PORT",
+      "label": "Host Port",
+      "description": "Port exposed on the host for PostgreSQL connections",
+      "default": "5432",
+      "required": false
+    }
+  ]
+}

@@ -1,0 +1,39 @@
+{
+  "name": "mongodb",
+  "title": "MongoDB 7",
+  "description": "MongoDB 7 NoSQL document database with authentication and persistent storage",
+  "category": "databases",
+  "target_stack": "development-tools",
+  "icon": "🍃",
+  "tags": ["database", "nosql", "document", "mongo"],
+  "variables": [
+    {
+      "name": "MONGO_USER",
+      "label": "Database User",
+      "description": "Root username for MongoDB authentication",
+      "default": "admin",
+      "required": true
+    },
+    {
+      "name": "MONGO_PASSWORD",
+      "label": "Database Password",
+      "description": "Root password for MongoDB authentication",
+      "default": "changeme",
+      "required": true
+    },
+    {
+      "name": "MONGO_DB",
+      "label": "Database Name",
+      "description": "Default database created on first start",
+      "default": "app",
+      "required": true
+    },
+    {
+      "name": "HOST_PORT",
+      "label": "Host Port",
+      "description": "Port exposed on the host for MongoDB connections",
+      "default": "27017",
+      "required": false
+    }
+  ]
+}

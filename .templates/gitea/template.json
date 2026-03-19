@@ -1,0 +1,25 @@
+{
+  "name": "gitea",
+  "title": "Gitea",
+  "description": "Gitea lightweight self-hosted Git service with web interface and API",
+  "category": "development",
+  "target_stack": "development-tools",
+  "icon": "🍵",
+  "tags": ["development", "git", "version-control", "self-hosted", "gitea"],
+  "variables": [
+    {
+      "name": "HOST_PORT",
+      "label": "Web UI Port",
+      "description": "Port exposed on the host for the Gitea web interface",
+      "default": "3000",
+      "required": false
+    },
+    {
+      "name": "SSH_PORT",
+      "label": "SSH Port",
+      "description": "Port exposed on the host for Git SSH operations",
+      "default": "222",
+      "required": false
+    }
+  ]
+}
