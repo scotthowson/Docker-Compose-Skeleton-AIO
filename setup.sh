@@ -218,7 +218,7 @@ stacks_existed=0
 for stack_name in "${_SETUP_STACKS[@]}"; do
     stack_dir="$COMPOSE_DIR/$stack_name"
     if [[ -d "$stack_dir" ]]; then
-        ((stacks_existed++))
+        stacks_existed=$((stacks_existed + 1))
         # Ensure App-Data exists even for pre-existing stacks
         if [[ ! -d "$stack_dir/App-Data" ]]; then
             _run mkdir -p "$stack_dir/App-Data"
@@ -260,7 +260,7 @@ ENV_EOF
         fi
 
         _ok "Created stack: $stack_name (docker-compose.yml + .env + App-Data/)"
-        ((stacks_created++))
+        stacks_created=$((stacks_created + 1))
     fi
 done
 
@@ -286,7 +286,7 @@ chmod_count=0
 for script in "$BASE_DIR"/*.sh; do
     [[ -f "$script" ]] || continue
     _run chmod +x "$script"
-    ((chmod_count++))
+    chmod_count=$((chmod_count + 1))
     [[ "$VERBOSE" == "true" ]] && _ok "chmod +x: $(basename "$script")"
 done
 
@@ -295,7 +295,7 @@ if [[ -d "$BASE_DIR/.lib" ]]; then
     for script in "$BASE_DIR/.lib/"*.sh; do
         [[ -f "$script" ]] || continue
         _run chmod +x "$script"
-        ((chmod_count++))
+        chmod_count=$((chmod_count + 1))
         [[ "$VERBOSE" == "true" ]] && _ok "chmod +x: .lib/$(basename "$script")"
     done
 fi
@@ -305,7 +305,7 @@ if [[ -d "$BASE_DIR/.scripts" ]]; then
     for script in "$BASE_DIR/.scripts/"*.sh; do
         [[ -f "$script" ]] || continue
         _run chmod +x "$script"
-        ((chmod_count++))
+        chmod_count=$((chmod_count + 1))
         [[ "$VERBOSE" == "true" ]] && _ok "chmod +x: .scripts/$(basename "$script")"
     done
 fi
@@ -315,7 +315,7 @@ if [[ -d "$BASE_DIR/.config" ]]; then
     for script in "$BASE_DIR/.config/"*.sh; do
         [[ -f "$script" ]] || continue
         _run chmod +x "$script"
-        ((chmod_count++))
+        chmod_count=$((chmod_count + 1))
         [[ "$VERBOSE" == "true" ]] && _ok "chmod +x: .config/$(basename "$script")"
     done
 fi
