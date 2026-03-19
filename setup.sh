@@ -155,6 +155,19 @@ _divider
 
 if [[ -f "$BASE_DIR/.env" ]]; then
     _skip ".env already exists -- not overwriting"
+    # AIO requires API accessible from Docker containers — auto-fix critical settings
+    if grep -q 'API_BIND.*127\.0\.0\.1' "$BASE_DIR/.env" 2>/dev/null; then
+        if [[ "$DRY_RUN" != "true" ]]; then
+            sed -i 's/API_BIND.*=.*127\.0\.0\.1/API_BIND=0.0.0.0/' "$BASE_DIR/.env"
+        fi
+        _ok "Updated API_BIND to 0.0.0.0 (required for DCS-UI container)"
+    fi
+    if grep -q '^API_ENABLED.*=.*false' "$BASE_DIR/.env" 2>/dev/null; then
+        if [[ "$DRY_RUN" != "true" ]]; then
+            sed -i 's/^API_ENABLED.*=.*false/API_ENABLED=true/' "$BASE_DIR/.env"
+        fi
+        _ok "Enabled API server (required for DCS-UI)"
+    fi
 elif [[ -f "$BASE_DIR/.env.example" ]]; then
     _run cp "$BASE_DIR/.env.example" "$BASE_DIR/.env"
     _ok "Copied .env.example -> .env"

@@ -4774,7 +4774,9 @@ handle_container_files() {
     [[ -z "$query_path" ]] && query_path="/"
 
     # SECURITY: Reject path traversal attempts
-    if [[ "$query_path" == *".."* ]] || [[ "$query_path" == *$'\0'* ]] || [[ "$query_path" == *"~"* ]]; then
+    # Note: $'\0' check removed — bash strings cannot contain null bytes, and $'\0'
+    # in [[ ]] degrades to an empty string making the pattern ** which matches everything.
+    if [[ "$query_path" == *".."* ]] || [[ "$query_path" == *"~"* ]]; then
         _api_error 400 "Invalid file path — path traversal not allowed"
         return
     fi
@@ -4854,8 +4856,8 @@ handle_container_file_content() {
     [[ -z "$container" ]] && { _api_error 400 "Missing container name"; return; }
     [[ -z "$file_path" ]] && { _api_error 400 "Missing file path"; return; }
 
-    # SECURITY: Reject path traversal attempts
-    if [[ "$file_path" == *".."* ]] || [[ "$file_path" == *$'\0'* ]] || [[ "$file_path" == *"~"* ]]; then
+    # SECURITY: Reject path traversal attempts (see null byte note in handle_container_files)
+    if [[ "$file_path" == *".."* ]] || [[ "$file_path" == *"~"* ]]; then
         _api_error 400 "Invalid file path — path traversal not allowed"
         return
     fi
