@@ -1918,8 +1918,12 @@ handle_images() {
         local age_days=-1
         local staleness="unknown"
         if [[ -n "$created" ]] && [[ "$created" != "<none>" ]]; then
+            # Strip trailing timezone name (e.g., "EDT") — Docker outputs both
+            # numeric offset and name ("2026-03-19 12:04:50 -0400 EDT") which
+            # confuses GNU date. Keep only the numeric offset.
+            local created_clean="${created% [A-Z]*}"
             local img_epoch
-            img_epoch=$(date -d "$created" '+%s' 2>/dev/null || echo 0)
+            img_epoch=$(date -d "$created_clean" '+%s' 2>/dev/null || date -d "$created" '+%s' 2>/dev/null || echo 0)
             if [[ "$img_epoch" -gt 0 ]]; then
                 local now_epoch
                 now_epoch=$(date '+%s')
