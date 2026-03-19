@@ -468,6 +468,9 @@ _ensure_api_running() {
         return 0
     fi
 
+    # Stop any orphaned API server instances before starting a new one
+    "$BASE_DIR/.scripts/api-server.sh" --stop 2>/dev/null || true
+
     _info "Starting API server..."
     mkdir -p "$BASE_DIR/.data"
     nohup "$BASE_DIR/.scripts/api-server.sh" --bind "$API_BIND" --port "$API_PORT" \
