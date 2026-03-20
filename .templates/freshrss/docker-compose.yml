@@ -1,0 +1,21 @@
+services:
+  freshrss:
+    container_name: FreshRSS
+    image: freshrss/freshrss:latest
+    restart: unless-stopped
+    environment:
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+      - TZ=${TZ:-UTC}
+      - CRON_MIN=1,31
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/FreshRSS/data:/var/www/FreshRSS/data
+      - ${APP_DATA_DIR:-./App-Data}/FreshRSS/extensions:/var/www/FreshRSS/extensions
+    ports:
+      - "${PORT_FRESHRSS:-8096}:80"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:80/i/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

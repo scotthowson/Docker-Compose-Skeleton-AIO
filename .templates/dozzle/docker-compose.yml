@@ -1,0 +1,17 @@
+services:
+  dozzle:
+    container_name: Dozzle
+    image: amir20/dozzle:latest
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-UTC}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    ports:
+      - "${PORT_DOZZLE:-9999}:8080"
+    healthcheck:
+      test: ["CMD", "/dozzle", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s

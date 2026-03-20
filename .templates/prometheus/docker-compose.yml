@@ -18,7 +18,7 @@ services:
       - ${APP_DATA_DIR:-./App-Data}/Prometheus/data:/prometheus
       - ${APP_DATA_DIR:-./App-Data}/Prometheus/config:/etc/prometheus
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:9090/-/healthy || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:9090/-/healthy || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 3

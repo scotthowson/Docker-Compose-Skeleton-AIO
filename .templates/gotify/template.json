@@ -1,0 +1,18 @@
+{
+  "name": "gotify",
+  "title": "Gotify",
+  "description": "Simple, self-hosted push notification server with a REST API and web/Android clients. Lightweight alternative to ntfy with application-based message routing and priority levels.",
+  "category": "notifications",
+  "target_stack": "communication-collaboration",
+  "icon": "📨",
+  "tags": ["notifications", "push", "alerts", "messaging", "api", "webhook"],
+  "variables": [
+    {
+      "name": "PORT_GOTIFY",
+      "label": "Host Port",
+      "description": "Port to expose Gotify on",
+      "default": "8094",
+      "required": false
+    }
+  ]
+}

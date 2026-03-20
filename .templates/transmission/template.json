@@ -1,0 +1,24 @@
+{
+  "name": "transmission",
+  "title": "Transmission",
+  "description": "Lightweight BitTorrent client with minimal resource usage. Clean web UI, encryption, peer exchange, magnet links. Ideal for headless servers \u2014 uses very little CPU and memory.",
+  "category": "download",
+  "target_stack": "media-services",
+  "icon": "\ud83d\udce5",
+  "tags": [
+    "torrent",
+    "download",
+    "bittorrent",
+    "lightweight",
+    "p2p"
+  ],
+  "variables": [
+    {
+      "name": "PORT_TRANSMISSION",
+      "label": "Web UI Port",
+      "description": "Port for the Transmission web interface",
+      "default": "9092",
+      "required": false
+    }
+  ]
+}

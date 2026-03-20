@@ -1,0 +1,18 @@
+{
+  "name": "wizarr",
+  "title": "Wizarr",
+  "description": "Automated user invitation system for Plex, Jellyfin, and Emby. Generate invite links, onboard users with custom instructions, and manage media server access — no manual setup needed.",
+  "category": "media",
+  "target_stack": "media-services",
+  "icon": "🧙",
+  "tags": ["plex", "jellyfin", "invites", "users", "onboarding", "media"],
+  "variables": [
+    {
+      "name": "PORT_WIZARR",
+      "label": "Host Port",
+      "description": "Port to expose Wizarr on",
+      "default": "5690",
+      "required": false
+    }
+  ]
+}

@@ -16,7 +16,7 @@ services:
       - ${APP_DATA_DIR:-./App-Data}/Grafana/data:/var/lib/grafana
       - ${APP_DATA_DIR:-./App-Data}/Grafana/provisioning:/etc/grafana/provisioning
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:3000/api/health || exit 1"]
+      test: ["CMD-SHELL", "curl -f http://127.0.0.1:3000/api/health || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5

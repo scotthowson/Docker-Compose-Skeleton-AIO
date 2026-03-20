@@ -1,0 +1,17 @@
+services:
+  memos:
+    container_name: Memos
+    image: neosmemo/memos:stable
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-UTC}
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Memos/data:/var/opt/memos
+    ports:
+      - "${PORT_MEMOS:-5230}:5230"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:5230/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

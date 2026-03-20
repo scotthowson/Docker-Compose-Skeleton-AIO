@@ -1,0 +1,17 @@
+services:
+  jellyseerr:
+    container_name: Jellyseerr
+    image: fallenbagel/jellyseerr:latest
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-UTC}
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Jellyseerr/config:/app/config
+    ports:
+      - "${PORT_JELLYSEERR:-5056}:5055"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:5055/api/v1/status"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s

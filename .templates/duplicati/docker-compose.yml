@@ -1,0 +1,21 @@
+services:
+  duplicati:
+    container_name: Duplicati
+    image: lscr.io/linuxserver/duplicati:latest
+    restart: unless-stopped
+    environment:
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+      - TZ=${TZ:-UTC}
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Duplicati/config:/config
+      - ${APP_DATA_DIR:-./App-Data}/Duplicati/backups:/backups
+      - /:/source:ro
+    ports:
+      - "${PORT_DUPLICATI:-8200}:8200"
+    healthcheck:
+      test: ["CMD", "curl", "-fso", "/dev/null", "http://127.0.0.1:8200/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

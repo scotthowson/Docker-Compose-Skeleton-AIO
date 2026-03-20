@@ -1,0 +1,18 @@
+{
+  "name": "excalidraw",
+  "title": "Excalidraw",
+  "description": "Virtual whiteboard for sketching diagrams with a hand-drawn feel. Real-time collaboration, infinite canvas, shape libraries, and export to PNG/SVG. Used by thousands of teams worldwide.",
+  "category": "tools",
+  "target_stack": "development-tools",
+  "icon": "🎨",
+  "tags": ["whiteboard", "diagrams", "drawing", "collaboration", "sketching"],
+  "variables": [
+    {
+      "name": "PORT_EXCALIDRAW",
+      "label": "Host Port",
+      "description": "Port to expose Excalidraw on",
+      "default": "3380",
+      "required": false
+    }
+  ]
+}

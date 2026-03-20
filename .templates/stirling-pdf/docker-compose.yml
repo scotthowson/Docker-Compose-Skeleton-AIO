@@ -1,0 +1,19 @@
+services:
+  stirling-pdf:
+    container_name: Stirling-PDF
+    image: stirlingtools/stirling-pdf:latest
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-UTC}
+      - DOCKER_ENABLE_SECURITY=false
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Stirling-PDF/data:/usr/share/tessdata
+      - ${APP_DATA_DIR:-./App-Data}/Stirling-PDF/config:/configs
+    ports:
+      - "${PORT_STIRLING_PDF:-8088}:8080"
+    healthcheck:
+      test: ["CMD", "curl", "-fso", "/dev/null", "http://127.0.0.1:8080/api/v1/info/status"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s

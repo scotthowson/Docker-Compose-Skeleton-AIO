@@ -1,0 +1,21 @@
+services:
+  diun:
+    container_name: Diun
+    image: crazymax/diun:latest
+    restart: unless-stopped
+    command: serve
+    environment:
+      - TZ=${TZ:-UTC}
+      - DIUN_WATCH_WORKERS=10
+      - DIUN_WATCH_SCHEDULE=0 6 * * *
+      - DIUN_PROVIDERS_DOCKER=true
+      - DIUN_PROVIDERS_DOCKER_WATCHBYDEFAULT=true
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Diun/data:/data
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    healthcheck:
+      test: ["CMD", "diun", "--version"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

@@ -1,0 +1,21 @@
+services:
+  tandoor:
+    container_name: Tandoor
+    image: vabene1111/recipes:latest
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-UTC}
+      - SECRET_KEY=${TANDOOR_SECRET_KEY}
+      - DB_ENGINE=django.db.backends.sqlite3
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Tandoor/staticfiles:/opt/recipes/staticfiles
+      - ${APP_DATA_DIR:-./App-Data}/Tandoor/mediafiles:/opt/recipes/mediafiles
+      - ${APP_DATA_DIR:-./App-Data}/Tandoor/database:/opt/recipes/database
+    ports:
+      - "${PORT_TANDOOR:-8099}:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s

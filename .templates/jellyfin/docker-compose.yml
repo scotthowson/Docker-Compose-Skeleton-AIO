@@ -4,7 +4,7 @@ services:
     container_name: jellyfin
     restart: unless-stopped
     environment:
-      - JELLYFIN_PublishedServerUrl=http://localhost:${HOST_PORT}
+      - JELLYFIN_PublishedServerUrl=http://127.0.0.1:${HOST_PORT}
       - TZ=${TZ:-UTC}
       - PUID=${PUID:-1000}
       - PGID=${PGID:-1000}
@@ -15,7 +15,7 @@ services:
       - ${APP_DATA_DIR:-./App-Data}/Jellyfin/cache:/cache
       - ${MEDIA_PATH}:/media:ro
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:8096/health || exit 1"]
+      test: ["CMD-SHELL", "curl -f http://127.0.0.1:8096/health || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3

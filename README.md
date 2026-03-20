@@ -2,7 +2,7 @@
 
 A batteries-included Docker homelab framework with a built-in web interface. One command to bootstrap your server — complete setup in your browser.
 
-> **AIO** bundles the [DCS framework](https://github.com/scotthowson/Docker-Compose-Skeleton) with [DCS Manager UI](https://github.com/scotthowson/Docker-Compose-Skeleton-UI) as a Docker container. No desktop app install needed.
+> **AIO** bundles the [DCS framework](https://github.com/scotthowson/Docker-Compose-Skeleton) with [DCS-UI](https://github.com/scotthowson/Docker-Compose-Skeleton-UI) as a Docker container. No desktop app install needed.
 
 ---
 
@@ -208,4 +208,4 @@ MIT
 
 ---
 
-Built with [DCS Framework](https://github.com/scotthowson/Docker-Compose-Skeleton) and [DCS Manager UI](https://github.com/scotthowson/Docker-Compose-Skeleton-UI).
+Built with [DCS Framework](https://github.com/scotthowson/Docker-Compose-Skeleton) and [DCS-UI](https://github.com/scotthowson/Docker-Compose-Skeleton-UI).

@@ -1,0 +1,18 @@
+services:
+  dashdot:
+    container_name: Dashdot
+    image: mauricenino/dashdot:latest
+    restart: unless-stopped
+    privileged: true
+    environment:
+      - TZ=${TZ:-UTC}
+    volumes:
+      - /:/mnt/host:ro
+    ports:
+      - "${PORT_DASHDOT:-3001}:3001"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3001/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

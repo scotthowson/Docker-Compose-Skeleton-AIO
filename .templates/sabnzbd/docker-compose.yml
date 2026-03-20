@@ -1,0 +1,21 @@
+services:
+  sabnzbd:
+    container_name: SABnzbd
+    image: lscr.io/linuxserver/sabnzbd:latest
+    restart: unless-stopped
+    environment:
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+      - TZ=${TZ:-UTC}
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/SABnzbd/config:/config
+      - ${APP_DATA_DIR:-./App-Data}/SABnzbd/downloads:/downloads
+      - ${APP_DATA_DIR:-./App-Data}/SABnzbd/incomplete:/incomplete-downloads
+    ports:
+      - "${PORT_SABNZBD:-8085}:8080"
+    healthcheck:
+      test: ["CMD", "curl", "-fso", "/dev/null", "http://127.0.0.1:8080/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

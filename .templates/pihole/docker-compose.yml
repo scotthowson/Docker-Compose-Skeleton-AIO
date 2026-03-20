@@ -1,0 +1,23 @@
+services:
+  pihole:
+    container_name: Pi-hole
+    image: pihole/pihole:latest
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-UTC}
+      - WEBPASSWORD=${PIHOLE_WEBPASSWORD}
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Pi-hole/etc-pihole:/etc/pihole
+      - ${APP_DATA_DIR:-./App-Data}/Pi-hole/etc-dnsmasq.d:/etc/dnsmasq.d
+    ports:
+      - "53:53/tcp"
+      - "53:53/udp"
+      - "${PORT_PIHOLE_WEB:-8089}:80"
+    cap_add:
+      - NET_ADMIN
+    healthcheck:
+      test: ["CMD", "dig", "+short", "+norecurse", "+retry=0", "@127.0.0.1", "pi.hole"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s

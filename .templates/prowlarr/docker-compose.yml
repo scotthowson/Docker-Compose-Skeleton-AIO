@@ -1,0 +1,19 @@
+services:
+  prowlarr:
+    container_name: Prowlarr
+    image: lscr.io/linuxserver/prowlarr:latest
+    restart: unless-stopped
+    environment:
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+      - TZ=${TZ:-UTC}
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Prowlarr/config:/config
+    ports:
+      - "${PORT_PROWLARR:-9696}:9696"
+    healthcheck:
+      test: ["CMD", "curl", "-fso", "/dev/null", "http://127.0.0.1:9696/ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s

@@ -1,0 +1,23 @@
+services:
+  healthchecks:
+    container_name: Healthchecks
+    image: lscr.io/linuxserver/healthchecks:latest
+    restart: unless-stopped
+    environment:
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+      - TZ=${TZ:-UTC}
+      - SITE_ROOT=http://127.0.0.1:${PORT_HEALTHCHECKS:-8001}
+      - SECRET_KEY=${HEALTHCHECKS_SECRET_KEY}
+      - SUPERUSER_EMAIL=admin@localhost
+      - SUPERUSER_PASSWORD=admin
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Healthchecks/config:/config
+    ports:
+      - "${PORT_HEALTHCHECKS:-8001}:8000"
+    healthcheck:
+      test: ["CMD", "curl", "-fso", "/dev/null", "http://127.0.0.1:8000/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s

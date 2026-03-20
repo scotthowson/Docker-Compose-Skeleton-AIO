@@ -1,0 +1,18 @@
+{
+  "name": "flaresolverr",
+  "title": "FlareSolverr",
+  "description": "Proxy server that solves Cloudflare and DDoS-GUARD challenges for Prowlarr and other *arr apps. Keeps your indexers accessible when sites are behind 'Verify you are human' screens.",
+  "category": "media",
+  "target_stack": "media-services",
+  "icon": "☁️",
+  "tags": ["cloudflare", "proxy", "arr", "indexer", "bypass", "captcha"],
+  "variables": [
+    {
+      "name": "PORT_FLARESOLVERR",
+      "label": "Host Port",
+      "description": "Port to expose FlareSolverr on",
+      "default": "8191",
+      "required": false
+    }
+  ]
+}

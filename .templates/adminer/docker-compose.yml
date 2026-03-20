@@ -1,0 +1,17 @@
+services:
+  adminer:
+    container_name: Adminer
+    image: adminer:latest
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-UTC}
+      - ADMINER_DEFAULT_SERVER=mariadb
+      - ADMINER_DESIGN=dracula
+    ports:
+      - "${PORT_ADMINER:-8097}:8080"
+    healthcheck:
+      test: ["CMD", "php", "-r", "echo 'ok';"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s

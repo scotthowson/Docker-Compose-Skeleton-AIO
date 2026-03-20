@@ -1,0 +1,18 @@
+{
+  "name": "monkeytype",
+  "title": "MonkeyType",
+  "description": "Self-hosted typing test application with customizable themes, multiple test modes, and detailed statistics tracking.",
+  "category": "entertainment",
+  "target_stack": "entertainment-personal",
+  "icon": "⌨️",
+  "tags": ["typing", "test", "productivity", "self-hosted"],
+  "variables": [
+    {
+      "name": "PORT_MONKEYTYPE",
+      "label": "Host Port",
+      "description": "Port to expose MonkeyType on",
+      "default": "5001",
+      "required": false
+    }
+  ]
+}

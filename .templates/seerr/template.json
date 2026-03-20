@@ -1,0 +1,18 @@
+{
+  "name": "seerr",
+  "title": "Seerr",
+  "description": "Modern media request management and discovery tool. Users can browse, request, and track movies and TV shows with automatic integration to Sonarr, Radarr, and Plex.",
+  "category": "media",
+  "target_stack": "media-services",
+  "icon": "🎬",
+  "tags": ["media", "requests", "plex", "sonarr", "radarr", "discovery"],
+  "variables": [
+    {
+      "name": "PORT_SEERR",
+      "label": "Host Port",
+      "description": "Port to expose Seerr on",
+      "default": "5055",
+      "required": false
+    }
+  ]
+}

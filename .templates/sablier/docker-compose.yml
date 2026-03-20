@@ -16,7 +16,7 @@ services:
       - ${APP_DATA_DIR:-./App-Data}/Sablier/sablier.yml:/etc/sablier/sablier.yml
       - ${APP_DATA_DIR:-./App-Data}/Sablier/state.json:/etc/sablier/state.json
     healthcheck:
-      test: ["CMD-SHELL", "wget -q --spider http://localhost:10000/health || exit 1"]
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:10000/health || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3

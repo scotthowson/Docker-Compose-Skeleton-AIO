@@ -1,0 +1,40 @@
+services:
+  rustdesk-server:
+    container_name: RustDesk-Server
+    image: rustdesk/rustdesk-server:latest
+    restart: unless-stopped
+    command: hbbs
+    environment:
+      - TZ=${TZ:-UTC}
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/RustDesk/data:/root
+    ports:
+      - "21115:21115"
+      - "21116:21116"
+      - "21116:21116/udp"
+      - "21118:21118"
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 21116 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  rustdesk-relay:
+    container_name: RustDesk-Relay
+    image: rustdesk/rustdesk-server:latest
+    restart: unless-stopped
+    command: hbbr
+    environment:
+      - TZ=${TZ:-UTC}
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/RustDesk/data:/root
+    ports:
+      - "21117:21117"
+      - "21119:21119"
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 21117 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

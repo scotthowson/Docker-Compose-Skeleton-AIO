@@ -1,0 +1,18 @@
+{
+  "name": "filebrowser",
+  "title": "File Browser",
+  "description": "Clean, web-based file manager with upload, download, preview, rename, and edit capabilities. Supports multiple users with individual home directories and permission controls.",
+  "category": "storage",
+  "target_stack": "storage-backup",
+  "icon": "📁",
+  "tags": ["files", "storage", "manager", "upload", "download", "web"],
+  "variables": [
+    {
+      "name": "PORT_FILEBROWSER",
+      "label": "Host Port",
+      "description": "Port to expose File Browser on",
+      "default": "8095",
+      "required": false
+    }
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "name": "actual-budget",
+  "title": "Actual Budget",
+  "description": "Super fast, privacy-focused personal finance app with envelope budgeting, bank sync, powerful rules, and beautiful reports. Local-first with optional sync across devices.",
+  "category": "finance",
+  "target_stack": "entertainment-personal",
+  "icon": "💰",
+  "tags": ["finance", "budget", "money", "accounting", "privacy", "envelope"],
+  "variables": [
+    {
+      "name": "PORT_ACTUAL",
+      "label": "Host Port",
+      "description": "Port to expose Actual Budget on",
+      "default": "5006",
+      "required": false
+    }
+  ]
+}

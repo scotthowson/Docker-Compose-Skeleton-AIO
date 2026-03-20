@@ -15,7 +15,7 @@ services:
       - ${APP_DATA_DIR:-./App-Data}/Plex/transcode:/transcode
       - ${MEDIA_PATH}:/data:ro
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:32400/identity || exit 1"]
+      test: ["CMD-SHELL", "curl -f http://127.0.0.1:32400/identity || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3

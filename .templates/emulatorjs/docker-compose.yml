@@ -1,0 +1,23 @@
+services:
+  emulatorjs:
+    container_name: EmulatorJS
+    image: lscr.io/linuxserver/emulatorjs:1.9.2
+    restart: unless-stopped
+    environment:
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+      - TZ=${TZ:-UTC}
+      - SUBFOLDER=${EMULATORJS_SUBFOLDER:-/}
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/EmulatorJS/config:/config
+      - ${APP_DATA_DIR:-./App-Data}/EmulatorJS/data:/data
+    ports:
+      - "3060:3000"
+      - "8990:80"
+      - "4001:4001"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:80/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s

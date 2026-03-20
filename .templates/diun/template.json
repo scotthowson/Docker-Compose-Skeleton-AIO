@@ -1,0 +1,10 @@
+{
+  "name": "diun",
+  "title": "Diun",
+  "description": "Docker Image Update Notifier — monitors your running containers and alerts you when newer versions are available on the registry. Supports ntfy, Gotify, Slack, Discord, email, and more.",
+  "category": "monitoring",
+  "target_stack": "monitoring-management",
+  "icon": "🔄",
+  "tags": ["docker", "updates", "notifications", "monitoring", "images", "registry"],
+  "variables": []
+}

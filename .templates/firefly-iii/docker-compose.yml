@@ -1,0 +1,21 @@
+services:
+  firefly-iii:
+    container_name: Firefly-III
+    image: fireflyiii/core:latest
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-UTC}
+      - APP_KEY=${FIREFLY_APP_KEY}
+      - DB_CONNECTION=sqlite
+      - TRUSTED_PROXIES=**
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Firefly-III/upload:/var/www/html/storage/upload
+      - ${APP_DATA_DIR:-./App-Data}/Firefly-III/database:/var/www/html/storage/database
+    ports:
+      - "${PORT_FIREFLY:-8084}:8080"
+    healthcheck:
+      test: ["CMD", "curl", "-fso", "/dev/null", "http://127.0.0.1:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s

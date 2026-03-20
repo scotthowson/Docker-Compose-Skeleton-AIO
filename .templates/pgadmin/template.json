@@ -1,0 +1,32 @@
+{
+  "name": "pgadmin",
+  "title": "pgAdmin 4",
+  "description": "Comprehensive PostgreSQL management platform with query tool, ERD designer, backup/restore, performance dashboards, and server monitoring. The standard tool for PostgreSQL administration.",
+  "category": "database",
+  "target_stack": "development-tools",
+  "icon": "\ud83d\udc18",
+  "tags": [
+    "postgresql",
+    "database",
+    "admin",
+    "management",
+    "query",
+    "backup"
+  ],
+  "variables": [
+    {
+      "name": "PORT_PGADMIN",
+      "label": "Host Port",
+      "description": "Port to expose pgAdmin on",
+      "default": "5051",
+      "required": false
+    },
+    {
+      "name": "PGADMIN_EMAIL",
+      "label": "Admin Email",
+      "description": "Email for the pgAdmin admin account",
+      "default": "admin@example.com",
+      "required": true
+    }
+  ]
+}

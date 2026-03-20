@@ -1,0 +1,18 @@
+{
+  "name": "readarr",
+  "title": "Readarr",
+  "description": "Automated ebook and audiobook manager — the book counterpart to Sonarr/Radarr. Monitors authors, searches indexers, and manages your book library.",
+  "category": "media",
+  "target_stack": "media-services",
+  "icon": "📚",
+  "tags": ["books", "ebooks", "audiobooks", "arr", "media", "automation"],
+  "variables": [
+    {
+      "name": "PORT_READARR",
+      "label": "Host Port",
+      "description": "Port to expose Readarr on",
+      "default": "8787",
+      "required": false
+    }
+  ]
+}

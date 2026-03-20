@@ -1,0 +1,18 @@
+{
+  "name": "tautulli",
+  "title": "Tautulli",
+  "description": "Monitoring and tracking tool for Plex Media Server. Provides detailed analytics on what is being watched, who is watching, and when they are watching.",
+  "category": "media",
+  "target_stack": "media-services",
+  "icon": "📊",
+  "tags": ["plex", "monitoring", "analytics", "media", "statistics"],
+  "variables": [
+    {
+      "name": "PORT_TAUTULLI",
+      "label": "Host Port",
+      "description": "Port to expose Tautulli on",
+      "default": "8181",
+      "required": false
+    }
+  ]
+}

@@ -1,0 +1,20 @@
+services:
+  calibre-web:
+    container_name: Calibre-Web
+    image: lscr.io/linuxserver/calibre-web:latest
+    restart: unless-stopped
+    environment:
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+      - TZ=${TZ:-UTC}
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Calibre-Web/config:/config
+      - ${APP_DATA_DIR:-./App-Data}/Calibre-Web/books:/books
+    ports:
+      - "${PORT_CALIBRE_WEB:-8083}:8083"
+    healthcheck:
+      test: ["CMD", "curl", "-fso", "/dev/null", "http://127.0.0.1:8083/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s

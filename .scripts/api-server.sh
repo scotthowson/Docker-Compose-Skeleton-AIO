@@ -1335,6 +1335,7 @@ handle_root() {
     {"method": "POST",   "path": "/snapshots/:id/restore",    "description": "Restore from a snapshot"},
     {"method": "DELETE", "path": "/snapshots/:id",            "description": "Delete a snapshot"},
     {"method": "GET",    "path": "/stacks/:name/compose/history", "description": "Compose file version history"},
+    {"method": "GET",    "path": "/stacks/:name/compose/history/:id", "description": "View a specific compose version content"},
     {"method": "POST",   "path": "/stacks/:name/compose/rollback", "description": "Rollback compose to a previous version"},
     {"method": "GET",    "path": "/templates",                "description": "List available templates"},
     {"method": "GET",    "path": "/templates/:name",          "description": "Template detail with compose content"},
@@ -3676,18 +3677,25 @@ handle_batch_stacks() {
     local stacks_input
     stacks_input=$(printf '%s' "$body" | jq -r '.stacks' 2>/dev/null)
 
-    local -a ordered_stacks=(
-        "core-infrastructure"
-        "networking-security"
-        "monitoring-management"
-        "development-tools"
-        "media-services"
-        "web-applications"
-        "storage-backup"
-        "communication-collaboration"
-        "entertainment-personal"
-        "miscellaneous-services"
-    )
+    # Read startup order from .env DOCKER_STACKS (respects user customization via
+    # setup wizard or /stacks/reorder endpoint). Falls back to default if unset.
+    local -a ordered_stacks=()
+    if [[ -n "${DOCKER_STACKS:-}" ]]; then
+        read -ra ordered_stacks <<< "$DOCKER_STACKS"
+    else
+        ordered_stacks=(
+            "core-infrastructure"
+            "networking-security"
+            "monitoring-management"
+            "development-tools"
+            "media-services"
+            "web-applications"
+            "storage-backup"
+            "communication-collaboration"
+            "entertainment-personal"
+            "miscellaneous-services"
+        )
+    fi
 
     local -a target_stacks=()
     if [[ "$stacks_input" == '"all"' || "$stacks_input" == 'all' ]]; then
@@ -3695,9 +3703,28 @@ handle_batch_stacks() {
             [[ -d "$COMPOSE_DIR/$s" && -f "$COMPOSE_DIR/$s/docker-compose.yml" ]] && target_stacks+=("$s")
         done
     else
+        # For selected stacks, reorder them to match DOCKER_STACKS order
+        local -a selected=()
         while IFS= read -r s; do
-            [[ -n "$s" ]] && target_stacks+=("$s")
+            [[ -n "$s" ]] && selected+=("$s")
         done < <(printf '%s' "$body" | jq -r '.stacks[]' 2>/dev/null)
+        # Sort selected stacks by their position in ordered_stacks
+        for s in "${ordered_stacks[@]}"; do
+            for sel in "${selected[@]}"; do
+                if [[ "$s" == "$sel" ]]; then
+                    target_stacks+=("$s")
+                    break
+                fi
+            done
+        done
+        # Append any selected stacks not in ordered_stacks (custom stacks)
+        for sel in "${selected[@]}"; do
+            local found=false
+            for t in "${target_stacks[@]}"; do
+                [[ "$t" == "$sel" ]] && { found=true; break; }
+            done
+            [[ "$found" == "false" ]] && target_stacks+=("$sel")
+        done
     fi
 
     # Reverse order for stop
@@ -3752,11 +3779,30 @@ handle_batch_update() {
     local stacks_input
     stacks_input=$(printf '%s' "$body" | jq -r '.stacks' 2>/dev/null)
 
+    # Read startup order from .env (same as batch/stacks handler)
+    local -a ordered_stacks=()
+    if [[ -n "${DOCKER_STACKS:-}" ]]; then
+        read -ra ordered_stacks <<< "$DOCKER_STACKS"
+    else
+        ordered_stacks=(
+            "core-infrastructure"
+            "networking-security"
+            "monitoring-management"
+            "development-tools"
+            "media-services"
+            "web-applications"
+            "storage-backup"
+            "communication-collaboration"
+            "entertainment-personal"
+            "miscellaneous-services"
+        )
+    fi
+
     local -a target_stacks=()
     if [[ "$stacks_input" == '"all"' || "$stacks_input" == 'all' ]]; then
-        while IFS= read -r dir; do
-            [[ -f "$dir/docker-compose.yml" ]] && target_stacks+=("$(basename "$dir")")
-        done < <(find "$COMPOSE_DIR" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort)
+        for s in "${ordered_stacks[@]}"; do
+            [[ -d "$COMPOSE_DIR/$s" && -f "$COMPOSE_DIR/$s/docker-compose.yml" ]] && target_stacks+=("$s")
+        done
     else
         while IFS= read -r s; do
             [[ -n "$s" ]] && target_stacks+=("$s")
@@ -6281,6 +6327,36 @@ handle_compose_rollback() {
     }
 
     _api_success "{\"success\": true, \"stack\": \"$(_api_json_escape "$stack")\", \"restored_version\": \"$(_api_json_escape "$version_id")\", \"message\": \"Compose file rolled back successfully\"}"
+}
+
+# GET /stacks/:name/compose/history/:version_id — View a specific compose version's content
+handle_compose_history_view() {
+    local stack="$1"
+    local version_id="$2"
+
+    if [[ ! -d "$COMPOSE_DIR/$stack" ]]; then
+        _api_error 404 "Stack not found: $stack"
+        return
+    fi
+
+    # Validate version_id (prevent path traversal)
+    if [[ "$version_id" == *".."* ]] || [[ "$version_id" == *"/"* ]]; then
+        _api_error 400 "Invalid version ID"
+        return
+    fi
+
+    local version_file="$COMPOSE_HISTORY_DIR/$stack/${version_id}.yml"
+    if [[ ! -f "$version_file" ]]; then
+        _api_error 404 "Version not found: $version_id"
+        return
+    fi
+
+    local content
+    content=$(cat "$version_file" 2>/dev/null)
+    local size
+    size=$(stat -c '%s' "$version_file" 2>/dev/null || echo 0)
+
+    _api_success "{\"stack\": \"$(_api_json_escape "$stack")\", \"version_id\": \"$(_api_json_escape "$version_id")\", \"content\": \"$(_api_json_escape "$content")\", \"size\": $size}"
 }
 
 # Helper: save a compose version snapshot
@@ -10604,6 +10680,14 @@ handle_request() {
                 snap="${snap%/download}"
                 _api_validate_resource_name "$snap" "snapshot" || return
                 handle_snapshot_download "$snap"
+                ;;
+            /stacks/*/compose/history/*)
+                # View specific version content: /stacks/:name/compose/history/:version_id
+                local stack="${path#/stacks/}"
+                local version_id="${stack##*/compose/history/}"
+                stack="${stack%%/compose/history/*}"
+                _api_validate_stack_name "$stack" || return
+                handle_compose_history_view "$stack" "$version_id"
                 ;;
             /stacks/*/compose/history)
                 local stack="${path#/stacks/}"

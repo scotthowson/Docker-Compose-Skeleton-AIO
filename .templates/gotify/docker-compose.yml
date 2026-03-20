@@ -1,0 +1,17 @@
+services:
+  gotify:
+    container_name: Gotify
+    image: gotify/server:latest
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-UTC}
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Gotify/data:/app/data
+    ports:
+      - "${PORT_GOTIFY:-8094}:80"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:80/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s

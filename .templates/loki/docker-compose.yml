@@ -1,0 +1,18 @@
+services:
+  loki:
+    container_name: Loki
+    image: grafana/loki:latest
+    restart: unless-stopped
+    command: -config.file=/etc/loki/local-config.yaml
+    environment:
+      - TZ=${TZ:-UTC}
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Loki/data:/loki
+    ports:
+      - "${PORT_LOKI:-3100}:3100"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3100/ready"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s

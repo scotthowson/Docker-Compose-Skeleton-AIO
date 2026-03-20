@@ -1,0 +1,25 @@
+{
+  "name": "freshrss",
+  "title": "FreshRSS",
+  "description": "Self-hosted RSS feed aggregator with a rich web UI. Handles 100k+ articles, supports extensions, multiple users, API access for mobile apps, and OPML import/export.",
+  "category": "content",
+  "target_stack": "web-applications",
+  "icon": "\ud83d\udcf0",
+  "tags": [
+    "rss",
+    "news",
+    "feeds",
+    "reader",
+    "aggregator",
+    "content"
+  ],
+  "variables": [
+    {
+      "name": "PORT_FRESHRSS",
+      "label": "Host Port",
+      "description": "Port to expose FreshRSS on",
+      "default": "8098",
+      "required": false
+    }
+  ]
+}

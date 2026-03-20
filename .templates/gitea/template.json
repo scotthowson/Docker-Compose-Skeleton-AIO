@@ -11,7 +11,7 @@
       "name": "HOST_PORT",
       "label": "Web UI Port",
       "description": "Port exposed on the host for the Gitea web interface",
-      "default": "3000",
+      "default": "3300",
       "required": false
     },
     {

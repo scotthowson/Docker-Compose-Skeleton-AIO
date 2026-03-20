@@ -1,0 +1,27 @@
+services:
+  netdata:
+    container_name: Netdata
+    image: netdata/netdata:stable
+    restart: unless-stopped
+    cap_add:
+      - SYS_PTRACE
+      - SYS_ADMIN
+    security_opt:
+      - apparmor:unconfined
+    environment:
+      - TZ=${TZ:-UTC}
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Netdata/config:/etc/netdata
+      - ${APP_DATA_DIR:-./App-Data}/Netdata/lib:/var/lib/netdata
+      - ${APP_DATA_DIR:-./App-Data}/Netdata/cache:/var/cache/netdata
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    ports:
+      - "${PORT_NETDATA:-19999}:19999"
+    healthcheck:
+      test: ["CMD", "curl", "-fso", "/dev/null", "http://127.0.0.1:19999/api/v1/info"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s

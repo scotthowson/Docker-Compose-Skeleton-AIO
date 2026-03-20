@@ -1,0 +1,19 @@
+services:
+  bazarr:
+    container_name: Bazarr
+    image: lscr.io/linuxserver/bazarr:latest
+    restart: unless-stopped
+    environment:
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+      - TZ=${TZ:-UTC}
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Bazarr/config:/config
+    ports:
+      - "${PORT_BAZARR:-6767}:6767"
+    healthcheck:
+      test: ["CMD", "curl", "-fso", "/dev/null", "http://127.0.0.1:6767/ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s

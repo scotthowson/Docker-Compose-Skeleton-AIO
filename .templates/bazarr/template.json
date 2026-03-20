@@ -1,0 +1,18 @@
+{
+  "name": "bazarr",
+  "title": "Bazarr",
+  "description": "Automated subtitle manager for Sonarr and Radarr. Searches and downloads subtitles in your chosen language(s) automatically for your entire media library.",
+  "category": "media",
+  "target_stack": "media-services",
+  "icon": "💬",
+  "tags": ["subtitles", "arr", "media", "sonarr", "radarr", "automation"],
+  "variables": [
+    {
+      "name": "PORT_BAZARR",
+      "label": "Host Port",
+      "description": "Port to expose Bazarr on",
+      "default": "6767",
+      "required": false
+    }
+  ]
+}

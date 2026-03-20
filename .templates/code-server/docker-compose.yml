@@ -1,0 +1,20 @@
+services:
+  code-server:
+    container_name: Code-Server
+    image: lscr.io/linuxserver/code-server:latest
+    restart: unless-stopped
+    environment:
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+      - TZ=${TZ:-UTC}
+      - DEFAULT_WORKSPACE=/config/workspace
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Code-Server/config:/config
+    ports:
+      - "${PORT_CODE_SERVER:-8443}:8443"
+    healthcheck:
+      test: ["CMD", "curl", "-fso", "/dev/null", "http://127.0.0.1:8443/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

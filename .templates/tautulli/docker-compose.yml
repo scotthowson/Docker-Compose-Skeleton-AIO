@@ -1,0 +1,19 @@
+services:
+  tautulli:
+    container_name: Tautulli
+    image: lscr.io/linuxserver/tautulli:latest
+    restart: unless-stopped
+    environment:
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+      - TZ=${TZ:-UTC}
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Tautulli/config:/config
+    ports:
+      - "${PORT_TAUTULLI:-8181}:8181"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8181/status"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s

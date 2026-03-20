@@ -1,0 +1,19 @@
+services:
+  monkeytype:
+    container_name: MonkeyType
+    image: themythologist/monkeytype:frontend-latest
+    restart: unless-stopped
+    environment:
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+      - TZ=${TZ:-UTC}
+    ports:
+      - "${PORT_MONKEYTYPE:-5001}:5000"
+    mem_limit: 100M
+    cpus: 0.25
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:5000/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

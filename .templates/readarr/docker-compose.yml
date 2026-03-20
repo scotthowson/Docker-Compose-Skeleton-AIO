@@ -1,0 +1,19 @@
+services:
+  readarr:
+    container_name: Readarr
+    image: lscr.io/linuxserver/readarr:develop
+    restart: unless-stopped
+    environment:
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+      - TZ=${TZ:-UTC}
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Readarr/config:/config
+    ports:
+      - "${PORT_READARR:-8787}:8787"
+    healthcheck:
+      test: ["CMD", "curl", "-fso", "/dev/null", "http://127.0.0.1:8787/ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s

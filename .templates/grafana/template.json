@@ -18,7 +18,7 @@
       "name": "HOST_PORT",
       "label": "Web UI Port",
       "description": "Port exposed on the host for the Grafana web interface",
-      "default": "3000",
+      "default": "3200",
       "required": false
     }
   ]

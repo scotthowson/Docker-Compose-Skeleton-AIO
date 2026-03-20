@@ -1,0 +1,25 @@
+{
+  "name": "reactive-resume",
+  "title": "Reactive Resume",
+  "description": "Free, privacy-first resume builder. Beautiful templates, real-time preview, PDF export, and zero tracking. Your data never leaves your server. The open-source alternative to resume.io.",
+  "category": "tools",
+  "target_stack": "web-applications",
+  "icon": "\ud83d\udcdd",
+  "tags": [
+    "resume",
+    "cv",
+    "career",
+    "privacy",
+    "pdf",
+    "job"
+  ],
+  "variables": [
+    {
+      "name": "PORT_REACTIVE_RESUME",
+      "label": "Host Port",
+      "description": "Port to expose Reactive Resume on",
+      "default": "3210",
+      "required": false
+    }
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "name": "dashdot",
+  "title": "dash.",
+  "description": "Minimal, beautiful server dashboard showing CPU, RAM, storage, and network at a glance. Designed to be the simplest possible status page for your homelab.",
+  "category": "monitoring",
+  "target_stack": "monitoring-management",
+  "icon": "\u26a1",
+  "tags": [
+    "dashboard",
+    "monitoring",
+    "server",
+    "status",
+    "minimal",
+    "system"
+  ],
+  "variables": [
+    {
+      "name": "PORT_DASHDOT",
+      "label": "Host Port",
+      "description": "Port to expose dash. on",
+      "default": "3002",
+      "required": false
+    }
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "name": "radarr",
+  "title": "Radarr",
+  "description": "Automated movie management — monitors RSS feeds, searches indexers, and manages your movie library. The movie counterpart to Sonarr in the *arr stack.",
+  "category": "media",
+  "target_stack": "media-services",
+  "icon": "🎬",
+  "tags": ["movies", "automation", "arr", "media", "download"],
+  "variables": [
+    {
+      "name": "PORT_RADARR",
+      "label": "Host Port",
+      "description": "Port to expose Radarr on",
+      "default": "7878",
+      "required": false
+    }
+  ]
+}

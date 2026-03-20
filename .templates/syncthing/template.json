@@ -1,0 +1,18 @@
+{
+  "name": "syncthing",
+  "title": "Syncthing",
+  "description": "Peer-to-peer file synchronization — keeps folders in sync across devices without a cloud middleman. End-to-end encrypted, open protocol, works on every platform.",
+  "category": "sync",
+  "target_stack": "storage-backup",
+  "icon": "🔄",
+  "tags": ["sync", "files", "p2p", "backup", "encrypted", "cross-platform"],
+  "variables": [
+    {
+      "name": "PORT_SYNCTHING",
+      "label": "Web UI Port",
+      "description": "Port for the Syncthing web interface",
+      "default": "8384",
+      "required": false
+    }
+  ]
+}

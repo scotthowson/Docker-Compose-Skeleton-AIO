@@ -1,0 +1,15 @@
+services:
+  excalidraw:
+    container_name: Excalidraw
+    image: excalidraw/excalidraw:latest
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-UTC}
+    ports:
+      - "${PORT_EXCALIDRAW:-3380}:80"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:80/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s

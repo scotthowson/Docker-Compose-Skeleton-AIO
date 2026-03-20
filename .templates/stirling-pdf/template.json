@@ -1,0 +1,18 @@
+{
+  "name": "stirling-pdf",
+  "title": "Stirling-PDF",
+  "description": "Powerful self-hosted PDF manipulation toolkit with 50+ tools — merge, split, convert, compress, sign, OCR, redact, and more. Processes everything locally with zero external API calls.",
+  "category": "tools",
+  "target_stack": "development-tools",
+  "icon": "📄",
+  "tags": ["pdf", "documents", "tools", "convert", "merge", "ocr", "privacy"],
+  "variables": [
+    {
+      "name": "PORT_STIRLING_PDF",
+      "label": "Host Port",
+      "description": "Port to expose Stirling-PDF on",
+      "default": "8088",
+      "required": false
+    }
+  ]
+}

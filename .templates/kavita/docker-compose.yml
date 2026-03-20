@@ -1,0 +1,18 @@
+services:
+  kavita:
+    container_name: Kavita
+    image: jvmilazz0/kavita:latest
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-UTC}
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Kavita/config:/kavita/config
+      - ${APP_DATA_DIR:-./App-Data}/Kavita/data:/data
+    ports:
+      - "${PORT_KAVITA:-5050}:5000"
+    healthcheck:
+      test: ["CMD", "curl", "-fso", "/dev/null", "http://127.0.0.1:5000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s

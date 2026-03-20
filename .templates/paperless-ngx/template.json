@@ -1,0 +1,25 @@
+{
+  "name": "paperless-ngx",
+  "title": "Paperless-ngx",
+  "description": "Scan, index, and archive all your paper documents. OCR-powered full-text search, automatic tagging, document matching, and a beautiful web UI. Go paperless.",
+  "category": "documents",
+  "target_stack": "storage-backup",
+  "icon": "📑",
+  "tags": ["documents", "ocr", "archive", "paperless", "scan", "search"],
+  "variables": [
+    {
+      "name": "PORT_PAPERLESS",
+      "label": "Host Port",
+      "description": "Port to expose Paperless-ngx on",
+      "default": "8010",
+      "required": false
+    },
+    {
+      "name": "PAPERLESS_SECRET_KEY",
+      "label": "Secret Key",
+      "description": "Random secret for session encryption (generate with: openssl rand -base64 36)",
+      "default": "",
+      "required": true
+    }
+  ]
+}
