@@ -91,8 +91,10 @@ WHAT IT DOES:
      (each gets a base docker-compose.yml and .env template)
   4. Sets executable permissions on all .sh scripts
   5. Sets ownership to the current user (${CURRENT_USER})
-  6. Verifies Docker and Docker Compose are installed
-  7. Starts API server + DCS-UI container, prints browser URL
+  6. Installs required + optional system dependencies
+     (jq, curl, git, python3, openssl, socat, rsync, tar, etc.)
+  7. Verifies Docker and Docker Compose are installed
+  8. Launches API server for Setup Wizard configuration
 
 EOF
     exit 0
@@ -133,7 +135,7 @@ _run() {
 
 echo ""
 echo -e "${C_BOLD}${C_CYAN}+======================================================+${C_RESET}"
-echo -e "${C_BOLD}${C_CYAN}|    Docker Compose Skeleton AIO  --  Setup             |${C_RESET}"
+echo -e "${C_BOLD}${C_CYAN}|         Docker Compose Skeleton  --  Setup            |${C_RESET}"
 echo -e "${C_BOLD}${C_CYAN}+======================================================+${C_RESET}"
 echo ""
 
@@ -148,27 +150,28 @@ _info "App-Data target : $APP_DATA_DIR"
 _info "Running as user : ${CURRENT_USER}:${CURRENT_GROUP}"
 
 # =============================================================================
+# PRE-CHECK: Docker must be installed before proceeding
+# =============================================================================
+
+if ! command -v docker >/dev/null 2>&1; then
+    echo ""
+    _warn "Docker is NOT installed on this system."
+    _info "DCS requires Docker Engine to manage containers."
+    _info "Install Docker first: https://docs.docker.com/engine/install/"
+    echo ""
+    _fail "Cannot continue without Docker. Install it and run ./setup.sh again."
+    exit 1
+fi
+
+# =============================================================================
 # STEP 1: Environment File
 # =============================================================================
 
-_header "Step 1/7: Environment Configuration"
+_header "Step 1/8: Environment Configuration"
 _divider
 
 if [[ -f "$BASE_DIR/.env" ]]; then
     _skip ".env already exists -- not overwriting"
-    # AIO requires API accessible from Docker containers — auto-fix critical settings
-    if grep -q 'API_BIND.*127\.0\.0\.1' "$BASE_DIR/.env" 2>/dev/null; then
-        if [[ "$DRY_RUN" != "true" ]]; then
-            sed -i 's/API_BIND.*=.*127\.0\.0\.1/API_BIND=0.0.0.0/' "$BASE_DIR/.env"
-        fi
-        _ok "Updated API_BIND to 0.0.0.0 (required for DCS-UI container)"
-    fi
-    if grep -q '^API_ENABLED.*=.*false' "$BASE_DIR/.env" 2>/dev/null; then
-        if [[ "$DRY_RUN" != "true" ]]; then
-            sed -i 's/^API_ENABLED.*=.*false/API_ENABLED=true/' "$BASE_DIR/.env"
-        fi
-        _ok "Enabled API server (required for DCS-UI)"
-    fi
 elif [[ -f "$BASE_DIR/.env.example" ]]; then
     _run cp "$BASE_DIR/.env.example" "$BASE_DIR/.env"
     _ok "Copied .env.example -> .env"
@@ -182,7 +185,7 @@ fi
 # STEP 2: Create Directories
 # =============================================================================
 
-_header "Step 2/7: Directory Structure"
+_header "Step 2/8: Directory Structure"
 _divider
 
 declare -a REQUIRED_DIRS=(
@@ -203,7 +206,7 @@ done
 # STEP 3: Stack Directories
 # =============================================================================
 
-_header "Step 3/7: Stack Directories"
+_header "Step 3/8: Stack Directories"
 _divider
 
 # Read stack list from .env (DOCKER_STACKS), or use defaults
@@ -291,7 +294,7 @@ unset _SETUP_STACKS
 # STEP 4: Set Executable Permissions
 # =============================================================================
 
-_header "Step 4/7: Script Permissions"
+_header "Step 4/8: Script Permissions"
 _divider
 
 chmod_count=0
@@ -340,7 +343,7 @@ _ok "Set executable on $chmod_count script files"
 # STEP 5: Set Ownership
 # =============================================================================
 
-_header "Step 5/7: File Ownership"
+_header "Step 5/8: File Ownership"
 _divider
 
 # Only attempt chown if we can (avoids errors in unprivileged containers)
@@ -355,10 +358,308 @@ else
 fi
 
 # =============================================================================
-# STEP 6: Verify Docker Environment
+# STEP 6: System Dependencies
 # =============================================================================
 
-_header "Step 6/7: Docker Environment"
+_header "Step 6/8: System Dependencies"
+_divider
+
+# ── Detect Linux distribution ──
+_DISTRO="unknown"
+_DISTRO_FAMILY="unknown"
+_PKG_MGR=""
+_PKG_INSTALL=""
+_PKG_UPDATE=""
+
+if [[ -f /etc/os-release ]]; then
+    # shellcheck disable=SC1091
+    source /etc/os-release 2>/dev/null
+    _DISTRO="${NAME:-unknown}"
+    case "${ID:-}:${ID_LIKE:-}" in
+        *debian*|*ubuntu*|*mint*|*pop*)
+            _DISTRO_FAMILY="debian"
+            _PKG_MGR="apt-get"
+            _PKG_INSTALL="sudo apt-get install -y"
+            _PKG_UPDATE="sudo apt-get update -qq"
+            ;;
+        *fedora*|*rhel*|*centos*|*rocky*|*alma*)
+            _DISTRO_FAMILY="rhel"
+            _PKG_MGR="dnf"
+            _PKG_INSTALL="sudo dnf install -y"
+            _PKG_UPDATE=""
+            ;;
+        *arch*|*manjaro*|*endeavour*)
+            _DISTRO_FAMILY="arch"
+            _PKG_MGR="pacman"
+            _PKG_INSTALL="sudo pacman -S --noconfirm --needed"
+            _PKG_UPDATE="sudo pacman -Sy --noconfirm"
+            ;;
+        *suse*|*opensuse*)
+            _DISTRO_FAMILY="suse"
+            _PKG_MGR="zypper"
+            _PKG_INSTALL="sudo zypper install -y"
+            _PKG_UPDATE=""
+            ;;
+        *alpine*)
+            _DISTRO_FAMILY="alpine"
+            _PKG_MGR="apk"
+            _PKG_INSTALL="sudo apk add --no-cache"
+            _PKG_UPDATE="sudo apk update"
+            ;;
+        *void*)
+            _DISTRO_FAMILY="void"
+            _PKG_MGR="xbps-install"
+            _PKG_INSTALL="sudo xbps-install -y"
+            _PKG_UPDATE="sudo xbps-install -S"
+            ;;
+        *nixos*|*nix*)
+            _DISTRO_FAMILY="nix"
+            _PKG_MGR="nix-env"
+            _PKG_INSTALL="nix-env -iA nixpkgs."
+            _PKG_UPDATE=""
+            ;;
+    esac
+fi
+
+# Fallback detection via available binary
+if [[ -z "$_PKG_MGR" ]]; then
+    if   command -v apt-get >/dev/null 2>&1; then _DISTRO_FAMILY="debian"; _PKG_MGR="apt-get"; _PKG_INSTALL="sudo apt-get install -y"; _PKG_UPDATE="sudo apt-get update -qq"
+    elif command -v dnf     >/dev/null 2>&1; then _DISTRO_FAMILY="rhel";   _PKG_MGR="dnf";     _PKG_INSTALL="sudo dnf install -y"
+    elif command -v yum     >/dev/null 2>&1; then _DISTRO_FAMILY="rhel";   _PKG_MGR="yum";     _PKG_INSTALL="sudo yum install -y"
+    elif command -v pacman  >/dev/null 2>&1; then _DISTRO_FAMILY="arch";   _PKG_MGR="pacman";   _PKG_INSTALL="sudo pacman -S --noconfirm --needed"; _PKG_UPDATE="sudo pacman -Sy --noconfirm"
+    elif command -v zypper  >/dev/null 2>&1; then _DISTRO_FAMILY="suse";   _PKG_MGR="zypper";   _PKG_INSTALL="sudo zypper install -y"
+    elif command -v apk     >/dev/null 2>&1; then _DISTRO_FAMILY="alpine"; _PKG_MGR="apk";      _PKG_INSTALL="sudo apk add --no-cache"; _PKG_UPDATE="sudo apk update"
+    fi
+fi
+
+_info "Detected: ${C_BOLD}${_DISTRO}${C_RESET} (${_DISTRO_FAMILY})"
+[[ -n "$_PKG_MGR" ]] && _info "Package manager: ${C_BOLD}${_PKG_MGR}${C_RESET}"
+
+# ── Cross-distro package name mapping ──
+# Tool name → actual package name varies between distro families.
+_pkg_name() {
+    local tool="$1"
+    case "${_DISTRO_FAMILY}:${tool}" in
+        # socat
+        *:socat) echo "socat" ;;
+
+        # ncat — different package on every distro
+        debian:ncat)  echo "ncat" ;;
+        rhel:ncat)    echo "nmap-ncat" ;;
+        arch:ncat)    echo "nmap" ;;
+        suse:ncat)    echo "ncat" ;;
+        alpine:ncat)  echo "nmap-ncat" ;;
+        *:ncat)       echo "ncat" ;;
+
+        # python3 — Arch uses 'python' as the package name
+        arch:python3) echo "python" ;;
+        *:python3)    echo "python3" ;;
+
+        # openssl — Alpine uses 'openssl' which is the binary + libs
+        alpine:openssl) echo "openssl" ;;
+        *:openssl)      echo "openssl" ;;
+
+        # xxd — in different packages across distros
+        debian:xxd)   echo "xxd" ;;
+        rhel:xxd)     echo "vim-common" ;;
+        arch:xxd)     echo "xxd" ;;
+        suse:xxd)     echo "xxd" ;;
+        alpine:xxd)   echo "vim" ;;
+        *:xxd)        echo "xxd" ;;
+
+        # perl — same everywhere except Alpine (perl is large, use perl-utils)
+        alpine:perl)  echo "perl" ;;
+        *:perl)       echo "perl" ;;
+
+        # rsync
+        *:rsync)      echo "rsync" ;;
+
+        # Everything else — tool name = package name
+        *)            echo "$tool" ;;
+    esac
+}
+
+# ── Package index refresh (run once before first install) ──
+_pkg_refreshed=false
+_refresh_pkg_index() {
+    [[ "$_pkg_refreshed" == "true" ]] && return
+    if [[ -n "$_PKG_UPDATE" ]]; then
+        _info "Updating package index..."
+        if $DRY_RUN; then
+            _info "DRY RUN: $_PKG_UPDATE"
+        else
+            ${_PKG_UPDATE} >/dev/null 2>&1 || true
+        fi
+    fi
+    _pkg_refreshed=true
+}
+
+# ── Install a tool ──
+_install_tool() {
+    local tool="$1" required="${2:-false}"
+    local pkg
+    pkg=$(_pkg_name "$tool")
+
+    if [[ -z "$_PKG_INSTALL" ]]; then
+        _fail "No package manager found — install '$tool' manually"
+        [[ "$required" == "true" ]] && return 1
+        return 0
+    fi
+
+    if [[ "$DRY_RUN" == "true" ]]; then
+        _info "DRY RUN: Would install '$pkg' via: $_PKG_INSTALL $pkg"
+        return 0
+    fi
+
+    _refresh_pkg_index
+
+    _info "Installing '${C_BOLD}$pkg${C_RESET}'..."
+
+    # Capture output so we can show it on failure
+    local install_output
+    if [[ "$_DISTRO_FAMILY" == "nix" ]]; then
+        # Nix has a different syntax: nix-env -iA nixpkgs.PACKAGE
+        install_output=$(${_PKG_INSTALL}${pkg} 2>&1) || true
+    else
+        install_output=$(${_PKG_INSTALL} "$pkg" 2>&1) || true
+    fi
+
+    if command -v "$tool" >/dev/null 2>&1; then
+        _ok "Installed '$tool' successfully"
+        return 0
+    fi
+
+    # Show install output on failure so user can diagnose
+    _fail "Failed to install '$tool' (package: $pkg)"
+    if [[ "$VERBOSE" == "true" && -n "$install_output" ]]; then
+        echo "$install_output" | tail -5 | while IFS= read -r line; do
+            echo "         $line"
+        done
+    fi
+    [[ "$required" == "true" ]] && return 1
+    return 0
+}
+
+deps_ok=true
+deps_missing=0
+deps_installed=0
+
+# ── Required dependencies ──
+echo ""
+echo -e "  ${C_BOLD}Required dependencies:${C_RESET}"
+echo ""
+
+# socat OR ncat — need at least one for the API server listener
+_LISTENER_FOUND=false
+if command -v socat >/dev/null 2>&1; then
+    _LISTENER_FOUND=true
+    _ok "socat — TCP listener for API server"
+elif command -v ncat >/dev/null 2>&1; then
+    _LISTENER_FOUND=true
+    _ok "ncat — TCP listener for API server"
+fi
+
+# Ordered list with descriptions (arrays instead of associative for consistent order)
+_REQ_TOOLS=(jq curl git python3 openssl)
+_REQ_DESCS=(
+    "JSON processor — required for API server"
+    "HTTP client — required for health checks and updates"
+    "Version control — required for updates and plugin installs"
+    "Python 3 — required for secure password hashing (PBKDF2)"
+    "OpenSSL — required for secure token generation and TLS"
+)
+
+for i in "${!_REQ_TOOLS[@]}"; do
+    tool="${_REQ_TOOLS[$i]}"
+    desc="${_REQ_DESCS[$i]}"
+    if command -v "$tool" >/dev/null 2>&1; then
+        _ok "$tool — $desc"
+    else
+        deps_missing=$((deps_missing + 1))
+        echo ""
+        _fail "$tool — $desc"
+        read -rp "    Install '$tool' now? [Y/n] " _answer
+        if [[ ! "$_answer" =~ ^[Nn]$ ]]; then
+            if _install_tool "$tool" "true"; then
+                deps_installed=$((deps_installed + 1))
+            else
+                deps_ok=false
+            fi
+        else
+            _fail "Skipped — '$tool' is required for full functionality"
+            deps_ok=false
+        fi
+    fi
+done
+
+# Install socat if no listener found
+if [[ "$_LISTENER_FOUND" == "false" ]]; then
+    deps_missing=$((deps_missing + 1))
+    echo ""
+    _fail "socat — TCP listener for API server (neither socat nor ncat found)"
+    read -rp "    Install 'socat' now? [Y/n] " _answer
+    if [[ ! "$_answer" =~ ^[Nn]$ ]]; then
+        if _install_tool "socat" "true"; then
+            deps_installed=$((deps_installed + 1))
+        else
+            deps_ok=false
+        fi
+    else
+        deps_ok=false
+    fi
+fi
+
+# ── Optional dependencies (recommended) ──
+echo ""
+echo -e "  ${C_BOLD}Optional dependencies ${C_DIM}(recommended)${C_RESET}${C_BOLD}:${C_RESET}"
+echo ""
+
+_OPT_TOOLS=(rsync tar xxd perl)
+_OPT_DESCS=(
+    "Fast file copy — used for backups and snapshots"
+    "Archive tool — used for backup/restore operations"
+    "Hex encoder — used for secure token generation"
+    "Text processing — used for ANSI code stripping in logs"
+)
+
+opt_missing=()
+opt_missing_desc=()
+for i in "${!_OPT_TOOLS[@]}"; do
+    tool="${_OPT_TOOLS[$i]}"
+    desc="${_OPT_DESCS[$i]}"
+    if command -v "$tool" >/dev/null 2>&1; then
+        _ok "$tool — $desc"
+    else
+        opt_missing+=("$tool")
+        opt_missing_desc+=("$desc")
+        _skip "$tool — $desc ${C_DIM}(not installed)${C_RESET}"
+    fi
+done
+
+if [[ ${#opt_missing[@]} -gt 0 ]]; then
+    echo ""
+    _dep_word="dependency"; [[ ${#opt_missing[@]} -gt 1 ]] && _dep_word="dependencies"
+    echo -e "  ${C_CYAN}Install ${#opt_missing[@]} optional ${_dep_word}? ${C_DIM}(recommended for full functionality)${C_RESET}"
+    read -rp "    Install optional dependencies? [Y/n] " _opt_answer
+    if [[ ! "$_opt_answer" =~ ^[Nn]$ ]]; then
+        for tool in "${opt_missing[@]}"; do
+            _install_tool "$tool" "false"
+        done
+    else
+        _info "Skipped optional dependencies — some features may be limited"
+    fi
+fi
+
+if [[ "$deps_installed" -gt 0 ]]; then
+    echo ""
+    _ok "Installed $deps_installed new package(s)"
+fi
+
+# =============================================================================
+# STEP 7: Verify Docker Environment
+# =============================================================================
+
+_header "Step 7/8: Docker Environment"
 _divider
 
 docker_ok=true
@@ -414,9 +715,9 @@ if [[ "$DRY_RUN" == "true" ]]; then
     _info "Remove --dry-run to apply changes"
     echo ""
     exit 0
-elif [[ "$docker_ok" != "true" ]]; then
-    _fail "Setup completed with warnings (Docker issues above)"
-    _info "Resolve the Docker issues above, then run ./start.sh"
+elif [[ "$docker_ok" != "true" ]] || [[ "$deps_ok" != "true" ]]; then
+    _fail "Setup completed with warnings (see issues above)"
+    _info "Resolve the issues above, then run ./start.sh"
     echo ""
     exit 1
 fi
@@ -425,7 +726,7 @@ _ok "Everything is configured and ready"
 echo ""
 
 # =============================================================================
-# STEP 7: Launch DCS-UI — Start API + Web Interface
+# STEP 8: Setup Wizard — Launch API for remote configuration
 # =============================================================================
 
 # Detect host IP for connection banners
@@ -438,172 +739,99 @@ _detect_ip() {
     echo "localhost"
 }
 
-# Re-source .env to pick up any changes from Step 1
-if [[ -f "$BASE_DIR/.env" ]]; then
-    set -a; source "$BASE_DIR/.env"; set +a
-fi
-
-# Detect compose command (already validated in Step 6)
-if docker compose version &>/dev/null; then
-    _COMPOSE_CMD="docker compose"
-elif command -v docker-compose &>/dev/null; then
-    _COMPOSE_CMD="docker-compose"
-else
-    _fail "Docker Compose not available — cannot start DCS-UI"
-    exit 1
-fi
-
-API_PORT="${API_PORT:-9876}"
-API_BIND="${API_BIND:-0.0.0.0}"
-DCS_UI_PORT="${DCS_UI_PORT:-3000}"
-API_PID_FILE="$BASE_DIR/.data/api-server.pid"
-HOST_IP=$(_detect_ip)
 SETUP_COMPLETE_MARKER="$BASE_DIR/.api-auth/.setup-complete"
 
-# ---------------------------------------------------------------------------
-# Helper: ensure the API server is running in the background
-# ---------------------------------------------------------------------------
-_ensure_api_running() {
-    if [[ -f "$API_PID_FILE" ]] && kill -0 "$(cat "$API_PID_FILE" 2>/dev/null)" 2>/dev/null; then
-        _ok "API server already running (PID $(cat "$API_PID_FILE"))"
-        return 0
-    fi
-
-    # Stop any orphaned API server instances before starting a new one
-    "$BASE_DIR/.scripts/api-server.sh" --stop 2>/dev/null || true
-
-    _info "Starting API server..."
-    mkdir -p "$BASE_DIR/.data"
-    nohup "$BASE_DIR/.scripts/api-server.sh" --bind "$API_BIND" --port "$API_PORT" \
-        > "$BASE_DIR/logs/api-server.log" 2>&1 &
-    echo "$!" > "$API_PID_FILE"
-    sleep 2
-
-    if kill -0 "$(cat "$API_PID_FILE" 2>/dev/null)" 2>/dev/null; then
-        _ok "API server started (PID $(cat "$API_PID_FILE"))"
-        return 0
-    else
-        _fail "API server failed to start — check logs/api-server.log"
-        return 1
-    fi
-}
-
-# ---------------------------------------------------------------------------
-# Helper: ensure core-infrastructure stack is running (DCS-UI + Redis)
-# ---------------------------------------------------------------------------
-_ensure_core_infra_running() {
-    local ui_status
-    ui_status=$(docker inspect --format='{{.State.Status}}' DCS-UI 2>/dev/null || echo "not_found")
-
-    if [[ "$ui_status" == "running" ]]; then
-        # Already running — check health
-        local health
-        health=$(docker inspect --format='{{.State.Health.Status}}' DCS-UI 2>/dev/null || echo "unknown")
-        if [[ "$health" == "healthy" ]]; then
-            _ok "DCS-UI is running and healthy"
-            return 0
-        fi
-        _info "DCS-UI is running (health: $health)"
-        return 0
-    fi
-
-    _info "Starting core infrastructure..."
-    $_COMPOSE_CMD -f "$COMPOSE_DIR/core-infrastructure/docker-compose.yml" \
-        --env-file "$BASE_DIR/.env" \
-        up -d 2>&1 | while IFS= read -r line; do
-        [[ -n "$line" ]] && _info "  $line"
-    done
-
-    # Wait for DCS-UI to become healthy
-    _info "Waiting for DCS-UI to be ready..."
-    local max_wait=90
-    for i in $(seq 1 $max_wait); do
-        local status
-        status=$(docker inspect --format='{{.State.Health.Status}}' DCS-UI 2>/dev/null || echo "not_found")
-        case "$status" in
-            healthy)
-                _ok "DCS-UI is healthy"
-                return 0
-                ;;
-            unhealthy)
-                _fail "DCS-UI container is unhealthy"
-                _info "Check logs: docker logs DCS-UI"
-                return 1
-                ;;
-        esac
-        # Progress update every 10 seconds
-        if (( i % 10 == 0 )); then
-            _info "  Still waiting... (${i}s)"
-        fi
-        sleep 1
-    done
-
-    # If we got here, it didn't become healthy in time — but it may still be starting
-    local final_status
-    final_status=$(docker inspect --format='{{.State.Status}}' DCS-UI 2>/dev/null || echo "not_found")
-    if [[ "$final_status" == "running" ]]; then
-        _info "DCS-UI is running but not yet healthy — it may still be starting"
-        return 0
-    fi
-    _fail "DCS-UI did not start within ${max_wait}s"
-    return 1
-}
-
-# ---------------------------------------------------------------------------
-# Helper: print the connection banner
-# ---------------------------------------------------------------------------
-_print_url_banner() {
-    local local_url="http://localhost:${DCS_UI_PORT}"
-    local net_url="http://${HOST_IP}:${DCS_UI_PORT}"
-    echo ""
-    echo -e "${C_BOLD}${C_CYAN}  ╔═════════════════════════════════════════════════════════╗${C_RESET}"
-    echo -e "${C_BOLD}${C_CYAN}  ║                                                         ║${C_RESET}"
-    echo -e "${C_BOLD}${C_CYAN}  ║   Open your browser to complete setup:                   ║${C_RESET}"
-    echo -e "${C_BOLD}${C_CYAN}  ║                                                         ║${C_RESET}"
-    echo -e "${C_BOLD}${C_GREEN}  ║   Local:   ${local_url}$(printf '%*s' $((44 - ${#local_url})) '')║${C_RESET}"
-    echo -e "${C_BOLD}${C_GREEN}  ║   Network: ${net_url}$(printf '%*s' $((44 - ${#net_url})) '')║${C_RESET}"
-    echo -e "${C_BOLD}${C_CYAN}  ║                                                         ║${C_RESET}"
-    echo -e "${C_BOLD}${C_CYAN}  ║   The web UI will guide you through the rest.            ║${C_RESET}"
-    echo -e "${C_BOLD}${C_CYAN}  ║                                                         ║${C_RESET}"
-    echo -e "${C_BOLD}${C_CYAN}  ╚═════════════════════════════════════════════════════════╝${C_RESET}"
-    echo ""
-}
-
-# =============================================================================
-# Already configured — start services and show URL
-# =============================================================================
 if [[ -f "$SETUP_COMPLETE_MARKER" ]]; then
     _ok "Initial setup already complete."
     echo ""
-    _ensure_api_running
-    _ensure_core_infra_running
-    _print_url_banner
-    _info "Run ${C_BOLD}./start.sh${C_RESET} to launch all stacks."
+
+    # Check if API server is already running
+    API_PID_FILE="$BASE_DIR/.data/api-server.pid"
+    if [[ -f "$API_PID_FILE" ]] && kill -0 "$(cat "$API_PID_FILE")" 2>/dev/null; then
+        _info "API server is already running (PID $(cat "$API_PID_FILE"))"
+        _info "Run ${C_BOLD}./start.sh${C_RESET} to launch all services."
+        echo ""
+        exit 0
+    fi
+
+    # Offer to start the API server
+    echo -e "  ${C_CYAN}Would you like to start the API server?${C_RESET}"
+    echo ""
+    echo -e "    ${C_BOLD}1)${C_RESET} Start in background (recommended)"
+    echo -e "    ${C_BOLD}2)${C_RESET} Start in foreground"
+    echo -e "    ${C_BOLD}3)${C_RESET} Skip — just run ${C_DIM}./start.sh${C_RESET} later"
+    echo ""
+    read -r -p "  Choose [1/2/3]: " _api_choice
+    echo ""
+
+    API_PORT="${API_PORT:-9876}"
+    HOST_IP=$(_detect_ip 2>/dev/null || echo "localhost")
+
+    case "$_api_choice" in
+        1)
+            _info "Starting API server in background..."
+            mkdir -p "$BASE_DIR/.data"
+            nohup "$BASE_DIR/.scripts/api-server.sh" --bind 0.0.0.0 --port "$API_PORT" \
+                > "$BASE_DIR/logs/api-server.log" 2>&1 &
+            echo "$!" > "$API_PID_FILE"
+            sleep 1
+            if kill -0 "$(cat "$API_PID_FILE")" 2>/dev/null; then
+                _ok "API server started (PID $(cat "$API_PID_FILE"))"
+                # Verify the port is actually responding (not just process alive)
+                local _api_ready=false
+                for _i in $(seq 1 10); do
+                    if curl -s -o /dev/null --max-time 2 "http://127.0.0.1:${API_PORT}/" 2>/dev/null; then
+                        _api_ready=true
+                        break
+                    fi
+                    sleep 1
+                done
+                if [[ "$_api_ready" == "true" ]]; then
+                    _ok "API responding on http://${HOST_IP}:${API_PORT}"
+                else
+                    _warn "API process running but port ${API_PORT} not responding yet"
+                    _info "It may still be initializing — check logs/api-server.log"
+                fi
+                _info "Logs: $BASE_DIR/logs/api-server.log"
+            else
+                _fail "API server failed to start — check logs/api-server.log"
+            fi
+            ;;
+        2)
+            _info "Starting API server in foreground (Ctrl+C to stop)..."
+            echo ""
+            exec "$BASE_DIR/.scripts/api-server.sh" --bind 0.0.0.0 --port "$API_PORT"
+            ;;
+        *)
+            _info "Skipped. Run ${C_BOLD}./start.sh${C_RESET} to launch all services."
+            ;;
+    esac
     echo ""
     exit 0
 fi
 
-# =============================================================================
-# First run — bootstrap API + DCS-UI, then hand off to the browser
-# =============================================================================
-_header "Step 7/7: Launch DCS-UI"
+_header "Step 8/8: Setup Wizard"
 _divider
+echo ""
 
-if [[ "$DRY_RUN" == "true" ]]; then
-    _info "DRY RUN: Would start API server and core-infrastructure stack"
-    _info "DRY RUN: DCS-UI would be available at http://localhost:${DCS_UI_PORT}"
-    echo ""
-    exit 0
-fi
+HOST_IP=$(_detect_ip)
+API_PORT="${API_PORT:-9876}"
 
-_ensure_api_running || {
-    _fail "Cannot continue without API server"
-    _info "Check logs/api-server.log for details"
-    exit 1
-}
+echo ""
+echo -e "${C_BOLD}${C_CYAN}  ╔═══════════════════════════════════════════════════════╗${C_RESET}"
+echo -e "${C_BOLD}${C_CYAN}  ║                                                       ║${C_RESET}"
+echo -e "${C_BOLD}${C_CYAN}  ║          Setup API is ready!                           ║${C_RESET}"
+echo -e "${C_BOLD}${C_CYAN}  ║                                                       ║${C_RESET}"
+echo -e "${C_BOLD}${C_CYAN}  ║   Open DCS Manager and connect to:                    ║${C_RESET}"
+echo -e "${C_BOLD}${C_GREEN}  ║   http://${HOST_IP}:${API_PORT}$(printf '%*s' $((28 - ${#HOST_IP} - ${#API_PORT})) '')║${C_RESET}"
+echo -e "${C_BOLD}${C_CYAN}  ║                                                       ║${C_RESET}"
+echo -e "${C_BOLD}${C_CYAN}  ║   Press Ctrl+C to stop the setup server               ║${C_RESET}"
+echo -e "${C_BOLD}${C_CYAN}  ║                                                       ║${C_RESET}"
+echo -e "${C_BOLD}${C_CYAN}  ╚═══════════════════════════════════════════════════════╝${C_RESET}"
+echo ""
 
-_ensure_core_infra_running || {
-    _info "DCS-UI may still be starting — try the URL below"
-}
+_info "Starting API server in setup mode..."
+echo ""
 
-_print_url_banner
+# Launch API in foreground so Ctrl+C stops it cleanly
+exec "$BASE_DIR/.scripts/api-server.sh" --bind 0.0.0.0 --port "$API_PORT" --setup-mode

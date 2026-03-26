@@ -1,0 +1,18 @@
+services:
+  homarr:
+    image: ghcr.io/homarr-labs/homarr:latest
+    container_name: Homarr
+    restart: unless-stopped
+    environment:
+      - SECRET_ENCRYPTION_KEY=${SECRET_ENCRYPTION_KEY}
+    ports:
+      - "${HOST_PORT}:7575"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ${APP_DATA_DIR:-./App-Data}/Homarr/appdata:/appdata
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:7575 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s

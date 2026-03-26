@@ -1,0 +1,32 @@
+services:
+  cloudflare-ddns:
+    container_name: Cloudflare-DDNS
+    image: favonia/cloudflare-ddns:latest
+    restart: unless-stopped
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      - PGID=${PGID:-1000}
+      - PUID=${PUID:-1000}
+      - CF_API_TOKEN=${CF_API_TOKEN}
+      - DOMAINS=${CF_ZONE}
+      - SUBDOMAINS=${CF_DDNS_SUBDOMAINS:-@}
+      - PROXIED=${CF_DDNS_PROXIED:-true}
+      - IP4_PROVIDER=cloudflare.trace
+      - IP6_PROVIDER=none
+      - UPDATE_CRON=@every ${CF_DDNS_INTERVAL:-300}s
+      - DELETE_ON_STOP=false
+      - DETECTION_TIMEOUT=15
+      - UPDATE_TIMEOUT=30
+      - TZ=${TZ:-UTC}
+    mem_limit: 64M
+    cpus: 0.25
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f cloudflare-ddns || exit 1"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

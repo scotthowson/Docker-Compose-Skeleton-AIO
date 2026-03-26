@@ -1,0 +1,46 @@
+{
+  "name": "cloudflare-ddns",
+  "title": "Cloudflare Dynamic DNS",
+  "description": "Automatically detects your public IP and updates Cloudflare DNS records when it changes. Supports multiple subdomains and runs checks every 5 minutes. Perfect for home servers with dynamic IPs.",
+  "category": "web",
+  "target_stack": "networking-security",
+  "icon": "\ud83c\udf10",
+  "tags": ["dns", "cloudflare", "ddns", "dynamic-dns", "networking"],
+  "variables": [
+    {
+      "name": "CF_API_TOKEN",
+      "label": "Cloudflare API Token",
+      "description": "API token with DNS:Edit permissions for your zone",
+      "default": "",
+      "required": true
+    },
+    {
+      "name": "CF_ZONE",
+      "label": "Domain / Zone",
+      "description": "Your root domain (e.g. example.com)",
+      "default": "",
+      "required": true
+    },
+    {
+      "name": "CF_DDNS_SUBDOMAINS",
+      "label": "Subdomains to Update",
+      "description": "Comma-separated subdomains to keep updated (leave empty for root domain only). Example: @,www,traefik,ui",
+      "default": "@",
+      "required": false
+    },
+    {
+      "name": "CF_DDNS_PROXIED",
+      "label": "Cloudflare Proxy",
+      "description": "Enable Cloudflare proxy (orange cloud) on DNS records",
+      "default": "true",
+      "required": false
+    },
+    {
+      "name": "CF_DDNS_INTERVAL",
+      "label": "Check Interval (seconds)",
+      "description": "How often to check for IP changes",
+      "default": "300",
+      "required": false
+    }
+  ]
+}

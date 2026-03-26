@@ -1,211 +1,241 @@
-# Docker Compose Skeleton — All-In-One
+<p align="center">
+  <img src="https://img.shields.io/badge/bash-4.0+-4EAA25?style=flat-square&logo=gnubash&logoColor=white" />
+  <img src="https://img.shields.io/badge/docker-compose-2496ED?style=flat-square&logo=docker&logoColor=white" />
+  <img src="https://img.shields.io/badge/templates-100+-34d399?style=flat-square" />
+  <img src="https://img.shields.io/badge/API_endpoints-76+-06b6d4?style=flat-square" />
+  <img src="https://img.shields.io/badge/security-67%2B_fixes-a78bfa?style=flat-square" />
+  <img src="https://img.shields.io/badge/license-MIT-f472b6?style=flat-square" />
+</p>
 
-A batteries-included Docker homelab framework with a built-in web interface. One command to bootstrap your server — complete setup in your browser.
+# Docker Compose Skeleton
 
-> **AIO** bundles the [DCS framework](https://github.com/scotthowson/Docker-Compose-Skeleton) with [DCS-UI](https://github.com/scotthowson/Docker-Compose-Skeleton-UI) as a Docker container. No desktop app install needed.
+**Your entire homelab, orchestrated from one framework.**
+
+Deploy 100+ services with one click. Automatic HTTPS routing. Cloudflare DNS. Authelia SSO. Wildcard TLS. Security-hardened API. Customizable dashboard. Setup wizard. All from a single git clone.
+
+```bash
+git clone https://github.com/scotthowson/Docker-Compose-Skeleton.git
+cd Docker-Compose-Skeleton && ./setup.sh
+```
+
+That's it. The setup wizard handles the rest.
+
+---
+
+## Why DCS?
+
+Most homelab setups are a mess of scattered compose files, manual DNS entries, and no central management. DCS gives you:
+
+- **One framework** that manages every service on your server
+- **Deploy anything** from 100 templates — Traefik, Plex, Nextcloud, Authelia, Grafana, and more
+- **Automatic HTTPS** with wildcard TLS via Cloudflare DNS challenge (one cert, unlimited subdomains)
+- **Auto DNS** — deploy a service, get `service.yourdomain.com` in Cloudflare instantly
+- **Undeploy cleanup** — removes routes, DNS records, containers, images, and app data
+- **Security-first** — 7 rounds of penetration testing, 67+ fixes, compose security scanner
+- **37-page management UI** with glassmorphism design, real-time metrics, and drag-and-drop dashboard
+
+---
+
+## Features
+
+### Infrastructure
+- **100 Service Templates** — Traefik, Portainer, Jellyfin, Nextcloud, Grafana, Authelia, and 94 more
+- **Traefik Auto-Routing** — deploy a template, get automatic HTTPS route + Cloudflare DNS CNAME
+- **Wildcard TLS** — single `*.yourdomain.com` certificate covers all subdomains forever
+- **Authelia SSO** — single sign-on with 2FA, WebAuthn, and access control — deployed from Setup Wizard
+- **Dynamic DNS** — auto-update Cloudflare A record when your public IP changes
+- **Dependency-Ordered Startup** — 10 stack categories start in order, shutdown in reverse
+
+### Security
+- **Two-Factor Authentication** — TOTP 2FA with authenticator app support
+- **Auto-Lock** — screen locks after inactivity, preserves app state, password to unlock
+- **Compose Security Scanner** — blocks privileged containers, dangerous mounts, capability escalation
+- **PBKDF2-SHA256 Auth** — 100k iterations, rate limiting, invite-only registration
+- **7 Rounds of Penetration Testing** — 67+ security fixes applied
+
+### Management
+- **76+ API Endpoints** — full remote management of stacks, containers, templates, networks, volumes
+- **Auto-Generate Secrets** — encryption keys and JWT secrets created automatically on deploy
+- **Plugin System** — custom dashboard cards, lifecycle hooks, and template extensions
+- **Encrypted Secrets** — AES-256-CBC key-value store for API keys, passwords, and tokens
+- **System Updates** — git-based with backup tags, one-click rollback, factory reset
+
+### Monitoring
+- **Health Scoring** — container health monitoring with uptime tracking
+- **Resource Trends** — historical CPU, memory, disk usage with charts
+- **Push Notifications** — NTFY integration for start, stop, failure, and health events
+- **Backup & Restore** — full system snapshots with path traversal protection
 
 ---
 
 ## Quick Start
 
 ```bash
-git clone https://github.com/scotthowson/Docker-Compose-Skeleton-AIO.git dcs
-cd dcs
+# 1. Clone
+git clone https://github.com/scotthowson/Docker-Compose-Skeleton.git
+cd Docker-Compose-Skeleton
+
+# 2. Run setup (installs dependencies, creates directories, starts API)
 ./setup.sh
-```
 
-Open `http://localhost:3000` in your browser. The Setup Wizard walks you through everything: admin account, server configuration, stack selection, and optional Traefik HTTPS.
+# 3. Open DCS Manager → connect to your server → complete the 5-step Setup Wizard
+#    (creates admin account, configures domain, deploys Traefik + Authelia)
 
-When ready, start all services:
-
-```bash
+# 4. Start all services
 ./start.sh
 ```
 
----
+### What the Setup Wizard Does
 
-## How It Works
-
-```
-./setup.sh
-  1. Checks Docker + Docker Compose
-  2. Creates .env from .env.example
-  3. Creates stack directories
-  4. Sets permissions
-  5. Verifies Docker environment
-  6. Starts API server (background)
-  7. Starts core-infrastructure (DCS-UI + Redis)
-  8. Prints browser URL
-
-Browser → http://localhost:3000
-  → Setup Wizard auto-connects
-  → Create admin account
-  → Configure server (timezone, domain, stacks)
-  → Optionally deploy Traefik for HTTPS
-  → Done — manage everything from the web UI
-```
-
-## Architecture
-
-```
-Browser → https://ui.example.com (or http://localhost:3000)
-         → Traefik (optional, Let's Encrypt TLS)
-         → DCS-UI container (nginx:alpine, ~25MB)
-              → /        serves the SPA
-              → /api/*   proxies to host API (127.0.0.1:9876)
-                           ↓
-                    DCS API server (api-server.sh)
-                           ↓
-                    Docker Engine → manages all stacks
-```
-
-Same origin — no CORS issues. The nginx reverse proxy bridges the container to the host API.
+1. **Connect** — enter your server IP, the wizard finds the API
+2. **Account** — create your admin account (PBKDF2-hashed, rate-limited)
+3. **Configure** — domain, timezone, PUID/PGID, notifications, Traefik, DDNS
+4. **Authelia** — optional SSO with auto-generated config, Redis sessions, Argon2id passwords
+5. **Complete** — deploys Traefik + Authelia, creates DNS records, starts containers
 
 ---
 
-## What's Inside
+## The Deploy Flow
 
-| Component | Description |
-|-----------|-------------|
-| **DCS Framework** | 10 stack categories, dependency-ordered startup/shutdown, progress bars, health checks |
-| **DCS-UI** | Glassmorphism web interface — dashboard, containers, stacks, images, logs, terminal, file browser |
-| **REST API** | 60+ endpoints for full server management, auth, SSE streaming |
-| **Template System** | 28+ service templates (Traefik, Portainer, Jellyfin, Nextcloud, etc.) — deploy from the UI |
-| **Management CLI** | Stack manager, health checks, config validator, network mapper, image tracker, log viewer |
+When you deploy a template, DCS handles everything:
 
----
+```
+Template Deploy
+  ├─ Security scan (blocks privileged, dangerous mounts, capabilities)
+  ├─ Port conflict detection across all stacks
+  ├─ Compose merge (services added to target stack)
+  ├─ Variable substitution + secret auto-generation
+  ├─ Config file scaffolding (Traefik, Authelia, etc.)
+  ├─ Traefik route file creation (custom subdomain support)
+  ├─ Cloudflare CNAME auto-creation
+  ├─ Proxy network connection
+  ├─ Container startup with volume permission fixing
+  └─ Deploy event audit logging
+```
 
-## Configuration
+On undeploy, the reverse:
 
-All configuration lives in the root `.env` file. Key settings for AIO:
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `API_ENABLED` | `true` | REST API server (required for DCS-UI) |
-| `API_PORT` | `9876` | API listen port |
-| `API_BIND` | `0.0.0.0` | API bind address (`0.0.0.0` required for container access) |
-| `DCS_UI_PORT` | `3000` | Web UI port (published to all interfaces) |
-| `TZ` | `UTC` | Timezone |
-| `PROXY_DOMAIN` | `example.com` | Domain for Traefik routes |
-
-Restrict DCS-UI to localhost only:
-```bash
-DCS_UI_PORT=127.0.0.1:3000
+```
+Template Undeploy
+  ├─ Container stop + removal
+  ├─ Service removed from compose file
+  ├─ Traefik route file deleted
+  ├─ Cloudflare DNS record deleted
+  ├─ App-Data cleanup (optional)
+  ├─ Docker image removal (optional)
+  └─ Undeploy event audit logging
 ```
 
 ---
 
-## Updating the Web UI
+## Service Templates
 
-The DCS-UI container pulls from [GHCR](https://github.com/scotthowson/Docker-Compose-Skeleton-UI/pkgs/container/docker-compose-skeleton-ui). To update:
+100 ready-to-deploy templates. Deploy via the UI or API.
 
-```bash
-docker compose -f Stacks/core-infrastructure/docker-compose.yml pull dcs-ui
-docker compose -f Stacks/core-infrastructure/docker-compose.yml up -d dcs-ui
-```
+<details>
+<summary><strong>View all 100 templates</strong></summary>
 
-Or use `./start.sh` which handles all stacks including image updates.
+| Category | Templates |
+|----------|-----------|
+| **Reverse Proxies** | Traefik, Caddy, Nginx Proxy Manager, Cloudflared |
+| **Media** | Jellyfin, Plex, Sonarr, Radarr, Lidarr, Readarr, Prowlarr, Bazarr, Tautulli, Seerr, Jellyseerr, qBittorrent, Transmission, SABnzbd, FlareSolverr |
+| **Dashboards** | Homarr, Homepage, Dashy, Dashdot, Yacht |
+| **Monitoring** | Grafana, Prometheus, Uptime Kuma, Netdata, Loki, InfluxDB, SpeedTest Tracker, Dozzle |
+| **Storage** | Nextcloud, Nextcloud AIO, MinIO, Syncthing, Duplicati, FileBrowser |
+| **Databases** | PostgreSQL, MySQL, MariaDB, MongoDB, Redis, RedisInsight, Adminer, pgAdmin, phpMyAdmin |
+| **Productivity** | Memos, Trilium, BookStack, Mealie, Tandoor, Actual Budget, Firefly III, Vikunja, Planka, Reactive Resume, Karakeep, Linkwarden, Kavita, Calibre-Web, Audiobookshelf, Paperless-ngx |
+| **Development** | Gitea, Code Server, n8n, Semaphore |
+| **Security** | Authelia, Vaultwarden, CrowdSec, WireGuard, AdGuard Home, Pi-hole, Docker Socket Proxy |
+| **Communication** | PrivateBin, Ntfy, Gotify, FreshRSS, SearXNG, Wizarr |
+| **Gaming** | EmulatorJS, MonkeyType, Pelican Panel, RustDesk |
+| **Infrastructure** | Portainer, Watchtower, Diun, Sablier, Komodo, Home Assistant, Healthchecks |
+| **AI** | Ollama, Open WebUI |
+| **Web** | Nginx, Ghost, Excalidraw, Stirling PDF, IT-Tools, Immich |
+| **DNS** | Cloudflare DDNS |
 
-**What happens on update:**
-- New SPA assets are served immediately (Vite content-hashed filenames bust browser cache)
-- Auth sessions persist (stored in browser localStorage + host API)
-- Server configuration persists (stored on host in `.env` and `.api-auth/`)
-- Setup wizard does NOT re-trigger (`.api-auth/.setup-complete` marker is on the host)
-- No data loss — the container is stateless; all state lives on the host
-
----
-
-## Security
-
-| Layer | Protection |
-|-------|------------|
-| **Authentication** | PBKDF2 password hashing, rate-limited login (5 attempts), 4-hour sessions |
-| **API** | Bearer token auth, admin-only endpoints, path traversal guards, SSRF protection |
-| **Transport** | HTTP on port 3000 (LAN); HTTPS via Traefik when configured |
-| **Container** | nginx security headers (CSP, X-Frame-Options, HSTS), read-only SPA |
-| **Docker** | Optional Docker Socket Proxy for restricted API access |
-
-**First-run note:** The Setup Wizard is accessible without authentication until an admin account is created. The first person to complete setup becomes the admin. On a trusted LAN, this is standard for self-hosted applications (same model as Portainer, Nextcloud, etc.).
+</details>
 
 ---
 
-## HTTPS with Traefik
+## REST API
 
-Traefik is available as a template — deploy it from the UI's template browser or via the API:
+13,700+ line hardened bash API server. 76+ endpoints. Starts on port `9876`.
 
-1. Open **Templates** in the web UI
-2. Deploy **Traefik Reverse Proxy** to `networking-security`
-3. Enter your domain and Let's Encrypt email
-4. DCS-UI becomes available at `https://ui.yourdomain.com`
+<details>
+<summary><strong>View all endpoint groups</strong></summary>
 
-The Traefik route template (`dcs-ui.yml`) is pre-included and auto-activated when Traefik is deployed.
+| Group | Endpoints | Description |
+|-------|-----------|-------------|
+| **System** | `/status`, `/health`, `/version`, `/system` | Health, metrics, Docker info |
+| **Stacks** | `/stacks`, `/stacks/:name/*` | Start, stop, restart, update, rename, clone |
+| **Containers** | `/containers`, `/containers/:id/*` | Inspect, logs, exec, file browser, stats |
+| **Templates** | `/templates`, `/templates/:name/deploy` | Browse, deploy, import, undeploy |
+| **Auth** | `/auth/*` | Login, TOTP 2FA, invite codes, sessions |
+| **Networks** | `/networks/*` | Create, remove, connect, disconnect |
+| **Volumes** | `/volumes/*` | List, inspect, remove |
+| **Logs** | `/logs/*` | Filtering, live streaming, statistics |
+| **Backups** | `/backups/*` | Create, restore, status |
+| **Plugins** | `/plugins/*` | Install, scaffold, enable, cards |
+| **Updates** | `/system/update/*` | Check, apply, rollback |
+| **Webhooks** | `/webhooks/*` | Create, test, fire |
+| **Automations** | `/automations/*` | Cron-based scheduled tasks |
 
----
-
-## CLI Commands
-
-```bash
-./start.sh                          # Full startup (API + all stacks)
-./stop.sh                           # Graceful shutdown
-./restart.sh                        # Stop + Start
-./status.sh                         # Container status
-./setup.sh                          # First-run setup (or re-launch UI)
-
-# Management utilities
-.scripts/stack-manager.sh list      # List all stacks
-.scripts/maintenance.sh             # System report
-.scripts/config-validator.sh --fix  # Validate & fix config
-.scripts/docker-network-info.sh     # Network map
-.scripts/image-tracker.sh           # Check image freshness
-```
+</details>
 
 ---
 
-## Directory Structure
+## Commands
 
-```
-Docker-Compose-Skeleton-AIO/
-├── start.sh / stop.sh / restart.sh / status.sh    # Entry points
-├── setup.sh                                        # First-run setup + DCS-UI launch
-├── .env.example                                    # Configuration template
-├── .env                                            # Your configuration (created by setup)
-├── .scripts/
-│   ├── api-server.sh                               # REST API server
-│   ├── stack-manager.sh                            # Stack management CLI
-│   └── ...                                         # Health, maintenance, network, etc.
-├── .lib/                                           # Logger, helpers, Docker utils
-├── .templates/                                     # 28+ deployable service templates
-│   ├── traefik/                                    # Includes DCS-UI route
-│   ├── portainer/
-│   └── ...
-├── Stacks/
-│   ├── core-infrastructure/                        # Redis + DCS-UI (AIO)
-│   ├── networking-security/                        # Traefik, Authelia, etc.
-│   ├── monitoring-management/                      # Grafana, Prometheus, etc.
-│   └── ...                                         # 10 categories total
-└── logs/                                           # Runtime logs
-```
+| Command | Description |
+|---------|-------------|
+| `./setup.sh` | First-run setup with dependency installer |
+| `./start.sh` | Start all services in dependency order |
+| `./stop.sh` | Graceful shutdown in reverse order |
+| `./restart.sh` | Stop then start |
+| `./status.sh` | Container status overview |
+
+<details>
+<summary><strong>Management utilities</strong></summary>
+
+| Script | Description |
+|--------|-------------|
+| `.scripts/api-server.sh --bind 0.0.0.0` | Start API server (external access) |
+| `.scripts/stack-manager.sh list` | CLI for individual stacks |
+| `.scripts/health-check.sh` | Container health monitoring |
+| `.scripts/config-validator.sh --fix` | Validate and fix configuration |
+| `.scripts/maintenance.sh` | Docker cleanup and disk analysis |
+| `.scripts/docker-network-info.sh` | Network visualization |
+| `.scripts/image-tracker.sh` | Image freshness tracking |
+
+</details>
 
 ---
 
-## Differences from Base DCS
+## DCS Manager UI
 
-| | [DCS](https://github.com/scotthowson/Docker-Compose-Skeleton) | AIO |
-|---|---|---|
-| Web UI | Separate [Electron app](https://github.com/scotthowson/Docker-Compose-Skeleton-UI) | Built-in (Docker container on port 3000) |
-| `core-infrastructure` | Redis only | Redis + DCS-UI |
-| `setup.sh` | Prepares files, starts API | Prepares files, starts API + DCS-UI, prints URL |
-| `API_ENABLED` | `false` (opt-in) | `true` (required) |
-| `API_BIND` | `127.0.0.1` | `0.0.0.0` (container access) |
+A companion 37-page Electron + web app with glassmorphism dark theme.
 
-Everything else is identical. AIO syncs from DCS upstream.
+See [Docker-Compose-Skeleton-UI](https://github.com/scotthowson/Docker-Compose-Skeleton-UI).
+
+**Pages:** Dashboard, Containers, Stacks, Templates, Health, Uptime, Trends, Networks, Volumes, Images, Logs, Terminal, Export, Settings, Users, Plugins, Notifications, Automations, Schedules, Secrets, Snapshots, Backup, File Browser, Environment, Config, Diagnostics, Disk Analysis, Topology, Event Feed, Bookmarks, Activity, Updates, System, Login, Setup Wizard
+
+---
+
+## Requirements
+
+| Dependency | Purpose |
+|------------|---------|
+| **Docker + Compose v2** | Container runtime |
+| **Bash 4+** | Framework scripts |
+| **jq** | JSON processing |
+| **python3** | Password hashing |
+| **curl, git, openssl** | Health checks, updates, tokens |
+| **socat** or **ncat** | API server listener |
+
+`./setup.sh` auto-installs everything. Supports Ubuntu, Debian, Fedora, RHEL, Arch, Alpine, openSUSE, Void, NixOS.
 
 ---
 
 ## License
 
 MIT
-
----
-
-Built with [DCS Framework](https://github.com/scotthowson/Docker-Compose-Skeleton) and [DCS-UI](https://github.com/scotthowson/Docker-Compose-Skeleton-UI).

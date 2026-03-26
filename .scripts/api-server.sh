@@ -110,6 +110,9 @@ else
     esac
 fi
 
+# NOTE: API_AUTH_ENABLED is respected as-is from .env or auto-detection above.
+# When the user explicitly sets API_AUTH_ENABLED=false, we honor that choice.
+
 # IP Whitelist — comma-separated list of allowed IPs/CIDRs (empty = allow all)
 # Example: API_IP_WHITELIST="192.168.1.0/24,10.0.0.5"
 API_IP_WHITELIST="${API_IP_WHITELIST:-}"
@@ -376,8 +379,9 @@ _api_response() {
     printf "Pragma: no-cache\r\n"
     printf "Content-Security-Policy: default-src 'none'; frame-ancestors 'none'\r\n"
     printf "Referrer-Policy: strict-origin-when-cross-origin\r\n"
+    printf "Permissions-Policy: camera=(), microphone=(), geolocation=(), interest-cohort=()\r\n"
     if [[ "$API_TLS_ENABLED" == "true" ]] || [[ "$API_BEHIND_TLS_PROXY" == "true" ]]; then
-        printf "Strict-Transport-Security: max-age=31536000; includeSubDomains\r\n"
+        printf "Strict-Transport-Security: max-age=31536000; includeSubDomains; preload\r\n"
     fi
 
     printf "X-API-Version: %s\r\n" "$API_VERSION"
@@ -457,12 +461,18 @@ _api_audit_log() {
 # Initialize auth data directory and files
 _api_init_auth_dir() {
     if [[ ! -d "$API_AUTH_DIR" ]]; then
-        (umask 0077 && mkdir -p "$API_AUTH_DIR")
+        (umask 0077 && mkdir -p "$API_AUTH_DIR") 2>/dev/null || mkdir -p "$API_AUTH_DIR" 2>/dev/null
     fi
-    [[ ! -f "$API_AUTH_DIR/users.json" ]]  && install -m 0600 /dev/stdin "$API_AUTH_DIR/users.json" <<< '[]'
-    [[ ! -f "$API_AUTH_DIR/tokens.json" ]] && install -m 0600 /dev/stdin "$API_AUTH_DIR/tokens.json" <<< '[]'
-    [[ ! -f "$API_AUTH_DIR/invites.json" ]] && install -m 0600 /dev/stdin "$API_AUTH_DIR/invites.json" <<< '[]'
-    [[ ! -f "$API_AUTH_DIR/rate_limits.json" ]] && install -m 0600 /dev/stdin "$API_AUTH_DIR/rate_limits.json" <<< '{}'
+    # Create missing auth files with secure permissions
+    # Use printf + chmod as fallback if install doesn't support /dev/stdin
+    for _f in users.json tokens.json invites.json; do
+        if [[ ! -f "$API_AUTH_DIR/$_f" ]]; then
+            printf '[]' > "$API_AUTH_DIR/$_f" 2>/dev/null && chmod 600 "$API_AUTH_DIR/$_f" 2>/dev/null
+        fi
+    done
+    if [[ ! -f "$API_AUTH_DIR/rate_limits.json" ]]; then
+        printf '{}' > "$API_AUTH_DIR/rate_limits.json" 2>/dev/null && chmod 600 "$API_AUTH_DIR/rate_limits.json" 2>/dev/null
+    fi
 }
 
 # Force-remove a directory, using Docker as fallback for root-owned files.
@@ -520,7 +530,12 @@ _api_verify_password() {
     else
         computed_hash=$(_api_hash_password "$stored_salt" "$password")
     fi
-    [[ "$computed_hash" == "$stored_hash" ]]
+    # SECURITY: Constant-time comparison to prevent timing attacks.
+    # Python's hmac.compare_digest is guaranteed constant-time.
+    python3 -c "
+import hmac, sys
+sys.exit(0 if hmac.compare_digest(sys.argv[1], sys.argv[2]) else 1)
+" "$computed_hash" "$stored_hash"
 }
 
 # Update a user's password hash in users.json (for transparent migration)
@@ -536,6 +551,69 @@ _api_update_user_hash() {
             --arg s "$new_salt" \
             --argjson v "$new_version" \
             '[.[] | if .username == $u then . + {"password_hash": $h, "salt": $s, "hash_version": $v} else . end]' 2>/dev/null)
+        _api_write_auth_file "users.json" "$new_users"
+    fi
+}
+
+# =============================================================================
+# TOTP (Time-Based One-Time Password) — RFC 6238
+# =============================================================================
+
+# Generate a TOTP secret (20 bytes random, returned as hex + base32)
+_api_totp_generate_secret() {
+    python3 -c "
+import os, base64
+raw = os.urandom(20)
+print(raw.hex())
+print(base64.b32encode(raw).decode().rstrip('='))
+" 2>/dev/null
+}
+
+# Verify a TOTP code against a secret. Allows +/-1 time window (90 seconds).
+# Args: $1=hex_secret $2=6-digit code
+# Returns: 0 on success, 1 on failure
+_api_totp_verify() {
+    local hex_secret="$1" code="$2"
+    python3 -c "
+import hmac, hashlib, struct, sys, time
+secret = bytes.fromhex(sys.argv[1])
+code = sys.argv[2].strip()
+if len(code) != 6 or not code.isdigit():
+    sys.exit(1)
+now = int(time.time())
+# Check current period and +/-1 for clock skew (90 second window)
+for offset in (-1, 0, 1):
+    t = (now // 30) + offset
+    msg = struct.pack('>Q', t)
+    h = hmac.new(secret, msg, hashlib.sha1).digest()
+    o = h[-1] & 0x0F
+    token = (struct.unpack('>I', h[o:o+4])[0] & 0x7FFFFFFF) % 1000000
+    if str(token).zfill(6) == code:
+        sys.exit(0)
+sys.exit(1)
+" "$hex_secret" "$code" 2>/dev/null
+}
+
+# Build an otpauth:// URI for QR code generation
+# Args: $1=base32_secret $2=username $3=issuer
+_api_totp_uri() {
+    local b32="$1" username="$2" issuer="${3:-DCS}"
+    printf 'otpauth://totp/%s:%s?secret=%s&issuer=%s&algorithm=SHA1&digits=6&period=30' \
+        "$(_api_json_escape "$issuer")" "$(_api_json_escape "$username")" "$b32" "$(_api_json_escape "$issuer")"
+}
+
+# Update a user's TOTP fields in users.json
+_api_totp_update_user() {
+    local username="$1" totp_secret="$2" totp_enabled="$3"
+    local users
+    users=$(_api_read_auth_file "users.json")
+    if command -v jq >/dev/null 2>&1; then
+        local new_users
+        new_users=$(echo "$users" | jq \
+            --arg u "$username" \
+            --arg s "$totp_secret" \
+            --argjson e "$totp_enabled" \
+            '[.[] | if .username == $u then . + {"totp_secret": $s, "totp_enabled": $e} else . end]' 2>/dev/null)
         _api_write_auth_file "users.json" "$new_users"
     fi
 }
@@ -576,21 +654,29 @@ _api_generate_salt() {
     echo "$salt"
 }
 
-# Read a JSON auth file (returns contents)
+# Read a JSON auth file (returns contents, with shared flock)
 _api_read_auth_file() {
     local file="$API_AUTH_DIR/$1"
-    if [[ -f "$file" ]]; then
-        cat "$file" 2>/dev/null
+    [[ -f "$file" ]] || { echo '[]'; return; }
+    if command -v flock >/dev/null 2>&1; then
+        (flock -s -w 2 200; cat "$file" 2>/dev/null) 200>"$file.lock"
     else
-        echo '[]'
+        cat "$file" 2>/dev/null
     fi
 }
 
-# Write a JSON auth file (restricted permissions)
+# Write a JSON auth file (exclusive flock + restricted permissions)
 _api_write_auth_file() {
     local file="$API_AUTH_DIR/$1"
     local content="$2"
-    install -m 0600 /dev/stdin "$file" <<< "$content"
+    [[ -d "$API_AUTH_DIR" ]] || mkdir -p "$API_AUTH_DIR" 2>/dev/null
+    if command -v flock >/dev/null 2>&1; then
+        (flock -w 2 200; printf '%s' "$content" > "$file" 2>/dev/null; chmod 600 "$file" 2>/dev/null) 200>"$file.lock"
+    else
+        printf '%s' "$content" > "$file" 2>/dev/null
+        chmod 600 "$file" 2>/dev/null
+    fi
+    return 0
 }
 
 # Get current epoch timestamp
@@ -623,6 +709,11 @@ SETUP_COMPLETE_MARKER="$API_AUTH_DIR/.setup-complete"
 
 # Check if server is fully initialized (users exist AND setup marker present)
 _api_is_initialized() {
+    # When auth is disabled, only check the marker file (no user accounts required)
+    if [[ "$API_AUTH_ENABLED" != "true" ]]; then
+        [[ -f "$SETUP_COMPLETE_MARKER" ]]
+        return $?
+    fi
     [[ "$(_api_user_count)" -gt 0 ]] && [[ -f "$SETUP_COMPLETE_MARKER" ]]
 }
 
@@ -688,38 +779,45 @@ _api_add_user() {
 # Store a session token (enforces single-session when enabled)
 _api_store_token() {
     local token="$1" username="$2" role="$3"
+    local lockfile="$API_AUTH_DIR/.tokens.lock"
 
-    # Single-session enforcement: revoke all existing tokens for this user
-    if [[ "${API_SINGLE_SESSION:-true}" == "true" ]]; then
-        _api_revoke_user_tokens "$username"
-    fi
+    # SECURITY: File lock prevents race condition where concurrent logins
+    # both pass the single-session check and create duplicate tokens.
+    (
+        flock -w 10 200 || { echo "Token lock timeout" >&2; return 1; }
 
-    local now
-    now=$(_api_now_epoch)
-    local expires_at=$(( now + API_TOKEN_EXPIRY ))
-    local created_at
-    created_at=$(_api_now_iso)
-    local tokens
-    tokens=$(_api_read_auth_file "tokens.json")
-    if command -v jq >/dev/null 2>&1; then
-        local new_tokens
-        new_tokens=$(echo "$tokens" | jq \
-            --arg t "$token" \
-            --arg u "$username" \
-            --arg r "$role" \
-            --arg c "$created_at" \
-            --argjson e "$expires_at" \
-            '. + [{"token": $t, "username": $u, "role": $r, "created_at": $c, "expires_at": $e}]' 2>/dev/null)
-        _api_write_auth_file "tokens.json" "$new_tokens"
-    else
-        local entry="{\"token\": \"$token\", \"username\": \"$username\", \"role\": \"$role\", \"created_at\": \"$created_at\", \"expires_at\": $expires_at}"
-        if [[ "$tokens" == "[]" ]]; then
-            _api_write_auth_file "tokens.json" "[$entry]"
-        else
-            local trimmed="${tokens%]}"
-            _api_write_auth_file "tokens.json" "${trimmed}, $entry]"
+        # Single-session enforcement: revoke all existing tokens for this user
+        if [[ "${API_SINGLE_SESSION:-true}" == "true" ]]; then
+            _api_revoke_user_tokens "$username"
         fi
-    fi
+
+        local now
+        now=$(_api_now_epoch)
+        local expires_at=$(( now + API_TOKEN_EXPIRY ))
+        local created_at
+        created_at=$(_api_now_iso)
+        local tokens
+        tokens=$(_api_read_auth_file "tokens.json")
+        if command -v jq >/dev/null 2>&1; then
+            local new_tokens
+            new_tokens=$(echo "$tokens" | jq \
+                --arg t "$token" \
+                --arg u "$username" \
+                --arg r "$role" \
+                --arg c "$created_at" \
+                --argjson e "$expires_at" \
+                '. + [{"token": $t, "username": $u, "role": $r, "created_at": $c, "expires_at": $e}]' 2>/dev/null)
+            _api_write_auth_file "tokens.json" "$new_tokens"
+        else
+            local entry="{\"token\": \"$token\", \"username\": \"$username\", \"role\": \"$role\", \"created_at\": \"$created_at\", \"expires_at\": $expires_at}"
+            if [[ "$tokens" == "[]" ]]; then
+                _api_write_auth_file "tokens.json" "[$entry]"
+            else
+                local trimmed="${tokens%]}"
+                _api_write_auth_file "tokens.json" "${trimmed}, $entry]"
+            fi
+        fi
+    ) 200>"$lockfile"
 }
 
 # Validate a token — sets AUTH_USERNAME and AUTH_ROLE on success; returns 1 on failure
@@ -857,10 +955,11 @@ _api_check_auth() {
         return 0
     fi
 
-    # If no users exist yet, allow access (setup not complete)
+    # If no users exist yet, allow anonymous access for initial setup.
+    # This covers both fresh installs AND factory resets (which delete users + .setup-complete).
     local user_count
     user_count=$(_api_user_count)
-    if [[ "$user_count" -eq 0 ]]; then
+    if [[ "$user_count" -eq 0 ]] && [[ ! -f "$API_AUTH_DIR/.setup-complete" ]]; then
         AUTH_USERNAME="anonymous"
         AUTH_ROLE="admin"
         return 0
@@ -868,12 +967,17 @@ _api_check_auth() {
 
     _api_init_auth_dir
 
-    # Extract token from Authorization header
+    # Extract token from Authorization header or ?token= query parameter
     local token=""
     if [[ -n "${REQUEST_AUTH_HEADER:-}" ]]; then
         # Strip "Bearer " prefix
         token="${REQUEST_AUTH_HEADER#Bearer }"
         token="${token#bearer }"
+    fi
+
+    # Fallback: check query parameter (needed for EventSource/SSE which can't set headers)
+    if [[ -z "$token" && -n "${QUERY_PARAMS[token]:-}" ]]; then
+        token="${QUERY_PARAMS[token]}"
     fi
 
     if [[ -z "$token" ]]; then
@@ -952,6 +1056,243 @@ _api_validate_resource_name() {
     return 0
 }
 
+# =============================================================================
+# COMPOSE SECURITY SCANNER
+# =============================================================================
+# Scans docker-compose YAML content for dangerous Docker features that could
+# allow container escape, host compromise, or privilege escalation.
+# Returns 0 if safe, 1 if dangerous (and sends 400 error response with details).
+#
+# This prevents the #1 Docker attack vector: deploying a privileged container
+# that mounts the host filesystem, escapes, and installs malware (e.g., crypto miners).
+# =============================================================================
+
+_api_scan_compose_security() {
+    local content="$1"
+    local context="${2:-compose file}"
+    local mode="${3:-strict}"  # "strict" = block everything, "deploy" = allow docker.sock (trusted templates)
+    local -a violations=()
+
+    # SECURITY: Pre-resolve ${VAR:-default} patterns before scanning.
+    # This prevents bypass via `privileged: ${X:-true}` which Docker Compose
+    # resolves to `privileged: true` at runtime. We scan the resolved version.
+    local resolved_content
+    resolved_content=$(printf '%s' "$content" | sed 's/\${[A-Za-z_][A-Za-z0-9_]*:-\([^}]*\)}/\1/g')
+
+    # Convert to lowercase for case-insensitive matching
+    # Use resolved content for scanning (catches ${VAR:-dangerous} bypass)
+    local lower_content="${resolved_content,,}"
+
+    # ── CRITICAL: Container escape vectors ──
+    # NOTE: We check for the KEY existing at all (not just specific values) for the most
+    # dangerous features. This prevents bypass via YAML anchors, aliases, or variable
+    # substitution (e.g., `privileged: *anchor` or `privileged: ${VAR:-true}`).
+
+    # ── CRITICAL: Build context (Dockerfile can execute arbitrary code) ──
+    # Block `build:` directive entirely — only pre-built images are allowed.
+    # A Dockerfile can RUN any command during build, bypassing all runtime checks.
+    if printf '%s' "$lower_content" | grep -qE '^\s+build:\s'; then
+        violations+=("'build:' directive is not allowed — only pre-built images (image:) are permitted. Dockerfiles can execute arbitrary code during build.")
+    fi
+
+    # ── CRITICAL: File inclusion directives (can reference files outside App-Data) ──
+    # `extends:` includes another compose file which may contain dangerous directives
+    # that bypass our scanner (the included file is never scanned)
+    if [[ "$mode" == "strict" ]]; then
+        if printf '%s' "$lower_content" | grep -qE '^\s+extends:\s'; then
+            violations+=("'extends:' directive is not allowed in user-edited compose files (can include unscanned external files)")
+        fi
+    fi
+
+    # ── CRITICAL: Container escape vectors ──
+    # privileged mode = full host access (most dangerous)
+    if [[ "$mode" == "strict" ]]; then
+        # Strict: block ANY use of privileged key
+        if printf '%s' "$lower_content" | grep -qE '^\s+privileged:\s'; then
+            violations+=("'privileged' key is not allowed in user-edited compose files (container escape risk)")
+        fi
+    else
+        # Deploy: block privileged: true/yes AND YAML aliases (*anchor)
+        # This prevents bypass via `x-p: &p true` + `privileged: *p`
+        if printf '%s' "$lower_content" | grep -qE '^\s+privileged:\s*(true|yes|\*[a-z])'; then
+            violations+=("privileged mode is not allowed (grants full host access). Template requires manual approval via --allow-privileged flag.")
+        fi
+    fi
+
+    # Host PID namespace = can see/kill host processes
+    if printf '%s' "$lower_content" | grep -qE '^\s+pid:\s*["'"'"']?host'; then
+        violations+=("host PID namespace is not allowed (exposes host processes)")
+    fi
+
+    # Host network = bypass network isolation
+    if printf '%s' "$lower_content" | grep -qE '^\s+network_mode:\s*["'"'"']?host'; then
+        violations+=("host network mode is not allowed (bypasses network isolation)")
+    fi
+
+    # Host IPC namespace
+    if printf '%s' "$lower_content" | grep -qE '^\s+ipc:\s*["'"'"']?host'; then
+        violations+=("host IPC namespace is not allowed")
+    fi
+
+    # userns_mode: host = share user namespace with host
+    if printf '%s' "$lower_content" | grep -qE '^\s+userns_mode:\s*["'"'"']?host'; then
+        violations+=("host user namespace is not allowed")
+    fi
+
+    # cgroup_parent = custom cgroup (can escape resource limits)
+    if printf '%s' "$lower_content" | grep -qE '^\s+cgroup_parent:\s'; then
+        violations+=("cgroup_parent is not allowed")
+    fi
+
+    # ── HIGH: Dangerous volume mounts ──
+
+    # Mount host root filesystem
+    if printf '%s' "$lower_content" | grep -qE '^\s+-\s*["'"'"']?/:/'; then
+        violations+=("mounting host root filesystem (/) is not allowed")
+    fi
+
+    # Mount /etc directly (system config) — but allow specific subdirs like /etc/localtime
+    # Block: "- /etc:/something" or "- /etc" (bare mount)
+    # Allow: "- /etc/localtime:/etc/localtime:ro" or "- /etc/timezone:/etc/timezone:ro"
+    if printf '%s' "$lower_content" | grep -qE '^\s+-\s*["'"'"']?/etc[:"'"'"'\s]' | grep -vq '/etc/'; then
+        # Only flag if mounting /etc root, not a subdirectory
+        if printf '%s' "$lower_content" | grep -qE '^\s+-\s*["'"'"']?/etc[:"'"'"'\s]'; then
+            local etc_mount
+            etc_mount=$(printf '%s' "$lower_content" | grep -E '^\s+-\s*["'"'"']?/etc[:"'"'"'\s]')
+            # If it's /etc: or /etc" (bare), that's the whole /etc directory
+            if echo "$etc_mount" | grep -qE '/etc["'"'"']?:'; then
+                violations+=("mounting /etc is not allowed (contains system configuration)")
+            fi
+        fi
+    fi
+
+    # Mount /root (root home directory)
+    if printf '%s' "$lower_content" | grep -qE '^\s+-\s*["'"'"']?/root[/:]'; then
+        violations+=("mounting /root is not allowed")
+    fi
+
+    # Mount /proc or /sys (kernel interfaces) — strict mode only
+    # In deploy mode, monitoring tools (Netdata, Dashdot) need :ro access to /proc and /sys
+    if [[ "$mode" == "strict" ]]; then
+        if printf '%s' "$lower_content" | grep -qE '^\s+-\s*["'"'"']?/(proc|sys)[/:]'; then
+            violations+=("mounting /proc or /sys is not allowed (kernel interface access)")
+        fi
+    else
+        # Even in deploy mode, block writable /proc or /sys mounts
+        if printf '%s' "$lower_content" | grep -qE '^\s+-\s*["'"'"']?/(proc|sys)[/:]' && \
+           ! printf '%s' "$lower_content" | grep -E '^\s+-\s*["'"'"']?/(proc|sys)[/:]' | grep -q ':ro'; then
+            violations+=("mounting /proc or /sys without :ro is not allowed")
+        fi
+    fi
+
+    # Mount /dev (device access) — allow only /dev/null, /dev/urandom, /dev/random
+    if printf '%s' "$lower_content" | grep -qE '^\s+-\s*["'"'"']?/dev[/:]'; then
+        if ! printf '%s' "$lower_content" | grep -E '^\s+-\s*["'"'"']?/dev[/:]' | grep -qE '/dev/(null|urandom|random)'; then
+            violations+=("mounting /dev is not allowed (device access)")
+        fi
+    fi
+
+    # Mount Docker socket — container escape via Docker API
+    # In "deploy" mode, allow docker.sock (trusted built-in templates need it for
+    # Portainer, Watchtower, Docker Socket Proxy, etc.)
+    # In "strict" mode (user compose edits), block it entirely
+    if [[ "$mode" == "strict" ]]; then
+        if printf '%s' "$lower_content" | grep -qE 'docker\.sock'; then
+            violations+=("mounting docker.sock is not allowed in user-edited compose files (use docker-socket-proxy template instead)")
+        fi
+    fi
+
+    # Mount /boot (bootloader access)
+    if printf '%s' "$lower_content" | grep -qE '^\s+-\s*["'"'"']?/boot[/:]'; then
+        violations+=("mounting /boot is not allowed")
+    fi
+
+    # Mount /var/run (runtime sockets including Docker) — only in strict mode
+    # In deploy mode, some templates mount /var/run/docker.sock specifically
+    if [[ "$mode" == "strict" ]]; then
+        if printf '%s' "$lower_content" | grep -qE '^\s+-\s*["'"'"']?/var/run[/:]'; then
+            violations+=("mounting /var/run is not allowed (contains system sockets)")
+        fi
+    fi
+
+    # Mount /home with write access (user data access)
+    if printf '%s' "$lower_content" | grep -qE '^\s+-\s*["'"'"']?/home[/:]' | grep -vq ':ro'; then
+        if printf '%s' "$lower_content" | grep -qE '^\s+-\s*["'"'"']?/home[/:]' && \
+           ! printf '%s' "$lower_content" | grep -E '^\s+-\s*["'"'"']?/home[/:]' | grep -q ':ro'; then
+            violations+=("mounting /home with write access is not allowed")
+        fi
+    fi
+
+    # ── MEDIUM: Dangerous capabilities ──
+    # NOTE: In Docker Compose YAML, cap_add and the capability name are on SEPARATE lines:
+    #   cap_add:
+    #     - SYS_ADMIN
+    # So we must check for the capability value as a standalone line, not on the same line as cap_add.
+    # We look for the capability name in list items (- SYS_ADMIN) anywhere in the file.
+
+    # In strict mode, block all dangerous capabilities.
+    # In deploy mode, allow them (trusted templates like Netdata need SYS_ADMIN/SYS_PTRACE).
+    if [[ "$mode" == "strict" ]]; then
+        local -a _dangerous_caps=(sys_admin sys_ptrace net_admin net_raw sys_rawio sys_module dac_override dac_read_search)
+        for _cap in "${_dangerous_caps[@]}"; do
+            if printf '%s' "$lower_content" | grep -qE "^\s+-\s*[\"']?${_cap}[\"']?\s*$"; then
+                violations+=("${_cap^^} capability is not allowed (container escape / privilege escalation risk)")
+            fi
+        done
+        if printf '%s' "$lower_content" | grep -qE 'cap_add:\s*\[.*\b(sys_admin|sys_ptrace|net_admin|net_raw|sys_rawio|sys_module)\b'; then
+            violations+=("Dangerous capabilities detected in inline cap_add format")
+        fi
+    fi
+
+    # ── MEDIUM: Security options ──
+    # In strict mode, block disabling security profiles.
+    # In deploy mode, allow (trusted templates like Netdata need apparmor:unconfined).
+    if [[ "$mode" == "strict" ]]; then
+        if printf '%s' "$lower_content" | grep -qE '^\s+-\s*[\"'"'"']?apparmor[=:]unconfined'; then
+            violations+=("disabling AppArmor is not allowed")
+        fi
+        if printf '%s' "$lower_content" | grep -qE '^\s+-\s*[\"'"'"']?seccomp[=:]unconfined'; then
+            violations+=("disabling seccomp is not allowed")
+        fi
+        if printf '%s' "$lower_content" | grep -qE '^\s+-\s*[\"'"'"']?label[=:]disable'; then
+            violations+=("disabling SELinux labels is not allowed")
+        fi
+        if printf '%s' "$lower_content" | grep -qE 'security_opt:\s*\[.*\b(apparmor|seccomp)[=:]unconfined\b'; then
+            violations+=("Dangerous security_opt detected in inline format")
+        fi
+    fi
+
+    # ── MEDIUM: Variable substitution bypass detection ──
+    # Attackers can wrap dangerous values in ${VAR:-value} to bypass text scanning.
+    # Docker Compose resolves these at runtime, so we must detect them.
+    # Check for patterns like: privileged: ${ANYTHING:-true}
+    if printf '%s' "$lower_content" | grep -qE 'privileged:\s*\$\{[^}]*:-\s*true\s*\}'; then
+        violations+=("privileged with variable substitution default detected (bypass attempt)")
+    fi
+    if printf '%s' "$lower_content" | grep -qE 'pid:\s*\$\{[^}]*:-\s*host\s*\}'; then
+        violations+=("host PID namespace via variable substitution default detected")
+    fi
+    if printf '%s' "$lower_content" | grep -qE 'network_mode:\s*\$\{[^}]*:-\s*host\s*\}'; then
+        violations+=("host network mode via variable substitution default detected")
+    fi
+    if printf '%s' "$lower_content" | grep -qE 'ipc:\s*\$\{[^}]*:-\s*host\s*\}'; then
+        violations+=("host IPC namespace via variable substitution default detected")
+    fi
+
+    # ── Report results ──
+
+    if [[ ${#violations[@]} -gt 0 ]]; then
+        local details=""
+        for v in "${violations[@]}"; do
+            details="${details}${details:+; }$v"
+        done
+        _api_error 403 "Security policy violation in ${context}: ${details}"
+        return 1
+    fi
+
+    return 0
+}
+
 # Validate a URL for SSRF protection — blocks private/internal IPs
 # Returns 0 if safe, 1 if blocked (and sends 400 error response)
 _api_validate_url() {
@@ -1003,8 +1344,11 @@ _api_validate_url() {
         return 1
     fi
 
-    # If we can't resolve, allow it (DNS may not be available in all environments)
-    return 0
+    # SECURITY: If we can't resolve the hostname, BLOCK the request.
+    # This prevents DNS rebinding attacks where the hostname intentionally fails
+    # resolution on the first attempt but succeeds when curl fetches it.
+    _api_error 400 "$context blocked: hostname '$host' could not be resolved"
+    return 1
 }
 
 # Rate limiting: check if an IP is locked out
@@ -1232,44 +1576,44 @@ _api_stack_status() {
 # Get container details as JSON array entry
 _api_container_json() {
     local container_id="$1"
-    local name state health image created status
 
-    name=$(docker inspect --format='{{.Name}}' "$container_id" 2>/dev/null | sed 's|^/||')
-    state=$(docker inspect --format='{{.State.Status}}' "$container_id" 2>/dev/null)
-    health=$(docker inspect --format='{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$container_id" 2>/dev/null)
-    image=$(docker inspect --format='{{.Config.Image}}' "$container_id" 2>/dev/null)
-    created=$(docker inspect --format='{{.Created}}' "$container_id" 2>/dev/null)
-    status=$(docker inspect --format='{{.State.Status}}' "$container_id" 2>/dev/null)
+    # Use docker inspect with JSON output + jq for reliable parsing
+    if command -v jq >/dev/null 2>&1; then
+        local raw
+        raw=$(timeout 5 docker inspect "$container_id" 2>/dev/null)
+        [[ -z "$raw" ]] && { echo '{"name":"unknown","state":"unknown","health":"none","image":"","image_id":"","created":"","uptime_seconds":0,"ports":"","restart_count":0}'; return; }
 
-    local started_at uptime_seconds=0
-    started_at=$(docker inspect --format='{{.State.StartedAt}}' "$container_id" 2>/dev/null)
-    if [[ -n "$started_at" ]] && [[ "$started_at" != "0001-01-01T00:00:00Z" ]]; then
-        local start_epoch now_epoch
-        start_epoch=$(date -d "$started_at" +%s 2>/dev/null) || start_epoch=0
+        local now_epoch
         now_epoch=$(date +%s)
-        uptime_seconds=$(( now_epoch - start_epoch ))
+
+        printf '%s' "$raw" | jq -c --argjson now "$now_epoch" '
+            .[0] | {
+                name: (.Name | ltrimstr("/")),
+                state: .State.Status,
+                health: (if .State.Health then .State.Health.Status else "none" end),
+                image: .Config.Image,
+                image_id: (.Image | split(":") | .[1][:12] // ""),
+                created: .Created,
+                uptime_seconds: (if .State.Status == "running" and .State.StartedAt != "0001-01-01T00:00:00Z" then
+                    ($now - (.State.StartedAt | split(".")[0] + "Z" | fromdateiso8601)) else 0 end),
+                ports: ([.NetworkSettings.Ports | to_entries[] |
+                    select(.value != null) | .value[] |
+                    (if .HostIp == "" or .HostIp == "0.0.0.0" then "0.0.0.0" else .HostIp end) +
+                    ":" + .HostPort + "->" + (.key // "")] | join(", ")),
+                restart_count: (.RestartCount // 0)
+            }' 2>/dev/null
+        return
     fi
 
-    local ports
-    ports=$(_api_json_escape "$(docker inspect --format='{{range $p, $conf := .NetworkSettings.Ports}}{{if $conf}}{{range $i, $b := $conf}}{{if $i}}, {{end}}{{if $b.HostIp}}{{$b.HostIp}}{{else}}0.0.0.0{{end}}:{{$b.HostPort}}->{{$p}}{{end}}{{end}}{{end}}' "$container_id" 2>/dev/null)")
+    # Fallback without jq — simple format
+    local name state health image
+    name=$(timeout 3 docker inspect --format='{{.Name}}' "$container_id" 2>/dev/null | sed 's|^/||')
+    state=$(timeout 3 docker inspect --format='{{.State.Status}}' "$container_id" 2>/dev/null)
+    health=$(timeout 3 docker inspect --format='{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$container_id" 2>/dev/null)
+    image=$(timeout 3 docker inspect --format='{{.Config.Image}}' "$container_id" 2>/dev/null)
 
-    local restart_count
-    restart_count=$(docker inspect --format='{{.RestartCount}}' "$container_id" 2>/dev/null)
-
-    local image_id
-    image_id=$(docker inspect --format='{{.Image}}' "$container_id" 2>/dev/null)
-    local image_id_short="${image_id:7:12}"
-
-    printf '{"name": "%s", "state": "%s", "health": "%s", "image": "%s", "image_id": "%s", "created": "%s", "uptime_seconds": %d, "ports": "%s", "restart_count": %s}' \
-        "$(_api_json_escape "$name")" \
-        "$(_api_json_escape "$state")" \
-        "$(_api_json_escape "$health")" \
-        "$(_api_json_escape "$image")" \
-        "$image_id_short" \
-        "$(_api_json_escape "$created")" \
-        "$uptime_seconds" \
-        "$ports" \
-        "${restart_count:-0}"
+    printf '{"name":"%s","state":"%s","health":"%s","image":"%s","image_id":"","created":"","uptime_seconds":0,"ports":"","restart_count":0}' \
+        "$(_api_json_escape "$name")" "$(_api_json_escape "$state")" "$(_api_json_escape "$health")" "$(_api_json_escape "$image")"
 }
 
 # =============================================================================
@@ -1364,23 +1708,29 @@ handle_version() {
     docker_version=$(_api_json_escape "$(docker --version 2>/dev/null)")
     compose_version=$(_api_json_escape "$($DOCKER_COMPOSE_CMD version 2>/dev/null)")
 
-    _api_success "{\"api_version\": \"$API_VERSION\", \"framework_version\": \"${SCRIPT_VERSION:-2.0.0}\", \"docker_version\": \"$docker_version\", \"compose_version\": \"$compose_version\", \"compose_command\": \"$DOCKER_COMPOSE_CMD\"}"
+    _api_success "{\"api_version\": \"$API_VERSION\", \"framework_version\": \"${SCRIPT_VERSION:-2.0.0}\", \"docker_version\": \"$(_api_json_escape "$docker_version")\", \"compose_version\": \"$(_api_json_escape "$compose_version")\", \"compose_command\": \"$(_api_json_escape "$DOCKER_COMPOSE_CMD")\"}"
 }
 
 handle_status() {
-    local total_containers running_containers stopped_containers
-    total_containers=$(docker ps -a -q 2>/dev/null | wc -l)
-    running_containers=$(docker ps -q 2>/dev/null | wc -l)
-    stopped_containers=$(( total_containers - running_containers ))
+    # PERFORMANCE: Use docker system info for counts (single command) + parallel for the rest
+    local total_containers=0 running_containers=0 stopped_containers=0
+    local total_images=0 total_volumes=0 total_networks=0
 
-    local total_images
-    total_images=$(docker images -q 2>/dev/null | wc -l)
+    # Get all counts from docker system info in one call
+    if command -v jq >/dev/null 2>&1; then
+        local dinfo
+        dinfo=$(timeout 5 docker system info --format '{{json .}}' 2>/dev/null)
+        if [[ -n "$dinfo" ]]; then
+            total_containers=$(printf '%s' "$dinfo" | jq '.Containers // 0' 2>/dev/null)
+            running_containers=$(printf '%s' "$dinfo" | jq '.ContainersRunning // 0' 2>/dev/null)
+            stopped_containers=$(printf '%s' "$dinfo" | jq '.ContainersStopped // 0' 2>/dev/null)
+            total_images=$(printf '%s' "$dinfo" | jq '.Images // 0' 2>/dev/null)
+        fi
+    fi
 
-    local total_volumes
-    total_volumes=$(docker volume ls -q 2>/dev/null | wc -l)
-
-    local total_networks
-    total_networks=$(docker network ls --format '{{.Name}}' 2>/dev/null | grep -cv '^bridge$\|^host$\|^none$' || echo 0)
+    # Volumes and networks (fast, no heavy operations)
+    total_volumes=$(timeout 3 docker volume ls -q 2>/dev/null | wc -l)
+    total_networks=$(timeout 3 docker network ls --format '{{.Name}}' 2>/dev/null | grep -cv '^bridge$\|^host$\|^none$') || total_networks=0
 
     local disk_usage
     disk_usage=$(df -h / 2>/dev/null | tail -1 | awk '{printf "{\"total\": \"%s\", \"used\": \"%s\", \"available\": \"%s\", \"percent\": \"%s\"}", $2, $3, $4, $5}')
@@ -1393,51 +1743,53 @@ handle_status() {
     local uptime_seconds
     uptime_seconds=$(awk '{printf "%d", $1}' /proc/uptime 2>/dev/null || echo 0)
 
-    # Fast stack status: run all checks in parallel subshells
+    # Fast stack count: use docker compose ls (single command, lists all projects)
     local stacks
     stacks=($(_api_get_stacks))
     local running_stacks=0
-    local tmpdir
-    tmpdir=$(mktemp -d)
-
+    local active_projects
+    active_projects=$(timeout 5 docker compose ls --format json 2>/dev/null | jq -r '.[].Name' 2>/dev/null) || active_projects=""
     for s in "${stacks[@]}"; do
-        (
-            local compose_file="$COMPOSE_DIR/$s/docker-compose.yml"
-            local env_file="$COMPOSE_DIR/$s/.env"
-            local -a args=(-f "$compose_file")
-            [[ -f "$env_file" ]] && args+=(--env-file "$env_file")
-            local count
-            count=$($DOCKER_COMPOSE_CMD "${args[@]}" ps -q 2>/dev/null | wc -l)
-            echo "$count" > "$tmpdir/$s"
-        ) &
+        if echo "$active_projects" | grep -q "^${s}$" 2>/dev/null; then
+            running_stacks=$(( running_stacks + 1 ))
+        fi
     done
-    wait
-
-    for s in "${stacks[@]}"; do
-        local count=0
-        [[ -f "$tmpdir/$s" ]] && count=$(cat "$tmpdir/$s")
-        [[ "$count" -gt 0 ]] && running_stacks=$(( running_stacks + 1 ))
-    done
-    rm -rf "$tmpdir"
 
     local cpu_count
     cpu_count=$(nproc 2>/dev/null || echo 0)
 
-    _api_success "{\"timestamp\": \"$(date -u '+%Y-%m-%dT%H:%M:%SZ')\", \"hostname\": \"$(hostname)\", \"uptime_seconds\": $uptime_seconds, \"docker\": {\"containers\": {\"total\": $total_containers, \"running\": $running_containers, \"stopped\": $stopped_containers}, \"images\": $total_images, \"volumes\": $total_volumes, \"networks\": $total_networks}, \"stacks\": {\"total\": ${#stacks[@]}, \"running\": $running_stacks}, \"system\": {\"load_average\": $load_avg, \"memory_mb\": {\"total\": $mem_total, \"available\": $mem_available}, \"disk\": $disk_usage, \"cpu_count\": $cpu_count}}"
+    _api_success "{\"timestamp\": \"$(date -u '+%Y-%m-%dT%H:%M:%SZ')\", \"hostname\": \"$(_api_json_escape "$(hostname)")\", \"uptime_seconds\": $uptime_seconds, \"docker\": {\"containers\": {\"total\": $total_containers, \"running\": $running_containers, \"stopped\": $stopped_containers}, \"images\": $total_images, \"volumes\": $total_volumes, \"networks\": $total_networks}, \"stacks\": {\"total\": ${#stacks[@]}, \"running\": $running_stacks}, \"system\": {\"load_average\": $load_avg, \"memory_mb\": {\"total\": $mem_total, \"available\": $mem_available}, \"disk\": $disk_usage, \"cpu_count\": $cpu_count}}"
+}
+
+# Internal variant — returns JSON to stdout (used by export handler)
+handle_system_info_internal() {
+    local load_avg mem_total mem_available uptime_seconds cpu_count disk_usage
+    load_avg=$(awk '{printf "[%s, %s, %s]", $1, $2, $3}' /proc/loadavg 2>/dev/null || echo "[0,0,0]")
+    mem_total=$(awk '/MemTotal/ {printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || echo 0)
+    mem_available=$(awk '/MemAvailable/ {printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || echo 0)
+    uptime_seconds=$(awk '{printf "%d", $1}' /proc/uptime 2>/dev/null || echo 0)
+    cpu_count=$(nproc 2>/dev/null || echo 0)
+    disk_usage=$(df -h / 2>/dev/null | tail -1 | awk '{printf "{\"total\":\"%s\",\"used\":\"%s\",\"available\":\"%s\",\"percent\":\"%s\"}", $2, $3, $4, $5}')
+    printf '{"hostname":"%s","uptime_seconds":%d,"system":{"load_average":%s,"memory_mb":{"total":%d,"available":%d},"disk":%s,"cpu_count":%d}}' \
+        "$(_api_json_escape "$(hostname)")" "$uptime_seconds" "$load_avg" "$mem_total" "$mem_available" "${disk_usage:-{}}" "$cpu_count"
 }
 
 handle_health() {
     local -a results=()
     local total=0 healthy=0 unhealthy=0 stopped=0
 
-    while IFS= read -r cid; do
-        [[ -z "$cid" ]] && continue
-        total=$(( total + 1 ))
+    # Single docker inspect for ALL containers — use JSON output for reliability
+    local inspect_data=""
+    local all_cids
+    all_cids=$(timeout 5 docker ps -a -q 2>/dev/null | tr '\n' ' ')
+    if [[ -n "$all_cids" ]] && command -v jq >/dev/null 2>&1; then
+        inspect_data=$(timeout 10 docker inspect $all_cids 2>/dev/null | jq -r '.[] | "\(.Name | ltrimstr("/"))\t\(.State.Status)\t\(if .State.Health then .State.Health.Status else "none" end)"' 2>/dev/null) || inspect_data=""
+    fi
 
-        local name state health
-        name=$(docker inspect --format='{{.Name}}' "$cid" 2>/dev/null | sed 's|^/||')
-        state=$(docker inspect --format='{{.State.Status}}' "$cid" 2>/dev/null)
-        health=$(docker inspect --format='{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$cid" 2>/dev/null)
+    while IFS=$'\t' read -r name state health; do
+        [[ -z "$name" ]] && continue
+        name="${name#/}"
+        total=$(( total + 1 ))
 
         if [[ "$state" != "running" ]]; then
             stopped=$(( stopped + 1 ))
@@ -1448,7 +1800,7 @@ handle_health() {
         fi
 
         results+=("{\"name\": \"$(_api_json_escape "$name")\", \"state\": \"$state\", \"health\": \"$health\"}")
-    done < <(docker ps -a -q 2>/dev/null)
+    done <<< "$inspect_data"
 
     # Status logic: stopped containers are expected/normal and don't affect health.
     # Only actually unhealthy containers (failed healthchecks) trigger warnings.
@@ -1486,6 +1838,31 @@ handle_health() {
     _api_success "{\"status\": \"$overall\", \"summary\": {\"total\": $total, \"healthy\": $healthy, \"unhealthy\": $unhealthy, \"stopped\": $stopped}, \"containers\": $containers_json, \"api\": {\"uptime_seconds\": $api_uptime, \"requests_total\": ${api_requests:-0}, \"errors_total\": ${api_errors:-0}, \"memory_kb\": ${api_mem_kb:-0}, \"pid\": ${api_pid_val:-0}}}"
 }
 
+# Internal variant — returns JSON to stdout (used by export handler)
+handle_health_internal() {
+    local -a results=()
+    local total=0 healthy=0 unhealthy=0 stopped=0
+    local inspect_data="" all_cids
+    all_cids=$(timeout 5 docker ps -a -q 2>/dev/null | tr '\n' ' ')
+    if [[ -n "$all_cids" ]] && command -v jq >/dev/null 2>&1; then
+        inspect_data=$(timeout 10 docker inspect $all_cids 2>/dev/null | jq -r '.[] | "\(.Name | ltrimstr("/"))\t\(.State.Status)\t\(if .State.Health then .State.Health.Status else "none" end)"' 2>/dev/null) || inspect_data=""
+    fi
+    while IFS=$'\t' read -r name state health; do
+        [[ -z "$name" ]] && continue
+        name="${name#/}"; total=$(( total + 1 ))
+        if [[ "$state" != "running" ]]; then stopped=$(( stopped + 1 ))
+        elif [[ "$health" == "unhealthy" ]]; then unhealthy=$(( unhealthy + 1 ))
+        else healthy=$(( healthy + 1 )); fi
+        results+=("{\"name\":\"$(_api_json_escape "$name")\",\"state\":\"$state\",\"health\":\"$health\"}")
+    done <<< "$inspect_data"
+    local overall="healthy"
+    (( unhealthy >= 3 )) && overall="critical"
+    (( unhealthy > 0 && unhealthy < 3 )) && overall="degraded"
+    local cj; cj=$(printf '%s,' "${results[@]}"); cj="[${cj%,}]"
+    printf '{"status":"%s","summary":{"total":%d,"healthy":%d,"unhealthy":%d,"stopped":%d},"containers":%s}' \
+        "$overall" "$total" "$healthy" "$unhealthy" "$stopped" "$cj"
+}
+
 handle_stacks() {
     local stacks
     stacks=($(_api_get_stacks))
@@ -1503,7 +1880,7 @@ handle_stacks() {
 
         # Count services defined in compose file
         local service_count
-        service_count=$(grep -c '^\s\+[a-zA-Z]' "$compose_file" 2>/dev/null || echo 0)
+        service_count=$(grep -c '^\s\+[a-zA-Z]' "$compose_file" 2>/dev/null) || service_count=0
 
         entries+=("{\"name\": \"$stack\", \"status\": \"$status\", \"running_containers\": $count, \"has_env\": $has_env, \"compose_file\": \"$compose_file\"}")
     done
@@ -1664,6 +2041,11 @@ handle_stack_compose_validate() {
         return
     fi
 
+    # SECURITY: Scan compose content for dangerous Docker features
+    if ! _api_scan_compose_security "$content" "compose validation for $stack"; then
+        return
+    fi
+
     local tmpfile
     tmpfile=$(mktemp /tmp/dcs-compose-validate-XXXXXX.yml)
     printf '%s' "$content" > "$tmpfile"
@@ -1708,6 +2090,11 @@ handle_stack_compose_save() {
         return
     fi
 
+    # SECURITY: Scan compose content for dangerous Docker features
+    if ! _api_scan_compose_security "$content" "compose save for $stack"; then
+        return
+    fi
+
     # Validate before saving
     local tmpfile
     tmpfile=$(mktemp /tmp/dcs-compose-save-XXXXXX.yml)
@@ -1737,8 +2124,10 @@ handle_stack_compose_save() {
         _save_compose_version "$stack"
     fi
 
-    # Write new content
-    printf '%s' "$content" > "$compose_file" 2>/dev/null || {
+    # Write new content (atomic: write to temp then rename to prevent corruption)
+    local tmpwrite="${compose_file}.tmp.$$"
+    printf '%s' "$content" > "$tmpwrite" 2>/dev/null && mv -f "$tmpwrite" "$compose_file" 2>/dev/null || {
+        rm -f "$tmpwrite" 2>/dev/null
         _api_error 500 "Failed to write compose file"
         return
     }
@@ -1951,17 +2340,65 @@ handle_images() {
 }
 
 handle_containers() {
-    local -a entries=()
+    # PERFORMANCE: Single docker command to get all container data as JSON
+    # Then use jq to transform — fast, reliable, no delimiter issues
+    local raw_json
+    raw_json=$(timeout 10 docker ps -a --format '{{json .}}' 2>/dev/null)
 
+    if [[ -z "$raw_json" ]]; then
+        _api_success '{"total": 0, "containers": []}'
+        return
+    fi
+
+    if command -v jq >/dev/null 2>&1; then
+        local now_epoch
+        now_epoch=$(date +%s)
+        local containers_json
+        containers_json=$(printf '%s\n' "$raw_json" | jq -s --argjson now "$now_epoch" '
+            [.[] | {
+                name: .Names,
+                state: .State,
+                health: (if .Status | test("healthy") then "healthy"
+                         elif .Status | test("unhealthy") then "unhealthy"
+                         elif .Status | test("health:") then "starting"
+                         else "none" end),
+                image: .Image,
+                image_id: (.ID[:12] // ""),
+                created: .CreatedAt,
+                uptime_seconds: (if .State == "running" then
+                    ($now - ((.RunningFor // "0") | if test("seconds") then (scan("[0-9]+")[0] | tonumber)
+                             elif test("minutes") then (scan("[0-9]+")[0] | tonumber * 60)
+                             elif test("hours") then (scan("[0-9]+")[0] | tonumber * 3600)
+                             elif test("days") then (scan("[0-9]+")[0] | tonumber * 86400)
+                             elif test("weeks") then (scan("[0-9]+")[0] | tonumber * 604800)
+                             elif test("months") then (scan("[0-9]+")[0] | tonumber * 2592000)
+                             else 0 end)) else 0 end),
+                ports: .Ports,
+                restart_count: 0
+            }]' 2>/dev/null)
+
+        if [[ -n "$containers_json" ]]; then
+            local total
+            total=$(printf '%s' "$containers_json" | jq 'length' 2>/dev/null)
+            _api_success "{\"total\": ${total:-0}, \"containers\": $containers_json}"
+            return
+        fi
+    fi
+
+    # Fallback: per-container inspect (slower but always works)
+    local -a entries=()
     while IFS= read -r cid; do
         [[ -z "$cid" ]] && continue
         entries+=("$(_api_container_json "$cid")")
     done < <(docker ps -a -q 2>/dev/null)
 
     local json
-    json=$(printf '%s,' "${entries[@]}")
-    json="[${json%,}]"
-
+    if [[ ${#entries[@]} -gt 0 ]]; then
+        json=$(printf '%s,' "${entries[@]}")
+        json="[${json%,}]"
+    else
+        json="[]"
+    fi
     _api_success "{\"total\": ${#entries[@]}, \"containers\": $json}"
 }
 
@@ -2075,7 +2512,7 @@ handle_config() {
     config+="\"compose_dir\": \"$(_api_json_escape "$COMPOSE_DIR")\","
     config+="\"app_data_dir\": \"$(_api_json_escape "$APP_DATA_DIR")\","
     config+="\"base_dir\": \"$(_api_json_escape "$BASE_DIR")\","
-    config+="\"compose_command\": \"$DOCKER_COMPOSE_CMD\","
+    config+="\"compose_command\": \"$(_api_json_escape "$DOCKER_COMPOSE_CMD")\","
     config+="\"skip_healthcheck_wait\": ${SKIP_HEALTHCHECK_WAIT:-false},"
     config+="\"continue_on_failure\": ${CONTINUE_ON_FAILURE:-true},"
     config+="\"remove_volumes_on_stop\": ${REMOVE_VOLUMES_ON_STOP:-false},"
@@ -2121,7 +2558,7 @@ handle_system() {
     local docker_version
     docker_version=$(_api_json_escape "$(docker --version 2>/dev/null)")
 
-    _api_success "{\"hostname\": \"$(hostname)\", \"kernel\": \"$kernel_version\", \"cpu_count\": $cpu_count, \"memory_total_mb\": $mem_total_mb, \"swap_total_mb\": $swap_total_mb, \"docker_version\": \"$docker_version\", \"docker_disk_usage\": $df_json}"
+    _api_success "{\"hostname\": \"$(_api_json_escape "$(hostname)")\", \"kernel\": \"$(_api_json_escape "$kernel_version")\", \"cpu_count\": $cpu_count, \"memory_total_mb\": $mem_total_mb, \"swap_total_mb\": $swap_total_mb, \"docker_version\": \"$docker_version\", \"docker_disk_usage\": $df_json}"
 }
 
 handle_disks() {
@@ -2236,6 +2673,27 @@ handle_create_network() {
         return
     fi
 
+    # Validate driver (only allow known Docker network drivers)
+    case "$driver" in
+        bridge|host|overlay|macvlan|ipvlan|none) ;;
+        *)
+            _api_error 400 "Invalid network driver. Allowed: bridge, host, overlay, macvlan, ipvlan, none"
+            return
+            ;;
+    esac
+
+    # Validate subnet (CIDR notation)
+    if [[ -n "$subnet" && ! "$subnet" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+$ ]]; then
+        _api_error 400 "Invalid subnet format. Use CIDR notation (e.g., 172.20.0.0/16)"
+        return
+    fi
+
+    # Validate gateway (IPv4 address)
+    if [[ -n "$gateway" && ! "$gateway" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        _api_error 400 "Invalid gateway format. Use IPv4 address (e.g., 172.20.0.1)"
+        return
+    fi
+
     # Check if network already exists
     if docker network inspect "$name" >/dev/null 2>&1; then
         _api_error 409 "Network '$name' already exists"
@@ -2295,7 +2753,7 @@ handle_delete_network() {
     fi
 
     local output
-    output=$(docker network rm "$name" 2>&1) || {
+    output=$(docker network rm -- "$name" 2>&1) || {
         _api_error 500 "Failed to delete network: $(_api_json_escape "$output")"
         return
     }
@@ -2318,8 +2776,12 @@ handle_network_connect() {
         return
     fi
 
+    # SECURITY: Validate container name to prevent Docker flag injection
+    _api_validate_resource_name "$container" "container" || return
+
     local output
-    output=$(docker network connect "$name" "$container" 2>&1) || {
+    # SECURITY: Use -- to separate flags from positional arguments
+    output=$(docker network connect -- "$name" "$container" 2>&1) || {
         _api_error 500 "Failed to connect: $(_api_json_escape "$output")"
         return
     }
@@ -2342,8 +2804,11 @@ handle_network_disconnect() {
         return
     fi
 
+    # SECURITY: Validate container name to prevent Docker flag injection
+    _api_validate_resource_name "$container" "container" || return
+
     local output
-    output=$(docker network disconnect "$name" "$container" 2>&1) || {
+    output=$(docker network disconnect -- "$name" "$container" 2>&1) || {
         _api_error 500 "Failed to disconnect: $(_api_json_escape "$output")"
         return
     }
@@ -2401,7 +2866,7 @@ handle_delete_volume() {
     fi
 
     local output
-    output=$(docker volume rm "$name" 2>&1) || {
+    output=$(docker volume rm -- "$name" 2>&1) || {
         _api_error 500 "Failed to delete volume: $(_api_json_escape "$output"). It may be in use by a container."
         return
     }
@@ -2431,7 +2896,8 @@ handle_logs() {
             content=$(printf '%s\n' "$content" | grep -i "\[$level_filter\]" 2>/dev/null || true)
         fi
         if [[ -n "$search_filter" ]]; then
-            content=$(printf '%s\n' "$content" | grep -i "$search_filter" 2>/dev/null || true)
+            # SECURITY: Use -F (fixed string) not regex to prevent ReDoS attacks
+            content=$(printf '%s\n' "$content" | grep -iF "$search_filter" 2>/dev/null || true)
         fi
     else
         content=$(tail -"$num_lines" "$log_file" 2>/dev/null)
@@ -2457,18 +2923,20 @@ handle_logs_stats() {
     total_lines=$(wc -l < "$log_file" 2>/dev/null | tr -d ' ')
     file_size=$(du -h "$log_file" 2>/dev/null | awk '{print $1}')
 
+    # Count log levels — grep -c returns exit code 1 when count is 0,
+    # so use "|| true" to prevent the fallback from appending a second "0"
     local errors warnings successes infos debugs steps timings criticals
-    errors=$(grep -c '\[ERROR\]' "$log_file" 2>/dev/null || echo 0)
-    criticals=$(grep -c '\[CRITICAL\]' "$log_file" 2>/dev/null || echo 0)
-    warnings=$(grep -c '\[WARNING\]' "$log_file" 2>/dev/null || echo 0)
-    successes=$(grep -c '\[SUCCESS\]' "$log_file" 2>/dev/null || echo 0)
-    infos=$(grep -c '\[INFO\]' "$log_file" 2>/dev/null || echo 0)
-    debugs=$(grep -c '\[DEBUG\]' "$log_file" 2>/dev/null || echo 0)
-    steps=$(grep -c '\[STEP' "$log_file" 2>/dev/null || echo 0)
-    timings=$(grep -c '\[TIMING\]' "$log_file" 2>/dev/null || echo 0)
+    errors=$(grep -c '\[ERROR\]' "$log_file" 2>/dev/null) || errors=0
+    criticals=$(grep -c '\[CRITICAL\]' "$log_file" 2>/dev/null) || criticals=0
+    warnings=$(grep -c '\[WARNING\]' "$log_file" 2>/dev/null) || warnings=0
+    successes=$(grep -c '\[SUCCESS\]' "$log_file" 2>/dev/null) || successes=0
+    infos=$(grep -c '\[INFO\]' "$log_file" 2>/dev/null) || infos=0
+    debugs=$(grep -c '\[DEBUG\]' "$log_file" 2>/dev/null) || debugs=0
+    steps=$(grep -c '\[STEP' "$log_file" 2>/dev/null) || steps=0
+    timings=$(grep -c '\[TIMING\]' "$log_file" 2>/dev/null) || timings=0
 
     local sessions
-    sessions=$(grep -c 'Session Started' "$log_file" 2>/dev/null || echo 0)
+    sessions=$(grep -c 'Session Started' "$log_file" 2>/dev/null) || sessions=0
 
     local archive_count=0 archive_size="0"
     local archive_dir="${BASE_DIR}/logs/archive"
@@ -2587,6 +3055,9 @@ handle_auth_setup() {
 
     _api_add_user "$username" "$password_hash" "$salt" "admin"
 
+    # NOTE: Do NOT touch .setup-complete here — that's done by /setup/complete
+    # (the final step of the wizard). Marking it here would block steps 3-5.
+
     local client_ip="${SOCAT_PEERADDR:-unknown}"
     _api_audit_log "$client_ip" "SETUP" "$username" "Admin account created"
 
@@ -2627,6 +3098,10 @@ handle_auth_login() {
 
     # Look up user
     if ! _api_user_exists "$username"; then
+        # SECURITY: Perform a dummy hash to prevent username enumeration via timing.
+        # Without this, nonexistent users return immediately while existing users
+        # take ~100ms+ for PBKDF2, allowing attackers to discover valid usernames.
+        _api_hash_password_v2 "0000000000000000000000000000000000000000" "dummy_password" >/dev/null 2>&1
         _api_record_failed_login "$client_ip"
         _api_error 401 "Invalid username or password"
         return
@@ -2674,6 +3149,31 @@ handle_auth_login() {
 
     # Clean up expired tokens periodically
     _api_cleanup_expired_tokens
+
+    # ── TOTP 2FA check ──
+    # If user has TOTP enabled, don't issue a real token yet.
+    # Issue a temporary token with totp_pending=true that only works for /auth/totp/validate.
+    local totp_enabled
+    totp_enabled=$(echo "$user_record" | jq -r '.totp_enabled // false' 2>/dev/null)
+    if [[ "$totp_enabled" == "true" ]]; then
+        local totp_token
+        totp_token=$(_api_generate_token)
+        # Store as pending token (5 minute expiry for TOTP entry)
+        local now; now=$(_api_now_epoch)
+        local totp_expires=$(( now + 300 ))
+        local tokens; tokens=$(_api_read_auth_file "tokens.json")
+        if command -v jq >/dev/null 2>&1; then
+            local new_tokens
+            new_tokens=$(echo "$tokens" | jq \
+                --arg t "$totp_token" --arg u "$username" --arg r "$role" \
+                --argjson e "$totp_expires" \
+                '. + [{"token": $t, "username": $u, "role": $r, "expires_at": $e, "totp_pending": true}]' 2>/dev/null)
+            _api_write_auth_file "tokens.json" "$new_tokens"
+        fi
+        _api_audit_log "$client_ip" "LOGIN_TOTP_PENDING" "$username" "Password OK, awaiting 2FA"
+        _api_success "{\"success\": true, \"requires_totp\": true, \"totp_token\": \"$totp_token\", \"message\": \"Enter your 2FA code to complete login.\"}"
+        return
+    fi
 
     _api_audit_log "$client_ip" "LOGIN_OK" "$username" "Login successful"
 
@@ -2966,6 +3466,175 @@ handle_auth_invites() {
     fi
 }
 
+# =============================================================================
+# TOTP 2FA ENDPOINTS
+# =============================================================================
+
+# POST /auth/totp/setup — Generate TOTP secret and return QR URI (not yet enabled)
+handle_totp_setup() {
+    local body="$1"
+    _api_init_auth_dir
+
+    # Get current user from auth
+    [[ -z "${AUTH_USERNAME:-}" ]] && { _api_error 401 "Authentication required"; return; }
+
+    # Check if already enabled
+    local user_record
+    user_record=$(_api_get_user "$AUTH_USERNAME")
+    local already_enabled
+    already_enabled=$(echo "$user_record" | jq -r '.totp_enabled // false' 2>/dev/null)
+    if [[ "$already_enabled" == "true" ]]; then
+        _api_error 409 "TOTP is already enabled for this account. Disable it first to regenerate."
+        return
+    fi
+
+    # Generate secret
+    local totp_output
+    totp_output=$(_api_totp_generate_secret)
+    local hex_secret b32_secret
+    hex_secret=$(echo "$totp_output" | head -1)
+    b32_secret=$(echo "$totp_output" | tail -1)
+
+    if [[ -z "$hex_secret" || -z "$b32_secret" ]]; then
+        _api_error 500 "Failed to generate TOTP secret"
+        return
+    fi
+
+    # Store secret but don't enable yet (user must verify first)
+    _api_totp_update_user "$AUTH_USERNAME" "$hex_secret" "false"
+
+    # Build QR URI
+    local uri
+    uri=$(_api_totp_uri "$b32_secret" "$AUTH_USERNAME" "DCS")
+
+    _api_success "{\"secret\": \"$b32_secret\", \"uri\": \"$(_api_json_escape "$uri")\", \"message\": \"Scan the QR code with your authenticator app, then verify with a code to enable 2FA.\"}"
+}
+
+# POST /auth/totp/verify — Verify a TOTP code and enable 2FA
+handle_totp_verify() {
+    local body="$1"
+    _api_init_auth_dir
+
+    [[ -z "${AUTH_USERNAME:-}" ]] && { _api_error 401 "Authentication required"; return; }
+
+    local code
+    if command -v jq >/dev/null 2>&1; then
+        code=$(printf '%s' "$body" | jq -r '.code // empty' 2>/dev/null)
+    else
+        code=$(echo "$body" | sed -n 's/.*"code" *: *"\([^"]*\)".*/\1/p')
+    fi
+
+    [[ -z "$code" ]] && { _api_error 400 "Missing 'code' field (6-digit TOTP code)"; return; }
+
+    # Get the stored (but not yet enabled) secret
+    local user_record
+    user_record=$(_api_get_user "$AUTH_USERNAME")
+    local hex_secret
+    hex_secret=$(echo "$user_record" | jq -r '.totp_secret // empty' 2>/dev/null)
+
+    [[ -z "$hex_secret" ]] && { _api_error 400 "No TOTP secret set up. Call /auth/totp/setup first."; return; }
+
+    # Verify the code
+    if _api_totp_verify "$hex_secret" "$code"; then
+        # Enable TOTP
+        _api_totp_update_user "$AUTH_USERNAME" "$hex_secret" "true"
+        _api_audit_log "${SOCAT_PEERADDR:-unknown}" "TOTP_ENABLED" "$AUTH_USERNAME" "2FA enabled"
+        _api_success "{\"success\": true, \"message\": \"Two-factor authentication is now enabled.\"}"
+    else
+        _api_error 401 "Invalid TOTP code. Make sure your authenticator app is synced."
+    fi
+}
+
+# POST /auth/totp/disable — Disable 2FA (requires password confirmation)
+handle_totp_disable() {
+    local body="$1"
+    _api_init_auth_dir
+
+    [[ -z "${AUTH_USERNAME:-}" ]] && { _api_error 401 "Authentication required"; return; }
+
+    local password
+    if command -v jq >/dev/null 2>&1; then
+        password=$(printf '%s' "$body" | jq -r '.password // empty' 2>/dev/null)
+    fi
+
+    [[ -z "$password" ]] && { _api_error 400 "Password required to disable 2FA"; return; }
+
+    # Verify password
+    local user_record
+    user_record=$(_api_get_user "$AUTH_USERNAME")
+    local stored_hash stored_salt hash_version
+    stored_hash=$(echo "$user_record" | jq -r '.password_hash' 2>/dev/null)
+    stored_salt=$(echo "$user_record" | jq -r '.salt' 2>/dev/null)
+    hash_version=$(echo "$user_record" | jq -r '.hash_version // 1' 2>/dev/null)
+
+    if ! _api_verify_password "$password" "$stored_hash" "$stored_salt" "$hash_version"; then
+        _api_error 401 "Incorrect password"
+        return
+    fi
+
+    # Disable TOTP
+    _api_totp_update_user "$AUTH_USERNAME" "" "false"
+    _api_audit_log "${SOCAT_PEERADDR:-unknown}" "TOTP_DISABLED" "$AUTH_USERNAME" "2FA disabled"
+    _api_success "{\"success\": true, \"message\": \"Two-factor authentication has been disabled.\"}"
+}
+
+# POST /auth/totp/validate — Validate TOTP code during login (second step)
+handle_totp_validate() {
+    local body="$1"
+    _api_init_auth_dir
+
+    local totp_token code
+    if command -v jq >/dev/null 2>&1; then
+        totp_token=$(printf '%s' "$body" | jq -r '.totp_token // empty' 2>/dev/null)
+        code=$(printf '%s' "$body" | jq -r '.code // empty' 2>/dev/null)
+    fi
+
+    [[ -z "$totp_token" ]] && { _api_error 400 "Missing 'totp_token' field"; return; }
+    [[ -z "$code" ]] && { _api_error 400 "Missing 'code' field (6-digit TOTP code)"; return; }
+
+    # Validate the temporary TOTP token
+    local tokens
+    tokens=$(_api_read_auth_file "tokens.json")
+    local now
+    now=$(_api_now_epoch)
+    local record
+    record=$(echo "$tokens" | jq -r --arg t "$totp_token" --argjson n "$now" \
+        '.[] | select(.token == $t and .expires_at > $n and .totp_pending == true)' 2>/dev/null)
+
+    [[ -z "$record" ]] && { _api_error 401 "Invalid or expired TOTP token"; return; }
+
+    local username role
+    username=$(echo "$record" | jq -r '.username' 2>/dev/null)
+    role=$(echo "$record" | jq -r '.role' 2>/dev/null)
+
+    # Get user's TOTP secret
+    local user_record
+    user_record=$(_api_get_user "$username")
+    local hex_secret
+    hex_secret=$(echo "$user_record" | jq -r '.totp_secret // empty' 2>/dev/null)
+
+    [[ -z "$hex_secret" ]] && { _api_error 500 "TOTP secret not found for user"; return; }
+
+    # Verify the code
+    if _api_totp_verify "$hex_secret" "$code"; then
+        # Remove the temporary TOTP token
+        local new_tokens
+        new_tokens=$(echo "$tokens" | jq --arg t "$totp_token" '[.[] | select(.token != $t)]' 2>/dev/null)
+        _api_write_auth_file "tokens.json" "$new_tokens"
+
+        # Issue a real session token
+        local real_token
+        real_token=$(_api_generate_token)
+        _api_store_token "$real_token" "$username" "$role"
+
+        _api_audit_log "${SOCAT_PEERADDR:-unknown}" "TOTP_LOGIN_OK" "$username" "2FA verified"
+        _api_success "{\"success\": true, \"token\": \"$real_token\", \"username\": \"$(_api_json_escape "$username")\", \"role\": \"$(_api_json_escape "$role")\"}"
+    else
+        _api_audit_log "${SOCAT_PEERADDR:-unknown}" "TOTP_LOGIN_FAIL" "$username" "Invalid 2FA code"
+        _api_error 401 "Invalid TOTP code"
+    fi
+}
+
 # POST /auth/logout — Invalidate the current session token
 handle_auth_logout() {
     _api_init_auth_dir
@@ -3180,7 +3849,10 @@ handle_auth_factory_reset() {
     local removed_json="["
     local rfirst=true
 
-    # Files to remove (auth state + setup flag)
+    # Remove factory-reset-pending if it exists from a previous reset
+    rm -f "$auth_dir/.factory-reset-pending" 2>/dev/null
+
+    # Files to remove (auth state + setup marker — full clean slate)
     local reset_files=(
         ".setup-complete"
         "users.json"
@@ -3222,11 +3894,17 @@ handle_auth_factory_reset() {
             disown
         fi
 
-        # Remove App-Data directories in background (can be slow for root-owned files)
+        # Remove App-Data directories in background (handles root-owned files via docker alpine)
         (
             if [[ -d "$stacks_dir" ]]; then
                 for d in "$stacks_dir"/*/; do
-                    [[ -d "$d" && -d "$d/App-Data" ]] && rm -rf "$d/App-Data" 2>/dev/null
+                    [[ -d "$d" && -d "$d/App-Data" ]] || continue
+                    # Try normal rm first, then use docker for root-owned files
+                    rm -rf "$d/App-Data" 2>/dev/null
+                    if [[ -d "$d/App-Data" ]]; then
+                        docker run --rm -v "$d/App-Data:/cleanup" alpine rm -rf /cleanup 2>/dev/null || true
+                        rm -rf "$d/App-Data" 2>/dev/null || true
+                    fi
                 done
             fi
         ) &
@@ -3299,6 +3977,82 @@ handle_auth_factory_reset() {
             done
         fi
 
+        # Remove compose backup files (.bak and .bak.TIMESTAMP)
+        if [[ -d "$stacks_dir" ]]; then
+            find "$stacks_dir" -name 'docker-compose.yml.bak*' -delete 2>/dev/null || true
+        fi
+
+        # Remove compose history snapshots
+        rm -rf "$BASE_DIR/.compose-history" 2>/dev/null || true
+
+        # Remove rollback snapshots
+        rm -rf "$BASE_DIR/.data/rollback" 2>/dev/null || true
+
+        # Remove system snapshots
+        rm -rf "$BASE_DIR/.snapshots" 2>/dev/null || true
+
+        # Remove root .env backup
+        rm -f "$BASE_DIR/.env.bak" 2>/dev/null || true
+
+        # Remove per-user dashboard layouts and profiles
+        rm -rf "$auth_dir/dashboard-layouts" 2>/dev/null || true
+        rm -rf "$auth_dir/profiles" 2>/dev/null || true
+
+        # Remove automation rules data
+        rm -rf "$BASE_DIR/.data/automations" 2>/dev/null || true
+
+        # Remove notification rules and history
+        rm -f "$BASE_DIR/.data/notification-rules.json" 2>/dev/null || true
+        rm -f "$BASE_DIR/.data/notification-history.jsonl" 2>/dev/null || true
+
+        # Remove metrics history
+        rm -rf "$BASE_DIR/.data/metrics" 2>/dev/null || true
+
+        # Remove backup status
+        rm -f "$auth_dir/backup-status.json" 2>/dev/null || true
+
+        # Clean up Cloudflare DNS records created by DCS (background, non-fatal)
+        local _cf_token="${CF_DNS_API_TOKEN:-}"
+        local _cf_domain="${TRAEFIK_DOMAIN:-}"
+        [[ -z "$_cf_token" ]] && _cf_token=$(grep -m1 '^CF_DNS_API_TOKEN=' "$COMPOSE_DIR"/*/".env" "$BASE_DIR/.env" 2>/dev/null | head -1 | cut -d'=' -f2- | tr -d '"' | tr -d "'")
+        [[ -z "$_cf_domain" ]] && _cf_domain=$(grep -m1 '^TRAEFIK_DOMAIN=' "$COMPOSE_DIR"/*/".env" "$BASE_DIR/.env" 2>/dev/null | head -1 | cut -d'=' -f2- | tr -d '"' | tr -d "'")
+        if [[ -n "$_cf_token" && -n "$_cf_domain" ]] && command -v curl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
+            (
+                local cf_api="https://api.cloudflare.com/client/v4"
+                local zone_id=""
+                [[ -f "$auth_dir/.cf-zone-cache" ]] && zone_id=$(sed -n '2p' "$auth_dir/.cf-zone-cache" 2>/dev/null)
+                [[ -z "$zone_id" ]] && zone_id=$(curl -s --max-time 10 -H "Authorization: Bearer $_cf_token" "$cf_api/zones?name=$_cf_domain&status=active" 2>/dev/null | jq -r '.result[0].id // empty')
+                [[ -z "$zone_id" ]] && exit 0
+                # Delete DNS records with "DCS" or "Auto-created by DCS" in comment
+                # Paginate through all records (100 per page)
+                local _cf_log="$auth_dir/cf-cleanup.log"
+                local page=1 deleted=0
+                while true; do
+                    local records
+                    records=$(curl -s --max-time 15 -H "Authorization: Bearer $_cf_token" \
+                        "$cf_api/zones/$zone_id/dns_records?per_page=100&page=$page" 2>/dev/null)
+                    local count
+                    count=$(printf '%s' "$records" | jq '.result | length' 2>/dev/null) || count=0
+                    [[ "$count" -eq 0 ]] && break
+
+                    printf '%s' "$records" | jq -r '.result[] | select(.comment != null and (.comment | test("DCS"))) | "\(.id) \(.name)"' 2>/dev/null | while read -r rid rname; do
+                        [[ -z "$rid" ]] && continue
+                        curl -s --max-time 10 -X DELETE -H "Authorization: Bearer $_cf_token" \
+                            "$cf_api/zones/$zone_id/dns_records/$rid" >/dev/null 2>&1
+                        echo "$(date -Iseconds) DELETED $rname ($rid)" >> "$_cf_log" 2>/dev/null
+                        deleted=$((deleted + 1))
+                    done
+
+                    [[ "$count" -lt 100 ]] && break
+                    page=$((page + 1))
+                    [[ "$page" -gt 10 ]] && break  # safety limit
+                done
+                echo "$(date -Iseconds) CF cleanup complete: $deleted records deleted" >> "$_cf_log" 2>/dev/null
+            ) &
+            disown
+        fi
+        rm -f "$auth_dir/.cf-zone-cache" "$auth_dir/cf-dns-audit.log" "$auth_dir/ddns.log" "$auth_dir/os-update-status.json" 2>/dev/null || true
+
         # Stop scheduler and metrics daemons if running
         for pidfile in /tmp/dcs-metrics-collector.pid /tmp/dcs-scheduler.pid; do
             if [[ -f "$pidfile" ]]; then
@@ -3348,10 +4102,10 @@ handle_container_action() {
     local success=true
 
     case "$action" in
-        start)   output=$(docker start "$name" 2>&1) || success=false ;;
-        stop)    output=$(docker stop "$name" 2>&1) || success=false ;;
-        restart) output=$(docker restart "$name" 2>&1) || success=false ;;
-        remove)  output=$(docker rm -f "$name" 2>&1) || success=false ;;
+        start)   output=$(docker start -- "$name" 2>&1) || success=false ;;
+        stop)    output=$(docker stop -- "$name" 2>&1) || success=false ;;
+        restart) output=$(docker restart -- "$name" 2>&1) || success=false ;;
+        remove)  output=$(docker rm -f -- "$name" 2>&1) || success=false ;;
         *)       _api_error 400 "Unknown action: $action"; return ;;
     esac
 
@@ -3481,7 +4235,7 @@ handle_maintenance_report() {
     total_volumes=$(docker volume ls -q 2>/dev/null | wc -l | tr -d ' ')
     dangling_volumes=$(docker volume ls -f 'dangling=true' -q 2>/dev/null | wc -l | tr -d ' ')
     total_networks=$(docker network ls -q 2>/dev/null | wc -l | tr -d ' ')
-    custom_networks=$(docker network ls --format '{{.Name}}' 2>/dev/null | grep -cvE '^(bridge|host|none)$' || echo 0)
+    custom_networks=$(docker network ls --format '{{.Name}}' 2>/dev/null | grep -cvE '^(bridge|host|none)$') || custom_networks=0
 
     local docker_df
     docker_df=$(_api_json_escape "$(docker system df 2>/dev/null)")
@@ -3708,7 +4462,6 @@ handle_batch_stacks() {
         while IFS= read -r s; do
             [[ -n "$s" ]] && selected+=("$s")
         done < <(printf '%s' "$body" | jq -r '.stacks[]' 2>/dev/null)
-        # Sort selected stacks by their position in ordered_stacks
         for s in "${ordered_stacks[@]}"; do
             for sel in "${selected[@]}"; do
                 if [[ "$s" == "$sel" ]]; then
@@ -4155,12 +4908,26 @@ handle_backup_restore() {
         return
     fi
 
+    # SECURITY: Check for path traversal in archive (../../ etc) before extracting
+    if tar -tzf "$archive_path" 2>/dev/null | grep -qE '^\.\./|/\.\./|^/'; then
+        _api_error 403 "Backup archive contains path traversal entries — refusing to extract"
+        return
+    fi
+
+    # SECURITY: Check for symlinks in archive (symlink-following traversal attack)
+    # A symlink entry pointing to /etc/cron.d followed by a file entry writes through it
+    if tar -tvf "$archive_path" 2>/dev/null | grep -q '^l'; then
+        _api_error 403 "Backup archive contains symbolic links — refusing to extract for security"
+        return
+    fi
+
     local status_file="$API_AUTH_DIR/backup-status.json"
     printf '{"status": "restoring", "filename": "%s", "progress": "Restoring from backup..."}' "$filename" > "$status_file"
 
     (
         local target="${BACKUP_SOURCE_DIR:-$BASE_DIR}"
-        if tar -xzf "$archive_path" -C "$target" 2>/dev/null; then
+        # SECURITY: --no-absolute-names prevents extracting absolute paths
+        if tar -xzf "$archive_path" --no-absolute-names -C "$target" 2>/dev/null; then
             printf '{"status": "idle", "last_restore": {"filename": "%s", "timestamp": "%s"}, "progress": null}' \
                 "$filename" "$(date -Iseconds)" > "$status_file"
         else
@@ -4362,10 +5129,14 @@ handle_config_update() {
         changed=$(( changed + 1 ))
     done
 
-    # Re-source .env to pick up changes
+    # Re-source .env to pick up changes — preserve runtime CLI overrides
+    local _saved_api_bind="$API_BIND"
+    local _saved_api_port="$API_PORT"
     set -a
     source "$env_file"
     set +a
+    API_BIND="$_saved_api_bind"
+    API_PORT="$_saved_api_port"
 
     _api_success "{\"success\": true, \"updated\": $changed, \"message\": \"Configuration updated. Some changes may require a restart.\"}"
 }
@@ -4446,13 +5217,14 @@ PYEOF
     if command -v expect >/dev/null 2>&1; then
         auth_method="expect"
         local marker="AUTH_OK_$$_$(date +%s)"
-        TERM_AUTH_PASS="$password" expect << EXPEOF 2>/dev/null
+        # SECURITY: Quote all variables via env() to prevent shell injection
+        TERM_AUTH_USER="$username" TERM_AUTH_PASS="$password" TERM_AUTH_MARKER="$marker" expect << 'EXPEOF' 2>/dev/null
 log_user 0
 set timeout 10
-spawn su - $username -c "echo $marker"
+spawn su - $env(TERM_AUTH_USER) -c "echo $env(TERM_AUTH_MARKER)"
 expect {
-    -re {[Pp]assword:} { send "\$env(TERM_AUTH_PASS)\r"; exp_continue }
-    "$marker" { exit 0 }
+    -re {[Pp]assword:} { send "$env(TERM_AUTH_PASS)\r"; exp_continue }
+    "$env(TERM_AUTH_MARKER)" { exit 0 }
     timeout { exit 1 }
     eof { exit 1 }
 }
@@ -4510,7 +5282,7 @@ _validate_terminal_session() {
 handle_terminal_auth() {
     local body="$1"
 
-    if ! _api_check_admin; then return; fi
+    if ! _api_check_admin; then _api_error 403 "Admin access required"; return; fi
 
     local username password
     if command -v jq >/dev/null 2>&1; then
@@ -4620,7 +5392,7 @@ handle_terminal_auth() {
 handle_terminal_auth_verify() {
     local body="$1"
 
-    if ! _api_check_admin; then return; fi
+    if ! _api_check_admin; then _api_error 403 "Admin access required"; return; fi
 
     local token
     if command -v jq >/dev/null 2>&1; then
@@ -4649,7 +5421,7 @@ handle_terminal_auth_verify() {
 handle_terminal_logout() {
     local body="$1"
 
-    if ! _api_check_admin; then return; fi
+    if ! _api_check_admin; then _api_error 403 "Admin access required"; return; fi
 
     local token
     if command -v jq >/dev/null 2>&1; then
@@ -4681,7 +5453,7 @@ handle_terminal_logout() {
 handle_terminal_exec() {
     local body="$1"
 
-    if ! _api_check_admin; then return; fi
+    if ! _api_check_admin; then _api_error 403 "Admin access required"; return; fi
 
     # Validate terminal session token
     local terminal_token
@@ -4715,19 +5487,45 @@ handle_terminal_exec() {
     [[ -z "$command" ]] && { _api_error 400 "Missing 'command' field"; return; }
     [[ -z "$cwd" ]] && cwd="$BASE_DIR"
 
+    # SECURITY: Validate cwd — must be a real directory, no path traversal
+    if [[ "$cwd" == *".."* ]]; then
+        _api_error 400 "Invalid working directory: path traversal not allowed"
+        return
+    fi
+    if [[ ! -d "$cwd" ]]; then
+        _api_error 400 "Working directory does not exist: $cwd"
+        return
+    fi
+
     # ── Terminal Command Guard: block dangerous shell patterns ──
+    # NOTE: This is a SAFETY NET against accidental destructive commands, NOT a security
+    # boundary. The terminal requires triple auth (API token + admin role + Linux credentials).
+    # A determined admin can always bypass a denylist (base64, aliases, scripting languages).
+    # The real security is the triple auth requirement + audit logging.
+
+    # SECURITY: Command length limit (prevents buffer overflow attacks)
+    if [[ ${#command} -gt 8192 ]]; then
+        _api_error 400 "Command too long (max 8192 characters)"
+        return
+    fi
+
     local _cmd_lower="${command,,}"
     local -a _blocked_patterns=(
         "rm -rf /"          # filesystem wipe
         "rm -rf /*"         # filesystem wipe variant
+        "rm -rf ~"          # home directory wipe
         "mkfs"              # format disk
         "dd if="            # raw disk write
         "> /dev/sd"         # raw device write
+        "> /dev/nvme"       # raw NVMe device write
         ":(){ :|:& };:"    # fork bomb
-        "chmod -R 777 /"    # permission wipe
-        "chown -R"          # ownership change on system dirs
+        ".(){.|.&};."       # fork bomb variant
+        "chmod -r 777 /"    # permission wipe
+        "chmod 777 /"       # permission wipe
+        "chown -r"          # ownership change on system dirs
         "/etc/shadow"       # password file access
         "/etc/passwd"       # user file access
+        "/etc/sudoers"      # sudo file access
         "curl.*| *bash"     # pipe-to-shell
         "wget.*| *bash"     # pipe-to-shell
         "curl.*| *sh"       # pipe-to-shell
@@ -4736,12 +5534,43 @@ handle_terminal_exec() {
         "reboot"            # system reboot
         "init 0"            # system halt
         "poweroff"          # system poweroff
+        "halt"              # system halt
+        "systemctl.*halt"   # systemd halt
+        "systemctl.*poweroff" # systemd poweroff
+        "systemctl.*reboot" # systemd reboot
+        "crontab -r"        # cron wipe
+        "iptables -f"       # firewall flush
+        "nft flush"         # nftables flush
+        "visudo"            # sudo editor
+        "passwd"            # password change
+        "useradd"           # user creation
+        "userdel"           # user deletion
+        "groupdel"          # group deletion
     )
 
     for _pat in "${_blocked_patterns[@]}"; do
         if [[ "$_cmd_lower" == *"${_pat,,}"* ]]; then
             local client_ip="${SOCAT_PEERADDR:-unknown}"
             _api_audit_log "$client_ip" "TERM_BLOCKED" "$session_user" "Blocked: $command"
+            _api_error 403 "Command blocked by security policy"
+            return
+        fi
+    done
+
+    # Regex-based patterns (for pipe chains and complex patterns that need wildcards)
+    local -a _blocked_regex=(
+        'curl\s.*\|\s*(ba)?sh'       # curl pipe-to-shell
+        'wget\s.*\|\s*(ba)?sh'       # wget pipe-to-shell
+        'systemctl\s.*(halt|poweroff|reboot|suspend)'  # systemd destructive
+        'base64\s.*\|\s*(ba)?sh'     # base64 decode pipe-to-shell
+        'python[23]?\s+-c\s.*os\.(system|exec|popen)'  # python os exec
+        'perl\s+-e\s.*system\('      # perl system exec
+        'ruby\s+-e\s.*system\('      # ruby system exec
+    )
+    for _rpat in "${_blocked_regex[@]}"; do
+        if printf '%s' "$_cmd_lower" | grep -qE "$_rpat"; then
+            local client_ip="${SOCAT_PEERADDR:-unknown}"
+            _api_audit_log "$client_ip" "TERM_BLOCKED" "$session_user" "Blocked(regex): $command"
             _api_error 403 "Command blocked by security policy"
             return
         fi
@@ -4782,7 +5611,7 @@ handle_terminal_exec() {
 }
 
 handle_terminal_history() {
-    if ! _api_check_admin; then return; fi
+    if ! _api_check_admin; then _api_error 403 "Admin access required"; return; fi
 
     local audit_file="$BASE_DIR/.api-auth/terminal-audit.log"
 
@@ -4816,7 +5645,7 @@ handle_terminal_history() {
 
 # GET /containers/:name/files?path=/ — List directory contents inside a container
 handle_container_files() {
-    if ! _api_check_admin; then return; fi
+    if ! _api_check_admin; then _api_error 403 "Admin access required"; return; fi
 
     local container="$1"
     local query_path="$2"
@@ -4899,7 +5728,7 @@ handle_container_files() {
 
 # GET /containers/:name/files/content?path=/etc/hostname — Read file contents inside a container
 handle_container_file_content() {
-    if ! _api_check_admin; then return; fi
+    if ! _api_check_admin; then _api_error 403 "Admin access required"; return; fi
 
     local container="$1"
     local file_path="$2"
@@ -4929,8 +5758,14 @@ handle_container_file_content() {
         return
     fi
 
+    # Check if file is binary (contains null bytes) — reject gracefully
+    if docker exec "$container" grep -qP '\x00' "$file_path" 2>/dev/null; then
+        _api_error 400 "Binary file cannot be displayed as text"
+        return
+    fi
+
     local content
-    content=$(docker exec "$container" cat "$file_path" 2>&1)
+    content=$(docker exec "$container" cat "$file_path" 2>/dev/null)
     local exit_code=$?
 
     if [[ $exit_code -ne 0 ]]; then
@@ -4947,7 +5782,7 @@ handle_container_file_content() {
 
 # GET /alerts/config — Read alert thresholds
 handle_alerts_config() {
-    if ! _api_check_admin; then return; fi
+    if ! _api_check_admin; then _api_error 403 "Admin access required"; return; fi
 
     local alerts_file="$BASE_DIR/.api-auth/alerts.json"
     mkdir -p "$BASE_DIR/.api-auth"
@@ -4981,7 +5816,7 @@ ALERTS_EOF
 
 # POST /alerts/config — Update alert thresholds
 handle_alerts_config_update() {
-    if ! _api_check_admin; then return; fi
+    if ! _api_check_admin; then _api_error 403 "Admin access required"; return; fi
 
     local body="$1"
     local alerts_file="$BASE_DIR/.api-auth/alerts.json"
@@ -5019,7 +5854,7 @@ handle_alerts_config_update() {
 
 # GET /system/crontab — User crontab entries
 handle_crontab() {
-    if ! _api_check_admin; then return; fi
+    if ! _api_check_admin; then _api_error 403 "Admin access required"; return; fi
 
     local raw_crontab
     raw_crontab=$(crontab -l 2>&1 || echo "")
@@ -5055,7 +5890,7 @@ handle_crontab() {
 
 # GET /system/crontab/system — System-level cron entries
 handle_crontab_system() {
-    if ! _api_check_admin; then return; fi
+    if ! _api_check_admin; then _api_error 403 "Admin access required"; return; fi
 
     local entries="["
     local first=true
@@ -5113,7 +5948,7 @@ handle_crontab_system() {
 
 # POST /system/crontab — Update user crontab
 handle_crontab_update() {
-    if ! _api_check_admin; then return; fi
+    if ! _api_check_admin; then _api_error 403 "Admin access required"; return; fi
 
     local body="$1"
     local content
@@ -5189,21 +6024,32 @@ _cron_to_human() {
 
 # GET /containers/:name/logs/live?lines=100&since=<timestamp> — Fetch recent logs for polling
 handle_container_logs_live() {
-    if ! _api_check_admin; then return; fi
+    if ! _api_check_admin; then _api_error 403 "Admin access required"; return; fi
 
     local container="$1"
     local lines="${2:-100}"
     local since="$3"
     [[ -z "$container" ]] && { _api_error 400 "Missing container name"; return; }
 
+    # SECURITY: Validate lines is a positive integer (prevents flag injection via tail -"${lines}")
+    [[ "$lines" =~ ^[0-9]+$ ]] || lines=100
+    (( lines > 5000 )) && lines=5000
+
+    # SECURITY: Validate since is a safe timestamp or duration (prevents docker flag injection)
+    if [[ -n "$since" ]]; then
+        if [[ ! "$since" =~ ^[0-9T.:ZzZ+/-]+$ ]] && [[ ! "$since" =~ ^[0-9]+[smh]$ ]]; then
+            since=""
+        fi
+    fi
+
     # Verify container exists
     docker inspect "$container" >/dev/null 2>&1 || { _api_error 404 "Container not found: $container"; return; }
 
     local log_output
     if [[ -n "$since" ]]; then
-        log_output=$(docker logs --since "$since" --timestamps "$container" 2>&1 | tail -"${lines}")
+        log_output=$(docker logs --since "$since" --timestamps -- "$container" 2>&1 | tail -"${lines}")
     else
-        log_output=$(docker logs --tail "$lines" --timestamps "$container" 2>&1)
+        log_output=$(docker logs --tail "$lines" --timestamps -- "$container" 2>&1)
     fi
 
     # Parse into structured entries
@@ -5246,11 +6092,18 @@ handle_container_logs_live() {
 
 # GET /logs/live?lines=100&since=<timestamp> — Stream DCS application log
 handle_app_logs_live() {
-    if ! _api_check_admin; then return; fi
+    if ! _api_check_admin; then _api_error 403 "Admin access required"; return; fi
 
     local lines="${1:-100}"
     local since="$2"
     local log_file="$BASE_DIR/logs/docker-services.log"
+
+    # SECURITY: Validate lines and since parameters
+    [[ "$lines" =~ ^[0-9]+$ ]] || lines=100
+    (( lines > 5000 )) && lines=5000
+    if [[ -n "$since" && ! "$since" =~ ^[0-9T.:ZzZ+/-]+$ ]]; then
+        since=""
+    fi
 
     [[ ! -f "$log_file" ]] && { _api_success "{\"entries\": [], \"count\": 0}"; return; }
 
@@ -5302,7 +6155,7 @@ handle_app_logs_live() {
 # =============================================================================
 
 handle_image_delete() {
-    if ! _api_check_admin; then return; fi
+    if ! _api_check_admin; then _api_error 403 "Admin access required"; return; fi
 
     local image_id="$1"
     [[ -z "$image_id" ]] && { _api_error 400 "Missing image ID"; return; }
@@ -5323,7 +6176,7 @@ handle_image_delete() {
 # =============================================================================
 
 handle_container_rename() {
-    if ! _api_check_admin; then return; fi
+    if ! _api_check_admin; then _api_error 403 "Admin access required"; return; fi
 
     local name="$1"
     local body="$2"
@@ -5337,8 +6190,11 @@ handle_container_rename() {
     fi
     [[ -z "$new_name" ]] && { _api_error 400 "Missing 'new_name' field"; return; }
 
+    # SECURITY: Validate new name to prevent Docker flag injection
+    _api_validate_resource_name "$new_name" "container" || return
+
     local output
-    output=$(docker rename "$name" "$new_name" 2>&1)
+    output=$(docker rename -- "$name" "$new_name" 2>&1)
     local exit_code=$?
 
     if [[ $exit_code -eq 0 ]]; then
@@ -5418,21 +6274,23 @@ handle_system_update_check() {
     branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
     latest=$(git rev-parse --short "origin/$branch" 2>/dev/null || echo "$current")
     behind=$(git rev-list HEAD.."origin/$branch" --count 2>/dev/null || echo "0")
-    has_local=$(git status --porcelain 2>/dev/null | head -1)
+    # Ignore runtime data files when checking for local changes
+    has_local=$(git diff --name-only HEAD 2>/dev/null | grep -vE '^\.api-auth/|^\.data/|^\.compose-history/|^logs/|^\.env$|^\.env\.bak|^Stacks/.*/App-Data/|^Stacks/.*/docker-compose\.yml\.bak' | head -1)
 
     # Get changelog (commits we're behind)
+    # SECURITY: Use tab-separated format and escape each field to prevent
+    # JSON injection via commit messages containing double-quotes
     changelog="[]"
     if [[ "$behind" -gt 0 ]]; then
-        if command -v jq >/dev/null 2>&1; then
-            changelog=$(git log HEAD.."origin/$branch" --pretty=format:'{"hash":"%h","message":"%s","author":"%an","date":"%ci"}' 2>/dev/null | head -20 | jq -s '.' 2>/dev/null || echo "[]")
-        else
-            # Fallback: build JSON array manually without jq
-            local entries="" entry_line
-            while IFS= read -r entry_line; do
-                [[ -n "$entries" ]] && entries="$entries,"
-                entries="$entries$entry_line"
-            done < <(git log HEAD.."origin/$branch" --pretty=format:'{"hash":"%h","message":"%s","author":"%an","date":"%ci"}' 2>/dev/null | head -20)
-            changelog="[$entries]"
+        local -a cl_entries=()
+        while IFS=$'\t' read -r _hash _msg _author _date; do
+            [[ -z "$_hash" ]] && continue
+            cl_entries+=("{\"hash\":\"$(_api_json_escape "$_hash")\",\"message\":\"$(_api_json_escape "$_msg")\",\"author\":\"$(_api_json_escape "$_author")\",\"date\":\"$(_api_json_escape "$_date")\"}")
+        done < <(git log HEAD.."origin/$branch" --pretty=format:'%h%x09%s%x09%an%x09%ci' 2>/dev/null | head -20)
+        if [[ ${#cl_entries[@]} -gt 0 ]]; then
+            local cl_json
+            cl_json=$(printf '%s,' "${cl_entries[@]}")
+            changelog="[${cl_json%,}]"
         fi
     fi
 
@@ -5479,11 +6337,14 @@ handle_system_update_apply() {
         fi
     fi
 
-    # Check for local changes — refuse to update if the working tree is dirty
+    # Check for local changes to TRACKED files — refuse if working tree is dirty
+    # Only check tracked files (not untracked .api-auth, .env, .compose-history, etc.)
     local has_local
-    has_local=$(git status --porcelain 2>/dev/null | head -1)
+    # Check for local changes to tracked files — but ignore runtime data files
+    # (.api-auth, .data, logs, .env, .compose-history are runtime state, not source code)
+    has_local=$(git diff --name-only HEAD 2>/dev/null | grep -vE '^\.api-auth/|^\.data/|^\.compose-history/|^logs/|^\.env$|^\.env\.bak|^Stacks/.*/App-Data/|^Stacks/.*/docker-compose\.yml\.bak' | head -1)
     if [[ -n "$has_local" ]]; then
-        _api_error 409 "Cannot update: local changes detected. Commit or stash changes before updating."
+        _api_error 409 "Cannot update: local changes to tracked source files detected. Commit or stash changes before updating."
         return
     fi
 
@@ -5531,10 +6392,16 @@ handle_system_update_apply() {
     local new_version
     new_version=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 
-    # Collect changelog of what was applied
+    # Collect changelog of what was applied (safely escaped to prevent JSON injection)
     local changelog="[]"
-    if command -v jq >/dev/null 2>&1; then
-        changelog=$(git log "${backup_tag}..HEAD" --pretty=format:'{"hash":"%h","message":"%s","author":"%an","date":"%ci"}' 2>/dev/null | head -20 | jq -s '.' 2>/dev/null || echo "[]")
+    local -a _cl=()
+    while IFS=$'\t' read -r _h _m _a _d; do
+        [[ -z "$_h" ]] && continue
+        _cl+=("{\"hash\":\"$(_api_json_escape "$_h")\",\"message\":\"$(_api_json_escape "$_m")\",\"author\":\"$(_api_json_escape "$_a")\",\"date\":\"$(_api_json_escape "$_d")\"}")
+    done < <(git log "${backup_tag}..HEAD" --pretty=format:'%h%x09%s%x09%an%x09%ci' 2>/dev/null | head -20)
+    if [[ ${#_cl[@]} -gt 0 ]]; then
+        local _cj; _cj=$(printf '%s,' "${_cl[@]}")
+        changelog="[${_cj%,}]"
     fi
 
     # NOTE: After a successful update, the API server process should be restarted
@@ -5629,6 +6496,502 @@ handle_system_update_rollback() {
   \"backup_tag\": \"$(_api_json_escape "$backup_tag")\",
   \"branch\": \"$(_api_json_escape "$branch")\",
   \"message\": \"Rollback successful. API server restart may be required to load restored code.\"
+}"
+}
+
+# =============================================================================
+# OS PACKAGE UPDATE MANAGEMENT
+# =============================================================================
+
+# Detect the system package manager
+_detect_pkg_manager() {
+    if command -v apt-get >/dev/null 2>&1; then echo "apt"
+    elif command -v dnf >/dev/null 2>&1; then echo "dnf"
+    elif command -v yum >/dev/null 2>&1; then echo "yum"
+    elif command -v pacman >/dev/null 2>&1; then echo "pacman"
+    elif command -v apk >/dev/null 2>&1; then echo "apk"
+    elif command -v zypper >/dev/null 2>&1; then echo "zypper"
+    else echo "unknown"
+    fi
+}
+
+# Run a command with root privileges using the best available method.
+# Args: $1=password $2=username $3...=command
+# Tries: root > NOPASSWD sudo > sudo.ws -S > sudo -S > su via python pty
+_run_privileged() {
+    local _pw="$1" _user="$2"
+    shift 2
+
+    # Already root — just run it
+    if [[ "$(id -u)" -eq 0 ]]; then
+        "$@" 2>&1
+        return $?
+    fi
+
+    # NOPASSWD sudo available
+    if sudo -n true 2>/dev/null; then
+        sudo "$@" 2>&1
+        return $?
+    fi
+
+    # Need password — try traditional sudo.ws first (handles -S properly)
+    if [[ -n "$_pw" ]]; then
+        # Try original sudo (sudo.ws) which handles -S stdin correctly
+        if [[ -x /usr/bin/sudo.ws ]]; then
+            printf '%s\n' "$_pw" | /usr/bin/sudo.ws -S "$@" 2>&1
+            return $?
+        fi
+
+        # Try regular sudo -S (works on traditional sudo, not sudo-rs)
+        local _sudo_out
+        _sudo_out=$(printf '%s\n' "$_pw" | sudo -S "$@" 2>&1)
+        local _rc=$?
+        if [[ $_rc -eq 0 ]] || ! echo "$_sudo_out" | grep -qi "authentication failed\|try again"; then
+            echo "$_sudo_out"
+            return $_rc
+        fi
+
+        # Fallback: use python3 pty to run su -c (same as terminal auth strategy)
+        # SECURITY: Pass password and command via environment variables, NOT string interpolation.
+        # This prevents code injection via passwords containing quotes or Python metacharacters.
+        if command -v python3 >/dev/null 2>&1; then
+            local _cmd_str
+            _cmd_str=$(printf '%q ' "$@")
+            _DCS_PW="$_pw" _DCS_USER="$_user" _DCS_CMD="$_cmd_str" python3 -c "
+import pty, os, sys, select, time
+_pw = os.environ.get('_DCS_PW', '')
+_user = os.environ.get('_DCS_USER', '')
+_cmd = os.environ.get('_DCS_CMD', '')
+pid, fd = pty.openpty()
+child = os.fork()
+if child == 0:
+    os.setsid()
+    os.dup2(fd, 0); os.dup2(fd, 1); os.dup2(fd, 2)
+    os.close(fd)
+    os.execlp('su', 'su', '-c', _cmd, _user)
+else:
+    os.close(fd)
+    master = pid
+    output = b''
+    pw_sent = False
+    start = time.time()
+    while time.time() - start < 300:
+        try:
+            r, _, _ = select.select([master], [], [], 1)
+            if r:
+                data = os.read(master, 4096)
+                if not data: break
+                output += data
+                if not pw_sent and (b'assword' in output or b'Password' in output):
+                    os.write(master, _pw.encode() + b'\n')
+                    pw_sent = True
+        except: break
+    _, status = os.waitpid(child, 0)
+    # Strip password echo and prompt from output
+    lines = output.decode('utf-8', errors='replace').split('\n')
+    clean = [l for l in lines if 'assword' not in l and 'su:' not in l]
+    sys.stdout.write('\n'.join(clean))
+    sys.exit(os.WEXITSTATUS(status) if os.WIFEXITED(status) else 1)
+" 2>&1
+            return $?
+        fi
+    fi
+
+    echo "No privilege escalation method available"
+    return 1
+}
+
+# POST /system/os-update/check — Check for available OS package updates
+# Requires terminal auth token (Linux credentials)
+handle_os_update_check() {
+    local body="$1"
+
+    # Validate terminal session token
+    local token=""
+    if command -v jq >/dev/null 2>&1; then
+        token=$(printf '%s' "$body" | jq -r '.terminal_token // empty' 2>/dev/null)
+    fi
+    if [[ -z "$token" ]]; then
+        _api_error 401 "Terminal authentication required. Provide terminal_token."
+        return
+    fi
+
+    local term_user=""
+    term_user=$(_validate_terminal_session "$token")
+    if [[ $? -ne 0 || -z "$term_user" ]]; then
+        _api_error 401 "Invalid or expired terminal session"
+        return
+    fi
+
+    local pkg_manager
+    pkg_manager=$(_detect_pkg_manager)
+
+    if [[ "$pkg_manager" == "unknown" ]]; then
+        _api_error 500 "No supported package manager found (apt, dnf, yum, pacman, apk, zypper)"
+        return
+    fi
+
+    local update_output=""
+    local update_count=0
+    local update_list="[]"
+
+    # Get password for privilege escalation
+    local password=""
+    password=$(printf '%s' "$body" | jq -r '.password // empty' 2>/dev/null)
+
+    if [[ "$(id -u)" -ne 0 ]] && ! sudo -n true 2>/dev/null && [[ -z "$password" ]]; then
+        _api_error 403 "Sudo password required. Please re-authenticate."
+        return
+    fi
+
+    case "$pkg_manager" in
+        apt)
+            _run_privileged "$password" "$term_user" apt-get update -qq >/dev/null 2>&1
+            update_output=$(_run_privileged "$password" "$term_user" apt list --upgradable 2>/dev/null | grep -v "^Listing" | head -50)
+            update_count=$(echo "$update_output" | grep -c '/' 2>/dev/null) || update_count=0
+            if command -v jq >/dev/null 2>&1 && [[ -n "$update_output" && "$update_count" -gt 0 ]]; then
+                update_list=$(echo "$update_output" | head -30 | while IFS='/' read -r pkg rest; do
+                    [[ -z "$pkg" ]] && continue
+                    local ver
+                    ver=$(echo "$rest" | awk '{print $2}' 2>/dev/null)
+                    printf '{"package":"%s","version":"%s"}\n' "$(_api_json_escape "$pkg")" "$(_api_json_escape "$ver")"
+                done | jq -s '.' 2>/dev/null || echo "[]")
+            fi
+            ;;
+        dnf|yum)
+            update_output=$(_run_privileged "$password" "$term_user" $pkg_manager check-update 2>/dev/null | grep -E '^\S+\.\S+' | head -50)
+            update_count=$(echo "$update_output" | grep -c '\.' 2>/dev/null) || update_count=0
+            if command -v jq >/dev/null 2>&1 && [[ -n "$update_output" && "$update_count" -gt 0 ]]; then
+                update_list=$(echo "$update_output" | head -30 | awk '{printf "{\"package\":\"%s\",\"version\":\"%s\"}\n", $1, $2}' | jq -s '.' 2>/dev/null || echo "[]")
+            fi
+            ;;
+        pacman)
+            _run_privileged "$password" "$term_user" pacman -Sy --noconfirm >/dev/null 2>&1
+            update_output=$(_run_privileged "$password" "$term_user" pacman -Qu 2>/dev/null | head -50)
+            update_count=$(echo "$update_output" | grep -c '\S' 2>/dev/null) || update_count=0
+            if command -v jq >/dev/null 2>&1 && [[ -n "$update_output" && "$update_count" -gt 0 ]]; then
+                update_list=$(echo "$update_output" | head -30 | awk '{printf "{\"package\":\"%s\",\"version\":\"%s\"}\n", $1, $3}' | jq -s '.' 2>/dev/null || echo "[]")
+            fi
+            ;;
+        apk)
+            _run_privileged "$password" "$term_user" apk update >/dev/null 2>&1
+            update_output=$(_run_privileged "$password" "$term_user" apk upgrade --simulate 2>/dev/null | grep "Upgrading" | head -50)
+            update_count=$(echo "$update_output" | grep -c 'Upgrading' 2>/dev/null) || update_count=0
+            ;;
+        zypper)
+            _run_privileged "$password" "$term_user" zypper refresh >/dev/null 2>&1
+            update_output=$(_run_privileged "$password" "$term_user" zypper list-updates 2>/dev/null | grep '|' | tail -n +3 | head -50)
+            update_count=$(echo "$update_output" | grep -c '|' 2>/dev/null) || update_count=0
+            ;;
+    esac
+
+    [[ "$update_count" -lt 0 ]] && update_count=0
+
+    _api_success "{
+  \"available\": $([ "$update_count" -gt 0 ] && echo true || echo false),
+  \"count\": $update_count,
+  \"package_manager\": \"$pkg_manager\",
+  \"packages\": $update_list,
+  \"checked_as\": \"$(_api_json_escape "$term_user")\"
+}"
+}
+
+# POST /system/os-update/apply — Apply all available OS package updates
+# Requires terminal auth token (Linux credentials)
+handle_os_update_apply() {
+    local body="$1"
+
+    # Validate terminal session token
+    local token="" confirm=""
+    if command -v jq >/dev/null 2>&1; then
+        token=$(printf '%s' "$body" | jq -r '.terminal_token // empty' 2>/dev/null)
+        confirm=$(printf '%s' "$body" | jq -r '.confirm // empty' 2>/dev/null)
+    fi
+    if [[ -z "$token" ]]; then
+        _api_error 401 "Terminal authentication required. Provide terminal_token."
+        return
+    fi
+    if [[ "$confirm" != "true" ]]; then
+        _api_error 400 "Missing confirmation. Send {\"confirm\": true} to apply OS updates."
+        return
+    fi
+
+    local term_user=""
+    term_user=$(_validate_terminal_session "$token")
+    if [[ $? -ne 0 || -z "$term_user" ]]; then
+        _api_error 401 "Invalid or expired terminal session"
+        return
+    fi
+
+    local pkg_manager
+    pkg_manager=$(_detect_pkg_manager)
+
+    if [[ "$pkg_manager" == "unknown" ]]; then
+        _api_error 500 "No supported package manager found"
+        return
+    fi
+
+    local update_cmd=""
+    case "$pkg_manager" in
+        apt)     update_cmd="DEBIAN_FRONTEND=noninteractive apt-get upgrade -y -q" ;;
+        dnf)     update_cmd="dnf upgrade -y --quiet" ;;
+        yum)     update_cmd="yum update -y -q" ;;
+        pacman)  update_cmd="pacman -Syu --noconfirm" ;;
+        apk)     update_cmd="apk upgrade --no-cache" ;;
+        zypper)  update_cmd="zypper update -y --no-confirm" ;;
+    esac
+
+    # Get password for privilege escalation
+    local password=""
+    password=$(printf '%s' "$body" | jq -r '.password // empty' 2>/dev/null)
+
+    if [[ "$(id -u)" -ne 0 ]] && ! sudo -n true 2>/dev/null && [[ -z "$password" ]]; then
+        _api_error 403 "Sudo password required to apply updates."
+        return
+    fi
+
+    # Run update in BACKGROUND — write status to a file, respond immediately.
+    # This prevents the HTTP connection from timing out during long apt upgrades.
+    local status_file="$API_AUTH_DIR/os-update-status.json"
+    printf '{"status":"running","package_manager":"%s","started_at":"%s","message":"Applying updates..."}' \
+        "$pkg_manager" "$(date -Iseconds)" > "$status_file"
+
+    local client_ip="${SOCAT_PEERADDR:-unknown}"
+
+    (
+        local output=""
+        local exit_code=0
+        output=$(_run_privileged "$password" "$term_user" bash -c "$update_cmd" 2>&1) || exit_code=$?
+
+        # Extract summary
+        local summary=""
+        case "$pkg_manager" in
+            apt)
+                summary=$(echo "$output" | grep -E '^\d+ upgraded|^0 upgraded' | tail -1)
+                [[ -z "$summary" ]] && summary=$(echo "$output" | tail -3 | head -1)
+                ;;
+            dnf|yum)
+                summary=$(echo "$output" | grep -E 'Complete!|Nothing to do' | tail -1)
+                [[ -z "$summary" ]] && summary=$(echo "$output" | tail -3 | head -1)
+                ;;
+            pacman)
+                summary=$(echo "$output" | grep -E 'there is nothing to do|upgraded' | tail -1)
+                ;;
+            *)
+                summary=$(echo "$output" | tail -3 | head -1)
+                ;;
+        esac
+
+        local truncated_output
+        truncated_output=$(echo "$output" | tail -100)
+
+        _api_audit_log "$client_ip" "OS_UPDATE" "$term_user" "OS update via $pkg_manager (exit=$exit_code)"
+
+        # Write final status
+        if [[ "$exit_code" -eq 0 ]]; then
+            printf '{"status":"complete","success":true,"package_manager":"%s","exit_code":0,"summary":"%s","output":"%s","applied_as":"%s","message":"System packages updated successfully.","completed_at":"%s"}' \
+                "$pkg_manager" "$(_api_json_escape "$summary")" "$(_api_json_escape "$truncated_output")" "$(_api_json_escape "$term_user")" "$(date -Iseconds)" > "$status_file"
+        else
+            printf '{"status":"complete","success":false,"package_manager":"%s","exit_code":%d,"summary":"%s","output":"%s","applied_as":"%s","message":"Update completed with errors (exit code %d).","completed_at":"%s"}' \
+                "$pkg_manager" "$exit_code" "$(_api_json_escape "$summary")" "$(_api_json_escape "$truncated_output")" "$(_api_json_escape "$term_user")" "$exit_code" "$(date -Iseconds)" > "$status_file"
+        fi
+    ) &
+    disown
+
+    _api_success "{
+  \"success\": true,
+  \"status\": \"running\",
+  \"package_manager\": \"$pkg_manager\",
+  \"message\": \"Update started in background. Poll /system/os-update/status for progress.\"
+}"
+}
+
+# GET /system/os-update/status — Poll background OS update progress
+handle_os_update_status() {
+    local status_file="$API_AUTH_DIR/os-update-status.json"
+    if [[ -f "$status_file" ]]; then
+        local content
+        content=$(cat "$status_file" 2>/dev/null)
+        _api_success "$content"
+    else
+        _api_success "{\"status\":\"idle\"}"
+    fi
+}
+
+# =============================================================================
+# DYNAMIC DNS (CLOUDFLARE)
+# =============================================================================
+# Built-in DDNS: detects public IP and updates Cloudflare DNS records.
+# Runs as a background loop inside the API server — no extra container needed.
+
+DDNS_ENABLED="${DDNS_ENABLED:-false}"
+DDNS_INTERVAL="${DDNS_INTERVAL:-300}"
+DDNS_PID_FILE="/tmp/dcs-ddns.pid"
+
+_ddns_get_public_ip() {
+    # Try multiple providers — use plain IPv4 services to avoid Cloudflare proxy IPs
+    local ip=""
+    ip=$(curl -4 -s --max-time 5 https://api.ipify.org 2>/dev/null)
+    [[ -z "$ip" || ! "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] && ip=$(curl -4 -s --max-time 5 https://ifconfig.me 2>/dev/null)
+    [[ -z "$ip" || ! "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] && ip=$(curl -4 -s --max-time 5 https://icanhazip.com 2>/dev/null | tr -d '[:space:]')
+    [[ -z "$ip" || ! "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] && ip=$(curl -4 -s --max-time 5 https://checkip.amazonaws.com 2>/dev/null | tr -d '[:space:]')
+    echo "$ip"
+}
+
+_ddns_update_loop() {
+    local cf_token="${CF_DNS_API_TOKEN:-}"
+    local domain="${TRAEFIK_DOMAIN:-}"
+    local subdomains="${DDNS_SUBDOMAINS:-@}"
+    local interval="${DDNS_INTERVAL:-300}"
+    local cf_api="https://api.cloudflare.com/client/v4"
+    local last_ip=""
+    local log_file="$BASE_DIR/.api-auth/ddns.log"
+
+    [[ -z "$cf_token" || -z "$domain" ]] && return
+
+    # Get zone ID
+    local zone_id=""
+    local zone_cache="$BASE_DIR/.api-auth/.cf-zone-cache"
+    if [[ -f "$zone_cache" ]]; then
+        local cd cz
+        cd=$(sed -n '1p' "$zone_cache" 2>/dev/null)
+        cz=$(sed -n '2p' "$zone_cache" 2>/dev/null)
+        [[ "$cd" == "$domain" && -n "$cz" ]] && zone_id="$cz"
+    fi
+    if [[ -z "$zone_id" ]]; then
+        local zr
+        zr=$(curl -s --max-time 10 -H "Authorization: Bearer $cf_token" "$cf_api/zones?name=$domain&status=active" 2>/dev/null)
+        zone_id=$(printf '%s' "$zr" | jq -r '.result[0].id // empty' 2>/dev/null)
+        [[ -z "$zone_id" ]] && return
+        printf '%s\n%s\n' "$domain" "$zone_id" > "$zone_cache" 2>/dev/null
+    fi
+
+    printf '[%s] DDNS started — domain=%s interval=%ss\n' "$(date -Iseconds)" "$domain" "$interval" >> "$log_file"
+
+    while true; do
+        local current_ip
+        current_ip=$(_ddns_get_public_ip)
+
+        if [[ -n "$current_ip" && "$current_ip" != "$last_ip" ]]; then
+            # IP changed — update records
+            IFS=',' read -ra subs <<< "$subdomains"
+            for sub in "${subs[@]}"; do
+                sub=$(echo "$sub" | tr -d ' ')
+                local fqdn
+                if [[ "$sub" == "@" || -z "$sub" ]]; then
+                    fqdn="$domain"
+                else
+                    fqdn="${sub}.${domain}"
+                fi
+
+                # Check ALL records for this FQDN first
+                local all_records
+                all_records=$(curl -s --max-time 10 -H "Authorization: Bearer $cf_token" \
+                    "$cf_api/zones/$zone_id/dns_records?name=$fqdn" 2>/dev/null)
+
+                # Skip if a CNAME exists (managed by auto-routing, not DDNS)
+                local cname_count
+                cname_count=$(printf '%s' "$all_records" | jq -r '[.result[] | select(.type=="CNAME")] | length' 2>/dev/null || echo 0)
+                if [[ "$cname_count" -gt 0 ]]; then
+                    continue
+                fi
+
+                # Find existing A record
+                local record_id
+                record_id=$(printf '%s' "$all_records" | jq -r '[.result[] | select(.type=="A")][0].id // empty' 2>/dev/null)
+                local record_ip
+                record_ip=$(printf '%s' "$all_records" | jq -r '[.result[] | select(.type=="A")][0].content // empty' 2>/dev/null)
+
+                if [[ -n "$record_id" ]]; then
+                    # Only update if IP actually differs
+                    if [[ "$record_ip" != "$current_ip" ]]; then
+                        curl -s --max-time 10 -X PATCH \
+                            -H "Authorization: Bearer $cf_token" \
+                            -H "Content-Type: application/json" \
+                            -d "{\"content\":\"$current_ip\"}" \
+                            "$cf_api/zones/$zone_id/dns_records/$record_id" >/dev/null 2>&1
+                    fi
+                else
+                    # Create new A record (no existing A or CNAME)
+                    curl -s --max-time 10 -X POST \
+                        -H "Authorization: Bearer $cf_token" \
+                        -H "Content-Type: application/json" \
+                        -d "{\"type\":\"A\",\"name\":\"$fqdn\",\"content\":\"$current_ip\",\"proxied\":true,\"ttl\":1,\"comment\":\"DCS DDNS\"}" \
+                        "$cf_api/zones/$zone_id/dns_records" >/dev/null 2>&1
+                fi
+            done
+
+            printf '[%s] IP updated: %s → %s (%s)\n' "$(date -Iseconds)" "${last_ip:-none}" "$current_ip" "$subdomains" >> "$log_file"
+            last_ip="$current_ip"
+        fi
+
+        # On IP change, also scan custom_routes for subdomains that need DNS records.
+        # Only runs when IP changes (not every cycle) to avoid hitting CF rate limits.
+        if [[ -n "$current_ip" && "$current_ip" != "${_last_route_sync_ip:-}" ]]; then
+            _last_route_sync_ip="$current_ip"
+            local routes_dir=""
+            local _sd
+            for _sd in "$COMPOSE_DIR"/*/App-Data/Traefik/custom_routes; do
+                [[ -d "$_sd" ]] && routes_dir="$_sd" && break
+            done
+            if [[ -n "$routes_dir" ]]; then
+                local route_file
+                while IFS= read -r route_file; do
+                    [[ -f "$route_file" ]] || continue
+                    local route_sub
+                    route_sub=$(basename "$route_file" .yml)
+                    [[ "$route_sub" == ".reload" || "$route_sub" == "traefik" ]] && continue
+                    local route_fqdn="${route_sub}.${domain}"
+                    # Quick check: does any record exist?
+                    local rec
+                    rec=$(curl -s --max-time 5 -H "Authorization: Bearer $cf_token" \
+                        "$cf_api/zones/$zone_id/dns_records?name=$route_fqdn" 2>/dev/null)
+                    local rec_count
+                    rec_count=$(printf '%s' "$rec" | jq -r '.result | length' 2>/dev/null || echo 0)
+                    if [[ "$rec_count" -eq 0 ]]; then
+                        # No record at all — create CNAME
+                        curl -s --max-time 10 -X POST \
+                            -H "Authorization: Bearer $cf_token" \
+                            -H "Content-Type: application/json" \
+                            -d "{\"type\":\"CNAME\",\"name\":\"$route_fqdn\",\"content\":\"$domain\",\"proxied\":true,\"ttl\":1,\"comment\":\"DCS DDNS sync\"}" \
+                            "$cf_api/zones/$zone_id/dns_records" >/dev/null 2>&1
+                        printf '[%s] DDNS sync: created CNAME %s → %s\n' "$(date -Iseconds)" "$route_fqdn" "$domain" >> "$log_file"
+                    fi
+                    sleep 2  # Pace CF API calls to avoid rate limits
+                done < <(find "$routes_dir" -name '*.yml' -not -name '.reload' 2>/dev/null)
+            fi
+        fi
+
+        sleep "$interval"
+    done
+}
+
+# Start DDNS loop in background if enabled
+if [[ "$DDNS_ENABLED" == "true" && -n "${CF_DNS_API_TOKEN:-}" && -n "${TRAEFIK_DOMAIN:-}" ]]; then
+    _ddns_update_loop &
+    echo "$!" > "$DDNS_PID_FILE"
+fi
+
+# GET /ddns/status — Check DDNS status and current IP
+handle_ddns_status() {
+    local enabled="$DDNS_ENABLED"
+    local current_ip=""
+    current_ip=$(_ddns_get_public_ip 2>/dev/null)
+    local last_log=""
+    last_log=$(tail -1 "$BASE_DIR/.api-auth/ddns.log" 2>/dev/null || echo "")
+    local running="false"
+    if [[ -f "$DDNS_PID_FILE" ]] && kill -0 "$(cat "$DDNS_PID_FILE" 2>/dev/null)" 2>/dev/null; then
+        running="true"
+    fi
+
+    _api_success "{
+  \"enabled\": $([[ "$enabled" == "true" ]] && echo true || echo false),
+  \"running\": $running,
+  \"current_ip\": \"$(_api_json_escape "$current_ip")\",
+  \"domain\": \"$(_api_json_escape "${TRAEFIK_DOMAIN:-}")\",
+  \"subdomains\": \"$(_api_json_escape "${DDNS_SUBDOMAINS:-@}")\",
+  \"interval\": ${DDNS_INTERVAL:-300},
+  \"last_log\": \"$(_api_json_escape "$last_log")\"
 }"
 }
 
@@ -6188,9 +7551,21 @@ handle_snapshot_restore() {
         return
     fi
 
+    # SECURITY: Check for path traversal in archive before extracting
+    if tar -tzf "$filepath" 2>/dev/null | grep -qE '^\.\./|/\.\./|^/'; then
+        _api_error 403 "Snapshot contains path traversal entries — refusing to extract"
+        return
+    fi
+
+    # SECURITY: Check for symlinks (symlink-following traversal attack)
+    if tar -tvf "$filepath" 2>/dev/null | grep -q '^l'; then
+        _api_error 403 "Snapshot contains symbolic links — refusing to extract for security"
+        return
+    fi
+
     local tmpdir
     tmpdir=$(mktemp -d /tmp/dcs-restore-XXXXXX)
-    tar -xzf "$filepath" -C "$tmpdir" 2>/dev/null || {
+    tar -xzf "$filepath" --no-absolute-names -C "$tmpdir" 2>/dev/null || {
         rm -rf "$tmpdir"
         _api_error 500 "Failed to extract snapshot"
         return
@@ -6203,30 +7578,49 @@ handle_snapshot_restore() {
         return
     fi
 
-    # Restore config
+    # Restore config (settings only, not auth-sensitive files)
     [[ -d "$tmpdir/config" ]] && cp -r "$tmpdir/config/"* "$BASE_DIR/.config/" 2>/dev/null
-    [[ -f "$tmpdir/root.env" ]] && cp "$tmpdir/root.env" "$BASE_DIR/.env" 2>/dev/null
 
-    # Restore stacks
+    # SECURITY: Do NOT restore root .env — it could contain API_AUTH_ENABLED=false
+    # or API_BIND=0.0.0.0 which would compromise security. Admin must manually
+    # reconfigure these settings after restore.
+    if [[ -f "$tmpdir/root.env" ]]; then
+        cp "$tmpdir/root.env" "$BASE_DIR/.env.restored" 2>/dev/null
+    fi
+
+    # Restore stacks (with compose security scanning)
     if [[ -d "$tmpdir/stacks" ]]; then
         for stack_dir in "$tmpdir/stacks"/*/; do
             [[ ! -d "$stack_dir" ]] && continue
             local sname
             sname=$(basename "$stack_dir")
             mkdir -p "$COMPOSE_DIR/$sname"
-            [[ -f "$stack_dir/docker-compose.yml" ]] && cp "$stack_dir/docker-compose.yml" "$COMPOSE_DIR/$sname/" 2>/dev/null
+            # SECURITY: Scan restored compose files through security scanner
+            if [[ -f "$stack_dir/docker-compose.yml" ]]; then
+                local compose_content
+                compose_content=$(cat "$stack_dir/docker-compose.yml" 2>/dev/null)
+                if _api_scan_compose_security "$compose_content" "snapshot restore ($sname)" "deploy" 2>/dev/null; then
+                    cp "$stack_dir/docker-compose.yml" "$COMPOSE_DIR/$sname/" 2>/dev/null
+                fi
+            fi
             [[ -f "$stack_dir/.env" ]] && cp "$stack_dir/.env" "$COMPOSE_DIR/$sname/" 2>/dev/null
         done
     fi
 
-    # Restore api-auth configs (not tokens)
+    # SECURITY: Do NOT restore auth files (users.json, invites.json, etc.)
+    # A crafted snapshot could inject attacker credentials or reset auth state.
+    # Only restore non-sensitive operational data.
     if [[ -d "$tmpdir/api-auth" ]]; then
+        local -a _safe_auth_files=(alerts.json automations.json notifications.json deploy-history.json)
         for f in "$tmpdir/api-auth/"*.json; do
             [[ ! -f "$f" ]] && continue
             local fname
             fname=$(basename "$f")
-            [[ "$fname" == "tokens.json" ]] && continue
-            cp "$f" "$BASE_DIR/.api-auth/" 2>/dev/null
+            local _is_safe=false
+            for _sf in "${_safe_auth_files[@]}"; do
+                [[ "$fname" == "$_sf" ]] && _is_safe=true
+            done
+            [[ "$_is_safe" == "true" ]] && cp "$f" "$BASE_DIR/.api-auth/" 2>/dev/null
         done
     fi
 
@@ -6504,6 +7898,55 @@ handle_template_detail() {
     _api_success "{\"template\": $meta, \"compose\": \"$compose_content\", \"env\": \"$env_content\"}"
 }
 
+# GET /traefik/status — Check if Traefik is deployed and return domain
+handle_traefik_status() {
+    local traefik_active="false"
+    local traefik_domain=""
+    local traefik_routes_dir=""
+
+    # Find the Traefik custom_routes directory — only in the stack that runs Traefik
+    local _check_stack
+    for _check_stack in $(_api_get_stacks); do
+        local _check_appdata="${APP_DATA_DIR:-$COMPOSE_DIR/$_check_stack/App-Data}"
+        [[ "$_check_appdata" == ./* ]] && _check_appdata="$COMPOSE_DIR/$_check_stack/${_check_appdata#./}"
+        if [[ -d "$_check_appdata/Traefik/custom_routes" ]]; then
+            if grep -q 'container_name: Traefik\|image: traefik' "$COMPOSE_DIR/$_check_stack/docker-compose.yml" 2>/dev/null; then
+                traefik_active="true"
+                traefik_routes_dir="$_check_appdata/Traefik/custom_routes"
+                break
+            fi
+        fi
+    done
+
+    if [[ "$traefik_active" == "true" ]]; then
+        # Read TRAEFIK_DOMAIN from .env files
+        local _env_file
+        for _env_file in "$COMPOSE_DIR"/*/".env" "$BASE_DIR/.env"; do
+            [[ -f "$_env_file" ]] || continue
+            local _domain
+            _domain=$(grep -m1 '^TRAEFIK_DOMAIN=' "$_env_file" 2>/dev/null | cut -d'=' -f2- | tr -d '"' | tr -d "'")
+            if [[ -n "$_domain" ]]; then
+                traefik_domain="$_domain"
+                break
+            fi
+        done
+        # Fallback to PROXY_DOMAIN
+        if [[ -z "$traefik_domain" ]]; then
+            for _env_file in "$COMPOSE_DIR"/*/".env" "$BASE_DIR/.env"; do
+                [[ -f "$_env_file" ]] || continue
+                local _pdomain
+                _pdomain=$(grep -m1 '^PROXY_DOMAIN=' "$_env_file" 2>/dev/null | cut -d'=' -f2- | tr -d '"' | tr -d "'")
+                if [[ -n "$_pdomain" ]]; then
+                    traefik_domain="$_pdomain"
+                    break
+                fi
+            done
+        fi
+    fi
+
+    _api_success "{\"active\": $traefik_active, \"domain\": \"$(_api_json_escape "$traefik_domain")\"}"
+}
+
 handle_template_deploy() {
     local name="$1"
     local body="$2"
@@ -6565,6 +8008,26 @@ handle_template_deploy() {
 
     local vars
     vars=$(printf '%s' "$body" | jq -r '.variables // {} | to_entries[] | "\(.key)=\(.value)"' 2>/dev/null)
+
+    # Auto-generate empty secret/key variables (e.g., SECRET_ENCRYPTION_KEY, JWT_SECRET)
+    if [[ -f "$tdir/template.json" ]] && command -v jq >/dev/null 2>&1; then
+        local _gen_vars
+        _gen_vars=$(jq -r '.variables[]? | select(.generate != null or (.name | test("SECRET|_KEY$|ENCRYPTION"))) | .name' "$tdir/template.json" 2>/dev/null)
+        for _gv in $_gen_vars; do
+            local _gv_val
+            _gv_val=$(printf '%s' "$body" | jq -r --arg k "$_gv" '.variables[$k] // empty' 2>/dev/null)
+            if [[ -z "$_gv_val" ]]; then
+                _gv_val=$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | xxd -p -c 64 2>/dev/null)
+                # Replace the empty entry in vars (not append — first match wins in substitution)
+                if echo "$vars" | grep -q "^${_gv}="; then
+                    vars=$(echo "$vars" | sed "s|^${_gv}=.*|${_gv}=${_gv_val}|")
+                else
+                    vars+=$'\n'"${_gv}=${_gv_val}"
+                fi
+            fi
+        done
+    fi
+
     while IFS='=' read -r key val; do
         [[ -z "$key" ]] && continue
         # B1: Validate key is a legal env var name
@@ -6572,11 +8035,18 @@ handle_template_deploy() {
             _api_error 400 "Invalid variable name: $key"
             return
         fi
-        # B1: Reject values containing newlines (YAML injection vector)
+        # B1: Reject values containing newlines, control chars (YAML injection vector)
         if [[ "$val" == *$'\n'* || "$val" == *$'\r'* ]]; then
             _api_error 400 "Variable value for $key contains invalid characters"
             return
         fi
+        # SECURITY: Reject shell metacharacters in variable values
+        case "$val" in
+            *'`'*|*'$('*)
+                _api_error 400 "Variable value for $key contains unsafe characters"
+                return
+                ;;
+        esac
         # Replace ${VAR:-default} patterns FIRST (greedy match for default value)
         local safe_val
         safe_val=$(_sed_escape_val "$val")
@@ -6589,12 +8059,22 @@ handle_template_deploy() {
     # Resolve remaining ${VAR:-default} patterns to their default values
     template_compose=$(printf '%s' "$template_compose" | sed 's/${[A-Za-z_][A-Za-z0-9_]*:-\([^}]*\)}/\1/g')
 
+    # SECURITY: Scan the resolved template compose for dangerous Docker features.
+    # Built-in templates (from .templates/) are trusted, but user-modified variables
+    # could inject dangerous YAML, so we still scan after variable substitution.
+    # Use lenient mode for deploys: allow docker.sock (needed by Portainer, Watchtower, etc.)
+    if ! _api_scan_compose_security "$template_compose" "template deploy ($name)" "deploy"; then
+        return
+    fi
+
     # Optional: exclude services the user toggled off (e.g. docker-socket-proxy)
     local exclude_services
     exclude_services=$(printf '%s' "$body" | jq -r '.exclude_services // [] | .[]' 2>/dev/null)
     if [[ -n "$exclude_services" ]]; then
         while IFS= read -r exc_svc; do
             [[ -z "$exc_svc" ]] && continue
+            # SECURITY: Validate service name (alphanumeric, hyphens, underscores only)
+            if [[ ! "$exc_svc" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]]; then continue; fi
             # Remove the service block from template compose
             template_compose=$(printf '%s\n' "$template_compose" | awk -v svc="  ${exc_svc}:" '
                 BEGIN { skip=0 }
@@ -6930,6 +8410,41 @@ handle_template_deploy() {
     done <<< "$template_services"
     services_json+="]"
 
+    # -----------------------------------------------------------------------
+    # Detect Traefik — needed by config generation (Authelia routes) and auto-routing.
+    # Checks both existing App-Data AND the deploy request variables.
+    # -----------------------------------------------------------------------
+    local traefik_routes_dir="" traefik_domain=""
+    for _check_stack in $(_api_get_stacks); do
+        local _check_appdata="${APP_DATA_DIR:-$COMPOSE_DIR/$_check_stack/App-Data}"
+        [[ "$_check_appdata" == ./* ]] && _check_appdata="$COMPOSE_DIR/$_check_stack/${_check_appdata#./}"
+        if [[ -d "$_check_appdata/Traefik/custom_routes" ]]; then
+            # Verify this stack actually runs Traefik (not a stale artifact)
+            if grep -q 'container_name: Traefik\|image: traefik' "$COMPOSE_DIR/$_check_stack/docker-compose.yml" 2>/dev/null; then
+                traefik_routes_dir="$_check_appdata/Traefik/custom_routes"
+                break
+            fi
+        fi
+    done
+    # Domain: check .env files, then request variables, then root .env PROXY_DOMAIN
+    for _env_file in "$COMPOSE_DIR"/*/".env" "$BASE_DIR/.env"; do
+        [[ -f "$_env_file" ]] || continue
+        local _d
+        _d=$(grep -m1 '^TRAEFIK_DOMAIN=' "$_env_file" 2>/dev/null | cut -d'=' -f2- | tr -d '"' | tr -d "'")
+        if [[ -n "$_d" ]]; then traefik_domain="$_d"; break; fi
+    done
+    # Fallback: request variables (critical for first-time Traefik deploy)
+    [[ -z "$traefik_domain" ]] && traefik_domain=$(printf '%s' "$body" | jq -r '.variables.TRAEFIK_DOMAIN // empty' 2>/dev/null)
+    # Fallback: PROXY_DOMAIN from .env
+    if [[ -z "$traefik_domain" ]]; then
+        for _env_file in "$COMPOSE_DIR"/*/".env" "$BASE_DIR/.env"; do
+            [[ -f "$_env_file" ]] || continue
+            local _pd
+            _pd=$(grep -m1 '^PROXY_DOMAIN=' "$_env_file" 2>/dev/null | cut -d'=' -f2- | tr -d '"' | tr -d "'")
+            if [[ -n "$_pd" ]]; then traefik_domain="$_pd"; break; fi
+        done
+    fi
+
     # Deploy config files BEFORE auto-start so they exist when containers mount volumes
     if [[ -d "$tdir/config" ]]; then
         local config_target_name
@@ -6942,12 +8457,32 @@ handle_template_deploy() {
                 app_data="$target_dir/${app_data#./}"
             fi
             local config_target="$app_data/$config_target_name"
-            mkdir -p "$config_target"
-            # rsync is more reliable for recursive copies; fall back to cp -a
-            if command -v rsync >/dev/null 2>&1; then
-                rsync -a --ignore-existing "$tdir/config/" "$config_target/" 2>/dev/null || true
+            mkdir -p "$config_target" 2>/dev/null || docker run --rm -v "$app_data:/d" alpine mkdir -p "/d/$config_target_name" 2>/dev/null || true
+
+            # CRITICAL: Docker creates DIRECTORIES for missing bind-mount targets.
+            # If a previous failed deploy left traefik.yml or acme.json as directories,
+            # rsync --ignore-existing will skip them. Remove any directory-as-file artifacts
+            # BEFORE copying so the real files can be placed.
+            while IFS= read -r _src_file; do
+                [[ -z "$_src_file" ]] && continue
+                local _rel="${_src_file#$tdir/config/}"
+                local _dst="$config_target/$_rel"
+                if [[ -d "$_dst" && -f "$_src_file" ]]; then
+                    rm -rf "$_dst"
+                fi
+            done < <(find "$tdir/config" -type f 2>/dev/null)
+
+            # Copy config files — use docker if target is root-owned
+            if [[ -w "$config_target" ]]; then
+                if command -v rsync >/dev/null 2>&1; then
+                    rsync -a --ignore-existing "$tdir/config/" "$config_target/" 2>/dev/null || true
+                else
+                    cp -an "$tdir/config/"* "$config_target/" 2>/dev/null || cp -a "$tdir/config/"* "$config_target/" 2>/dev/null || true
+                fi
             else
-                cp -a "$tdir/config/"* "$config_target/" 2>/dev/null || true
+                # Target is root-owned — use docker alpine to copy
+                docker run --rm -v "$tdir/config:/src:ro" -v "$config_target:/dst" alpine sh -c \
+                    'cp -rn /src/* /dst/ 2>/dev/null; cp -r /src/* /dst/ 2>/dev/null' || true
             fi
 
             # Create custom_routes subdirectories for ALL existing stacks
@@ -7005,22 +8540,685 @@ handle_template_deploy() {
                 done < <(find "$config_target" -type f \( -name '*.yml' -o -name '*.yaml' \) 2>/dev/null)
             fi
 
+            # Ensure traefik.yml and acme.json are FILES not directories.
+            # Docker creates directories for missing bind mount sources — if the config
+            # copy didn't run yet or was skipped, these may be directories which breaks Traefik.
+            for _critical_file in "traefik.yml" "acme.json"; do
+                local _cf_path="$config_target/$_critical_file"
+                if [[ -d "$_cf_path" ]]; then
+                    # Docker created a directory — remove it and copy the real file
+                    rm -rf "$_cf_path"
+                fi
+                if [[ ! -f "$_cf_path" ]]; then
+                    if [[ -f "$tdir/config/$_critical_file" ]]; then
+                        cp -a "$tdir/config/$_critical_file" "$_cf_path"
+                    else
+                        touch "$_cf_path"
+                    fi
+                fi
+            done
             # Ensure acme.json has secure permissions (required by Traefik)
-            if [[ -f "$config_target/acme.json" ]]; then
-                chmod 600 "$config_target/acme.json"
+            chmod 600 "$config_target/acme.json" 2>/dev/null
+        fi
+    fi
+
+    # Re-detect Traefik AFTER config copy — when deploying the Traefik template itself,
+    # the config copy above creates the custom_routes directory. The early detection at
+    # the top of the handler found nothing because the directory didn't exist yet.
+    if [[ -z "$traefik_routes_dir" ]]; then
+        for _check_stack in $(_api_get_stacks); do
+            local _check_appdata="${APP_DATA_DIR:-$COMPOSE_DIR/$_check_stack/App-Data}"
+            [[ "$_check_appdata" == ./* ]] && _check_appdata="$COMPOSE_DIR/$_check_stack/${_check_appdata#./}"
+            if [[ -d "$_check_appdata/Traefik/custom_routes" ]]; then
+                if grep -q 'container_name: Traefik\|image: traefik' "$COMPOSE_DIR/$_check_stack/docker-compose.yml" 2>/dev/null; then
+                    traefik_routes_dir="$_check_appdata/Traefik/custom_routes"
+                    break
+                fi
+            fi
+        done
+    fi
+
+    # -----------------------------------------------------------------------
+    # Authelia config generation — creates configuration.yml and users_database.yml
+    # when deploying the authelia template. Secrets are auto-generated.
+    # -----------------------------------------------------------------------
+    if [[ "$name" == "authelia" ]]; then
+        local _auth_base="${APP_DATA_DIR:-$target_dir/App-Data}"
+        [[ "$_auth_base" == ./* ]] && _auth_base="$target_dir/${_auth_base#./}"
+        local _auth_dir="$_auth_base/Authelia/config"
+        # Write to a temp dir first, then copy with docker (handles root-owned target dirs)
+        local _auth_tmp="/tmp/dcs-authelia-$$"
+        mkdir -p "$_auth_tmp"
+        # Also ensure target dirs exist
+        mkdir -p "$_auth_dir" 2>/dev/null || docker run --rm -v "$_auth_base:/d" alpine mkdir -p /d/Authelia/config 2>/dev/null || true
+
+        local _domain="${TRAEFIK_DOMAIN:-example.com}"
+        local _admin_user _admin_display _admin_email _admin_pass
+        _admin_user=$(printf '%s' "$body" | jq -r '.variables.AUTHELIA_ADMIN_USER // "admin"' 2>/dev/null)
+        _admin_display=$(printf '%s' "$body" | jq -r '.variables.AUTHELIA_ADMIN_DISPLAY // ""' 2>/dev/null)
+        [[ -z "$_admin_display" ]] && _admin_display="$_admin_user"
+        _admin_email=$(printf '%s' "$body" | jq -r '.variables.AUTHELIA_ADMIN_EMAIL // "admin@'$_domain'"' 2>/dev/null)
+        _admin_pass=$(printf '%s' "$body" | jq -r '.variables.AUTHELIA_ADMIN_PASSWORD // "changeme"' 2>/dev/null)
+
+        # Generate random secrets
+        local _jwt_secret _session_secret _storage_key
+        _jwt_secret=$(openssl rand -hex 32 2>/dev/null || head -c 64 /dev/urandom | xxd -p -c 64)
+        _session_secret=$(openssl rand -hex 32 2>/dev/null || head -c 64 /dev/urandom | xxd -p -c 64)
+        _storage_key=$(openssl rand -base64 32 2>/dev/null || head -c 32 /dev/urandom | base64)
+
+        # Hash the admin password with Argon2id (via docker if argon2 not installed)
+        local _hashed_pass=""
+        if command -v authelia >/dev/null 2>&1; then
+            _hashed_pass=$(authelia crypto hash generate argon2 --password "$_admin_pass" 2>/dev/null | grep 'Digest:' | sed 's/Digest: //')
+        fi
+        if [[ -z "$_hashed_pass" ]]; then
+            _hashed_pass=$(docker run --rm authelia/authelia:latest authelia crypto hash generate argon2 --password "$_admin_pass" 2>/dev/null | grep 'Digest:' | sed 's/Digest: //')
+        fi
+        if [[ -z "$_hashed_pass" ]]; then
+            # Fallback: use python3 argon2 if available
+            _hashed_pass=$(python3 -c "
+import hashlib, os, base64
+salt = os.urandom(16)
+h = hashlib.scrypt(b'$_admin_pass', salt=salt, n=65536, r=8, p=1, dklen=32)
+s64 = base64.b64encode(salt).decode().rstrip('=')
+h64 = base64.b64encode(h).decode().rstrip('=')
+print(f'\$argon2id\$v=19\$m=65536,t=3,p=4\${s64}\${h64}')
+" 2>/dev/null) || _hashed_pass='$argon2id$v=19$m=65536,t=3,p=4$CHANGE_ME_HASH'
+        fi
+
+        # Write configuration.yml (only if it doesn't exist — don't overwrite user edits)
+        # Always write config on deploy (overwrites container defaults and stale configs)
+        if true; then
+            cat > "$_auth_tmp/configuration.yml" << AUTHELIA_CONFIG_EOF
+---
+# =============================================================================
+# Authelia Configuration — Auto-generated by DCS
+# =============================================================================
+# Documentation: https://www.authelia.com/configuration/
+# =============================================================================
+
+server:
+  address: 'tcp://0.0.0.0:9091/'
+
+log:
+  level: info
+
+theme: dark
+
+identity_validation:
+  reset_password:
+    jwt_secret: '${_jwt_secret}'
+
+totp:
+  issuer: ${_domain}
+
+webauthn:
+  disable: false
+  display_name: Authelia
+  attestation_conveyance_preference: indirect
+  user_verification: preferred
+  timeout: 60s
+
+password_policy:
+  standard:
+    enabled: true
+    min_length: 8
+    max_length: 128
+    require_uppercase: true
+    require_lowercase: true
+    require_number: true
+    require_special: true
+
+authentication_backend:
+  file:
+    path: /config/users_database.yml
+    password:
+      algorithm: argon2id
+      iterations: 3
+      salt_length: 16
+      parallelism: 4
+      memory: 65536
+
+access_control:
+  default_policy: deny
+  rules:
+    - domain:
+        - "auth.${_domain}"
+      policy: bypass
+    - domain:
+        - "*.${_domain}"
+      subject:
+        - "group:admins"
+      policy: one_factor
+
+session:
+  name: authelia_session
+  secret: '${_session_secret}'
+  expiration: 1h
+  inactivity: 5m
+  cookies:
+    - domain: ${_domain}
+      authelia_url: 'https://auth.${_domain}'
+      default_redirection_url: 'https://dash.${_domain}'
+
+  redis:
+    host: Authelia-Redis
+    port: 6379
+
+regulation:
+  max_retries: 3
+  find_time: 2m
+  ban_time: 5m
+
+storage:
+  encryption_key: '${_storage_key}'
+  local:
+    path: /config/db.sqlite3
+
+notifier:
+  filesystem:
+    filename: /config/notifications.txt
+AUTHELIA_CONFIG_EOF
+        fi
+
+        # Write users_database.yml (only if it doesn't exist)
+        if true; then
+            cat > "$_auth_tmp/users_database.yml" << AUTHELIA_USERS_EOF
+---
+# =============================================================================
+# Authelia Users Database — Auto-generated by DCS
+# =============================================================================
+# Add users here. Passwords must be hashed with Argon2id.
+# Generate hashes:
+#   docker run --rm authelia/authelia:latest authelia crypto hash generate argon2 --password 'YOUR_PASSWORD'
+# =============================================================================
+
+users:
+  ${_admin_user}:
+    disabled: false
+    displayname: "${_admin_display}"
+    password: "${_hashed_pass}"
+    email: ${_admin_email}
+    groups:
+      - admins
+AUTHELIA_USERS_EOF
+        fi
+
+        # Copy generated configs from temp into target (handles root-owned dirs via docker)
+        if [[ -s "$_auth_tmp/configuration.yml" ]]; then
+            # Copy to target dir
+            cp -f "$_auth_tmp/configuration.yml" "$_auth_dir/" 2>/dev/null && \
+            cp -f "$_auth_tmp/users_database.yml" "$_auth_dir/" 2>/dev/null && \
+            chmod 600 "$_auth_dir/configuration.yml" "$_auth_dir/users_database.yml" 2>/dev/null || \
+            docker run --rm -v "$_auth_dir:/dst" -v "$_auth_tmp:/src" alpine sh -c \
+                "cp -f /src/configuration.yml /src/users_database.yml /dst/; chmod 600 /dst/configuration.yml /dst/users_database.yml" 2>/dev/null
+            # Cache for post-start re-apply (outside root-owned config dir)
+            local _cache_dir="$_auth_base/Authelia/.dcs-cache"
+            mkdir -p "$_cache_dir" 2>/dev/null || docker run --rm -v "$_auth_base/Authelia:/d" alpine mkdir -p /d/.dcs-cache 2>/dev/null
+            cp -f "$_auth_tmp/configuration.yml" "$_cache_dir/" 2>/dev/null && \
+            cp -f "$_auth_tmp/users_database.yml" "$_cache_dir/" 2>/dev/null || \
+            docker run --rm -v "$_cache_dir:/dst" -v "$_auth_tmp:/src" alpine sh -c \
+                "cp -f /src/configuration.yml /src/users_database.yml /dst/" 2>/dev/null
+        fi
+        rm -rf "$_auth_tmp"
+
+        # Create Traefik route file for auth.domain → Authelia:9091
+        if [[ -n "${traefik_routes_dir:-}" && -n "${traefik_domain:-}" ]]; then
+            mkdir -p "$traefik_routes_dir/$target_stack"
+            # Always write — overrides the auto-generated route to use auth. subdomain
+            if true; then
+                cat > "$traefik_routes_dir/$target_stack/authelia.yml" << AUTH_ROUTE_EOF
+# Auto-generated Traefik route for Authelia SSO portal
+http:
+  routers:
+    authelia-router:
+      entryPoints:
+        - "websecure"
+      rule: "Host(\`auth.${traefik_domain}\`)"
+      service: "authelia"
+      middlewares:
+        - "authelia-headers"
+        - "compress-gzip"
+      tls: {}
+
+  services:
+    authelia:
+      loadBalancer:
+        servers:
+          - url: "http://Authelia:9091"
+
+  middlewares:
+    authelia-headers:
+      headers:
+        browserXssFilter: true
+        customFrameOptionsValue: "SAMEORIGIN"
+        customResponseHeaders:
+          Cache-Control: "no-store"
+          Pragma: "no-cache"
+        sslProxyHeaders:
+          X-Forwarded-Proto: "https"
+        referrerPolicy: "same-origin"
+        forceSTSHeader: true
+        stsPreload: true
+        stsIncludeSubdomains: true
+        stsSeconds: 315360000
+
+    authelia-forwardauth:
+      forwardAuth:
+        address: "http://Authelia:9091/api/authz/forward-auth"
+        trustForwardHeader: true
+        authResponseHeaders:
+          - "Remote-User"
+          - "Remote-Groups"
+          - "Remote-Name"
+          - "Remote-Email"
+AUTH_ROUTE_EOF
             fi
         fi
     fi
 
+    # -----------------------------------------------------------------------
+    # Cloudflare DNS auto-creation helper
+    # -----------------------------------------------------------------------
+    # Creates a CNAME record for a subdomain pointing to the root domain.
+    # Requires CF_DNS_API_TOKEN. Zone ID is auto-detected and cached.
+    # Non-fatal — errors are logged but never block deployment.
+    # -----------------------------------------------------------------------
+    _cloudflare_add_dns() {
+        local subdomain="$1" domain="$2" cf_token="$3"
+        # Debug trace
+        printf '[%s] _cloudflare_add_dns called: sub=%s domain=%s token=%s\n' \
+            "$(date -Iseconds)" "$subdomain" "$domain" "${cf_token:0:8}..." \
+            >> "$BASE_DIR/.api-auth/cf-debug.log" 2>/dev/null
+        [[ -z "$cf_token" || -z "$domain" || -z "$subdomain" ]] && return 0
+        command -v curl >/dev/null 2>&1 || return 0
+        command -v jq >/dev/null 2>&1 || return 0
+
+        local fqdn="${subdomain}.${domain}"
+        local cf_api="https://api.cloudflare.com/client/v4"
+        local cf_auth=(-H "Authorization: Bearer $cf_token")
+
+        # ── Get or cache Zone ID ──
+        local zone_id=""
+        local zone_cache="$BASE_DIR/.api-auth/.cf-zone-cache"
+        mkdir -p "$(dirname "$zone_cache")" 2>/dev/null
+        if [[ -f "$zone_cache" ]]; then
+            local cached_domain cached_zone
+            cached_domain=$(sed -n '1p' "$zone_cache" 2>/dev/null)
+            cached_zone=$(sed -n '2p' "$zone_cache" 2>/dev/null)
+            [[ "$cached_domain" == "$domain" && -n "$cached_zone" ]] && zone_id="$cached_zone"
+        fi
+
+        if [[ -z "$zone_id" ]]; then
+            # Try exact domain first, then strip subdomains to find zone
+            local _lookup_domain="$domain"
+            local _attempts=0
+            while [[ -z "$zone_id" && "$_attempts" -lt 3 ]]; do
+                local zone_resp
+                zone_resp=$(curl -s --max-time 15 "${cf_auth[@]}" \
+                    "$cf_api/zones?name=${_lookup_domain}&status=active" 2>/dev/null)
+                zone_id=$(printf '%s' "$zone_resp" | jq -r '.result[0].id // empty' 2>/dev/null)
+                if [[ -n "$zone_id" ]]; then
+                    break
+                fi
+                # Strip leftmost subdomain: sub.example.com → example.com
+                _lookup_domain="${_lookup_domain#*.}"
+                [[ "$_lookup_domain" == *.* ]] || break
+                _attempts=$((_attempts + 1))
+            done
+
+            if [[ -z "$zone_id" ]]; then
+                return 0  # Zone not found — skip silently
+            fi
+            printf '%s\n%s\n' "$domain" "$zone_id" > "$zone_cache" 2>/dev/null
+        fi
+
+        # ── Create CNAME: subdomain.domain.com → domain.com (proxied) ──
+        # Single attempt — no duplicate check (saves an API call, avoids rate limits).
+        # If the record already exists, CF returns an error which we silently ignore.
+        local create_resp
+        create_resp=$(curl -s --max-time 15 -X POST \
+            "${cf_auth[@]}" \
+            -H "Content-Type: application/json" \
+            -d "{\"type\":\"CNAME\",\"name\":\"${fqdn}\",\"content\":\"${domain}\",\"proxied\":true,\"ttl\":1,\"comment\":\"Auto-created by DCS\"}" \
+            "$cf_api/zones/$zone_id/dns_records" 2>/dev/null)
+
+        local success
+        success=$(printf '%s' "$create_resp" | jq -r '.success // false' 2>/dev/null)
+
+        # Debug: log result regardless of success
+        printf '[%s] CF create %s: success=%s resp=%s\n' \
+            "$(date -Iseconds)" "$fqdn" "$success" "$(printf '%s' "$create_resp" | head -c 200)" \
+            >> "$BASE_DIR/.api-auth/cf-debug.log" 2>/dev/null
+        if [[ "$success" == "true" ]]; then
+            printf '[%s] CREATED %s → %s (CNAME, proxied)\n' "$(date -Iseconds)" "$fqdn" "$domain" >> "$BASE_DIR/.api-auth/cf-dns-audit.log" 2>/dev/null
+        fi
+
+        return 0
+    }
+
+    # -----------------------------------------------------------------------
+    # Auto-generate Traefik route files for deployed services
+    # -----------------------------------------------------------------------
+    # If Traefik's custom_routes directory exists, create a route file for
+    # each service that has an exposed port. Uses the Traefik file provider
+    # which auto-discovers new .yml files (no restart needed).
+    # Skip for the traefik template itself (it ships its own routes).
+    # -----------------------------------------------------------------------
+    printf '[%s] AUTO-ROUTE CHECK: name=%s routes_dir=[%s] domain=[%s]\n' \
+        "$(date -Iseconds)" "$name" "$traefik_routes_dir" "$traefik_domain" \
+        >> "$BASE_DIR/.api-auth/cf-debug.log" 2>/dev/null
+    if [[ "$name" != "traefik" ]]; then
+        # traefik_routes_dir and traefik_domain already computed above
+        if [[ -n "$traefik_routes_dir" && -n "$traefik_domain" && "$traefik_domain" != "example.com" ]]; then
+                mkdir -p "$traefik_routes_dir/$target_stack"
+
+                # Read CF_DNS_API_TOKEN for auto DNS record creation
+                # Priority: request body variables > stack .env files > root .env > environment
+                local _cf_token=""
+                # 1. From deploy request variables
+                _cf_token=$(printf '%s' "$body" | jq -r '.variables.CF_DNS_API_TOKEN // empty' 2>/dev/null)
+                # 2. From environment (already sourced from .env at startup)
+                [[ -z "$_cf_token" ]] && _cf_token="${CF_DNS_API_TOKEN:-}"
+                # 3. From stack .env files
+                if [[ -z "$_cf_token" ]]; then
+                    for _env_file in "$COMPOSE_DIR"/*/".env" "$BASE_DIR/.env"; do
+                        [[ -f "$_env_file" ]] || continue
+                        local _tk
+                        _tk=$(grep -m1 '^CF_DNS_API_TOKEN=' "$_env_file" 2>/dev/null | cut -d'=' -f2- | tr -d '"' | tr -d "'")
+                        if [[ -n "$_tk" ]]; then
+                            _cf_token="$_tk"
+                            break
+                        fi
+                    done
+                fi
+
+                # If user provided custom route content, save those first.
+                # The auto-generation loop below will skip services that already have route files.
+                local _custom_routes_json
+                _custom_routes_json=$(printf '%s' "$body" | jq -c '.custom_routes // {}' 2>/dev/null)
+                if [[ -n "$_custom_routes_json" && "$_custom_routes_json" != "{}" && "$_custom_routes_json" != "null" ]]; then
+                    local _cr_key
+                    for _cr_key in $(printf '%s' "$_custom_routes_json" | jq -r 'keys[]' 2>/dev/null); do
+                        [[ -z "$_cr_key" ]] && continue
+                        # Validate key is safe for filename
+                        if [[ ! "$_cr_key" =~ ^[a-zA-Z0-9_-]+$ ]]; then continue; fi
+                        local _cr_content
+                        _cr_content=$(printf '%s' "$_custom_routes_json" | jq -r --arg k "$_cr_key" '.[$k] // empty' 2>/dev/null)
+                        [[ -z "$_cr_content" ]] && continue
+                        printf '%s\n' "$_cr_content" > "$traefik_routes_dir/$target_stack/${_cr_key}.yml"
+                    done
+                fi
+
+                # Parse each service from the SUBSTITUTED template compose
+                local _svc_name
+                while IFS= read -r _svc_name; do
+                    [[ -z "$_svc_name" ]] && continue
+
+                    local _route_exists=false
+                    [[ -f "$traefik_routes_dir/$target_stack/${_svc_name}.yml" ]] && _route_exists=true
+
+                    # Extract container_name for this service
+                    local _container_name=""
+                    _container_name=$(printf '%s' "$template_compose" | awk -v svc="  ${_svc_name}:" '
+                        BEGIN { in_svc=0 }
+                        $0 == svc || index($0, svc) == 1 { in_svc=1; next }
+                        in_svc && /^  [a-zA-Z_-]/ { in_svc=0 }
+                        in_svc && /^[a-zA-Z]/ { in_svc=0 }
+                        in_svc && /container_name:/ { gsub(/.*container_name:[[:space:]]*/, ""); gsub(/[[:space:]]*$/, ""); print; exit }
+                    ')
+                    # Fallback: use service name as container name
+                    [[ -z "$_container_name" ]] && _container_name="$_svc_name"
+
+                    # Extract the first container port (right side of host:container mapping)
+                    # Handles ${VAR:-default} patterns by resolving them to defaults first
+                    local _container_port=""
+                    local _port_line
+                    _port_line=$(printf '%s' "$template_compose" | awk -v svc="  ${_svc_name}:" '
+                        BEGIN { in_svc=0; in_ports=0 }
+                        $0 == svc || index($0, svc) == 1 { in_svc=1; next }
+                        in_svc && /^  [a-zA-Z_-]/ { in_svc=0 }
+                        in_svc && /^[a-zA-Z]/ { in_svc=0 }
+                        in_svc && /ports:/ { in_ports=1; next }
+                        in_svc && in_ports && /^      - / { gsub(/^[[:space:]]*-[[:space:]]*/, ""); gsub(/"/, ""); print; exit }
+                        in_svc && in_ports && /^    [^ ]/ { in_ports=0 }
+                    ')
+                    if [[ -n "$_port_line" ]]; then
+                        # Resolve ${VAR:-default} to default values first
+                        local _resolved_port
+                        _resolved_port=$(printf '%s' "$_port_line" | sed 's/${[A-Za-z_][A-Za-z0-9_]*:-\([^}]*\)}/\1/g; s/${[A-Za-z_][A-Za-z0-9_]*}//g')
+                        # Now split on colon safely — take the right side (container port)
+                        _container_port=$(echo "$_resolved_port" | awk -F: '{print $NF}' | sed 's|/.*||')
+                    fi
+
+                    # Skip services without ports (databases, workers, etc.)
+                    [[ -z "$_container_port" ]] && continue
+
+                    # Determine protocol (HTTPS for 443/9443 ports, HTTP otherwise)
+                    local _protocol="http"
+                    if [[ "$_container_port" == "443" || "$_container_port" == "9443" || "$_container_port" == "8443" ]]; then
+                        _protocol="https"
+                    fi
+
+                    # Generate the route file (skip if already exists — preserves user edits)
+                    local _route_id
+                    _route_id=$(printf '%s' "$_svc_name" | tr '[:upper:]' '[:lower:]' | tr -c '[:alnum:]-' '-')
+
+                    if [[ "$_route_exists" != "true" ]]; then
+                    cat > "$traefik_routes_dir/$target_stack/${_svc_name}.yml" << ROUTE_EOF
+# =============================================================================
+# Auto-generated Traefik route for: $_svc_name
+# =============================================================================
+# Created during template deployment to $target_stack.
+# Traefik's file provider auto-discovers this file (no restart needed).
+# Edit the subdomain or middlewares as needed.
+# =============================================================================
+
+http:
+  routers:
+    ${_route_id}-router:
+      entryPoints:
+        - "websecure"
+      rule: "Host(\`${_svc_name}.${traefik_domain}\`)"
+      service: "${_route_id}"
+      middlewares:
+        - "traefik-chain"
+        - "compress-gzip"
+      tls: {}
+
+  services:
+    ${_route_id}:
+      loadBalancer:
+        servers:
+          - url: "${_protocol}://${_container_name}:${_container_port}"
+ROUTE_EOF
+                    fi
+                    # Auto-create Cloudflare DNS record using the actual subdomain from the route file
+                    # (respects user-edited subdomains, not just the service name)
+                    if [[ -n "$_cf_token" ]]; then
+                        local _dns_sub="$_svc_name"
+                        # Extract subdomain from the route file's Host() rule if it exists
+                        local _route_file="$traefik_routes_dir/$target_stack/${_svc_name}.yml"
+                        if [[ -f "$_route_file" ]]; then
+                            local _host_sub
+                            _host_sub=$(grep -oP 'Host\(`\K[^.]+' "$_route_file" 2>/dev/null | head -1)
+                            [[ -n "$_host_sub" ]] && _dns_sub="$_host_sub"
+                        fi
+                        _cloudflare_add_dns "$_dns_sub" "$traefik_domain" "$_cf_token"
+                        sleep 1
+                    fi
+
+                    # Add proxy network to this service in the target compose file
+                    # so Traefik can reach it. Uses docker compose to connect at runtime
+                    # AND injects into compose for persistence across restarts.
+                    # Connect immediately via Docker CLI (works even before compose recreate)
+                    docker network connect proxy "$_container_name" 2>/dev/null || true
+
+                    # Also inject into compose file for persistence
+                    local _tc
+                    _tc=$(cat "$target_dir/docker-compose.yml")
+                    # Check if this service already has proxy in its networks
+                    local _has_proxy
+                    _has_proxy=$(printf '%s' "$_tc" | python3 -c "
+import sys, re
+content = sys.stdin.read()
+# Find the service block
+pattern = r'^  ${_svc_name}:.*?(?=^  [a-zA-Z]|\Z)'
+match = re.search(pattern, content, re.MULTILINE | re.DOTALL)
+if match and 'proxy' in match.group():
+    print('yes')
+else:
+    print('no')
+" 2>/dev/null || echo "no")
+                    if [[ "$_has_proxy" != "yes" ]]; then
+                        # Use python for reliable YAML-aware insertion
+                        printf '%s' "$_tc" | python3 -c "
+import sys
+lines = sys.stdin.read().split('\n')
+result = []
+in_svc = False
+svc_name = '  ${_svc_name}:'
+injected = False
+for i, line in enumerate(lines):
+    if line.startswith(svc_name):
+        in_svc = True
+        result.append(line)
+        continue
+    if in_svc and not injected:
+        # Check if next line is a new service or top-level key
+        if line and not line.startswith('    ') and not line.startswith('      '):
+            result.append('    networks:')
+            result.append('      - default')
+            result.append('      - proxy')
+            in_svc = False
+            injected = True
+    result.append(line)
+if in_svc and not injected:
+    result.append('    networks:')
+    result.append('      - default')
+    result.append('      - proxy')
+print('\n'.join(result))
+" > "$target_dir/docker-compose.yml" 2>/dev/null || true
+                    fi
+
+                done <<< "$template_services"
+
+                # Trigger Traefik's file watcher to reload routes
+                # Touch the root custom_routes dir and a marker file to ensure inotify fires
+                touch "$traefik_routes_dir" 2>/dev/null
+                touch "$traefik_routes_dir/.reload" 2>/dev/null
+
+                # Ensure the proxy external network is declared in the compose file
+                local _final_compose
+                _final_compose=$(cat "$target_dir/docker-compose.yml")
+                if ! printf '%s' "$_final_compose" | grep -q 'name: proxy'; then
+                    # Add proxy network declaration at the end
+                    if printf '%s' "$_final_compose" | grep -q '^networks:'; then
+                        # networks section exists — append proxy to it
+                        _final_compose=$(printf '%s\n' "$_final_compose" | awk '
+                            /^networks:/ { print; print "  proxy:"; print "    name: proxy"; print "    external: true"; next }
+                            { print }
+                        ')
+                    else
+                        # No networks section — add one at the end
+                        _final_compose=$(printf '%s\nnetworks:\n  proxy:\n    name: proxy\n    external: true\n' "$_final_compose")
+                    fi
+                    printf '%s\n' "$_final_compose" > "$target_dir/docker-compose.yml"
+                fi
+        fi
+    fi
+
+    # -----------------------------------------------------------------------
+    # Infrastructure DNS — create subdomains for core services (traefik, auth)
+    # These aren't port-scanned; they need explicit DNS entries.
+    # -----------------------------------------------------------------------
+    if [[ -n "${traefik_domain:-}" ]]; then
+        local _infra_cf_token="${CF_DNS_API_TOKEN:-}"
+        [[ -z "$_infra_cf_token" ]] && _infra_cf_token=$(printf '%s' "$body" | jq -r '.variables.CF_DNS_API_TOKEN // empty' 2>/dev/null)
+        [[ -z "$_infra_cf_token" ]] && _infra_cf_token=$(grep -m1 '^CF_DNS_API_TOKEN=' "$COMPOSE_DIR"/*/".env" "$BASE_DIR/.env" 2>/dev/null | head -1 | cut -d'=' -f2- | tr -d '"' | tr -d "'")
+
+        if [[ -n "$_infra_cf_token" ]]; then
+            case "$name" in
+                traefik)
+                    _cloudflare_add_dns "traefik" "$traefik_domain" "$_infra_cf_token"
+                    ;;
+                authelia)
+                    _cloudflare_add_dns "auth" "$traefik_domain" "$_infra_cf_token"
+                    ;;
+            esac
+        fi
+    fi
+
     # Auto-start if requested — run in background so API responds immediately.
-    # docker-compose up -d handles the full lifecycle: stop old → pull → create → start.
-    local auto_start
+    # After compose up, fix App-Data ownership for non-root images.
+    local auto_start connect_proxy
     auto_start=$(printf '%s' "$body" | jq -r '.auto_start // false' 2>/dev/null)
+    connect_proxy=$(printf '%s' "$body" | jq -r '.connect_proxy // false' 2>/dev/null)
     local started=false
     if [[ "$auto_start" == "true" ]]; then
         local env_up=()
         [[ -f "$target_dir/.env" ]] && env_up=(--env-file "$target_dir/.env")
-        ( $DOCKER_COMPOSE_CMD -f "$target_dir/docker-compose.yml" "${env_up[@]}" up -d --force-recreate --remove-orphans >/dev/null 2>&1 ) &
+        local _puid="${PUID:-1000}"
+        local _pgid="${PGID:-1000}"
+        local _ad="${APP_DATA_DIR:-$target_dir/App-Data}"
+        [[ "$_ad" == ./* ]] && _ad="$target_dir/${_ad#./}"
+        (
+            # Safety: ensure Traefik directories and files exist before compose up
+            mkdir -p "$_ad/Traefik/custom_routes" "$_ad/Traefik/cache" 2>/dev/null
+            # Ensure bind-mount targets are files, not directories (Docker creates dirs for missing targets)
+            for _bm in traefik.yml acme.json; do
+                local _bm_path="$_ad/Traefik/$_bm"
+                if [[ -d "$_bm_path" ]]; then
+                    rm -rf "$_bm_path"
+                    touch "$_bm_path"
+                    [[ "$_bm" == "acme.json" ]] && chmod 600 "$_bm_path"
+                fi
+            done
+
+            # Start containers
+            $DOCKER_COMPOSE_CMD -f "$target_dir/docker-compose.yml" "${env_up[@]}" up -d --force-recreate --remove-orphans >/dev/null 2>&1
+
+            # Connect routed containers to the 'proxy' network so Traefik can reach them.
+            # Controlled by the connect_proxy flag from the deploy request.
+            if [[ "$connect_proxy" == "true" ]] && docker network inspect proxy >/dev/null 2>&1; then
+                for _rf in "$traefik_routes_dir/$target_stack"/*.yml; do
+                    [[ -f "$_rf" ]] || continue
+                    local _cname
+                    _cname=$(grep -oP '(?<=url: "https?://)[^:]+' "$_rf" 2>/dev/null | head -1)
+                    [[ -n "$_cname" ]] && docker network connect proxy "$_cname" 2>/dev/null || true
+                done
+            fi
+
+            # Re-apply Authelia config AFTER compose up — the container's entrypoint
+            # overwrites our generated config with its default template on first start.
+            if [[ "$name" == "authelia" && -d "$_ad/Authelia/.dcs-cache" ]]; then
+                sleep 3
+                # Restore our generated config — container may have overwritten it with defaults
+                docker run --rm -v "$_ad/Authelia/.dcs-cache:/src" -v "$_ad/Authelia/config:/dst" alpine sh -c \
+                    "cp -f /src/configuration.yml /src/users_database.yml /dst/ 2>/dev/null; chmod 600 /dst/configuration.yml /dst/users_database.yml" 2>/dev/null
+                # Restart Authelia to pick up the correct config
+                $DOCKER_COMPOSE_CMD -f "$target_dir/docker-compose.yml" "${env_up[@]}" restart authelia >/dev/null 2>&1 || true
+            fi
+
+            # Fix volume ownership — Docker creates bind-mount dirs as root
+            # This runs AFTER compose creates the directories but containers may need a restart
+            sleep 2
+            local _needs_restart=false
+            while IFS= read -r _vol_path; do
+                [[ -z "$_vol_path" || "$_vol_path" != "$_ad/"* ]] && continue
+                [[ ! -d "$_vol_path" ]] && continue
+                local _owner
+                _owner=$(stat -c '%u' "$_vol_path" 2>/dev/null)
+                if [[ "$_owner" == "0" && "$_puid" != "0" ]]; then
+                    docker run --rm -v "$_vol_path:/d" alpine chown -R "$_puid:$_pgid" /d 2>/dev/null || chown -R "$_puid:$_pgid" "$_vol_path" 2>/dev/null || true
+                    _needs_restart=true
+                fi
+            done < <(find "$_ad" -maxdepth 2 -type d 2>/dev/null)
+            # Restart containers that had permission-fixed volumes
+            if [[ "$_needs_restart" == "true" ]]; then
+                $DOCKER_COMPOSE_CMD -f "$target_dir/docker-compose.yml" "${env_up[@]}" restart >/dev/null 2>&1 || true
+            fi
+        ) &
         disown
         started=true
     fi
@@ -7078,6 +9276,8 @@ handle_template_dry_run() {
     while IFS='=' read -r key val; do
         [[ -z "$key" ]] && continue
         if [[ ! "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then continue; fi
+        # SECURITY: Reject shell metacharacters in variable values
+        case "$val" in *'`'*|*'$('*) continue ;; esac
         # Replace ${VAR:-default} patterns FIRST, then simple ${VAR} and $VAR
         local safe_val
         safe_val=$(_sed_escape_val "$val")
@@ -7096,6 +9296,8 @@ handle_template_dry_run() {
     if [[ -n "$exclude_services" ]]; then
         while IFS= read -r exc_svc; do
             [[ -z "$exc_svc" ]] && continue
+            # SECURITY: Validate service name (alphanumeric, hyphens, underscores only)
+            if [[ ! "$exc_svc" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]]; then continue; fi
             template_compose=$(printf '%s\n' "$template_compose" | awk -v svc="  ${exc_svc}:" '
                 BEGIN { skip=0 }
                 $0 == svc || index($0, svc) == 1 { skip=1; next }
@@ -7503,22 +9705,92 @@ handle_template_undeploy() {
         printf '%s\n' "$env_after" > "$target_dir/.env"
     fi
 
-    # Remove deployed config data from App-Data if requested
+    # Remove routes immediately (fast), then heavy cleanup in background
     local data_removed="false"
-    if [[ "$remove_data" == "true" ]]; then
-        local config_target_name
-        config_target_name=$(printf '%s' "$meta" | jq -r '.config_path // empty' 2>/dev/null)
-        if [[ -n "$config_target_name" ]]; then
-            local app_data="${APP_DATA_DIR:-$target_dir/App-Data}"
-            if [[ "$app_data" == ./* ]]; then
-                app_data="$target_dir/${app_data#./}"
+    local images_removed="false"
+    local routes_removed="false"
+
+    # ALWAYS remove Traefik route files and CF DNS on undeploy (these are infrastructure, not user data)
+    local _routes_dir=""
+    local _sd_stack
+    for _sd_stack in $(_api_get_stacks); do
+        local _sd_appdata="${APP_DATA_DIR:-$COMPOSE_DIR/$_sd_stack/App-Data}"
+        [[ "$_sd_appdata" == ./* ]] && _sd_appdata="$COMPOSE_DIR/$_sd_stack/${_sd_appdata#./}"
+        if [[ -d "$_sd_appdata/Traefik/custom_routes" ]] && \
+           grep -q 'container_name: Traefik\|image: traefik' "$COMPOSE_DIR/$_sd_stack/docker-compose.yml" 2>/dev/null; then
+            _routes_dir="$_sd_appdata/Traefik/custom_routes"
+            break
+        fi
+    done
+    # Collect actual subdomains from route files BEFORE deleting them
+    local -a _dns_subs_to_remove=()
+    if [[ -n "$_routes_dir" ]]; then
+        for svc in "${services_to_remove[@]}"; do
+            local _rf="$_routes_dir/$target_stack/${svc}.yml"
+            local _sub="$svc"
+            if [[ -f "$_rf" ]]; then
+                local _hsub
+                _hsub=$(grep -oP 'Host\(`\K[^.]+' "$_rf" 2>/dev/null | head -1)
+                [[ -n "$_hsub" ]] && _sub="$_hsub"
+                rm -f "$_rf" && routes_removed="true"
             fi
-            local config_dir="$app_data/$config_target_name"
-            if [[ -d "$config_dir" ]]; then
-                _force_remove_dir "$config_dir"
-                data_removed="true"
+            _dns_subs_to_remove+=("$_sub")
+        done
+        [[ "$routes_removed" == "true" ]] && touch "$_routes_dir/.reload" 2>/dev/null
+    fi
+
+    # Remove CF DNS records in background (always, not gated on remove_data)
+    local _dns_list="${_dns_subs_to_remove[*]}"
+    (
+        local _cf_token="${CF_DNS_API_TOKEN:-}"
+        local _cf_domain="${TRAEFIK_DOMAIN:-}"
+        [[ -z "$_cf_token" ]] && _cf_token=$(grep -m1 '^CF_DNS_API_TOKEN=' "$COMPOSE_DIR"/*/".env" "$BASE_DIR/.env" 2>/dev/null | head -1 | cut -d'=' -f2- | tr -d '"' | tr -d "'")
+        [[ -z "$_cf_domain" ]] && _cf_domain=$(grep -m1 '^TRAEFIK_DOMAIN=' "$COMPOSE_DIR"/*/".env" "$BASE_DIR/.env" 2>/dev/null | head -1 | cut -d'=' -f2- | tr -d '"' | tr -d "'")
+        if [[ -n "$_cf_token" && -n "$_cf_domain" ]] && command -v curl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
+            local cf_api="https://api.cloudflare.com/client/v4"
+            local zone_id=""
+            [[ -f "$BASE_DIR/.api-auth/.cf-zone-cache" ]] && zone_id=$(sed -n '2p' "$BASE_DIR/.api-auth/.cf-zone-cache" 2>/dev/null)
+            [[ -z "$zone_id" ]] && zone_id=$(curl -s --max-time 10 -H "Authorization: Bearer $_cf_token" "$cf_api/zones?name=$_cf_domain&status=active" 2>/dev/null | jq -r '.result[0].id // empty')
+            if [[ -n "$zone_id" ]]; then
+                for _dns_sub in $_dns_list; do
+                    local fqdn="${_dns_sub}.${_cf_domain}"
+                    local rec_id
+                    rec_id=$(curl -s --max-time 10 -H "Authorization: Bearer $_cf_token" "$cf_api/zones/$zone_id/dns_records?name=$fqdn" 2>/dev/null | jq -r '.result[0].id // empty')
+                    [[ -n "$rec_id" ]] && curl -s --max-time 10 -X DELETE -H "Authorization: Bearer $_cf_token" "$cf_api/zones/$zone_id/dns_records/$rec_id" >/dev/null 2>&1
+                    printf '[%s] DELETED %s (undeploy)\n' "$(date -Iseconds)" "$fqdn" >> "$BASE_DIR/.api-auth/cf-dns-audit.log" 2>/dev/null
+                    sleep 1
+                done
             fi
         fi
+    ) &
+    disown
+
+    if [[ "$remove_data" == "true" ]]; then
+        # Heavy cleanup in background — app-data, images (prevents HTTP timeout)
+        local _app_data="${APP_DATA_DIR:-$target_dir/App-Data}"
+        [[ "$_app_data" == ./* ]] && _app_data="$target_dir/${_app_data#./}"
+        local _config_path
+        _config_path=$(printf '%s' "$meta" | jq -r '.config_path // empty' 2>/dev/null)
+        local _backup_file="$target_dir/docker-compose.yml.bak.${timestamp}"
+        (
+            # 1. Remove per-service App-Data
+            for svc in "${services_to_remove[@]}"; do
+                for dir_name in "$svc" "${svc^}" "${svc^^}"; do
+                    [[ -d "$_app_data/$dir_name" ]] && docker run --rm -v "$_app_data/$dir_name:/d" alpine rm -rf /d 2>/dev/null
+                done
+            done
+            # 2. Remove config_path data
+            [[ -n "$_config_path" && -d "$_app_data/$_config_path" ]] && docker run --rm -v "$_app_data/$_config_path:/d" alpine rm -rf /d 2>/dev/null
+            # 3. Remove Docker images
+            for svc in "${services_to_remove[@]}"; do
+                local img
+                img=$(awk -v s="  ${svc}:" 'BEGIN{f=0} $0==s||index($0,s)==1{f=1;next} f&&/image:/{gsub(/.*image:[[:space:]]*/,"");gsub(/[[:space:]]*$/,"");print;exit} f&&/^  [a-zA-Z]/{exit}' "$_backup_file" 2>/dev/null)
+                [[ -n "$img" ]] && docker rmi "$img" 2>/dev/null || true
+            done
+        ) &
+        disown
+        data_removed="true"
+        images_removed="true"
     fi
 
     # Build JSON arrays
@@ -7551,10 +9823,11 @@ handle_template_undeploy() {
 
     local msg="Services removed from $target_stack successfully"
     [[ "$stack_deleted" == "true" ]] && msg="Stack $target_stack fully removed (no services remaining)"
+    [[ "$data_removed" == "true" ]] && msg="$msg — app data purged"
+    [[ "$images_removed" == "true" ]] && msg="$msg — images removed"
+    [[ "$routes_removed" == "true" ]] && msg="$msg — routes cleaned"
 
-    [[ "$data_removed" == "true" ]] && msg="$msg (configuration data removed)"
-
-    _api_success "{\"success\": true, \"template\": \"$(_api_json_escape "$name")\", \"target_stack\": \"$(_api_json_escape "$target_stack")\", \"services_removed\": $svc_removed_json, \"containers_removed\": $ctr_removed_json, \"backup_file\": \"docker-compose.yml.bak.${timestamp}\", \"stack_deleted\": $stack_deleted, \"data_removed\": $data_removed, \"message\": \"$msg\"}"
+    _api_success "{\"success\": true, \"template\": \"$(_api_json_escape "$name")\", \"target_stack\": \"$(_api_json_escape "$target_stack")\", \"services_removed\": $svc_removed_json, \"containers_removed\": $ctr_removed_json, \"backup_file\": \"docker-compose.yml.bak.${timestamp}\", \"stack_deleted\": $stack_deleted, \"data_removed\": $data_removed, \"images_removed\": $images_removed, \"routes_removed\": $routes_removed, \"message\": \"$msg\"}"
 }
 
 handle_template_import() {
@@ -7582,6 +9855,11 @@ handle_template_import() {
     # Prevent path traversal
     if [[ "$name" == *".."* || "$name" == *"/"* || -z "$name" ]]; then
         _api_error 400 "Invalid template name"
+        return
+    fi
+
+    # SECURITY: Scan imported compose for dangerous Docker features
+    if ! _api_scan_compose_security "$compose" "template import ($name)"; then
         return
     fi
 
@@ -7728,6 +10006,11 @@ handle_template_import_url() {
         return
     fi
 
+    # SECURITY: Scan fetched compose for dangerous Docker features
+    if ! _api_scan_compose_security "$compose_content" "URL import from $url"; then
+        return
+    fi
+
     # Extract service names for metadata
     local services
     services=$(printf '%s' "$compose_content" | grep -E '^  [a-zA-Z_-][a-zA-Z0-9_-]*:' | sed 's/:.*//' | tr -d ' ' | paste -sd ',' -)
@@ -7852,17 +10135,33 @@ handle_image_search() {
         return
     fi
 
-    local results
-    results=$(docker search --format '{"name":"{{.Name}}","description":"{{.Description}}","stars":{{.StarCount}},"official":"{{.IsOfficial}}","automated":"{{.IsAutomated}}"}' --limit "$limit" "$query" 2>/dev/null | sed 's/$/,/' | sed '$ s/,$//')
+    # SECURITY: Validate limit is a positive integer (prevents flag injection)
+    [[ "$limit" =~ ^[0-9]+$ ]] || limit=25
+    (( limit > 100 )) && limit=100
 
-    if [[ -z "$results" ]]; then
+    # SECURITY: Use --format with tab separators for safe, parseable output.
+    # Docker Hub descriptions can contain quotes/special chars — escaping each field prevents JSON injection.
+    local raw_results
+    raw_results=$(docker search --format '{{.Name}}\t{{.Description}}\t{{.StarCount}}\t{{.IsOfficial}}' --limit "$limit" -- "$query" 2>/dev/null)
+
+    if [[ -z "$raw_results" ]]; then
         _api_success "{\"results\": [], \"total\": 0, \"query\": \"$(_api_json_escape "$query")\"}"
         return
     fi
 
-    local count
-    count=$(echo "$results" | wc -l)
-    _api_success "{\"results\": [$results], \"total\": $count, \"query\": \"$(_api_json_escape "$query")\"}"
+    # Build JSON safely by escaping each field
+    local -a entries=()
+    while IFS=$'\t' read -r name desc stars official; do
+        [[ -z "$name" ]] && continue
+        [[ ! "$stars" =~ ^[0-9]+$ ]] && stars=0
+        entries+=("{\"name\":\"$(_api_json_escape "$name")\",\"description\":\"$(_api_json_escape "$desc")\",\"stars\":$stars,\"official\":\"$(_api_json_escape "$official")\"}")
+    done <<< "$raw_results"
+
+    local json
+    json=$(printf '%s,' "${entries[@]}")
+    json="[${json%,}]"
+
+    _api_success "{\"results\": $json, \"total\": ${#entries[@]}, \"query\": \"$(_api_json_escape "$query")\"}"
 }
 
 # POST /compose/validate — Validate a compose file
@@ -7929,6 +10228,8 @@ handle_export() {
             _api_success "$system_data"
             ;;
         config)
+            # SECURITY: Require admin role for config export (contains sensitive values)
+            if ! _api_check_admin; then _api_error 403 "Admin access required for config export"; return; fi
             local config_data="{}"
             if [[ -f "$BASE_DIR/.env" ]]; then
                 local vars=""
@@ -7936,6 +10237,13 @@ handle_export() {
                     [[ -z "$key" || "$key" == \#* ]] && continue
                     key=$(echo "$key" | xargs)
                     value=$(echo "$value" | xargs | sed 's/^"//; s/"$//')
+                    # SECURITY: Mask sensitive values (tokens, passwords, secrets, keys)
+                    local key_upper="${key^^}"
+                    if [[ "$key_upper" == *TOKEN* || "$key_upper" == *PASSWORD* || "$key_upper" == *SECRET* || "$key_upper" == *KEY* || "$key_upper" == *CREDENTIAL* ]]; then
+                        if [[ -n "$value" ]]; then
+                            value="${value:0:4}****"
+                        fi
+                    fi
                     vars="${vars}\"$(_api_json_escape "$key")\": \"$(_api_json_escape "$value")\","
                 done < "$BASE_DIR/.env"
                 vars="${vars%,}"
@@ -7997,7 +10305,7 @@ _audit_log() {
     printf '{"timestamp":"%s","action":"%s","detail":"%s"}\n' "$timestamp" "$escaped_action" "$escaped_detail" >> "$audit_file"
 
     # Fire webhooks if configured
-    _webhook_fire "$action" "$detail" 2>/dev/null &
+    _webhook_fire "$action" "$detail" >/dev/null 2>&1 &
 }
 
 # Webhook fire helper
@@ -8017,6 +10325,11 @@ _webhook_fire() {
 
     while IFS= read -r url; do
         [[ -z "$url" ]] && continue
+        # SECURITY: Re-validate URL at fire time to prevent DNS rebinding attacks.
+        # The URL was validated at creation, but DNS could have changed since then.
+        if ! _api_validate_url "$url" "webhook" 2>/dev/null; then
+            continue
+        fi
         curl -s -X POST -H "Content-Type: application/json" \
             -d "{\"event\": \"$(_api_json_escape "$event")\", \"detail\": \"$(_api_json_escape "$detail")\", \"timestamp\": \"$timestamp\"}" \
             --max-time 10 "$url" >/dev/null 2>&1 &
@@ -8123,6 +10436,9 @@ handle_webhook_test() {
         return
     fi
 
+    # SECURITY: Re-validate URL at test time (DNS could have changed since creation)
+    _api_validate_url "$url" "webhook test" || return
+
     local timestamp
     timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
     local http_code
@@ -8159,7 +10475,13 @@ handle_template_update() {
     # Update compose if provided
     local compose
     compose=$(printf '%s' "$body" | jq -r '.compose // empty' 2>/dev/null)
-    [[ -n "$compose" ]] && printf '%s' "$compose" > "$tdir/docker-compose.yml"
+    if [[ -n "$compose" ]]; then
+        # SECURITY: Scan compose content for dangerous Docker features
+        if ! _api_scan_compose_security "$compose" "template update ($name)"; then
+            return
+        fi
+        printf '%s' "$compose" > "$tdir/docker-compose.yml"
+    fi
 
     # Update metadata if provided
     local metadata
@@ -8640,10 +10962,22 @@ handle_setup_configure() {
     keys=$(echo "$env_vars" | jq -r 'keys[]' 2>/dev/null)
     local key val
     for key in $keys; do
+        # SECURITY: Validate key is a legal env var name (prevent injection)
+        if [[ ! "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then continue; fi
         val=$(echo "$env_vars" | jq -r --arg k "$key" '.[$k] // empty' 2>/dev/null)
+        # Sanitize CF_DNS_API_TOKEN — extract token if user pasted a curl command
+        if [[ "$key" == "CF_DNS_API_TOKEN" && "$val" == *"curl "* ]]; then
+            val=$(printf '%s' "$val" | grep -oP 'Bearer \K[A-Za-z0-9_-]+' | head -1)
+        fi
+        # Strip any value containing shell-dangerous characters (newlines, backticks, $())
+        val=$(printf '%s' "$val" | tr -d '\n\r' | sed 's/`//g')
+        # SECURITY: Escape sed delimiter and special chars in value
+        local safe_val="${val//\\/\\\\}"
+        safe_val="${safe_val//|/\\|}"
+        safe_val="${safe_val//&/\\&}"
         # Replace existing KEY=... line or append
         if echo "$env_content" | grep -q "^${key}="; then
-            env_content=$(echo "$env_content" | sed "s|^${key}=.*|${key}=\"${val}\"|")
+            env_content=$(echo "$env_content" | sed "s|^${key}=.*|${key}=\"${safe_val}\"|")
             ((env_updated++))
         else
             env_content+=$'\n'"${key}=\"${val}\""
@@ -8791,9 +11125,10 @@ handle_stack_rename() {
 
     mv "$old_dir" "$new_dir"
 
-    # Update DOCKER_STACKS in .env
+    # Update DOCKER_STACKS in .env (word-boundary matching to prevent partial replacements)
+    # Only replace within the DOCKER_STACKS line, not across the entire file
     if [[ -f "$BASE_DIR/.env" ]]; then
-        sed -i "s|$old_name|$new_name|g" "$BASE_DIR/.env"
+        sed -i "/^DOCKER_STACKS=/s|\b${old_name}\b|${new_name}|g" "$BASE_DIR/.env"
     fi
 
     _api_success "{\"success\": true, \"old_name\": \"$(_api_json_escape "$old_name")\", \"new_name\": \"$(_api_json_escape "$new_name")\"}"
@@ -9688,6 +12023,104 @@ handle_health_score_stack() {
     _api_success "{\"stack\": \"$(_api_json_escape "$stack")\", \"score\": $score, \"grade\": \"$grade\", \"containers\": {\"total\": $total, \"running\": $running, \"healthy\": $healthy, \"unhealthy\": $unhealthy, \"stopped\": $stopped, \"expected\": $expected_services}, \"timestamp\": \"$(date -u '+%Y-%m-%dT%H:%M:%SZ')\"}"
 }
 
+# =============================================================================
+# DASHBOARD LAYOUT PERSISTENCE
+# =============================================================================
+
+DASHBOARD_LAYOUTS_DIR="$BASE_DIR/.api-auth/dashboard-layouts"
+PROFILES_DIR="$BASE_DIR/.api-auth/profiles"
+
+# GET /settings/dashboard — Fetch user's dashboard layout
+handle_dashboard_layout_get() {
+    if ! _api_check_auth; then return; fi
+
+    local username="${AUTH_USERNAME:-default}"
+    mkdir -p "$DASHBOARD_LAYOUTS_DIR"
+    local layout_file="$DASHBOARD_LAYOUTS_DIR/${username}.json"
+
+    if [[ -f "$layout_file" ]]; then
+        local content
+        content=$(cat "$layout_file" 2>/dev/null)
+        _api_success "{\"layout\": $content}"
+    else
+        _api_success "{\"layout\": null}"
+    fi
+}
+
+# POST /settings/dashboard — Save user's dashboard layout
+handle_dashboard_layout_save() {
+    local body="$1"
+    if ! _api_check_auth; then return; fi
+
+    local username="${AUTH_USERNAME:-default}"
+    mkdir -p "$DASHBOARD_LAYOUTS_DIR"
+    local layout_file="$DASHBOARD_LAYOUTS_DIR/${username}.json"
+
+    if ! command -v jq >/dev/null 2>&1; then
+        _api_error 500 "jq is required"
+        return
+    fi
+
+    local layout
+    layout=$(printf '%s' "$body" | jq -c '.layout // empty' 2>/dev/null)
+    if [[ -z "$layout" || "$layout" == "null" ]]; then
+        _api_error 400 "Missing required field: layout"
+        return
+    fi
+
+    local card_count
+    card_count=$(printf '%s' "$layout" | jq '.cards | length' 2>/dev/null || echo 0)
+    if [[ "$card_count" -eq 0 ]]; then
+        _api_error 400 "Layout must contain at least one card"
+        return
+    fi
+
+    printf '%s' "$layout" > "$layout_file"
+    _api_success "{\"success\": true, \"cards\": $card_count}"
+}
+
+# GET /settings/profile — Fetch user's profile settings
+handle_profile_get() {
+    if ! _api_check_auth; then return; fi
+
+    local username="${AUTH_USERNAME:-default}"
+    mkdir -p "$PROFILES_DIR"
+    local profile_file="$PROFILES_DIR/${username}.json"
+
+    if [[ -f "$profile_file" ]]; then
+        local content
+        content=$(cat "$profile_file" 2>/dev/null)
+        _api_success "{\"profile\": $content}"
+    else
+        _api_success "{\"profile\": null}"
+    fi
+}
+
+# POST /settings/profile — Save user's profile settings
+handle_profile_save() {
+    local body="$1"
+    if ! _api_check_auth; then return; fi
+
+    local username="${AUTH_USERNAME:-default}"
+    mkdir -p "$PROFILES_DIR"
+    local profile_file="$PROFILES_DIR/${username}.json"
+
+    if ! command -v jq >/dev/null 2>&1; then
+        _api_error 500 "jq is required"
+        return
+    fi
+
+    local profile
+    profile=$(printf '%s' "$body" | jq -c '.profile // empty' 2>/dev/null)
+    if [[ -z "$profile" || "$profile" == "null" ]]; then
+        _api_error 400 "Missing required field: profile"
+        return
+    fi
+
+    printf '%s' "$profile" > "$profile_file"
+    _api_success "{\"success\": true}"
+}
+
 # GET /health/score/history?range=1h|24h|7d
 # Read health score history from metrics data
 handle_health_score_history() {
@@ -9865,8 +12298,15 @@ handle_plugin_install() {
         return
     fi
 
+    # SECURITY: Validate URL (SSRF protection) and prevent git option injection
+    _api_validate_url "$url" "Plugin clone URL" || return
+    if [[ "$url" == --* ]]; then
+        _api_error 400 "Invalid plugin URL"
+        return
+    fi
+
     local clone_output
-    clone_output=$(git clone --depth 1 "$url" "$target_dir" 2>&1)
+    clone_output=$(git clone --depth 1 -- "$url" "$target_dir" 2>&1)
     local exit_code=$?
 
     if [[ $exit_code -ne 0 ]]; then
@@ -9935,15 +12375,9 @@ handle_plugin_scaffold() {
             version=$(echo "$body" | jq -r '.version // "1.0.0"' 2>/dev/null)
             local author
             author=$(echo "$body" | jq -r '.author // "DCS Community"' 2>/dev/null)
-            cat > "$target_dir/plugin.json" <<MANIFEST_EOF
-{
-  "name": "$name",
-  "version": "$version",
-  "description": "$desc",
-  "author": "$author",
-  "enabled": false
-}
-MANIFEST_EOF
+            printf '{"name": "%s", "version": "%s", "description": "%s", "author": "%s", "enabled": false}\n' \
+                "$(_api_json_escape "$name")" "$(_api_json_escape "$version")" "$(_api_json_escape "$desc")" "$(_api_json_escape "$author")" \
+                > "$target_dir/plugin.json"
         fi
 
         # Write hook scripts
@@ -9972,6 +12406,26 @@ MANIFEST_EOF
   "enabled": false
 }
 MANIFEST_EOF
+    fi
+
+    # Write card definitions (dashboard widget cards)
+    if command -v jq >/dev/null 2>&1; then
+        local card_keys
+        card_keys=$(echo "$body" | jq -r '.cards // {} | keys[]' 2>/dev/null)
+        for card_name in $card_keys; do
+            if [[ ! "$card_name" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+                continue
+            fi
+            mkdir -p "$target_dir/cards/$card_name"
+            # Write card.json metadata
+            local card_meta
+            card_meta=$(echo "$body" | jq -c ".cards[\"$card_name\"].meta // {}" 2>/dev/null)
+            [[ -n "$card_meta" && "$card_meta" != "{}" ]] && printf '%s' "$card_meta" > "$target_dir/cards/$card_name/card.json"
+            # Write index.html content
+            local card_html
+            card_html=$(echo "$body" | jq -r ".cards[\"$card_name\"].html // empty" 2>/dev/null)
+            [[ -n "$card_html" ]] && printf '%s' "$card_html" > "$target_dir/cards/$card_name/index.html"
+        done
     fi
 
     # Read back manifest
@@ -10333,6 +12787,83 @@ handle_plugin_config_update() {
 }
 
 # =============================================================================
+# =============================================================================
+# PLUGIN CARDS — Custom dashboard card discovery and content serving
+# =============================================================================
+
+# GET /plugins/cards — List all available plugin cards across all enabled plugins
+handle_plugin_cards_list() {
+    if ! _api_check_auth; then return; fi
+
+    local -a entries=()
+    local plugin_dir
+    for plugin_dir in "$BASE_DIR/.plugins"/*/; do
+        [[ -d "$plugin_dir" ]] || continue
+        local plugin_name
+        plugin_name=$(basename "$plugin_dir")
+        local manifest="$plugin_dir/plugin.json"
+
+        # Skip disabled plugins
+        if [[ -f "$manifest" ]] && command -v jq >/dev/null 2>&1; then
+            local enabled
+            enabled=$(jq -r '.enabled // true' "$manifest" 2>/dev/null)
+            [[ "$enabled" == "false" ]] && continue
+        fi
+
+        # Scan cards/ directory
+        local card_dir
+        for card_dir in "$plugin_dir/cards"/*/; do
+            [[ -d "$card_dir" ]] || continue
+            local card_json="$card_dir/card.json"
+            [[ -f "$card_json" ]] || continue
+
+            if command -v jq >/dev/null 2>&1; then
+                local _card_dirname
+                _card_dirname=$(basename "$card_dir")
+                local card_meta
+                card_meta=$(jq -c --arg plugin "$plugin_name" --arg cid "plugin:${plugin_name}:${_card_dirname}" \
+                    '. + {plugin: $plugin, id: $cid}' "$card_json" 2>/dev/null)
+                [[ -n "$card_meta" ]] && entries+=("$card_meta")
+            fi
+        done
+    done
+
+    local json
+    if [[ ${#entries[@]} -gt 0 ]]; then
+        json=$(printf '%s,' "${entries[@]}")
+        json="[${json%,}]"
+    else
+        json="[]"
+    fi
+
+    _api_success "{\"cards\": $json, \"total\": ${#entries[@]}}"
+}
+
+# GET /plugins/:name/cards/:card — Return card HTML content as JSON
+handle_plugin_card_content() {
+    local plugin_name="$1"
+    local card_name="$2"
+
+    if [[ "$plugin_name" == *".."* || "$plugin_name" == *"/"* ]] || \
+       [[ "$card_name" == *".."* || "$card_name" == *"/"* ]]; then
+        _api_error 400 "Invalid plugin or card name"
+        return
+    fi
+
+    local html_file="$BASE_DIR/.plugins/$plugin_name/cards/$card_name/index.html"
+
+    if [[ ! -f "$html_file" ]]; then
+        _api_error 404 "Card not found: $plugin_name/$card_name"
+        return
+    fi
+
+    local content
+    content=$(cat "$html_file" 2>/dev/null)
+
+    _api_success "{\"plugin\": \"$(_api_json_escape "$plugin_name")\", \"card\": \"$(_api_json_escape "$card_name")\", \"html\": \"$(_api_json_escape "$content")\"}"
+}
+
+# =============================================================================
 # FEATURE: CONFIG SCHEMA
 # =============================================================================
 
@@ -10385,12 +12916,11 @@ handle_sse_stream() {
     # Start docker events listener in background
     local events_pid=""
     docker events --format '{{json .}}' 2>/dev/null | while IFS= read -r event_line; do
-        local escaped
-        escaped=$(_api_json_escape "$event_line")
         printf "event: docker-event\ndata: %s\n\n" "$event_line" 2>/dev/null || break
     done &
     events_pid=$!
 
+    # Ensure docker events process is killed when this function exits
     # Periodic metrics loop (every 5 seconds)
     local iteration=0
     while true; do
@@ -10414,9 +12944,9 @@ handle_sse_stream() {
         [[ $mem_total -gt 0 ]] && mem_pct=$(awk "BEGIN { printf \"%.1f\", (($mem_total - $mem_available) / $mem_total) * 100 }")
 
         local running
-        running=$(docker ps -q 2>/dev/null | wc -l)
+        running=$(timeout 3 docker ps -q 2>/dev/null | wc -l)
         local total
-        total=$(docker ps -a -q 2>/dev/null | wc -l)
+        total=$(timeout 3 docker ps -a -q 2>/dev/null | wc -l)
 
         local ts
         ts=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
@@ -10459,8 +12989,19 @@ handle_request() {
         [[ -z "$header" ]] && break
         # Capture content-length (case-insensitive)
         if [[ "${header,,}" == content-length:* ]]; then
-            content_length="${header#*: }"
-            content_length="${content_length// /}"
+            local _new_cl="${header#*: }"
+            _new_cl="${_new_cl// /}"
+            # SECURITY: Reject duplicate Content-Length (HTTP request smuggling vector)
+            if [[ "$content_length" -gt 0 ]] 2>/dev/null && [[ "$_new_cl" != "$content_length" ]]; then
+                _api_error 400 "Duplicate Content-Length headers with different values"
+                return
+            fi
+            content_length="$_new_cl"
+        fi
+        # SECURITY: Reject Transfer-Encoding (not supported, prevents request smuggling)
+        if [[ "${header,,}" == transfer-encoding:* ]]; then
+            _api_error 400 "Transfer-Encoding is not supported"
+            return
         fi
         # Capture authorization header (case-insensitive)
         if [[ "${header,,}" == authorization:* ]]; then
@@ -10473,17 +13014,27 @@ handle_request() {
         if [[ "${header,,}" == origin:* ]]; then
             REQUEST_ORIGIN_HEADER="${header#*: }"
             REQUEST_ORIGIN_HEADER="${REQUEST_ORIGIN_HEADER## }"
+            # SECURITY: Strip CR/LF from Origin to prevent HTTP response splitting.
+            # An attacker could inject headers via: Origin: http://localhost:1234\r\nSet-Cookie: evil
+            REQUEST_ORIGIN_HEADER="${REQUEST_ORIGIN_HEADER//$'\r'/}"
+            REQUEST_ORIGIN_HEADER="${REQUEST_ORIGIN_HEADER//$'\n'/}"
         fi
     done
 
     # Read request body if present (enforce size limit)
+    # SECURITY: Validate content_length is a positive integer (prevents injection via headers)
     local request_body=""
-    if [[ "$content_length" -gt 0 ]] 2>/dev/null; then
+    if [[ "$content_length" =~ ^[0-9]+$ ]] && [[ "$content_length" -gt 0 ]]; then
         if [[ "$content_length" -gt "$API_MAX_BODY_SIZE" ]]; then
             _api_error 413 "Request body too large. Maximum: ${API_MAX_BODY_SIZE} bytes"
             return
         fi
-        request_body=$(dd bs=1 count="$content_length" 2>/dev/null)
+        # Read body with timeout to prevent slowloris DoS.
+        # Use head -c for reliable reading (works across all platforms).
+        request_body=$(timeout 30 head -c "$content_length" 2>/dev/null) || {
+            _api_error 408 "Request timeout: body not received within 30 seconds"
+            return
+        }
     fi
 
     # Normalize path: strip trailing slash, lowercase
@@ -10493,6 +13044,13 @@ handle_request() {
     # Parse query string and strip from path for clean routing
     _api_parse_query "$path"
     path="${path%%\?*}"
+
+    # SECURITY: Reject URL-encoded path traversal attempts (%2e = '.', %2f = '/')
+    # Also reject null bytes (%00) and other encoded dangerous chars
+    if [[ "$path" == *"%2e"* || "$path" == *"%2E"* || "$path" == *"%2f"* || "$path" == *"%2F"* || "$path" == *"%00"* ]]; then
+        _api_error 400 "Invalid request path"
+        return
+    fi
 
     # Handle CORS preflight
     if [[ "$method" == "OPTIONS" ]]; then
@@ -10575,6 +13133,8 @@ handle_request() {
             /terminal/history)          handle_terminal_history ;;
             /system/metrics)            handle_system_metrics ;;
             /system/update/check)       handle_system_update_check ;;
+            /system/os-update/status)   handle_os_update_status ;;
+            /ddns/status)               handle_ddns_status ;;
             /alerts/config)             handle_alerts_config ;;
             /system/crontab)            handle_crontab ;;
             /system/crontab/system)     handle_crontab_system ;;
@@ -10587,13 +13147,25 @@ handle_request() {
             /templates/deploy-history)  handle_deploy_history ;;
             /automations)               handle_automations_list ;;
             /topology)                  handle_topology ;;
+            /traefik/status)            handle_traefik_status ;;
             /metrics/history)           handle_metrics_history ;;
             /metrics/summary)           handle_metrics_summary ;;
             /health/score)              handle_health_score ;;
             /health/score/history)      handle_health_score_history ;;
+            /settings/dashboard)        handle_dashboard_layout_get ;;
+            /settings/profile)          handle_profile_get ;;
             /secrets)                   handle_secrets_list ;;
             /schedules)                 handle_schedules_list ;;
             /plugins)                   handle_plugins_list ;;
+            /plugins/cards)             handle_plugin_cards_list ;;
+            /plugins/*/cards/*)
+                local pname="${path#/plugins/}"
+                local cname="${pname#*/cards/}"
+                pname="${pname%%/*}"
+                cname="${cname%%/*}"
+                _api_validate_resource_name "$pname" "plugin" || return
+                handle_plugin_card_content "$pname" "$cname"
+                ;;
             /plugins/*/hooks/*)
                 local pname="${path#/plugins/}"
                 local hook_name="${pname#*/hooks/}"
@@ -10682,7 +13254,6 @@ handle_request() {
                 handle_snapshot_download "$snap"
                 ;;
             /stacks/*/compose/history/*)
-                # View specific version content: /stacks/:name/compose/history/:version_id
                 local stack="${path#/stacks/}"
                 local version_id="${stack##*/compose/history/}"
                 stack="${stack%%/compose/history/*}"
@@ -10797,9 +13368,10 @@ handle_request() {
 
         # Auth endpoints that do NOT require authentication
         case "$path" in
-            /auth/setup)    handle_auth_setup "$request_body"; return ;;
-            /auth/login)    handle_auth_login "$request_body"; return ;;
-            /auth/register) handle_auth_register "$request_body"; return ;;
+            /auth/setup)          handle_auth_setup "$request_body"; return ;;
+            /auth/login)          handle_auth_login "$request_body"; return ;;
+            /auth/register)       handle_auth_register "$request_body"; return ;;
+            /auth/totp/validate)  handle_totp_validate "$request_body"; return ;;
         esac
 
         # All other POST endpoints require authentication
@@ -10807,6 +13379,9 @@ handle_request() {
             _api_error 401 "Authentication required. Provide Authorization: Bearer <token> header."
             return
         fi
+
+        # SECURITY: Audit log ALL authenticated POST requests (write operations)
+        _api_audit_log "$client_ip" "POST" "${AUTH_USERNAME:-unknown}" "$path"
 
         # Setup wizard endpoints (require auth + setup not complete)
         case "$path" in
@@ -10816,8 +13391,11 @@ handle_request() {
 
         # Auth session management endpoints (any authenticated user)
         case "$path" in
-            /auth/logout)   handle_auth_logout; return ;;
-            /auth/refresh)  handle_auth_refresh; return ;;
+            /auth/logout)        handle_auth_logout; return ;;
+            /auth/refresh)       handle_auth_refresh; return ;;
+            /auth/totp/setup)    handle_totp_setup "$request_body"; return ;;
+            /auth/totp/verify)   handle_totp_verify "$request_body"; return ;;
+            /auth/totp/disable)  handle_totp_disable "$request_body"; return ;;
         esac
 
         # Auth endpoints that require admin
@@ -10859,6 +13437,12 @@ handle_request() {
                 ;;
             /system/update/rollback)
                 handle_system_update_rollback "$request_body"
+                ;;
+            /system/os-update/check)
+                handle_os_update_check "$request_body"
+                ;;
+            /system/os-update/apply)
+                handle_os_update_apply "$request_body"
                 ;;
             /stacks)
                 handle_create_stack "$request_body"
@@ -10994,6 +13578,12 @@ handle_request() {
                 stack="${stack%/compose/rollback}"
                 _api_validate_stack_name "$stack" || return
                 handle_compose_rollback "$stack" "$request_body"
+                ;;
+            /settings/dashboard)
+                handle_dashboard_layout_save "$request_body"
+                ;;
+            /settings/profile)
+                handle_profile_save "$request_body"
                 ;;
             /metrics/snapshot)
                 handle_metrics_snapshot
@@ -11179,6 +13769,9 @@ handle_request() {
             return
         fi
 
+        # SECURITY: Audit log ALL DELETE requests
+        _api_audit_log "$client_ip" "DELETE" "${AUTH_USERNAME:-unknown}" "$path"
+
         case "$path" in
             /auth/sessions/*)
                 local token_prefix="${path#/auth/sessions/}"
@@ -11292,6 +13885,9 @@ start_server() {
 
     # Write PID file (use $BASHPID for the actual process PID, not $$ which is always the parent)
     echo "${BASHPID:-$$}" > "$API_PID_FILE"
+
+    # SECURITY: Graceful shutdown handler — clean up child processes and temp files
+    trap 'echo ""; echo "  Shutting down API server..."; kill $(jobs -p) 2>/dev/null; rm -f "$API_PID_FILE"; exit 0' SIGTERM SIGINT SIGHUP
 
     local self_path
     self_path="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"

@@ -1,0 +1,47 @@
+{
+  "name": "authelia",
+  "title": "Authelia",
+  "description": "SSO and two-factor authentication for all your services. Protects apps behind Traefik with single sign-on, WebAuthn, TOTP, and access control policies.",
+  "category": "security",
+  "target_stack": "networking-security",
+  "icon": "🛡️",
+  "tags": ["auth", "sso", "2fa", "security", "oidc", "reverse-proxy", "webauthn"],
+  "config_path": "Authelia/config",
+  "variables": [
+    {
+      "name": "HOST_PORT",
+      "label": "Host Port",
+      "description": "Port exposed on the host (Traefik routes internally, this is for direct access)",
+      "default": "9091",
+      "required": false
+    },
+    {
+      "name": "AUTHELIA_ADMIN_USER",
+      "label": "Admin Username",
+      "description": "Primary admin username for Authelia login",
+      "default": "",
+      "required": true
+    },
+    {
+      "name": "AUTHELIA_ADMIN_DISPLAY",
+      "label": "Display Name",
+      "description": "Full name shown in the Authelia portal",
+      "default": "",
+      "required": false
+    },
+    {
+      "name": "AUTHELIA_ADMIN_EMAIL",
+      "label": "Admin Email",
+      "description": "Email address for notifications and password resets",
+      "default": "",
+      "required": true
+    },
+    {
+      "name": "AUTHELIA_ADMIN_PASSWORD",
+      "label": "Admin Password",
+      "description": "Password for the admin account (will be hashed with Argon2id)",
+      "default": "",
+      "required": true
+    }
+  ]
+}

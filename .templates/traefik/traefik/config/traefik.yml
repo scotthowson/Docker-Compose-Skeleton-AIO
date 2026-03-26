@@ -2,7 +2,7 @@
 # Traefik Static Configuration
 # =============================================================================
 # Main Traefik configuration — deployed by Docker Compose Skeleton.
-# Template variables (${TRAEFIK_DOMAIN}, etc.) are substituted at deploy time.
+# Template variables (${TRAEFIK_DOMAIN:-example.com}, etc.) are substituted at deploy time.
 # Documentation: https://doc.traefik.io/traefik/
 # =============================================================================
 
@@ -46,7 +46,7 @@ entryPoints:
         - '2a06:98c0::/29'
         - '2c0f:f248::/32'
         # Local network
-        - ${TRAEFIK_TRUSTED_LAN}
+        - ${TRAEFIK_TRUSTED_LAN:-192.168.1.0/24}
     http:
       redirections:
         entryPoint:
@@ -61,9 +61,9 @@ entryPoints:
       tls:
         certResolver: letsencrypt
         domains:
-          - main: ${TRAEFIK_DOMAIN}
+          - main: ${TRAEFIK_DOMAIN:-example.com}
             sans:
-              - '*.${TRAEFIK_DOMAIN}'
+              - '*.${TRAEFIK_DOMAIN:-example.com}'
 
 # -----------------------------------------------------------------------------
 # Plugins (optional — uncomment to enable)
@@ -108,7 +108,7 @@ providers:
   docker:
     watch: true
     network: proxy
-    defaultRule: 'Host(`{{ lower (trimPrefix `/` .Name )}}.${TRAEFIK_DOMAIN}`)'
+    defaultRule: 'Host(`{{ lower (trimPrefix `/` .Name )}}.${TRAEFIK_DOMAIN:-example.com}`)'
     exposedByDefault: false
     endpoint: 'tcp://Docker-Socket:2375'
 
@@ -134,7 +134,7 @@ log:
 certificatesResolvers:
   letsencrypt:
     acme:
-      email: ${TRAEFIK_ACME_EMAIL}
+      email: ${TRAEFIK_ACME_EMAIL:-admin@example.com}
       storage: /etc/traefik/acme.json
       # DNS challenge via Cloudflare (recommended for wildcard certs)
       dnsChallenge:
