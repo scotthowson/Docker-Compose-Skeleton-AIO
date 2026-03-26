@@ -8826,10 +8826,6 @@ AUTH_ROUTE_EOF
     # -----------------------------------------------------------------------
     _cloudflare_add_dns() {
         local subdomain="$1" domain="$2" cf_token="$3"
-        # Debug trace
-        printf '[%s] _cloudflare_add_dns called: sub=%s domain=%s token=%s\n' \
-            "$(date -Iseconds)" "$subdomain" "$domain" "${cf_token:0:8}..." \
-            >> "$BASE_DIR/.api-auth/cf-debug.log" 2>/dev/null
         [[ -z "$cf_token" || -z "$domain" || -z "$subdomain" ]] && return 0
         command -v curl >/dev/null 2>&1 || return 0
         command -v jq >/dev/null 2>&1 || return 0
@@ -8886,10 +8882,6 @@ AUTH_ROUTE_EOF
         local success
         success=$(printf '%s' "$create_resp" | jq -r '.success // false' 2>/dev/null)
 
-        # Debug: log result regardless of success
-        printf '[%s] CF create %s: success=%s resp=%s\n' \
-            "$(date -Iseconds)" "$fqdn" "$success" "$(printf '%s' "$create_resp" | head -c 200)" \
-            >> "$BASE_DIR/.api-auth/cf-debug.log" 2>/dev/null
         if [[ "$success" == "true" ]]; then
             printf '[%s] CREATED %s → %s (CNAME, proxied)\n' "$(date -Iseconds)" "$fqdn" "$domain" >> "$BASE_DIR/.api-auth/cf-dns-audit.log" 2>/dev/null
         fi
@@ -8905,9 +8897,6 @@ AUTH_ROUTE_EOF
     # which auto-discovers new .yml files (no restart needed).
     # Skip for the traefik template itself (it ships its own routes).
     # -----------------------------------------------------------------------
-    printf '[%s] AUTO-ROUTE CHECK: name=%s routes_dir=[%s] domain=[%s]\n' \
-        "$(date -Iseconds)" "$name" "$traefik_routes_dir" "$traefik_domain" \
-        >> "$BASE_DIR/.api-auth/cf-debug.log" 2>/dev/null
     if [[ "$name" != "traefik" ]]; then
         # traefik_routes_dir and traefik_domain already computed above
         if [[ -n "$traefik_routes_dir" && -n "$traefik_domain" && "$traefik_domain" != "example.com" ]]; then
