@@ -2244,12 +2244,14 @@ handle_stack_action() {
             output=$($DOCKER_COMPOSE_CMD "${compose_args[@]}" up -d --remove-orphans 2>&1) || success=false
             ;;
         stop)
-            output=$($DOCKER_COMPOSE_CMD "${compose_args[@]}" down --remove-orphans --timeout 30 2>&1) || success=false
+            # Run in background with timeout to prevent API request timeout on slow shutdowns
+            ( $DOCKER_COMPOSE_CMD "${compose_args[@]}" down --remove-orphans --timeout 15 >/dev/null 2>&1 ) &
+            output="Stopping $stack (background)"
             ;;
         restart)
-            output=$($DOCKER_COMPOSE_CMD "${compose_args[@]}" down --remove-orphans --timeout 30 2>&1) || true
-            output+=$'\n'
-            output+=$($DOCKER_COMPOSE_CMD "${compose_args[@]}" up -d --remove-orphans 2>&1) || success=false
+            ( $DOCKER_COMPOSE_CMD "${compose_args[@]}" down --remove-orphans --timeout 15 >/dev/null 2>&1
+              $DOCKER_COMPOSE_CMD "${compose_args[@]}" up -d --remove-orphans >/dev/null 2>&1 ) &
+            output="Restarting $stack (background)"
             ;;
         update)
             # Record pre-update IDs
@@ -4502,9 +4504,9 @@ handle_batch_stacks() {
 
         local output success=true
         case "$action" in
-            start)   output=$($DOCKER_COMPOSE_CMD "${compose_args[@]}" up -d 2>&1) || success=false ;;
-            stop)    output=$($DOCKER_COMPOSE_CMD "${compose_args[@]}" down 2>&1) || success=false ;;
-            restart) output=$($DOCKER_COMPOSE_CMD "${compose_args[@]}" restart 2>&1) || success=false ;;
+            start)   output=$(timeout 60 $DOCKER_COMPOSE_CMD "${compose_args[@]}" up -d 2>&1) || success=false ;;
+            stop)    output=$(timeout 30 $DOCKER_COMPOSE_CMD "${compose_args[@]}" down --timeout 10 2>&1) || success=false ;;
+            restart) output=$(timeout 60 $DOCKER_COMPOSE_CMD "${compose_args[@]}" down --timeout 10 2>&1 && $DOCKER_COMPOSE_CMD "${compose_args[@]}" up -d 2>&1) || success=false ;;
         esac
 
         results+=("{\"stack\": \"$(_api_json_escape "$stack")\", \"success\": $success, \"message\": \"$(_api_json_escape "$output")\"}")
