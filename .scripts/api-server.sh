@@ -6968,11 +6968,10 @@ _ddns_update_loop() {
     done
 }
 
-# Start DDNS loop in background if enabled
-if [[ "$DDNS_ENABLED" == "true" && -n "${CF_DNS_API_TOKEN:-}" && -n "${TRAEFIK_DOMAIN:-}" ]]; then
-    _ddns_update_loop &
-    echo "$!" > "$DDNS_PID_FILE"
-fi
+# DDNS loop is started inside start_server() — NOT here at top level.
+# Top-level code runs for EVERY socat request handler fork. Starting the
+# DDNS loop here would spawn a new loop per HTTP request, leaking thousands
+# of sleep processes.
 
 # GET /ddns/status — Check DDNS status and current IP
 handle_ddns_status() {
@@ -13882,6 +13881,13 @@ start_server() {
 
     local self_path
     self_path="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+
+    # Start DDNS loop (only once, in the server process — not per-request)
+    if [[ "$DDNS_ENABLED" == "true" && -n "${CF_DNS_API_TOKEN:-}" && -n "${TRAEFIK_DOMAIN:-}" ]]; then
+        _ddns_update_loop &
+        local _ddns_pid=$!
+        echo "$_ddns_pid" > "${DDNS_PID_FILE:-/tmp/dcs-ddns.pid}" 2>/dev/null
+    fi
 
     # Start the listener — socat/ncat invoke this script with --handle-request
     # which triggers the internal request handler (see ENTRY POINT below)
