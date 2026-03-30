@@ -3,6 +3,8 @@ services:
     container_name: Docker-Socket
     image: tecnativa/docker-socket-proxy:latest
     restart: unless-stopped
+    security_opt:
+      - label:disable
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     environment:
