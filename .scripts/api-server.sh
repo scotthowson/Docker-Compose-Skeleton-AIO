@@ -4104,11 +4104,35 @@ handle_container_action() {
     local success=true
 
     case "$action" in
-        start)   output=$(docker start -- "$name" 2>&1) || success=false ;;
-        stop)    output=$(docker stop -- "$name" 2>&1) || success=false ;;
-        restart) output=$(docker restart -- "$name" 2>&1) || success=false ;;
-        remove)  output=$(docker rm -f -- "$name" 2>&1) || success=false ;;
-        *)       _api_error 400 "Unknown action: $action"; return ;;
+        start)    output=$(docker start -- "$name" 2>&1) || success=false ;;
+        stop)     output=$(docker stop -- "$name" 2>&1) || success=false ;;
+        restart)  output=$(docker restart -- "$name" 2>&1) || success=false ;;
+        recreate)
+            local img
+            img=$(docker inspect --format='{{.Config.Image}}' "$name" 2>/dev/null)
+            docker pull "$img" >/dev/null 2>&1 || true
+            output=$(docker stop -- "$name" 2>&1 && docker rm -- "$name" 2>&1) || success=false
+            if [[ "$success" == "true" ]]; then
+                # Find the compose file that owns this container and recreate
+                local _stack_dir
+                for _sd in "$COMPOSE_DIR"/*/docker-compose.yml; do
+                    if grep -q "container_name: $name" "$_sd" 2>/dev/null; then
+                        _stack_dir=$(dirname "$_sd")
+                        break
+                    fi
+                done
+                if [[ -n "$_stack_dir" ]]; then
+                    local _env_args=()
+                    [[ -f "$_stack_dir/.env" ]] && _env_args=(--env-file "$_stack_dir/.env")
+                    output=$($DOCKER_COMPOSE_CMD -f "$_stack_dir/docker-compose.yml" "${_env_args[@]}" up -d --force-recreate --no-deps "$name" 2>&1) || success=false
+                else
+                    output="Container recreated but no compose file found — started from pulled image"
+                    docker run -d --name "$name" "$img" >/dev/null 2>&1 || success=false
+                fi
+            fi
+            ;;
+        remove)   output=$(docker rm -f -- "$name" 2>&1) || success=false ;;
+        *)        _api_error 400 "Unknown action: $action"; return ;;
     esac
 
     local escaped_output
@@ -8830,6 +8854,7 @@ http:
       forwardAuth:
         address: "http://Authelia:9091/api/authz/forward-auth"
         trustForwardHeader: true
+        maxResponseBodySize: 4096
         authResponseHeaders:
           - "Remote-User"
           - "Remote-Groups"
@@ -9200,7 +9225,7 @@ print('\n'.join(result))
             done
 
             # Start containers
-            $DOCKER_COMPOSE_CMD -f "$target_dir/docker-compose.yml" "${env_up[@]}" up -d --force-recreate --remove-orphans >/dev/null 2>&1
+            $DOCKER_COMPOSE_CMD -f "$target_dir/docker-compose.yml" "${env_up[@]}" up -d --no-recreate --remove-orphans >/dev/null 2>&1
 
             # Connect routed containers to the 'proxy' network so Traefik can reach them.
             # Controlled by the connect_proxy flag from the deploy request.
@@ -13497,6 +13522,12 @@ handle_request() {
                 container="${container%/restart}"
                 _api_validate_resource_name "$container" "container" || return
                 handle_container_action "$container" "restart"
+                ;;
+            /containers/*/recreate)
+                local container="${path#/containers/}"
+                container="${container%/recreate}"
+                _api_validate_resource_name "$container" "container" || return
+                handle_container_action "$container" "recreate"
                 ;;
             /containers/*/remove)
                 local container="${path#/containers/}"
