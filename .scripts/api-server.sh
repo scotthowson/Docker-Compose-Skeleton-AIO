@@ -9149,16 +9149,28 @@ print('\n'.join(result))
         [[ -z "$_infra_cf_token" ]] && _infra_cf_token=$(printf '%s' "$body" | jq -r '.variables.CF_DNS_API_TOKEN // empty' 2>/dev/null)
         [[ -z "$_infra_cf_token" ]] && _infra_cf_token=$(grep -m1 '^CF_DNS_API_TOKEN=' "$COMPOSE_DIR"/*/".env" "$BASE_DIR/.env" 2>/dev/null | head -1 | cut -d'=' -f2- | tr -d '"' | tr -d "'")
 
+        printf '[%s] INFRA-DNS: name=%s domain=%s token=%s\n' \
+            "$(date -Iseconds)" "$name" "$traefik_domain" "${_infra_cf_token:0:8}" \
+            >> "$BASE_DIR/.api-auth/cf-dns-audit.log" 2>/dev/null
+
         if [[ -n "$_infra_cf_token" ]]; then
             case "$name" in
                 traefik)
                     _cloudflare_add_dns "traefik" "$traefik_domain" "$_infra_cf_token"
+                    sleep 2
                     ;;
                 authelia)
                     _cloudflare_add_dns "auth" "$traefik_domain" "$_infra_cf_token"
+                    sleep 2
                     ;;
             esac
+        else
+            printf '[%s] INFRA-DNS: NO TOKEN FOUND\n' "$(date -Iseconds)" \
+                >> "$BASE_DIR/.api-auth/cf-dns-audit.log" 2>/dev/null
         fi
+    else
+        printf '[%s] INFRA-DNS: NO DOMAIN (traefik_domain empty)\n' "$(date -Iseconds)" \
+            >> "$BASE_DIR/.api-auth/cf-dns-audit.log" 2>/dev/null
     fi
 
     # Auto-start if requested — run in background so API responds immediately.

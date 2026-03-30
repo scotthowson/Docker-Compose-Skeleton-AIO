@@ -19,9 +19,10 @@ services:
       - "2375"
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:2375/version"]
-      interval: 30s
+      interval: 10s
       timeout: 5s
-      retries: 3
+      retries: 5
+      start_period: 15s
 
   traefik:
     container_name: Traefik
