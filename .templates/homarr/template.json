@@ -1,7 +1,7 @@
 {
   "name": "homarr",
   "title": "Homarr",
-  "description": "Homarr modern dashboard for managing and monitoring your server with Docker integration",
+  "description": "Modern dashboard for managing and monitoring your server with Docker integration, service bookmarks, and system stats",
   "category": "web",
   "target_stack": "web-applications",
   "icon": "🧭",
@@ -17,9 +17,10 @@
     {
       "name": "SECRET_ENCRYPTION_KEY",
       "label": "Encryption Key",
-      "description": "Secret key used to encrypt sensitive data (generate with: openssl rand -hex 32)",
+      "description": "64-character hex key for encrypting sensitive data. Leave blank to auto-generate.",
       "default": "",
-      "required": true
+      "required": false,
+      "generate": "hex64"
     }
   ]
 }

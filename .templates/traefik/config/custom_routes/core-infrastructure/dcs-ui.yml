@@ -10,13 +10,12 @@ http:
     dcs-ui-router:
       entryPoints:
         - "websecure"
-      rule: "Host(`ui.${TRAEFIK_DOMAIN}`)"
+      rule: "Host(`ui.${TRAEFIK_DOMAIN:-example.com}`)"
       service: "dcs-ui"
       middlewares:
         - "traefik-chain"
         - "compress-gzip"
-      tls:
-        certResolver: "letsencrypt"
+      tls: {}
 
   services:
     dcs-ui:

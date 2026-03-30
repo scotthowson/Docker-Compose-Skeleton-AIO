@@ -93,7 +93,7 @@ generate_random_string() {
 
 # Get Current Network IP
 get_network_ip() {
-    ip -4 addr show "$DEFAULT_NETWORK_INTERFACE" | grep -oP '(?<=inet\s)\d+(\.\d+){3}'
+    ip -4 addr show "$DEFAULT_NETWORK_INTERFACE" | grep -o '[0-9]\+\.[0-9]\+\.[0-9]\+\.[0-9]\+' | head -1
 }
 
 # Display Disk Usage

@@ -2241,10 +2241,10 @@ handle_stack_action() {
 
     case "$action" in
         start)
-            output=$($DOCKER_COMPOSE_CMD "${compose_args[@]}" up -d --remove-orphans 2>&1) || success=false
+            ( $DOCKER_COMPOSE_CMD "${compose_args[@]}" up -d --remove-orphans >/dev/null 2>&1 ) &
+            output="Starting $stack (background)"
             ;;
         stop)
-            # Run in background with timeout to prevent API request timeout on slow shutdowns
             ( $DOCKER_COMPOSE_CMD "${compose_args[@]}" down --remove-orphans --timeout 15 >/dev/null 2>&1 ) &
             output="Stopping $stack (background)"
             ;;
@@ -4502,14 +4502,14 @@ handle_batch_stacks() {
         local compose_args=(-f "$compose_file")
         [[ -f "$COMPOSE_DIR/$stack/.env" ]] && compose_args+=(--env-file "$COMPOSE_DIR/$stack/.env")
 
-        local output success=true
+        # Run each stack action in background — API responds immediately
         case "$action" in
-            start)   output=$(timeout 60 $DOCKER_COMPOSE_CMD "${compose_args[@]}" up -d 2>&1) || success=false ;;
-            stop)    output=$(timeout 30 $DOCKER_COMPOSE_CMD "${compose_args[@]}" down --timeout 10 2>&1) || success=false ;;
-            restart) output=$(timeout 60 $DOCKER_COMPOSE_CMD "${compose_args[@]}" down --timeout 10 2>&1 && $DOCKER_COMPOSE_CMD "${compose_args[@]}" up -d 2>&1) || success=false ;;
+            start)   ( $DOCKER_COMPOSE_CMD "${compose_args[@]}" up -d >/dev/null 2>&1 ) & ;;
+            stop)    ( $DOCKER_COMPOSE_CMD "${compose_args[@]}" down --timeout 10 >/dev/null 2>&1 ) & ;;
+            restart) ( $DOCKER_COMPOSE_CMD "${compose_args[@]}" down --timeout 10 >/dev/null 2>&1; $DOCKER_COMPOSE_CMD "${compose_args[@]}" up -d >/dev/null 2>&1 ) & ;;
         esac
 
-        results+=("{\"stack\": \"$(_api_json_escape "$stack")\", \"success\": $success, \"message\": \"$(_api_json_escape "$output")\"}")
+        results+=("{\"stack\": \"$(_api_json_escape "$stack")\", \"success\": true, \"message\": \"$action queued\"}")
     done
 
     local results_json
@@ -7129,7 +7129,7 @@ handle_metrics_trends() {
     while IFS= read -r line; do
         [[ -z "$line" ]] && continue
         local epoch
-        epoch=$(printf '%s' "$line" | grep -oP '"epoch":\K[0-9]+' 2>/dev/null || echo 0)
+        epoch=$(printf '%s' "$line" | sed -n 's/.*"epoch":\([0-9]*\).*/\1/p' 2>/dev/null || echo 0)
         [[ $epoch -ge $cutoff ]] && points+=("$line")
     done < "$METRICS_HISTORY_FILE"
 
@@ -7385,7 +7385,7 @@ handle_notification_test() {
     tags=$(printf '%s' "$body" | jq -r '.tags // "test,docker"' 2>/dev/null)
 
     local result
-    result=$(curl -s -o /dev/null -w "%{http_code}" \
+    result=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 \
         -H "Title: $title" \
         -H "Priority: $priority" \
         -H "Tags: $tags" \
@@ -9031,7 +9031,7 @@ ROUTE_EOF
                         local _route_file="$traefik_routes_dir/$target_stack/${_svc_name}.yml"
                         if [[ -f "$_route_file" ]]; then
                             local _host_sub
-                            _host_sub=$(grep -oP 'Host\(`\K[^.]+' "$_route_file" 2>/dev/null | head -1)
+                            _host_sub=$(sed -n 's/.*Host(`\([^.]*\).*/\1/p' "$_route_file" 2>/dev/null | head -1)
                             [[ -n "$_host_sub" ]] && _dns_sub="$_host_sub"
                         fi
                         _cloudflare_add_dns "$_dns_sub" "$traefik_domain" "$_cf_token"
@@ -9174,7 +9174,7 @@ print('\n'.join(result))
                 for _rf in "$traefik_routes_dir/$target_stack"/*.yml; do
                     [[ -f "$_rf" ]] || continue
                     local _cname
-                    _cname=$(grep -oP '(?<=url: "https?://)[^:]+' "$_rf" 2>/dev/null | head -1)
+                    _cname=$(sed -n 's|.*url: "https\{0,1\}://\([^:]*\).*|\1|p' "$_rf" 2>/dev/null | head -1)
                     [[ -n "$_cname" ]] && docker network connect proxy "$_cname" 2>/dev/null || true
                 done
             fi
@@ -9720,7 +9720,7 @@ handle_template_undeploy() {
             local _sub="$svc"
             if [[ -f "$_rf" ]]; then
                 local _hsub
-                _hsub=$(grep -oP 'Host\(`\K[^.]+' "$_rf" 2>/dev/null | head -1)
+                _hsub=$(sed -n 's/.*Host(`\([^.]*\).*/\1/p' "$_rf" 2>/dev/null | head -1)
                 [[ -n "$_hsub" ]] && _sub="$_hsub"
                 rm -f "$_rf" && routes_removed="true"
             fi
@@ -10957,7 +10957,7 @@ handle_setup_configure() {
         val=$(echo "$env_vars" | jq -r --arg k "$key" '.[$k] // empty' 2>/dev/null)
         # Sanitize CF_DNS_API_TOKEN — extract token if user pasted a curl command
         if [[ "$key" == "CF_DNS_API_TOKEN" && "$val" == *"curl "* ]]; then
-            val=$(printf '%s' "$val" | grep -oP 'Bearer \K[A-Za-z0-9_-]+' | head -1)
+            val=$(printf '%s' "$val" | sed -n 's/.*Bearer \([A-Za-z0-9_-]*\).*/\1/p' | head -1)
         fi
         # Strip any value containing shell-dangerous characters (newlines, backticks, $())
         val=$(printf '%s' "$val" | tr -d '\n\r' | sed 's/`//g')
@@ -11236,7 +11236,7 @@ handle_metrics_history() {
         while IFS= read -r line; do
             [[ -z "$line" ]] && continue
             local ts_val
-            ts_val=$(printf '%s' "$line" | grep -oP '"ts":\K[0-9]+' 2>/dev/null || echo 0)
+            ts_val=$(printf '%s' "$line" | sed -n 's/.*"ts":\([0-9]*\).*/\1/p' 2>/dev/null || echo 0)
             [[ $ts_val -ge $cutoff ]] && points+=("$line")
         done < "$mfile"
     done
@@ -11286,7 +11286,7 @@ handle_metrics_summary() {
         while IFS= read -r line; do
             [[ -z "$line" ]] && continue
             local ts_val
-            ts_val=$(printf '%s' "$line" | grep -oP '"ts":\K[0-9]+' 2>/dev/null || echo 0)
+            ts_val=$(printf '%s' "$line" | sed -n 's/.*"ts":\([0-9]*\).*/\1/p' 2>/dev/null || echo 0)
             [[ $ts_val -ge $cutoff ]] && echo "$line" >> "$tmpfile"
         done < "$mfile"
     done
@@ -11822,8 +11822,8 @@ handle_schedule_history() {
         if command -v jq >/dev/null 2>&1; then
             line_id=$(printf '%s' "$line" | jq -r '.schedule_id // .id // empty' 2>/dev/null)
         else
-            line_id=$(printf '%s' "$line" | grep -oP '"schedule_id" *: *"\K[^"]+' 2>/dev/null || \
-                      printf '%s' "$line" | grep -oP '"id" *: *"\K[^"]+' 2>/dev/null || echo "")
+            line_id=$(printf '%s' "$line" | sed -n 's/.*"schedule_id" *: *"\([^"]*\).*/\1/p' 2>/dev/null)
+            [[ -z "$line_id" ]] && line_id=$(printf '%s' "$line" | sed -n 's/.*"id" *: *"\([^"]*\).*/\1/p' 2>/dev/null)
         fi
         [[ "$line_id" == "$sched_id" ]] && entries+=("$line")
     done < "$history_file"
@@ -12142,11 +12142,11 @@ handle_health_score_history() {
         while IFS= read -r line; do
             [[ -z "$line" ]] && continue
             local ts_val
-            ts_val=$(printf '%s' "$line" | grep -oP '"ts":\K[0-9]+' 2>/dev/null || echo 0)
+            ts_val=$(printf '%s' "$line" | sed -n 's/.*"ts":\([0-9]*\).*/\1/p' 2>/dev/null || echo 0)
             if [[ $ts_val -ge $cutoff ]]; then
                 # Extract health_score field if present
                 local hs
-                hs=$(printf '%s' "$line" | grep -oP '"health_score":\K[0-9]+' 2>/dev/null || echo "")
+                hs=$(printf '%s' "$line" | sed -n 's/.*"health_score":\([0-9]*\).*/\1/p' 2>/dev/null || echo "")
                 if [[ -n "$hs" ]]; then
                     points+=("{\"ts\": $ts_val, \"score\": $hs}")
                 fi

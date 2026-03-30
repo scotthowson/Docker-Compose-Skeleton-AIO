@@ -1,46 +1,47 @@
 {
   "name": "authelia",
   "title": "Authelia",
-  "description": "Open-source authentication and authorization server providing two-factor authentication, single sign-on (SSO), and access control for your applications via a reverse proxy.",
-  "category": "web",
+  "description": "SSO and two-factor authentication for all your services. Protects apps behind Traefik with single sign-on, WebAuthn, TOTP, and access control policies.",
+  "category": "security",
   "target_stack": "networking-security",
-  "icon": "\ud83d\udee1\ufe0f",
-  "tags": ["auth", "sso", "2fa", "security", "ldap", "oidc", "reverse-proxy"],
+  "icon": "🛡️",
+  "tags": ["auth", "sso", "2fa", "security", "oidc", "reverse-proxy", "webauthn"],
+  "config_path": "Authelia/config",
   "variables": [
     {
       "name": "HOST_PORT",
       "label": "Host Port",
-      "description": "Port exposed on the host for Authelia web interface",
+      "description": "Port exposed on the host (Traefik routes internally, this is for direct access)",
       "default": "9091",
       "required": false
     },
     {
-      "name": "AUTHELIA_JWT_SECRET",
-      "label": "JWT Secret",
-      "description": "Secret key used for signing JWTs. Use a long random string (min 20 chars)",
+      "name": "AUTHELIA_ADMIN_USER",
+      "label": "Admin Username",
+      "description": "Primary admin username for Authelia login",
       "default": "",
       "required": true
     },
     {
-      "name": "AUTHELIA_SESSION_SECRET",
-      "label": "Session Secret",
-      "description": "Secret key used for encrypting session data. Use a long random string (min 20 chars)",
+      "name": "AUTHELIA_ADMIN_DISPLAY",
+      "label": "Display Name",
+      "description": "Full name shown in the Authelia portal",
       "default": "",
-      "required": true
-    },
-    {
-      "name": "AUTHELIA_STORAGE_ENCRYPTION_KEY",
-      "label": "Storage Encryption Key",
-      "description": "Encryption key for the storage backend. Use a long random string (min 20 chars)",
-      "default": "",
-      "required": true
-    },
-    {
-      "name": "AUTHELIA_DEFAULT_REDIRECTION_URL",
-      "label": "Default Redirect URL",
-      "description": "Default URL users are redirected to after authentication (e.g. https://home.example.com)",
-      "default": "https://home.example.com",
       "required": false
+    },
+    {
+      "name": "AUTHELIA_ADMIN_EMAIL",
+      "label": "Admin Email",
+      "description": "Email address for notifications and password resets",
+      "default": "",
+      "required": true
+    },
+    {
+      "name": "AUTHELIA_ADMIN_PASSWORD",
+      "label": "Admin Password",
+      "description": "Password for the admin account (will be hashed with Argon2id)",
+      "default": "",
+      "required": true
     }
   ]
 }

@@ -218,7 +218,7 @@ _si_get_docker_version() {
 
 _si_get_compose_version() {
     if docker compose version >/dev/null 2>&1; then
-        docker compose version --short 2>/dev/null || docker compose version 2>/dev/null | grep -oP '[\d.]+'
+        docker compose version --short 2>/dev/null || docker compose version 2>/dev/null | grep -o '[0-9][0-9.]*'
     elif command -v docker-compose >/dev/null 2>&1; then
         docker-compose version --short 2>/dev/null || echo "Legacy"
     else

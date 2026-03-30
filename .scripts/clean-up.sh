@@ -62,7 +62,7 @@ cleanup_docker_services() {
         # Use envsubst to resolve ${APP_DATA_DIR} / ${BASE_DIR} and extract
         # the final path component of any reference into the data directory.
         APP_DATA_DIR="$app_data_dir" BASE_DIR="$BASE_DIR" envsubst < "$compose_file" \
-            | grep -oP "${app_data_dir}/[^:/]*" \
+            | grep -o "${app_data_dir}/[^:/]*" \
             | awk -F'/' '{print $NF}' \
             >> "$tmp_volumes"
     done < <(find "$stacks_dir" -name "docker-compose.yml" 2>/dev/null)

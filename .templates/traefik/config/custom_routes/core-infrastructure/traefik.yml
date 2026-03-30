@@ -2,7 +2,7 @@
 # Traefik Dashboard Route
 # =============================================================================
 # This route file is auto-placed into the target stack's custom_routes
-# directory at deploy time. Template variables (${TRAEFIK_DOMAIN}, etc.)
+# directory at deploy time. Template variables (${TRAEFIK_DOMAIN:-example.com}, etc.)
 # are substituted during deployment.
 #
 # Route files in custom_routes/ are auto-discovered by the Traefik file
@@ -17,7 +17,7 @@ http:
     traefik-router:
       entryPoints:
         - "websecure"
-      rule: "Host(`traefik.${TRAEFIK_DOMAIN}`)"
+      rule: "Host(`traefik.${TRAEFIK_DOMAIN:-example.com}`)"
       service: "traefik"
       middlewares:
         - "traefik-chain"
@@ -25,8 +25,7 @@ http:
         # - "authelia-middlewares"
         # Uncomment after enabling geoblock plugin:
         # - "my-geoblock"
-      tls:
-        certResolver: "letsencrypt"
+      tls: {}
 
   services:
     traefik:
@@ -100,7 +99,7 @@ http:
 # -----------------------------------------------------------------------------
     authelia:
       forwardauth:
-        address: "http://Authelia:9091/api/verify?rd=https://auth.${TRAEFIK_DOMAIN}/"
+        address: "http://Authelia:9091/api/verify?rd=https://auth.${TRAEFIK_DOMAIN:-example.com}/"
         trustForwardHeader: true
         authResponseHeaders:
           - Remote-User

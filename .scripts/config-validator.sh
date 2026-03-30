@@ -185,7 +185,7 @@ check_system() {
         _cv_pass "Docker Compose v2 plugin: v$compose_version"
     elif command -v docker-compose >/dev/null 2>&1; then
         local compose_version
-        compose_version="$(docker-compose --version 2>/dev/null | grep -oP '[\d.]+')"
+        compose_version="$(docker-compose --version 2>/dev/null | grep -o '[0-9][0-9.]*')"
         _cv_warn "Using legacy docker-compose v1: v$compose_version (v2 plugin recommended)"
     else
         _cv_fail "No Docker Compose installation found"
@@ -456,7 +456,7 @@ check_ports() {
         # Extract host port mappings (lines like "8080:80" or "- 8080:80")
         while IFS= read -r line; do
             local host_port
-            host_port="$(echo "$line" | grep -oP '^\s*-?\s*"?\K\d+(?=:)' 2>/dev/null)"
+            host_port="$(echo "$line" | sed -n 's/^[[:space:]]*-\?[[:space:]]*"*\([0-9]*\):.*/\1/p' 2>/dev/null)"
             if [[ -n "$host_port" ]]; then
                 if [[ -n "${port_map[$host_port]:-}" ]]; then
                     _cv_warn "Port $host_port used by both: ${port_map[$host_port]} and $stack_name"
