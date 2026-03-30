@@ -2057,12 +2057,16 @@ handle_stack_compose_validate() {
     tmpfile=$(mktemp /tmp/dcs-compose-validate-XXXXXX.yml)
     printf '%s' "$content" > "$tmpfile"
 
-    local env_args=()
-    if [[ -f "$COMPOSE_DIR/$stack/.env" ]]; then
-        env_args=(--env-file "$COMPOSE_DIR/$stack/.env")
+    # Normalize ${SECRETS.KEY} in stack .env too (docker compose reads it)
+    local _stack_env="$COMPOSE_DIR/$stack/.env"
+    if [[ -f "$_stack_env" ]] && grep -q 'SECRETS\.' "$_stack_env" 2>/dev/null; then
+        sed -i 's/${SECRETS\.\([A-Za-z0-9_-]*\)}/${SECRETS_\1}/g' "$_stack_env"
     fi
 
-    # Inject decrypted SECRETS_* as env vars for validation (dots already normalized)
+    local env_args=()
+    [[ -f "$_stack_env" ]] && env_args=(--env-file "$_stack_env")
+
+    # Inject decrypted SECRETS_* as env vars for validation
     local validation_output
     local valid=true
     validation_output=$(
@@ -8567,6 +8571,11 @@ handle_template_deploy() {
                     printf '%s\n' "$entry"
                 done
             } >> "$env_file"
+        fi
+
+        # Normalize ${SECRETS.KEY} → ${SECRETS_KEY} in .env (dots invalid in compose vars)
+        if grep -q 'SECRETS\.' "$env_file" 2>/dev/null; then
+            sed -i 's/${SECRETS\.\([A-Za-z0-9_-]*\)}/${SECRETS_\1}/g' "$env_file"
         fi
     fi
 
