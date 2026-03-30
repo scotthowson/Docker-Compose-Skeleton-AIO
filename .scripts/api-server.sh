@@ -8558,8 +8558,12 @@ handle_template_deploy() {
                     fi
                 fi
             done
-            # Ensure acme.json has secure permissions (required by Traefik)
-            chmod 600 "$config_target/acme.json" 2>/dev/null
+            # Make config files readable by containers (rootless Docker maps UIDs)
+            # acme.json MUST be 600 (Traefik enforces this)
+            chmod -R 755 "$config_target" 2>/dev/null || \
+                docker run --rm -v "$config_target:/cfg" alpine sh -c "chmod -R 755 /cfg" 2>/dev/null
+            chmod 600 "$config_target/acme.json" 2>/dev/null || \
+                docker run --rm -v "$config_target:/cfg" alpine sh -c "chmod 600 /cfg/acme.json" 2>/dev/null
         fi
     fi
 
@@ -8750,9 +8754,9 @@ AUTHELIA_USERS_EOF
             # Copy to target dir
             cp -f "$_auth_tmp/configuration.yml" "$_auth_dir/" 2>/dev/null && \
             cp -f "$_auth_tmp/users_database.yml" "$_auth_dir/" 2>/dev/null && \
-            chmod 600 "$_auth_dir/configuration.yml" "$_auth_dir/users_database.yml" 2>/dev/null || \
+            chmod 644 "$_auth_dir/configuration.yml" "$_auth_dir/users_database.yml" 2>/dev/null || \
             docker run --rm -v "$_auth_dir:/dst" -v "$_auth_tmp:/src" alpine sh -c \
-                "cp -f /src/configuration.yml /src/users_database.yml /dst/; chmod 600 /dst/configuration.yml /dst/users_database.yml" 2>/dev/null
+                "cp -f /src/configuration.yml /src/users_database.yml /dst/; chmod 644 /dst/configuration.yml /dst/users_database.yml" 2>/dev/null
             # Cache for post-start re-apply (outside root-owned config dir)
             local _cache_dir="$_auth_base/Authelia/.dcs-cache"
             mkdir -p "$_cache_dir" 2>/dev/null || docker run --rm -v "$_auth_base/Authelia:/d" alpine mkdir -p /d/.dcs-cache 2>/dev/null
@@ -9185,7 +9189,7 @@ print('\n'.join(result))
                 sleep 3
                 # Restore our generated config — container may have overwritten it with defaults
                 docker run --rm -v "$_ad/Authelia/.dcs-cache:/src" -v "$_ad/Authelia/config:/dst" alpine sh -c \
-                    "cp -f /src/configuration.yml /src/users_database.yml /dst/ 2>/dev/null; chmod 600 /dst/configuration.yml /dst/users_database.yml" 2>/dev/null
+                    "cp -f /src/configuration.yml /src/users_database.yml /dst/ 2>/dev/null; chmod 644 /dst/configuration.yml /dst/users_database.yml" 2>/dev/null
                 # Restart Authelia to pick up the correct config
                 $DOCKER_COMPOSE_CMD -f "$target_dir/docker-compose.yml" "${env_up[@]}" restart authelia >/dev/null 2>&1 || true
             fi
