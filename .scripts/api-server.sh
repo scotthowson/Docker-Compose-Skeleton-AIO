@@ -6279,6 +6279,95 @@ handle_stack_services() {
 # SYSTEM UPDATE MANAGEMENT
 # =============================================================================
 
+# Check if DCS-UI Docker image has a newer version available on GHCR
+_check_ui_image_update() {
+    local ui_image="ghcr.io/scotthowson/docker-compose-skeleton-ui:latest"
+    local result='{"available": false}'
+
+    # Check if DCS-UI container exists
+    if ! docker inspect DCS-UI >/dev/null 2>&1; then
+        echo "$result"
+        return
+    fi
+
+    # Get local image digest
+    local local_digest
+    local_digest=$(docker inspect DCS-UI --format='{{.Image}}' 2>/dev/null)
+
+    # Get remote digest (GHCR manifest) — quick check with timeout
+    local remote_digest
+    remote_digest=$(timeout 10 docker manifest inspect "$ui_image" 2>/dev/null | jq -r '.manifests[0].digest // .config.digest // empty' 2>/dev/null)
+
+    if [[ -z "$remote_digest" ]]; then
+        echo "$result"
+        return
+    fi
+
+    # Compare — if local image ID doesn't contain the remote digest prefix, update available
+    local local_id
+    local_id=$(docker image inspect "$ui_image" --format='{{.Id}}' 2>/dev/null)
+
+    if [[ -n "$local_id" && -n "$remote_digest" ]]; then
+        # Pull to check without actually running — just compare digests
+        local pull_check
+        pull_check=$(timeout 15 docker pull --quiet "$ui_image" 2>/dev/null)
+        local new_id
+        new_id=$(docker image inspect "$ui_image" --format='{{.Id}}' 2>/dev/null)
+
+        if [[ "$new_id" != "$local_id" ]]; then
+            local new_tag
+            new_tag=$(docker image inspect "$ui_image" --format='{{index .RepoDigests 0}}' 2>/dev/null | cut -d'@' -f2 | cut -c1-12)
+            echo "{\"available\": true, \"current\": \"${local_id:7:12}\", \"latest\": \"${new_id:7:12}\"}"
+            return
+        fi
+    fi
+
+    echo "$result"
+}
+
+# POST /system/ui-update/apply — Pull latest DCS-UI image and recreate container
+handle_ui_update_apply() {
+    if ! _api_check_admin; then return; fi
+
+    local ui_image="ghcr.io/scotthowson/docker-compose-skeleton-ui:latest"
+
+    if ! docker inspect DCS-UI >/dev/null 2>&1; then
+        _api_error 404 "DCS-UI container not found"
+        return
+    fi
+
+    # Pull the latest image
+    local pull_output
+    pull_output=$(timeout 120 docker pull "$ui_image" 2>&1)
+    if [[ $? -ne 0 ]]; then
+        _api_error 500 "Failed to pull image: $(_api_json_escape "$pull_output")"
+        return
+    fi
+
+    # Find the compose file that has DCS-UI
+    local compose_file=""
+    local stack_dir=""
+    for _cf in "$COMPOSE_DIR"/*/docker-compose.yml; do
+        if grep -q 'container_name: DCS-UI' "$_cf" 2>/dev/null; then
+            compose_file="$_cf"
+            stack_dir=$(dirname "$_cf")
+            break
+        fi
+    done
+
+    if [[ -z "$compose_file" ]]; then
+        _api_error 404 "DCS-UI compose file not found"
+        return
+    fi
+
+    # Recreate in background — the UI will disconnect briefly
+    local env_args=()
+    [[ -f "$stack_dir/.env" ]] && env_args=(--env-file "$stack_dir/.env")
+    ( $DOCKER_COMPOSE_CMD -f "$compose_file" "${env_args[@]}" up -d --force-recreate --no-deps dcs-ui >/dev/null 2>&1 ) &
+
+    _api_success "{\"success\": true, \"message\": \"DCS-UI is being updated. The page will reconnect automatically.\"}"
+}
+
 # GET /system/update/check — Check for available DCS updates via git
 handle_system_update_check() {
     cd "$BASE_DIR" || { _api_error 500 "Cannot access BASE_DIR"; return; }
@@ -6333,7 +6422,8 @@ handle_system_update_check() {
   \"commits_behind\": $behind,
   \"changelog\": $changelog,
   \"has_local_changes\": $has_changes,
-  \"branch\": \"$(_api_json_escape "$branch")\"
+  \"branch\": \"$(_api_json_escape "$branch")\",
+  \"ui_update\": $(_check_ui_image_update)
 }"
 }
 
@@ -13483,6 +13573,9 @@ handle_request() {
                 ;;
             /system/update/apply)
                 handle_system_update_apply "$request_body"
+                ;;
+            /system/ui-update/apply)
+                handle_ui_update_apply
                 ;;
             /system/update/rollback)
                 handle_system_update_rollback "$request_body"
