@@ -4152,9 +4152,9 @@ handle_container_action() {
                     fi
                 done
                 if [[ -n "$_stack_dir" && -n "$_svc_name" ]]; then
-                    local _env_args=()
-                    [[ -f "$_stack_dir/.env" ]] && _env_args=(--env-file "$_stack_dir/.env")
-                    output=$($DOCKER_COMPOSE_CMD -f "$_stack_dir/docker-compose.yml" "${_env_args[@]}" up -d --force-recreate --no-deps "$_svc_name" 2>&1) || success=false
+                    local _rec_env=""
+                    [[ -f "$_stack_dir/.env" ]] && _rec_env="$_stack_dir/.env"
+                    output=$(_compose_with_secrets "$_stack_dir/docker-compose.yml" "$_rec_env" up -d --force-recreate --no-deps "$_svc_name" 2>&1) || success=false
                 else
                     output="Container recreated but no compose file found — started from pulled image"
                     docker run -d --name "$name" "$img" >/dev/null 2>&1 || success=false
