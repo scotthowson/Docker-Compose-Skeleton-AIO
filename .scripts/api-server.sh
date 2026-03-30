@@ -2059,10 +2059,15 @@ handle_stack_compose_validate() {
         env_args=(--env-file "$COMPOSE_DIR/$stack/.env")
     fi
 
+    # Resolve ${SECRETS.KEY} before validation
+    local _v_sec=""
+    _v_sec=$(_resolve_compose_secrets "$tmpfile")
+    local _v_cf="$tmpfile"
+    [[ -n "$_v_sec" ]] && _v_cf="$_v_sec"
     local validation_output
     local valid=true
-    validation_output=$($DOCKER_COMPOSE_CMD -f "$tmpfile" "${env_args[@]}" config 2>&1) || valid=false
-    rm -f "$tmpfile"
+    validation_output=$($DOCKER_COMPOSE_CMD -f "$_v_cf" "${env_args[@]}" config 2>&1) || valid=false
+    rm -f "$tmpfile" "$_v_sec" 2>/dev/null
 
     local escaped_output
     escaped_output=$(_api_json_escape "$validation_output")
@@ -2112,9 +2117,15 @@ handle_stack_compose_save() {
         env_args=(--env-file "$COMPOSE_DIR/$stack/.env")
     fi
 
+    # Resolve ${SECRETS.KEY} before validation
+    local _s_sec=""
+    _s_sec=$(_resolve_compose_secrets "$tmpfile")
+    local _s_cf="$tmpfile"
+    [[ -n "$_s_sec" ]] && _s_cf="$_s_sec"
     local validation_output
-    validation_output=$($DOCKER_COMPOSE_CMD -f "$tmpfile" "${env_args[@]}" config 2>&1)
+    validation_output=$($DOCKER_COMPOSE_CMD -f "$_s_cf" "${env_args[@]}" config 2>&1)
     local valid=$?
+    rm -f "$_s_sec" 2>/dev/null
     rm -f "$tmpfile"
 
     if [[ $valid -ne 0 ]]; then
@@ -8528,10 +8539,16 @@ handle_template_deploy() {
     sort -u -o "$target_dir/.dcs-trusted-templates" "$target_dir/.dcs-trusted-templates"
 
     # B2: Validate merged compose file — rollback on failure
+    # Resolve ${SECRETS.KEY} before validation (dots aren't valid in env var names)
+    local _val_sec=""
+    _val_sec=$(_resolve_compose_secrets "$target_dir/docker-compose.yml")
+    local _val_cf="$target_dir/docker-compose.yml"
+    [[ -n "$_val_sec" ]] && _val_cf="$_val_sec"
     local env_args=()
     [[ -f "$target_dir/.env" ]] && env_args=(--env-file "$target_dir/.env")
     local validate_output
-    validate_output=$($DOCKER_COMPOSE_CMD -f "$target_dir/docker-compose.yml" "${env_args[@]}" config 2>&1)
+    validate_output=$($DOCKER_COMPOSE_CMD -f "$_val_cf" "${env_args[@]}" config 2>&1)
+    rm -f "$_val_sec" 2>/dev/null
     if [[ $? -ne 0 ]]; then
         # Rollback: restore backup
         cp "$target_dir/docker-compose.yml.bak.${timestamp}" "$target_dir/docker-compose.yml"
