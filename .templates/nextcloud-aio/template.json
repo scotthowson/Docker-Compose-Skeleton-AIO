@@ -8,10 +8,9 @@
   "tags": ["nextcloud", "cloud", "file-sync", "collabora", "office", "talk", "backup"],
   "route_override": {
     "subdomain": "cloud",
-    "container": "nextcloud-aio-apache",
     "port": 11000,
     "protocol": "http",
-    "post_start_network": "proxy"
+    "use_host_ip": true
   },
   "variables": [
     {

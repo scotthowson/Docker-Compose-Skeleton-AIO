@@ -9097,36 +9097,45 @@ AUTH_ROUTE_EOF
                 fi
 
                 # Check if template.json has a route_override (for templates like Nextcloud AIO
-                # where the routable container isn't defined in the compose file).
-                # route_override: { subdomain, container, port, protocol, post_start_network }
+                # where the routable service isn't in the compose file — it's spawned externally).
+                # route_override: { subdomain, port, protocol, use_host_ip }
+                # When use_host_ip is true, the route points to the host's LAN IP instead of
+                # a Docker container name, because the spawned container isn't on Traefik's network.
                 local _route_override=""
                 _route_override=$(jq -c '.route_override // empty' "$tdir/template.json" 2>/dev/null)
                 if [[ -n "$_route_override" ]]; then
-                    local _ro_sub _ro_container _ro_port _ro_proto _ro_net
+                    local _ro_sub _ro_port _ro_proto _ro_host_ip
                     _ro_sub=$(printf '%s' "$_route_override" | jq -r '.subdomain // empty')
-                    _ro_container=$(printf '%s' "$_route_override" | jq -r '.container // empty')
                     _ro_port=$(printf '%s' "$_route_override" | jq -r '.port // empty')
                     _ro_proto=$(printf '%s' "$_route_override" | jq -r '.protocol // "http"')
-                    _ro_net=$(printf '%s' "$_route_override" | jq -r '.post_start_network // empty')
-                    if [[ -n "$_ro_container" && -n "$_ro_port" ]]; then
+                    _ro_host_ip=$(printf '%s' "$_route_override" | jq -r '.use_host_ip // false')
+                    if [[ -n "$_ro_port" ]]; then
                         [[ -z "$_ro_sub" ]] && _ro_sub="$name"
                         # Allow subdomain override from deploy variables (e.g. NEXTCLOUD_DOMAIN)
                         local _ro_domain_var
                         _ro_domain_var=$(printf '%s' "$body" | jq -r '.variables.NEXTCLOUD_DOMAIN // empty' 2>/dev/null)
                         if [[ -n "$_ro_domain_var" && "$_ro_domain_var" == *.* ]]; then
-                            # User provided full domain like cloud.howson.dev — extract subdomain
                             _ro_sub="${_ro_domain_var%%.*}"
                         fi
+                        # Determine the route target: host IP or container name
+                        local _ro_target=""
+                        if [[ "$_ro_host_ip" == "true" ]]; then
+                            # Detect the host's LAN IP for the route target
+                            _ro_target=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}' | head -1)
+                            [[ -z "$_ro_target" ]] && _ro_target=$(hostname -I 2>/dev/null | awk '{print $1}')
+                        fi
+                        if [[ -z "$_ro_target" ]]; then
+                            # Fallback to container name from route_override
+                            _ro_target=$(printf '%s' "$_route_override" | jq -r '.container // empty')
+                        fi
+                        [[ -z "$_ro_target" ]] && _ro_target="$name"
+
                         local _ro_id
                         _ro_id=$(printf '%s' "$_ro_sub" | tr '[:upper:]' '[:lower:]' | tr -c '[:alnum:]-' '-')
                         if [[ ! -f "$traefik_routes_dir/$target_stack/${name}.yml" ]]; then
                             cat > "$traefik_routes_dir/$target_stack/${name}.yml" << OVERRIDE_EOF
-# =============================================================================
-# Auto-generated Traefik route for: $name (route override)
-# =============================================================================
-# Routes to a container managed externally (not in this compose file).
-# The container ${_ro_container} is spawned by the service after startup.
-# =============================================================================
+# Auto-generated Traefik route for: ${_ro_sub}
+# Edit the subdomain or middlewares as needed.
 
 http:
   routers:
@@ -9144,27 +9153,13 @@ http:
     ${_ro_id}:
       loadBalancer:
         servers:
-          - url: "${_ro_proto}://${_ro_container}:${_ro_port}"
+          - url: "${_ro_proto}://${_ro_target}:${_ro_port}"
 OVERRIDE_EOF
                         fi
                         # Create DNS record for the override subdomain
                         if [[ -n "$_cf_token" ]]; then
                             _cloudflare_add_dns "$_ro_sub" "$traefik_domain" "$_cf_token"
                             sleep 1
-                        fi
-                        # Background task: wait for the spawned container and connect it to the proxy network
-                        if [[ -n "$_ro_net" ]]; then
-                            (
-                                local _wait=0
-                                while [[ $_wait -lt 120 ]]; do
-                                    if docker inspect "$_ro_container" >/dev/null 2>&1; then
-                                        docker network connect "$_ro_net" "$_ro_container" 2>/dev/null || true
-                                        break
-                                    fi
-                                    sleep 5
-                                    _wait=$((_wait + 5))
-                                done
-                            ) &
                         fi
                     fi
                 fi
