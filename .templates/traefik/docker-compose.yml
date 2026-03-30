@@ -32,11 +32,11 @@ services:
       - "${TRAEFIK_PORT_HTTPS:-443}:443"
       - "${TRAEFIK_PORT_DASHBOARD:-8180}:8080"
     volumes:
-      - ${APP_DATA_DIR:-./App-Data}/Traefik:/etc/traefik
-      - ${APP_DATA_DIR:-./App-Data}/Traefik/cache:/etc/traefik/cache
-      - ${APP_DATA_DIR:-./App-Data}/Traefik/custom_routes:/etc/traefik/custom_routes
-      - ${APP_DATA_DIR:-./App-Data}/Traefik/traefik.yml:/etc/traefik/traefik.yml
-      - ${APP_DATA_DIR:-./App-Data}/Traefik/acme.json:/etc/traefik/acme.json
+      - ${APP_DATA_DIR:-./App-Data}/Traefik:/etc/traefik:z
+      - ${APP_DATA_DIR:-./App-Data}/Traefik/cache:/etc/traefik/cache:z
+      - ${APP_DATA_DIR:-./App-Data}/Traefik/custom_routes:/etc/traefik/custom_routes:z
+      - ${APP_DATA_DIR:-./App-Data}/Traefik/traefik.yml:/etc/traefik/traefik.yml:z
+      - ${APP_DATA_DIR:-./App-Data}/Traefik/acme.json:/etc/traefik/acme.json:z
     environment:
       - TZ=${TZ:-UTC}
       - DOCKER_HOST=tcp://Docker-Socket:2375

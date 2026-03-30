@@ -8060,6 +8060,25 @@ handle_template_deploy() {
     # Resolve remaining ${VAR:-default} patterns to their default values
     template_compose=$(printf '%s' "$template_compose" | sed 's/${[A-Za-z_][A-Za-z0-9_]*:-\([^}]*\)}/\1/g')
 
+    # SELinux: append :z to volume mounts that don't already have a mode suffix.
+    # The :z flag relabels files for container access (required on Fedora/RHEL/CentOS).
+    # Harmless on non-SELinux systems (Ubuntu, Debian, Arch).
+    if command -v getenforce >/dev/null 2>&1 && [[ "$(getenforce 2>/dev/null)" != "Disabled" ]]; then
+        template_compose=$(printf '%s' "$template_compose" | sed -E '
+            /^\s*-\s.*:\//{
+                /:ro$/! {
+                    /:rw$/! {
+                        /:z$/! {
+                            /:Z$/! {
+                                s|$|:z|
+                            }
+                        }
+                    }
+                }
+            }
+        ')
+    fi
+
     # SECURITY: Scan the resolved template compose for dangerous Docker features.
     # Built-in templates (from .templates/) are trusted, but user-modified variables
     # could inject dangerous YAML, so we still scan after variable substitution.

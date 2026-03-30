@@ -6,7 +6,7 @@ services:
     environment:
       - TZ=${TZ:-UTC}
     volumes:
-      - ${APP_DATA_DIR:-./App-Data}/Authelia/config:/config
+      - ${APP_DATA_DIR:-./App-Data}/Authelia/config:/config:z
     ports:
       - "${HOST_PORT:-9091}:9091"
     expose:
@@ -30,7 +30,7 @@ services:
     restart: unless-stopped
     command: redis-server --save 60 1 --loglevel warning
     volumes:
-      - ${APP_DATA_DIR:-./App-Data}/Authelia/redis:/data
+      - ${APP_DATA_DIR:-./App-Data}/Authelia/redis:/data:z
     expose:
       - 6379
     healthcheck:
