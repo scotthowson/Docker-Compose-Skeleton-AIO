@@ -83,7 +83,11 @@ APP_DATA_DIR="${APP_DATA_DIR:-$BASE_DIR/App-Data}"
 
 API_PORT="${API_PORT:-9876}"
 API_BIND="${API_BIND:-127.0.0.1}"
-API_VERSION="1.1.0"
+API_VERSION="1.2.0"
+
+# Plugin system
+PLUGINS_DIR="${BASE_DIR}/.plugins"
+PLUGINS_HOOKS_ENABLED="${PLUGINS_HOOKS_ENABLED:-true}"
 API_PID_FILE="/tmp/dcs-api-server.pid"
 API_LOG_FILE="${BASE_DIR}/logs/api-server.log"
 
@@ -2263,22 +2267,30 @@ handle_stack_action() {
 
     local output=""
     local success=true
+    local _hook_ctx="{\"stack\":\"$stack\",\"action\":\"$action\"}"
 
     case "$action" in
         start)
+            _run_plugin_hooks "pre-start" "$_hook_ctx"
             ( _compose_with_secrets "$compose_file" "$env_file" up -d --remove-orphans >/dev/null 2>&1 ) &
+            _run_plugin_hooks "post-start" "$_hook_ctx"
             output="Starting $stack (background)"
             ;;
         stop)
+            _run_plugin_hooks "pre-stop" "$_hook_ctx"
             ( $DOCKER_COMPOSE_CMD "${compose_args[@]}" down --remove-orphans --timeout 15 >/dev/null 2>&1 ) &
+            _run_plugin_hooks "post-stop" "$_hook_ctx"
             output="Stopping $stack (background)"
             ;;
         restart)
+            _run_plugin_hooks "pre-stop" "$_hook_ctx"
             ( $DOCKER_COMPOSE_CMD "${compose_args[@]}" down --remove-orphans --timeout 15 >/dev/null 2>&1
               _compose_with_secrets "$compose_file" "$env_file" up -d --remove-orphans >/dev/null 2>&1 ) &
+            _run_plugin_hooks "post-start" "$_hook_ctx"
             output="Restarting $stack (background)"
             ;;
         update)
+            _run_plugin_hooks "pre-update" "$_hook_ctx"
             # Record pre-update IDs
             local -A pre_ids=()
             while IFS= read -r img; do
@@ -2312,6 +2324,7 @@ handle_stack_action() {
             changes_json=$(printf '"%s",' "${changes[@]}")
             changes_json="[${changes_json%,}]"
 
+            _run_plugin_hooks "post-update" "$_hook_ctx"
             local escaped_output
             escaped_output=$(_api_json_escape "$output")
             _api_success "{\"stack\": \"$stack\", \"action\": \"update\", \"success\": $success, \"changes_detected\": $changes_found, \"changed_images\": $changes_json, \"output\": \"$escaped_output\"}"
@@ -7292,9 +7305,85 @@ handle_metrics_trends() {
 
 UPDATE_HISTORY_FILE="$BASE_DIR/.api-auth/update-history.json"
 
+# Get the remote registry digest for an image WITHOUT pulling.
+# Supports Docker Hub (official + user), GHCR, LSCR, and Quay.
+# Prints the sha256 digest on stdout, or empty on failure.
+_get_remote_digest() {
+    local image="$1"
+    local registry="registry-1.docker.io"
+    local repo="" tag="" token_url="" token=""
+
+    # Parse image reference into registry/repo:tag
+    if [[ "$image" == *"/"*"/"* ]]; then
+        # Full registry path: ghcr.io/org/repo:tag or lscr.io/org/repo:tag
+        registry="${image%%/*}"
+        local rest="${image#*/}"
+        repo="${rest%%:*}"
+        tag="${rest##*:}"
+        [[ "$tag" == "$rest" ]] && tag="latest"
+    elif [[ "$image" == *"/"* ]]; then
+        # Docker Hub user repo: user/repo:tag
+        repo="${image%%:*}"
+        tag="${image##*:}"
+        [[ "$tag" == "$image" || -z "$tag" ]] && tag="latest"
+    else
+        # Official Docker Hub: repo:tag → library/repo
+        local name_part="${image%%:*}"
+        tag="${image##*:}"
+        [[ "$tag" == "$image" || -z "$tag" ]] && tag="latest"
+        repo="library/${name_part}"
+    fi
+
+    # Get bearer token (anonymous pull scope)
+    local auth_header=""
+    case "$registry" in
+        ghcr.io)
+            token=$(timeout 5 curl -sf "https://ghcr.io/token?scope=repository:${repo}:pull" 2>/dev/null | jq -r '.token // empty' 2>/dev/null)
+            ;;
+        lscr.io)
+            # LSCR proxies to GHCR
+            token=$(timeout 5 curl -sf "https://ghcr.io/token?scope=repository:${repo}:pull" 2>/dev/null | jq -r '.token // empty' 2>/dev/null)
+            registry="ghcr.io"
+            ;;
+        registry-1.docker.io|docker.io)
+            token=$(timeout 5 curl -sf "https://auth.docker.io/token?service=registry.docker.io&scope=repository:${repo}:pull" 2>/dev/null | jq -r '.token // empty' 2>/dev/null)
+            registry="registry-1.docker.io"
+            ;;
+        quay.io)
+            # Quay supports anonymous access for public repos
+            token=""
+            ;;
+        *)
+            token=""
+            ;;
+    esac
+
+    [[ -n "$token" ]] && auth_header="Authorization: Bearer $token"
+
+    # HEAD request for the manifest digest
+    local digest
+    digest=$(timeout 10 curl -sfI \
+        ${auth_header:+-H "$auth_header"} \
+        -H "Accept: application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.docker.distribution.manifest.v2+json,application/vnd.oci.image.manifest.v1+json" \
+        "https://${registry}/v2/${repo}/manifests/${tag}" 2>/dev/null \
+        | grep -i 'docker-content-digest' | awk '{print $2}' | tr -d '\r\n')
+
+    printf '%s' "$digest"
+}
+
 handle_images_check_updates_get() {
-    # Quick local staleness check (fast, no registry pull)
+    # Quick local-only check: image age + cached registry results
     local -a entries=()
+    local cache_file="$BASE_DIR/.data/image-update-cache.json"
+
+    # Load cached registry results if available
+    local -A cached_updates=()
+    if [[ -f "$cache_file" ]]; then
+        while IFS='=' read -r k v; do
+            [[ -n "$k" ]] && cached_updates["$k"]="$v"
+        done < <(jq -r 'to_entries[] | "\(.key)=\(.value)"' "$cache_file" 2>/dev/null)
+    fi
+
     while IFS= read -r line; do
         [[ -z "$line" || "$line" == "REPOSITORY"* ]] && continue
         local repo tag id created size
@@ -7313,9 +7402,16 @@ handle_images_check_updates_get() {
             age_days=$(( (now_epoch - created_epoch) / 86400 ))
         fi
 
+        # Staleness based on age (visual indicator only)
         local staleness="current"
         [[ $age_days -gt 30 ]] && staleness="stale"
         [[ $age_days -gt 7 && $age_days -le 30 ]] && staleness="aging"
+
+        # Check cached registry result
+        local update_available="null"
+        if [[ -n "${cached_updates[$full_image]:-}" ]]; then
+            update_available="${cached_updates[$full_image]}"
+        fi
 
         # Find containers using this image
         local containers
@@ -7330,7 +7426,7 @@ handle_images_check_updates_get() {
             [[ -n "$labels" && "$labels" != "<no value>" ]] && stack="$labels"
         fi
 
-        entries+=("{\"image\": \"$(_api_json_escape "$full_image")\", \"repository\": \"$(_api_json_escape "$repo")\", \"tag\": \"$(_api_json_escape "$tag")\", \"age_days\": $age_days, \"staleness\": \"$staleness\", \"containers\": \"$(_api_json_escape "$containers")\", \"stack\": \"$(_api_json_escape "$stack")\", \"size\": \"$(_api_json_escape "$size")\"}")
+        entries+=("{\"image\": \"$(_api_json_escape "$full_image")\", \"repository\": \"$(_api_json_escape "$repo")\", \"tag\": \"$(_api_json_escape "$tag")\", \"age_days\": $age_days, \"staleness\": \"$staleness\", \"update_available\": $update_available, \"containers\": \"$(_api_json_escape "$containers")\", \"stack\": \"$(_api_json_escape "$stack")\", \"size\": \"$(_api_json_escape "$size")\"}")
     done < <(docker images --format "{{.Repository}}\t{{.Tag}}\t{{.ID}}\t{{.CreatedSince}}\t{{.Size}}" 2>/dev/null)
 
     local json
@@ -7338,22 +7434,25 @@ handle_images_check_updates_get() {
     json="[${json%,}]"
     [[ ${#entries[@]} -eq 0 ]] && json="[]"
 
-    local stale_count=0 aging_count=0 current_count=0
+    local stale_count=0 aging_count=0 current_count=0 updates_count=0
     for e in "${entries[@]}"; do
         case "$e" in
             *'"staleness": "stale"'*) ((stale_count++)) ;;
             *'"staleness": "aging"'*) ((aging_count++)) ;;
             *) ((current_count++)) ;;
         esac
+        [[ "$e" == *'"update_available": true'* ]] && ((updates_count++))
     done
 
-    _api_success "{\"images\": $json, \"total\": ${#entries[@]}, \"stale\": $stale_count, \"aging\": $aging_count, \"current\": $current_count}"
+    _api_success "{\"images\": $json, \"total\": ${#entries[@]}, \"stale\": $stale_count, \"aging\": $aging_count, \"current\": $current_count, \"updates_available\": $updates_count}"
 }
 
 handle_images_check_updates_post() {
-    # Slow registry check: pull and compare digests
+    # Registry digest check: compares local RepoDigests vs remote manifest digest.
+    # No image pulling — uses HEAD requests to registry APIs. Fast and bandwidth-free.
     local -a entries=()
     local updates_available=0
+    local -A cache_results=()
 
     while IFS= read -r line; do
         [[ -z "$line" || "$line" == "REPOSITORY"* ]] && continue
@@ -7362,23 +7461,47 @@ handle_images_check_updates_post() {
         [[ "$repo" == "<none>" || "$tag" == "<none>" ]] && continue
 
         local full_image="${repo}:${tag}"
-        local old_id
-        old_id=$(docker images -q "$full_image" 2>/dev/null | head -1)
 
-        # Pull silently
-        local pull_output
-        pull_output=$(docker pull "$full_image" 2>&1)
-        local new_id
-        new_id=$(docker images -q "$full_image" 2>/dev/null | head -1)
+        # Get local digest from RepoDigests
+        local local_digest
+        local_digest=$(docker image inspect "$full_image" --format='{{index .RepoDigests 0}}' 2>/dev/null | cut -d'@' -f2)
+
+        # Get remote digest from registry (no pull)
+        local remote_digest
+        remote_digest=$(_get_remote_digest "$full_image")
 
         local update_available=false
-        if [[ -n "$old_id" && -n "$new_id" && "$old_id" != "$new_id" ]]; then
-            update_available=true
-            ((updates_available++))
+        local status="unknown"
+        if [[ -n "$local_digest" && -n "$remote_digest" ]]; then
+            if [[ "$local_digest" != "$remote_digest" ]]; then
+                update_available=true
+                status="update_available"
+                ((updates_available++))
+            else
+                status="up_to_date"
+            fi
+        elif [[ -z "$remote_digest" ]]; then
+            status="check_failed"
         fi
 
-        entries+=("{\"image\": \"$(_api_json_escape "$full_image")\", \"old_id\": \"$(_api_json_escape "$old_id")\", \"new_id\": \"$(_api_json_escape "$new_id")\", \"update_available\": $update_available}")
+        cache_results["$full_image"]="$update_available"
+
+        entries+=("{\"image\": \"$(_api_json_escape "$full_image")\", \"local_digest\": \"$(_api_json_escape "${local_digest:0:19}")\", \"remote_digest\": \"$(_api_json_escape "${remote_digest:0:19}")\", \"update_available\": $update_available, \"status\": \"$status\"}")
+
+        # Brief delay to avoid rate limiting
+        sleep 0.3
     done < <(docker images --format "{{.Repository}}\t{{.Tag}}\t{{.ID}}\t{{.Size}}" 2>/dev/null)
+
+    # Cache results for the GET endpoint
+    mkdir -p "$BASE_DIR/.data" 2>/dev/null
+    local cache_json="{"
+    local _first=true
+    for _ck in "${!cache_results[@]}"; do
+        [[ "$_first" == "true" ]] && _first=false || cache_json+=","
+        cache_json+="\"$(_api_json_escape "$_ck")\": ${cache_results[$_ck]}"
+    done
+    cache_json+="}"
+    printf '%s' "$cache_json" > "$BASE_DIR/.data/image-update-cache.json"
 
     local json
     json=$(printf '%s,' "${entries[@]}")
@@ -9417,7 +9540,9 @@ print('\n'.join(result))
     auto_start=$(printf '%s' "$body" | jq -r '.auto_start // false' 2>/dev/null)
     connect_proxy=$(printf '%s' "$body" | jq -r '.connect_proxy // false' 2>/dev/null)
     local started=false
+    _run_plugin_hooks "post-deploy" "{\"stack\":\"$target_stack\",\"template\":\"$name\"}"
     if [[ "$auto_start" == "true" ]]; then
+        _run_plugin_hooks "pre-start" "{\"stack\":\"$target_stack\",\"template\":\"$name\"}"
         local env_up=()
         [[ -f "$target_dir/.env" ]] && env_up=(--env-file "$target_dir/.env")
         local _puid="${PUID:-1000}"
@@ -12515,6 +12640,43 @@ handle_health_score_history() {
 # =============================================================================
 # FEATURE: PLUGIN MANAGEMENT
 # =============================================================================
+
+# Run lifecycle hooks across all enabled plugins.
+# Events: pre-start, post-start, pre-stop, post-stop, pre-update, post-update, pre-deploy, post-deploy
+# Context JSON is passed on stdin to each hook script.
+# Runs in background to avoid blocking API responses.
+_run_plugin_hooks() {
+    local event="$1"
+    local context="${2:-{\}}"
+
+    [[ "${PLUGINS_HOOKS_ENABLED:-true}" != "true" ]] && return 0
+    [[ ! -d "$PLUGINS_DIR" ]] && return 0
+
+    (
+        for plugin_dir in "$PLUGINS_DIR"/*/; do
+            [[ ! -d "$plugin_dir" ]] && continue
+            [[ -f "$plugin_dir/.disabled" ]] && continue
+
+            local hook_script="$plugin_dir/hooks/$event"
+            [[ -f "$hook_script" && -x "$hook_script" ]] || {
+                hook_script="$plugin_dir/hooks/${event}.sh"
+                [[ -f "$hook_script" && -x "$hook_script" ]] || continue
+            }
+
+            local plugin_name
+            plugin_name=$(basename "$plugin_dir")
+            local output
+            output=$(echo "$context" | timeout 30 "$hook_script" 2>&1) || true
+
+            # Log execution
+            local log_file="$plugin_dir/execution.log"
+            printf '{"ts":"%s","event":"%s","plugin":"%s","output":"%s"}\n' \
+                "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$event" "$plugin_name" \
+                "$(printf '%s' "$output" | head -c 500 | sed 's/"/\\"/g' | tr '\n' ' ')" \
+                >> "$log_file" 2>/dev/null
+        done
+    ) &
+}
 
 # GET /plugins — Scan .plugins/ directory, return plugin manifest data
 handle_plugins_list() {
