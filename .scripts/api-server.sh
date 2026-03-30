@@ -2041,8 +2041,12 @@ handle_stack_compose_validate() {
         return
     fi
 
-    # SECURITY: Scan compose content for dangerous Docker features
-    if ! _api_scan_compose_security "$content" "compose validation for $stack"; then
+    # SECURITY: Scan compose content for dangerous Docker features.
+    # Use "deploy" mode if the stack was created from a trusted template (has .dcs-trusted-templates).
+    # This allows template-required capabilities (docker.sock, label:disable) to persist through edits.
+    local _scan_mode="strict"
+    [[ -f "$COMPOSE_DIR/$stack/.dcs-trusted-templates" ]] && _scan_mode="deploy"
+    if ! _api_scan_compose_security "$content" "compose validation for $stack" "$_scan_mode"; then
         return
     fi
 
@@ -2090,8 +2094,11 @@ handle_stack_compose_save() {
         return
     fi
 
-    # SECURITY: Scan compose content for dangerous Docker features
-    if ! _api_scan_compose_security "$content" "compose save for $stack"; then
+    # SECURITY: Scan compose content for dangerous Docker features.
+    # Use "deploy" mode for stacks deployed from trusted templates.
+    local _scan_mode="strict"
+    [[ -f "$COMPOSE_DIR/$stack/.dcs-trusted-templates" ]] && _scan_mode="deploy"
+    if ! _api_scan_compose_security "$content" "compose save for $stack" "$_scan_mode"; then
         return
     fi
 
@@ -8492,6 +8499,13 @@ handle_template_deploy() {
 
     # Write merged result (atomic overwrite, not blind append)
     printf '%s\n' "$merged_compose" > "$target_dir/docker-compose.yml"
+
+    # Mark this stack as deployed from a trusted built-in template.
+    # This allows the compose editor to use "deploy" mode for security scanning,
+    # so users can edit ports/env without being blocked by docker.sock or label:disable
+    # restrictions that the template legitimately requires.
+    printf '%s\n' "$name" >> "$target_dir/.dcs-trusted-templates"
+    sort -u -o "$target_dir/.dcs-trusted-templates" "$target_dir/.dcs-trusted-templates"
 
     # B2: Validate merged compose file — rollback on failure
     local env_args=()

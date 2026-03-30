@@ -1,7 +1,7 @@
 {
   "name": "nextcloud-aio",
   "title": "Nextcloud All-in-One",
-  "description": "Full-featured Nextcloud deployment with automatic updates, built-in Collabora Office, Talk, backups, and GPU acceleration. Manages its own containers via the AIO mastercontainer. Designed for reverse proxy setups — the admin interface binds to localhost only.",
+  "description": "Full-featured Nextcloud deployment with automatic updates, built-in Collabora Office, Talk, backups, and GPU acceleration. Manages its own containers via the AIO mastercontainer. Access the admin interface on port 8080 (HTTPS, self-signed) to complete initial setup.",
   "category": "web",
   "target_stack": "web-applications",
   "icon": "\u2601\ufe0f",
@@ -10,7 +10,7 @@
     "subdomain": "cloud",
     "container": "nextcloud-aio-apache",
     "port": 11000,
-    "protocol": "https",
+    "protocol": "http",
     "post_start_network": "proxy"
   },
   "variables": [
@@ -24,7 +24,7 @@
     {
       "name": "PORT_NEXTCLOUD_AIO",
       "label": "AIO Admin Port",
-      "description": "Port for the AIO web installer interface (localhost only — not publicly accessible)",
+      "description": "Port for the AIO web installer interface (HTTPS with self-signed certificate)",
       "default": "8080",
       "required": false
     },
