@@ -6301,7 +6301,7 @@ handle_system_update_check() {
     latest=$(git rev-parse --short "origin/$branch" 2>/dev/null || echo "$current")
     behind=$(git rev-list HEAD.."origin/$branch" --count 2>/dev/null || echo "0")
     # Ignore runtime data files when checking for local changes
-    has_local=$(git diff --name-only HEAD 2>/dev/null | grep -vE '^\.api-auth/|^\.data/|^\.compose-history/|^logs/|^\.env$|^\.env\.bak|^Stacks/.*/App-Data/|^Stacks/.*/docker-compose\.yml\.bak' | head -1)
+    has_local=$(git diff --name-only HEAD 2>/dev/null | grep -vE '^\.api-auth/|^\.data/|^\.compose-history/|^\.secrets/|^\.plugins/|^logs/|^\.env|^Stacks/|^\.templates/.*/\.env' | head -1)
 
     # Get changelog (commits we're behind)
     # SECURITY: Use tab-separated format and escape each field to prevent
@@ -6366,9 +6366,9 @@ handle_system_update_apply() {
     # Check for local changes to TRACKED files — refuse if working tree is dirty
     # Only check tracked files (not untracked .api-auth, .env, .compose-history, etc.)
     local has_local
-    # Check for local changes to tracked files — but ignore runtime data files
-    # (.api-auth, .data, logs, .env, .compose-history are runtime state, not source code)
-    has_local=$(git diff --name-only HEAD 2>/dev/null | grep -vE '^\.api-auth/|^\.data/|^\.compose-history/|^logs/|^\.env$|^\.env\.bak|^Stacks/.*/App-Data/|^Stacks/.*/docker-compose\.yml\.bak' | head -1)
+    # Check for local changes to tracked files — but ignore user-modified runtime files.
+    # Template deployment modifies compose files, setup modifies .env, etc.
+    has_local=$(git diff --name-only HEAD 2>/dev/null | grep -vE '^\.api-auth/|^\.data/|^\.compose-history/|^\.secrets/|^\.plugins/|^logs/|^\.env|^Stacks/|^\.templates/.*/\.env' | head -1)
     if [[ -n "$has_local" ]]; then
         _api_error 409 "Cannot update: local changes to tracked source files detected. Commit or stash changes before updating."
         return
