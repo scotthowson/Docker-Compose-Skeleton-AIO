@@ -2340,6 +2340,15 @@ handle_stack_action() {
 handle_images() {
     local stale_only="${1:-false}"
 
+    # Load registry cache for staleness override
+    local _ic="$BASE_DIR/.data/image-update-cache.json"
+    local -A _ic_cache=()
+    if [[ -f "$_ic" ]]; then
+        while IFS='=' read -r k v; do
+            [[ -n "$k" ]] && _ic_cache["$k"]="$v"
+        done < <(jq -r 'to_entries[] | "\(.key)=\(.value)"' "$_ic" 2>/dev/null)
+    fi
+
     local -a entries=()
     while IFS= read -r line; do
         [[ -z "$line" ]] && continue
@@ -2348,9 +2357,6 @@ handle_images() {
         local age_days=-1
         local staleness="unknown"
         if [[ -n "$created" ]] && [[ "$created" != "<none>" ]]; then
-            # Strip trailing timezone name (e.g., "EDT") — Docker outputs both
-            # numeric offset and name ("2026-03-19 12:04:50 -0400 EDT") which
-            # confuses GNU date. Keep only the numeric offset.
             local created_clean="${created% [A-Z]*}"
             local img_epoch
             img_epoch=$(date -d "$created_clean" '+%s' 2>/dev/null || date -d "$created" '+%s' 2>/dev/null || echo 0)
@@ -2363,6 +2369,14 @@ handle_images() {
                 else staleness="stale"
                 fi
             fi
+        fi
+
+        # Override with registry cache — confirmed latest = current, confirmed update = stale
+        local full_image="${repo}:${tag}"
+        if [[ "${_ic_cache[$full_image]:-}" == "false" ]]; then
+            staleness="current"
+        elif [[ "${_ic_cache[$full_image]:-}" == "true" ]]; then
+            staleness="stale"
         fi
 
         if [[ "$stale_only" == "true" ]] && [[ "$staleness" != "stale" ]]; then
@@ -7402,15 +7416,22 @@ handle_images_check_updates_get() {
             age_days=$(( (now_epoch - created_epoch) / 86400 ))
         fi
 
-        # Staleness based on age (visual indicator only)
+        # Staleness: start with age-based, then override with registry results
         local staleness="current"
         [[ $age_days -gt 30 ]] && staleness="stale"
         [[ $age_days -gt 7 && $age_days -le 30 ]] && staleness="aging"
 
-        # Check cached registry result
+        # Check cached registry result — overrides age-based staleness
         local update_available="null"
         if [[ -n "${cached_updates[$full_image]:-}" ]]; then
             update_available="${cached_updates[$full_image]}"
+            if [[ "$update_available" == "false" ]]; then
+                # Registry confirms this is the latest version — not stale
+                staleness="current"
+            elif [[ "$update_available" == "true" ]]; then
+                # Registry confirms update exists
+                staleness="stale"
+            fi
         fi
 
         # Find containers using this image
@@ -12368,7 +12389,17 @@ handle_health_score() {
     resource_score=$(awk "BEGIN { s = 100 - (($cpu_pct + $mem_pct) / 2); if (s < 0) s = 0; printf \"%d\", s }")
 
     # ── Factor 3: Image freshness (15% weight) ──
+    # Uses registry cache when available — images confirmed as "latest" are NOT stale.
+    # Only images with confirmed updates or unchecked images >30 days old count as stale.
     local total_images=0 stale_images=0
+    local _img_cache="$BASE_DIR/.data/image-update-cache.json"
+    local -A _img_cached=()
+    if [[ -f "$_img_cache" ]]; then
+        while IFS='=' read -r k v; do
+            [[ -n "$k" ]] && _img_cached["$k"]="$v"
+        done < <(jq -r 'to_entries[] | "\(.key)=\(.value)"' "$_img_cache" 2>/dev/null)
+    fi
+
     while IFS= read -r line; do
         [[ -z "$line" || "$line" == "REPOSITORY"* ]] && continue
         local repo tag _rest
@@ -12377,6 +12408,19 @@ handle_health_score() {
         total_images=$((total_images + 1))
 
         local full_image="${repo}:${tag}"
+
+        # If registry cache confirms latest, skip — not stale
+        if [[ "${_img_cached[$full_image]:-}" == "false" ]]; then
+            continue
+        fi
+
+        # If registry cache confirms update available, count as stale
+        if [[ "${_img_cached[$full_image]:-}" == "true" ]]; then
+            stale_images=$((stale_images + 1))
+            continue
+        fi
+
+        # No cache — fall back to age-based check
         local created_ts
         created_ts=$(docker inspect --format '{{.Created}}' "$full_image" 2>/dev/null | head -1)
         if [[ -n "$created_ts" ]]; then
