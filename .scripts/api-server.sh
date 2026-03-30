@@ -2050,6 +2050,9 @@ handle_stack_compose_validate() {
         return
     fi
 
+    # Normalize ${SECRETS.KEY} → ${SECRETS_KEY} for validation
+    content=$(printf '%s' "$content" | _normalize_secrets_syntax)
+
     local tmpfile
     tmpfile=$(mktemp /tmp/dcs-compose-validate-XXXXXX.yml)
     printf '%s' "$content" > "$tmpfile"
@@ -2059,15 +2062,14 @@ handle_stack_compose_validate() {
         env_args=(--env-file "$COMPOSE_DIR/$stack/.env")
     fi
 
-    # Resolve ${SECRETS.KEY} before validation
-    local _v_sec=""
-    _v_sec=$(_resolve_compose_secrets "$tmpfile")
-    local _v_cf="$tmpfile"
-    [[ -n "$_v_sec" ]] && _v_cf="$_v_sec"
+    # Inject decrypted SECRETS_* as env vars for validation (dots already normalized)
     local validation_output
     local valid=true
-    validation_output=$($DOCKER_COMPOSE_CMD -f "$_v_cf" "${env_args[@]}" config 2>&1) || valid=false
-    rm -f "$tmpfile" "$_v_sec" 2>/dev/null
+    validation_output=$(
+        eval "$(_secrets_env_exports "$tmpfile")"
+        $DOCKER_COMPOSE_CMD -f "$tmpfile" "${env_args[@]}" config 2>&1
+    ) || valid=false
+    rm -f "$tmpfile"
 
     local escaped_output
     escaped_output=$(_api_json_escape "$validation_output")
@@ -2099,6 +2101,9 @@ handle_stack_compose_save() {
         return
     fi
 
+    # Normalize ${SECRETS.KEY} → ${SECRETS_KEY} (dots invalid in compose var names)
+    content=$(printf '%s' "$content" | _normalize_secrets_syntax)
+
     # SECURITY: Scan compose content for dangerous Docker features.
     # Use "deploy" mode for stacks deployed from trusted templates.
     local _scan_mode="strict"
@@ -2117,15 +2122,13 @@ handle_stack_compose_save() {
         env_args=(--env-file "$COMPOSE_DIR/$stack/.env")
     fi
 
-    # Resolve ${SECRETS.KEY} before validation
-    local _s_sec=""
-    _s_sec=$(_resolve_compose_secrets "$tmpfile")
-    local _s_cf="$tmpfile"
-    [[ -n "$_s_sec" ]] && _s_cf="$_s_sec"
+    # Inject decrypted SECRETS_* as env vars for validation
     local validation_output
-    validation_output=$($DOCKER_COMPOSE_CMD -f "$_s_cf" "${env_args[@]}" config 2>&1)
+    validation_output=$(
+        eval "$(_secrets_env_exports "$tmpfile")"
+        $DOCKER_COMPOSE_CMD -f "$tmpfile" "${env_args[@]}" config 2>&1
+    )
     local valid=$?
-    rm -f "$_s_sec" 2>/dev/null
     rm -f "$tmpfile"
 
     if [[ $valid -ne 0 ]]; then
@@ -2251,35 +2254,24 @@ handle_stack_action() {
         return
     fi
 
-    # Resolve ${SECRETS.KEY} references for compose up commands
-    local _resolved_file=""
-    _resolved_file=$(_resolve_compose_secrets "$compose_file")
-    local _active_compose="$compose_file"
-    [[ -n "$_resolved_file" ]] && _active_compose="$_resolved_file"
-
-    local -a compose_args=(-f "$_active_compose")
+    local -a compose_args=(-f "$compose_file")
     [[ -f "$env_file" ]] && compose_args+=(--env-file "$env_file")
-
-    # For stop/down, use original file (no secrets needed)
-    local -a compose_args_orig=(-f "$compose_file")
-    [[ -f "$env_file" ]] && compose_args_orig+=(--env-file "$env_file")
 
     local output=""
     local success=true
 
     case "$action" in
         start)
-            ( $DOCKER_COMPOSE_CMD "${compose_args[@]}" up -d --remove-orphans >/dev/null 2>&1; rm -f "$_resolved_file" 2>/dev/null ) &
+            ( _compose_with_secrets "$compose_file" "$env_file" up -d --remove-orphans >/dev/null 2>&1 ) &
             output="Starting $stack (background)"
             ;;
         stop)
-            rm -f "$_resolved_file" 2>/dev/null
-            ( $DOCKER_COMPOSE_CMD "${compose_args_orig[@]}" down --remove-orphans --timeout 15 >/dev/null 2>&1 ) &
+            ( $DOCKER_COMPOSE_CMD "${compose_args[@]}" down --remove-orphans --timeout 15 >/dev/null 2>&1 ) &
             output="Stopping $stack (background)"
             ;;
         restart)
-            ( $DOCKER_COMPOSE_CMD "${compose_args_orig[@]}" down --remove-orphans --timeout 15 >/dev/null 2>&1
-              $DOCKER_COMPOSE_CMD "${compose_args[@]}" up -d --remove-orphans >/dev/null 2>&1; rm -f "$_resolved_file" 2>/dev/null ) &
+            ( $DOCKER_COMPOSE_CMD "${compose_args[@]}" down --remove-orphans --timeout 15 >/dev/null 2>&1
+              _compose_with_secrets "$compose_file" "$env_file" up -d --remove-orphans >/dev/null 2>&1 ) &
             output="Restarting $stack (background)"
             ;;
         update)
@@ -2290,10 +2282,10 @@ handle_stack_action() {
                 local cid
                 cid=$(docker image inspect --format='{{.Id}}' "$img" 2>/dev/null)
                 [[ -n "$cid" ]] && pre_ids["$img"]="$cid"
-            done < <($DOCKER_COMPOSE_CMD "${compose_args[@]}" config 2>/dev/null | grep 'image:' | awk '{print $2}' | sort -u)
+            done < <(_compose_with_secrets "$compose_file" "$env_file" config 2>/dev/null | grep 'image:' | awk '{print $2}' | sort -u)
 
             # Pull
-            output=$($DOCKER_COMPOSE_CMD "${compose_args[@]}" pull 2>&1) || success=false
+            output=$(_compose_with_secrets "$compose_file" "$env_file" pull 2>&1) || success=false
 
             # Compare
             local changes_found=false
@@ -2309,14 +2301,13 @@ handle_stack_action() {
 
             if [[ "$changes_found" == "true" ]] && [[ "$success" == "true" ]]; then
                 output+=$'\n'
-                output+=$($DOCKER_COMPOSE_CMD "${compose_args[@]}" up -d --remove-orphans 2>&1) || success=false
+                output+=($(_compose_with_secrets "$compose_file" "$env_file" up -d --remove-orphans 2>&1)) || success=false
             fi
 
             local changes_json
             changes_json=$(printf '"%s",' "${changes[@]}")
             changes_json="[${changes_json%,}]"
 
-            rm -f "$_resolved_file" 2>/dev/null
             local escaped_output
             escaped_output=$(_api_json_escape "$output")
             _api_success "{\"stack\": \"$stack\", \"action\": \"update\", \"success\": $success, \"changes_detected\": $changes_found, \"changed_images\": $changes_json, \"output\": \"$escaped_output\"}"
@@ -4558,22 +4549,15 @@ handle_batch_stacks() {
             continue
         fi
 
-        # Resolve secrets for up commands
-        local _batch_sec=""
-        _batch_sec=$(_resolve_compose_secrets "$compose_file")
-        local _batch_cf="$compose_file"
-        [[ -n "$_batch_sec" ]] && _batch_cf="$_batch_sec"
-
-        local compose_args=(-f "$_batch_cf")
-        [[ -f "$COMPOSE_DIR/$stack/.env" ]] && compose_args+=(--env-file "$COMPOSE_DIR/$stack/.env")
-        local compose_args_orig=(-f "$compose_file")
-        [[ -f "$COMPOSE_DIR/$stack/.env" ]] && compose_args_orig+=(--env-file "$COMPOSE_DIR/$stack/.env")
+        local _batch_env="$COMPOSE_DIR/$stack/.env"
+        local compose_args=(-f "$compose_file")
+        [[ -f "$_batch_env" ]] && compose_args+=(--env-file "$_batch_env")
 
         # Run each stack action in background — API responds immediately
         case "$action" in
-            start)   ( $DOCKER_COMPOSE_CMD "${compose_args[@]}" up -d >/dev/null 2>&1; rm -f "$_batch_sec" 2>/dev/null ) & ;;
-            stop)    rm -f "$_batch_sec" 2>/dev/null; ( $DOCKER_COMPOSE_CMD "${compose_args_orig[@]}" down --timeout 10 >/dev/null 2>&1 ) & ;;
-            restart) ( $DOCKER_COMPOSE_CMD "${compose_args_orig[@]}" down --timeout 10 >/dev/null 2>&1; $DOCKER_COMPOSE_CMD "${compose_args[@]}" up -d >/dev/null 2>&1; rm -f "$_batch_sec" 2>/dev/null ) & ;;
+            start)   ( _compose_with_secrets "$compose_file" "$_batch_env" up -d >/dev/null 2>&1 ) & ;;
+            stop)    ( $DOCKER_COMPOSE_CMD "${compose_args[@]}" down --timeout 10 >/dev/null 2>&1 ) & ;;
+            restart) ( $DOCKER_COMPOSE_CMD "${compose_args[@]}" down --timeout 10 >/dev/null 2>&1; _compose_with_secrets "$compose_file" "$_batch_env" up -d >/dev/null 2>&1 ) & ;;
         esac
 
         results+=("{\"stack\": \"$(_api_json_escape "$stack")\", \"success\": true, \"message\": \"$action queued\"}")
@@ -8528,6 +8512,9 @@ handle_template_deploy() {
         ' "$target_dir/docker-compose.yml"
     )
 
+    # Normalize ${SECRETS.KEY} → ${SECRETS_KEY} before writing (dots invalid in compose vars)
+    merged_compose=$(printf '%s' "$merged_compose" | _normalize_secrets_syntax)
+
     # Write merged result (atomic overwrite, not blind append)
     printf '%s\n' "$merged_compose" > "$target_dir/docker-compose.yml"
 
@@ -8539,16 +8526,14 @@ handle_template_deploy() {
     sort -u -o "$target_dir/.dcs-trusted-templates" "$target_dir/.dcs-trusted-templates"
 
     # B2: Validate merged compose file — rollback on failure
-    # Resolve ${SECRETS.KEY} before validation (dots aren't valid in env var names)
-    local _val_sec=""
-    _val_sec=$(_resolve_compose_secrets "$target_dir/docker-compose.yml")
-    local _val_cf="$target_dir/docker-compose.yml"
-    [[ -n "$_val_sec" ]] && _val_cf="$_val_sec"
     local env_args=()
     [[ -f "$target_dir/.env" ]] && env_args=(--env-file "$target_dir/.env")
     local validate_output
-    validate_output=$($DOCKER_COMPOSE_CMD -f "$_val_cf" "${env_args[@]}" config 2>&1)
-    rm -f "$_val_sec" 2>/dev/null
+    # Inject decrypted SECRETS_* as env vars for validation
+    validate_output=$(
+        eval "$(_secrets_env_exports "$target_dir/docker-compose.yml")"
+        $DOCKER_COMPOSE_CMD -f "$target_dir/docker-compose.yml" "${env_args[@]}" config 2>&1
+    )
     if [[ $? -ne 0 ]]; then
         # Rollback: restore backup
         cp "$target_dir/docker-compose.yml.bak.${timestamp}" "$target_dir/docker-compose.yml"
@@ -9443,15 +9428,10 @@ print('\n'.join(result))
                 fi
             done
 
-            # Resolve ${SECRETS.KEY} references before starting
-            local _sec_file=""
-            _sec_file=$(_resolve_compose_secrets "$target_dir/docker-compose.yml")
-            local _compose_f="$target_dir/docker-compose.yml"
-            [[ -n "$_sec_file" ]] && _compose_f="$_sec_file"
-
-            # Start containers
-            $DOCKER_COMPOSE_CMD -f "$_compose_f" "${env_up[@]}" up -d --no-recreate --remove-orphans >/dev/null 2>&1
-            rm -f "$_sec_file" 2>/dev/null
+            # Start containers (with secrets injected as env vars)
+            local _deploy_env=""
+            [[ -f "$target_dir/.env" ]] && _deploy_env="$target_dir/.env"
+            _compose_with_secrets "$target_dir/docker-compose.yml" "$_deploy_env" up -d --no-recreate --remove-orphans >/dev/null 2>&1
 
             # Connect routed containers to the 'proxy' network so Traefik can reach them.
             # Controlled by the connect_proxy flag from the deploy request.
@@ -11809,88 +11789,60 @@ _decrypt_secret() {
     openssl enc -d -aes-256-cbc -pbkdf2 -pass "pass:${master_key}" -in "$enc_file" 2>/dev/null
 }
 
-# Resolve ${SECRETS.KEY} references in a compose file.
-# If secrets are found, writes a resolved temp file and prints its path.
-# If no secrets are found, prints nothing (use original file).
-# The caller MUST delete the temp file after use.
-_resolve_compose_secrets() {
+# Normalize ${SECRETS.KEY} → ${SECRETS_KEY} in a string.
+# Docker Compose rejects dots in variable names. This converts the user-friendly
+# dot syntax to valid underscore syntax that compose can parse.
+_normalize_secrets_syntax() {
+    sed 's/\${SECRETS\.\([A-Za-z0-9_-]*\)}/${SECRETS_\1}/g; s/\$SECRETS\.\([A-Za-z0-9_-]*\)/$SECRETS_\1/g'
+}
+
+# Build environment variables for all SECRETS_* references in a compose file.
+# Decrypts each referenced secret and prints KEY=VALUE lines.
+# Usage: eval "$(_secrets_env_exports compose_file)"
+_secrets_env_exports() {
     local compose_file="$1"
     [[ -f "$compose_file" ]] || return 0
 
     local content
     content=$(cat "$compose_file")
 
-    # Check if any SECRETS. references exist
-    if ! printf '%s' "$content" | grep -qE '\$\{?SECRETS\.[A-Za-z0-9_-]+\}?'; then
-        return 0
-    fi
+    # Find all SECRETS_* variable references
+    local -a refs=()
+    while IFS= read -r ref; do
+        [[ -z "$ref" ]] && continue
+        refs+=("$ref")
+    done < <(printf '%s' "$content" | grep -oE 'SECRETS_[A-Za-z0-9_]+' | sort -u)
 
-    # Extract all secret key names referenced
-    local -a secret_keys=()
-    while IFS= read -r _sk; do
-        [[ -z "$_sk" ]] && continue
-        secret_keys+=("$_sk")
-    done < <(printf '%s' "$content" | grep -oE 'SECRETS\.[A-Za-z0-9_-]+' | sed 's/^SECRETS\.//' | sort -u)
+    [[ ${#refs[@]} -eq 0 ]] && return 0
 
-    if [[ ${#secret_keys[@]} -eq 0 ]]; then
-        return 0
-    fi
-
-    # Resolve each secret
-    local resolved="$content"
-    local _failed=()
-    for _sk in "${secret_keys[@]}"; do
-        local _val
-        if _val=$(_decrypt_secret "$_sk"); then
-            # Escape special characters for sed replacement
-            local _escaped_val
-            _escaped_val=$(printf '%s' "$_val" | sed 's/[&/\]/\\&/g; s/$/\\/' | sed '$ s/\\$//')
-            # Replace both ${SECRETS.KEY} and $SECRETS.KEY
-            resolved=$(printf '%s' "$resolved" | sed "s/\${SECRETS\\.${_sk}}/${_escaped_val}/g; s/\$SECRETS\\.${_sk}/${_escaped_val}/g")
+    for ref in "${refs[@]}"; do
+        local key="${ref#SECRETS_}"  # Strip SECRETS_ prefix to get the secret name
+        local val
+        if val=$(_decrypt_secret "$key"); then
+            # Export as environment variable — docker compose reads these
+            printf 'export %s=%q\n' "$ref" "$val"
         else
-            _failed+=("$_sk")
+            echo "[DCS] WARN: Secret not found: $key (referenced as \${$ref})" >&2
         fi
     done
-
-    # Write to temp file
-    local tmpfile
-    tmpfile=$(mktemp /tmp/dcs-compose-secrets-XXXXXX.yml)
-    printf '%s\n' "$resolved" > "$tmpfile"
-    chmod 600 "$tmpfile"
-
-    # Log warnings for missing secrets
-    if [[ ${#_failed[@]} -gt 0 ]]; then
-        echo "[DCS] WARN: Unresolved secrets in $compose_file: ${_failed[*]}" >&2
-    fi
-
-    printf '%s' "$tmpfile"
 }
 
-# Wrapper: build compose args with secrets resolution.
-# Usage: _compose_args_with_secrets compose_file [env_file]
-# Sets $_resolved_file (empty if no secrets, temp path if resolved — caller must clean up)
-_compose_args_with_secrets() {
-    local compose_file="$1"
-    local env_file="${2:-}"
+# Run docker compose with decrypted secrets injected as environment variables.
+# Secrets are only in the process environment — never written to disk.
+# Usage: _compose_with_secrets compose_file env_file action [args...]
+_compose_with_secrets() {
+    local compose_file="$1"; shift
+    local env_file="$1"; shift
+    # remaining args are the docker compose subcommand + flags
 
-    _resolved_file=""
-    _resolved_file=$(_resolve_compose_secrets "$compose_file")
+    local -a compose_args=(-f "$compose_file")
+    [[ -n "$env_file" && -f "$env_file" ]] && compose_args+=(--env-file "$env_file")
 
-    local -a _args=()
-    if [[ -n "$_resolved_file" ]]; then
-        _args+=(-f "$_resolved_file")
-    else
-        _args+=(-f "$compose_file")
-    fi
-    [[ -n "$env_file" && -f "$env_file" ]] && _args+=(--env-file "$env_file")
-
-    printf '%s\n' "${_args[@]}"
-}
-
-# Clean up resolved secrets temp file
-_cleanup_secrets_file() {
-    [[ -n "${_resolved_file:-}" && -f "${_resolved_file:-}" ]] && rm -f "$_resolved_file"
-    _resolved_file=""
+    # Run in subshell so exported secrets don't leak into the API process
+    (
+        eval "$(_secrets_env_exports "$compose_file")"
+        $DOCKER_COMPOSE_CMD "${compose_args[@]}" "$@"
+    )
 }
 
 # GET /secrets — List secret key names (never values)
