@@ -4113,18 +4113,23 @@ handle_container_action() {
             docker pull "$img" >/dev/null 2>&1 || true
             output=$(docker stop -- "$name" 2>&1 && docker rm -- "$name" 2>&1) || success=false
             if [[ "$success" == "true" ]]; then
-                # Find the compose file that owns this container and recreate
-                local _stack_dir
+                # Find the compose file and SERVICE name that owns this container
+                local _stack_dir="" _svc_name=""
                 for _sd in "$COMPOSE_DIR"/*/docker-compose.yml; do
                     if grep -q "container_name: $name" "$_sd" 2>/dev/null; then
                         _stack_dir=$(dirname "$_sd")
+                        # Extract the service name (the YAML key above container_name)
+                        _svc_name=$(awk -v cn="container_name: $name" '
+                            /^  [a-zA-Z0-9_-]+:/ { svc=$1; gsub(/:$/,"",svc) }
+                            $0 ~ cn { print svc; exit }
+                        ' "$_sd" 2>/dev/null)
                         break
                     fi
                 done
-                if [[ -n "$_stack_dir" ]]; then
+                if [[ -n "$_stack_dir" && -n "$_svc_name" ]]; then
                     local _env_args=()
                     [[ -f "$_stack_dir/.env" ]] && _env_args=(--env-file "$_stack_dir/.env")
-                    output=$($DOCKER_COMPOSE_CMD -f "$_stack_dir/docker-compose.yml" "${_env_args[@]}" up -d --force-recreate --no-deps "$name" 2>&1) || success=false
+                    output=$($DOCKER_COMPOSE_CMD -f "$_stack_dir/docker-compose.yml" "${_env_args[@]}" up -d --force-recreate --no-deps "$_svc_name" 2>&1) || success=false
                 else
                     output="Container recreated but no compose file found — started from pulled image"
                     docker run -d --name "$name" "$img" >/dev/null 2>&1 || success=false
