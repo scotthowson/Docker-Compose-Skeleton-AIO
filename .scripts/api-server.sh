@@ -7398,11 +7398,9 @@ handle_images_check_updates_get() {
         done < <(jq -r 'to_entries[] | "\(.key)=\(.value)"' "$cache_file" 2>/dev/null)
     fi
 
-    while IFS= read -r line; do
-        [[ -z "$line" || "$line" == "REPOSITORY"* ]] && continue
-        local repo tag id created size
-        read -r repo tag id created size <<< "$line"
-        [[ "$repo" == "<none>" ]] && continue
+    while IFS=$'\t' read -r repo tag id size; do
+        [[ -z "$repo" || "$repo" == "<none>" ]] && continue
+        [[ "$tag" == "<none>" ]] && continue
 
         local full_image="${repo}:${tag}"
         local age_days=0
@@ -7426,10 +7424,8 @@ handle_images_check_updates_get() {
         if [[ -n "${cached_updates[$full_image]:-}" ]]; then
             update_available="${cached_updates[$full_image]}"
             if [[ "$update_available" == "false" ]]; then
-                # Registry confirms this is the latest version — not stale
                 staleness="current"
             elif [[ "$update_available" == "true" ]]; then
-                # Registry confirms update exists
                 staleness="stale"
             fi
         fi
@@ -7448,7 +7444,7 @@ handle_images_check_updates_get() {
         fi
 
         entries+=("{\"image\": \"$(_api_json_escape "$full_image")\", \"repository\": \"$(_api_json_escape "$repo")\", \"tag\": \"$(_api_json_escape "$tag")\", \"age_days\": $age_days, \"staleness\": \"$staleness\", \"update_available\": $update_available, \"containers\": \"$(_api_json_escape "$containers")\", \"stack\": \"$(_api_json_escape "$stack")\", \"size\": \"$(_api_json_escape "$size")\"}")
-    done < <(docker images --format "{{.Repository}}\t{{.Tag}}\t{{.ID}}\t{{.CreatedSince}}\t{{.Size}}" 2>/dev/null)
+    done < <(docker images --format "{{.Repository}}\t{{.Tag}}\t{{.ID}}\t{{.Size}}" 2>/dev/null)
 
     local json
     json=$(printf '%s,' "${entries[@]}")
