@@ -6295,39 +6295,34 @@ _check_ui_image_update() {
         return
     fi
 
-    # Get local image digest
+    # Get local image digest (the sha256 from RepoDigests)
     local local_digest
-    local_digest=$(docker inspect DCS-UI --format='{{.Image}}' 2>/dev/null)
+    local_digest=$(docker image inspect "$ui_image" --format='{{index .RepoDigests 0}}' 2>/dev/null | cut -d'@' -f2)
 
-    # Get remote digest (GHCR manifest) — quick check with timeout
+    if [[ -z "$local_digest" ]]; then
+        echo "$result"
+        return
+    fi
+
+    # Get remote digest from registry manifest (no pull, just metadata)
     local remote_digest
-    remote_digest=$(timeout 10 docker manifest inspect "$ui_image" 2>/dev/null | jq -r '.manifests[0].digest // .config.digest // empty' 2>/dev/null)
+    remote_digest=$(timeout 10 docker manifest inspect "$ui_image" 2>/dev/null | jq -r '
+        if .manifests then .manifests[0].digest
+        elif .config then .config.digest
+        else empty end
+    ' 2>/dev/null)
 
     if [[ -z "$remote_digest" ]]; then
         echo "$result"
         return
     fi
 
-    # Compare — if local image ID doesn't contain the remote digest prefix, update available
-    local local_id
-    local_id=$(docker image inspect "$ui_image" --format='{{.Id}}' 2>/dev/null)
-
-    if [[ -n "$local_id" && -n "$remote_digest" ]]; then
-        # Pull to check without actually running — just compare digests
-        local pull_check
-        pull_check=$(timeout 15 docker pull --quiet "$ui_image" 2>/dev/null)
-        local new_id
-        new_id=$(docker image inspect "$ui_image" --format='{{.Id}}' 2>/dev/null)
-
-        if [[ "$new_id" != "$local_id" ]]; then
-            local new_tag
-            new_tag=$(docker image inspect "$ui_image" --format='{{index .RepoDigests 0}}' 2>/dev/null | cut -d'@' -f2 | cut -c1-12)
-            echo "{\"available\": true, \"current\": \"${local_id:7:12}\", \"latest\": \"${new_id:7:12}\"}"
-            return
-        fi
+    # Compare digests
+    if [[ "$local_digest" != "$remote_digest" ]]; then
+        echo "{\"available\": true, \"current\": \"${local_digest:7:12}\", \"latest\": \"${remote_digest:7:12}\"}"
+    else
+        echo "$result"
     fi
-
-    echo "$result"
 }
 
 # POST /system/ui-update/apply — Pull latest DCS-UI image and recreate container
