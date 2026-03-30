@@ -83,7 +83,7 @@ APP_DATA_DIR="${APP_DATA_DIR:-$BASE_DIR/App-Data}"
 
 API_PORT="${API_PORT:-9876}"
 API_BIND="${API_BIND:-127.0.0.1}"
-API_VERSION="1.0.0"
+API_VERSION="1.1.0"
 API_PID_FILE="/tmp/dcs-api-server.pid"
 API_LOG_FILE="${BASE_DIR}/logs/api-server.log"
 
@@ -6295,7 +6295,7 @@ _check_ui_image_update() {
         return
     fi
 
-    # Get local image digest (the sha256 from RepoDigests)
+    # Get local image digest (the sha256 from RepoDigests — this is the manifest list digest)
     local local_digest
     local_digest=$(docker image inspect "$ui_image" --format='{{index .RepoDigests 0}}' 2>/dev/null | cut -d'@' -f2)
 
@@ -6304,20 +6304,24 @@ _check_ui_image_update() {
         return
     fi
 
-    # Get remote digest from registry manifest (no pull, just metadata)
-    local remote_digest
-    remote_digest=$(timeout 10 docker manifest inspect "$ui_image" 2>/dev/null | jq -r '
-        if .manifests then .manifests[0].digest
-        elif .config then .config.digest
-        else empty end
-    ' 2>/dev/null)
+    # Get remote manifest list digest from GHCR registry API (HEAD request for Docker-Content-Digest).
+    # This returns the same digest type as RepoDigests, so comparison is valid.
+    local remote_digest _ghcr_token
+    _ghcr_token=$(timeout 5 curl -sf "https://ghcr.io/token?scope=repository:scotthowson/docker-compose-skeleton-ui:pull" 2>/dev/null | jq -r '.token // empty' 2>/dev/null)
+    if [[ -n "$_ghcr_token" ]]; then
+        remote_digest=$(timeout 5 curl -sfI \
+            -H "Authorization: Bearer $_ghcr_token" \
+            -H "Accept: application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.docker.distribution.manifest.v2+json" \
+            "https://ghcr.io/v2/scotthowson/docker-compose-skeleton-ui/manifests/latest" 2>/dev/null \
+            | grep -i 'docker-content-digest' | awk '{print $2}' | tr -d '\r\n')
+    fi
 
     if [[ -z "$remote_digest" ]]; then
         echo "$result"
         return
     fi
 
-    # Compare digests
+    # Compare digests (both are manifest list digests now)
     if [[ "$local_digest" != "$remote_digest" ]]; then
         echo "{\"available\": true, \"current\": \"${local_digest:7:12}\", \"latest\": \"${remote_digest:7:12}\"}"
     else
@@ -6387,8 +6391,9 @@ handle_system_update_check() {
 
     current=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
     branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
-    latest=$(git rev-parse --short "origin/$branch" 2>/dev/null || echo "$current")
-    behind=$(git rev-list HEAD.."origin/$branch" --count 2>/dev/null || echo "0")
+    # Use refs/remotes/ explicitly to avoid ambiguity with tags of the same name
+    latest=$(git rev-parse --short "refs/remotes/origin/$branch" 2>/dev/null || echo "$current")
+    behind=$(git rev-list HEAD.."refs/remotes/origin/$branch" --count 2>/dev/null || echo "0")
     # Ignore runtime data files when checking for local changes
     has_local=$(git diff --name-only HEAD 2>/dev/null | grep -vE '^\.api-auth/|^\.data/|^\.compose-history/|^\.secrets/|^\.plugins/|^logs/|^\.env|^Stacks/|^\.templates/.*/\.env' | head -1)
 
@@ -6401,7 +6406,7 @@ handle_system_update_check() {
         while IFS=$'\t' read -r _hash _msg _author _date; do
             [[ -z "$_hash" ]] && continue
             cl_entries+=("{\"hash\":\"$(_api_json_escape "$_hash")\",\"message\":\"$(_api_json_escape "$_msg")\",\"author\":\"$(_api_json_escape "$_author")\",\"date\":\"$(_api_json_escape "$_date")\"}")
-        done < <(git log HEAD.."origin/$branch" --pretty=format:'%h%x09%s%x09%an%x09%ci' 2>/dev/null | head -20)
+        done < <(git log HEAD.."refs/remotes/origin/$branch" --pretty=format:'%h%x09%s%x09%an%x09%ci' 2>/dev/null | head -20)
         if [[ ${#cl_entries[@]} -gt 0 ]]; then
             local cl_json
             cl_json=$(printf '%s,' "${cl_entries[@]}")
@@ -6472,7 +6477,7 @@ handle_system_update_apply() {
     git fetch origin 2>/dev/null
 
     local behind
-    behind=$(git rev-list HEAD.."origin/$branch" --count 2>/dev/null || echo "0")
+    behind=$(git rev-list HEAD.."refs/remotes/origin/$branch" --count 2>/dev/null || echo "0")
     if [[ "$behind" -eq 0 ]]; then
         _api_success "{
   \"updated\": false,
@@ -6488,9 +6493,9 @@ handle_system_update_apply() {
     backup_tag="dcs-backup-$(date +%Y%m%d-%H%M%S)-${current}"
     git tag "$backup_tag" HEAD 2>/dev/null || true
 
-    # Attempt fast-forward-only pull (safe — no merge conflicts possible)
+    # Attempt fast-forward-only pull — use explicit refs/heads/ to avoid tag ambiguity
     local pull_output pull_exit
-    pull_output=$(git pull --ff-only origin "$branch" 2>&1)
+    pull_output=$(git pull --ff-only origin "refs/heads/$branch" 2>&1)
     pull_exit=$?
 
     if [[ $pull_exit -ne 0 ]]; then
@@ -9077,6 +9082,79 @@ AUTH_ROUTE_EOF
                     done
                 fi
 
+                # Check if template.json has a route_override (for templates like Nextcloud AIO
+                # where the routable container isn't defined in the compose file).
+                # route_override: { subdomain, container, port, protocol, post_start_network }
+                local _route_override=""
+                _route_override=$(jq -c '.route_override // empty' "$tdir/template.json" 2>/dev/null)
+                if [[ -n "$_route_override" ]]; then
+                    local _ro_sub _ro_container _ro_port _ro_proto _ro_net
+                    _ro_sub=$(printf '%s' "$_route_override" | jq -r '.subdomain // empty')
+                    _ro_container=$(printf '%s' "$_route_override" | jq -r '.container // empty')
+                    _ro_port=$(printf '%s' "$_route_override" | jq -r '.port // empty')
+                    _ro_proto=$(printf '%s' "$_route_override" | jq -r '.protocol // "http"')
+                    _ro_net=$(printf '%s' "$_route_override" | jq -r '.post_start_network // empty')
+                    if [[ -n "$_ro_container" && -n "$_ro_port" ]]; then
+                        [[ -z "$_ro_sub" ]] && _ro_sub="$name"
+                        # Allow subdomain override from deploy variables (e.g. NEXTCLOUD_DOMAIN)
+                        local _ro_domain_var
+                        _ro_domain_var=$(printf '%s' "$body" | jq -r '.variables.NEXTCLOUD_DOMAIN // empty' 2>/dev/null)
+                        if [[ -n "$_ro_domain_var" && "$_ro_domain_var" == *.* ]]; then
+                            # User provided full domain like cloud.howson.dev — extract subdomain
+                            _ro_sub="${_ro_domain_var%%.*}"
+                        fi
+                        local _ro_id
+                        _ro_id=$(printf '%s' "$_ro_sub" | tr '[:upper:]' '[:lower:]' | tr -c '[:alnum:]-' '-')
+                        if [[ ! -f "$traefik_routes_dir/$target_stack/${name}.yml" ]]; then
+                            cat > "$traefik_routes_dir/$target_stack/${name}.yml" << OVERRIDE_EOF
+# =============================================================================
+# Auto-generated Traefik route for: $name (route override)
+# =============================================================================
+# Routes to a container managed externally (not in this compose file).
+# The container ${_ro_container} is spawned by the service after startup.
+# =============================================================================
+
+http:
+  routers:
+    ${_ro_id}-router:
+      entryPoints:
+        - "websecure"
+      rule: "Host(\`${_ro_sub}.${traefik_domain}\`)"
+      service: "${_ro_id}"
+      middlewares:
+        - "traefik-chain"
+        - "compress-gzip"
+      tls: {}
+
+  services:
+    ${_ro_id}:
+      loadBalancer:
+        servers:
+          - url: "${_ro_proto}://${_ro_container}:${_ro_port}"
+OVERRIDE_EOF
+                        fi
+                        # Create DNS record for the override subdomain
+                        if [[ -n "$_cf_token" ]]; then
+                            _cloudflare_add_dns "$_ro_sub" "$traefik_domain" "$_cf_token"
+                            sleep 1
+                        fi
+                        # Background task: wait for the spawned container and connect it to the proxy network
+                        if [[ -n "$_ro_net" ]]; then
+                            (
+                                local _wait=0
+                                while [[ $_wait -lt 120 ]]; do
+                                    if docker inspect "$_ro_container" >/dev/null 2>&1; then
+                                        docker network connect "$_ro_net" "$_ro_container" 2>/dev/null || true
+                                        break
+                                    fi
+                                    sleep 5
+                                    _wait=$((_wait + 5))
+                                done
+                            ) &
+                        fi
+                    fi
+                fi
+
                 # Parse each service from the SUBSTITUTED template compose
                 local _svc_name
                 while IFS= read -r _svc_name; do
@@ -9120,6 +9198,11 @@ AUTH_ROUTE_EOF
 
                     # Skip services without ports (databases, workers, etc.)
                     [[ -z "$_container_port" ]] && continue
+
+                    # Skip localhost-bound ports (not publicly routable)
+                    if [[ "$_port_line" == *"127.0.0.1"* || "$_port_line" == *"localhost"* ]]; then
+                        continue
+                    fi
 
                     # Determine protocol (HTTPS for 443/9443 ports, HTTP otherwise)
                     local _protocol="http"
@@ -13844,6 +13927,16 @@ handle_request() {
                 handle_stack_action "$stack" "update"
                 ;;
             /secrets)
+                handle_secret_set "$request_body"
+                ;;
+            /secrets/*)
+                local key="${path#/secrets/}"
+                key="${key%%/*}"
+                _api_validate_resource_name "$key" "secret" || return
+                # Merge URL key into body for the handler
+                local _sb
+                _sb=$(printf '%s' "$request_body" | jq -c --arg k "$key" '. + {key: $k}' 2>/dev/null)
+                [[ -n "$_sb" ]] && request_body="$_sb"
                 handle_secret_set "$request_body"
                 ;;
             /schedules)

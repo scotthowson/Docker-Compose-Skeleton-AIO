@@ -9,7 +9,7 @@ services:
     ports:
       - "${PORT_FLARESOLVERR:-8191}:8191"
     healthcheck:
-      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://127.0.0.1:8191/health || exit 1"]
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8191/health')\" || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3

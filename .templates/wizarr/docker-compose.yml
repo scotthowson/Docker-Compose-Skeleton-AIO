@@ -11,7 +11,7 @@ services:
     ports:
       - "${PORT_WIZARR:-5690}:5690"
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:5690/api/health"]
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://127.0.0.1:5690/ || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 3

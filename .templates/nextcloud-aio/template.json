@@ -1,23 +1,37 @@
 {
   "name": "nextcloud-aio",
   "title": "Nextcloud All-in-One",
-  "description": "Full-featured Nextcloud deployment with automatic updates, built-in Collabora Office, Talk, backups, and GPU acceleration. Manages its own containers via the AIO mastercontainer.",
+  "description": "Full-featured Nextcloud deployment with automatic updates, built-in Collabora Office, Talk, backups, and GPU acceleration. Manages its own containers via the AIO mastercontainer. Designed for reverse proxy setups — the admin interface binds to localhost only.",
   "category": "web",
   "target_stack": "web-applications",
   "icon": "\u2601\ufe0f",
   "tags": ["nextcloud", "cloud", "file-sync", "collabora", "office", "talk", "backup"],
+  "route_override": {
+    "subdomain": "cloud",
+    "container": "nextcloud-aio-apache",
+    "port": 11000,
+    "protocol": "https",
+    "post_start_network": "proxy"
+  },
   "variables": [
     {
+      "name": "NEXTCLOUD_DOMAIN",
+      "label": "Nextcloud Domain",
+      "description": "The full domain for your Nextcloud instance (e.g. cloud.example.com). Used for Traefik routing and trusted domain config.",
+      "default": "",
+      "required": true
+    },
+    {
       "name": "PORT_NEXTCLOUD_AIO",
-      "label": "AIO Installer Port",
-      "description": "Port exposed on the host for the Nextcloud AIO web installer interface",
+      "label": "AIO Admin Port",
+      "description": "Port for the AIO web installer interface (localhost only — not publicly accessible)",
       "default": "8080",
       "required": false
     },
     {
       "name": "APACHE_IP_BINDING",
       "label": "Apache IP Binding",
-      "description": "IP address Apache will bind to (use your server's LAN IP for reverse proxy setups)",
+      "description": "IP address Apache will bind to (0.0.0.0 for reverse proxy setups)",
       "default": "0.0.0.0",
       "required": false
     },
