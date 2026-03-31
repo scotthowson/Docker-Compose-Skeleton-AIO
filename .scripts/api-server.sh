@@ -9500,15 +9500,13 @@ AUTH_ROUTE_EOF
         local _sq_icon="${icon_url//\'/\'\'}"
         local _sq_desc="${description//\'/\'\'}"
 
-        # SQLite only — no API calls, no SSR trigger. Requires sqlite3 on host.
-        if [[ -z "$db_path" ]] || ! command -v sqlite3 >/dev/null 2>&1; then
-            return 0
-        fi
-
         # Write via detached script (socat kills background subshells)
         local _reg_script
         _reg_script=$(mktemp /tmp/dcs-homarr-reg-XXXXXX.sh)
-        cat > "$_reg_script" << HOMARR_SQLITE_EOF
+
+        if [[ -n "$db_path" ]] && command -v sqlite3 >/dev/null 2>&1; then
+            # Primary: SQLite — instant, no API call, no SSR crash
+            cat > "$_reg_script" << HOMARR_SQLITE_EOF
 #!/bin/bash
 DB="$db_path"
 EXISTS=\$(sqlite3 "\$DB" "SELECT COUNT(*) FROM app WHERE href='$_sq_url';" 2>/dev/null)
@@ -9520,6 +9518,30 @@ else
 fi
 rm -f "$_reg_script"
 HOMARR_SQLITE_EOF
+        else
+            # Fallback: tRPC API (when sqlite3 is not installed)
+            local homarr_port=""
+            homarr_port=$(docker inspect --format='{{range $p, $conf := .NetworkSettings.Ports}}{{if eq $p "7575/tcp"}}{{(index $conf 0).HostPort}}{{end}}{{end}}' Homarr 2>/dev/null)
+            [[ -z "$homarr_port" ]] && rm -f "$_reg_script" && return 0
+            local api_key
+            api_key=$(_decrypt_secret "HOMARR_API_KEY") || { rm -f "$_reg_script"; return 0; }
+            [[ -z "$api_key" ]] && rm -f "$_reg_script" && return 0
+            local payload
+            payload=$(jq -nc --arg name "$app_name" --arg href "$app_url" --arg icon "$icon_url" --arg desc "$description" --arg ping "$app_url" \
+                '{json: {name: $name, href: $href, description: $desc, iconUrl: $icon, pingUrl: $ping}}')
+            cat > "$_reg_script" << HOMARR_API_EOF
+#!/bin/bash
+sleep 10
+for _i in 1 2 3; do
+    _code=\$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 -X POST "http://localhost:${homarr_port}/api/trpc/app.create" -H "ApiKey: $api_key" -H "Content-Type: application/json" -d '$payload' 2>/dev/null)
+    echo "\$(date): Homarr register '$app_name' attempt \$_i — HTTP \$_code (tRPC fallback)" >> "$BASE_DIR/logs/homarr-register.log"
+    [[ "\$_code" == "200" ]] && break
+    sleep 5
+done
+rm -f "$_reg_script"
+HOMARR_API_EOF
+        fi
+
         chmod +x "$_reg_script"
         nohup bash "$_reg_script" >/dev/null 2>&1 &
     }
@@ -9982,10 +10004,13 @@ print('\n'.join(result))
                 fi
             done
 
-            # Start containers (with secrets injected as env vars)
+            # Start ONLY the newly deployed services — don't restart existing containers
+            # in the same stack (prevents Homarr/other services from restarting)
             local _deploy_env=""
             [[ -f "$target_dir/.env" ]] && _deploy_env="$target_dir/.env"
-            _compose_with_secrets "$target_dir/docker-compose.yml" "$_deploy_env" up -d --no-recreate --remove-orphans >/dev/null 2>&1
+            local _svc_list=""
+            _svc_list=$(printf '%s' "$template_services" | tr '\n' ' ')
+            _compose_with_secrets "$target_dir/docker-compose.yml" "$_deploy_env" up -d --no-recreate $_svc_list >/dev/null 2>&1
 
             # Connect routed containers to the 'proxy' network so Traefik can reach them.
             # Controlled by the connect_proxy flag from the deploy request.

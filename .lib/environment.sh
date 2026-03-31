@@ -18,9 +18,11 @@
 _detect_package_manager() {
     if   command -v apt-get >/dev/null 2>&1; then echo "sudo apt-get install -y"
     elif command -v dnf     >/dev/null 2>&1; then echo "sudo dnf install -y"
-    elif command -v pacman  >/dev/null 2>&1; then echo "sudo pacman -Syu --noconfirm"
+    elif command -v yum     >/dev/null 2>&1; then echo "sudo yum install -y"
+    elif command -v pacman  >/dev/null 2>&1; then echo "sudo pacman -S --noconfirm --needed"
     elif command -v zypper  >/dev/null 2>&1; then echo "sudo zypper install -y"
-    elif command -v apk     >/dev/null 2>&1; then echo "sudo apk add"
+    elif command -v apk     >/dev/null 2>&1; then echo "sudo apk add --no-cache"
+    elif command -v xbps-install >/dev/null 2>&1; then echo "sudo xbps-install -y"
     else
         return 1
     fi
@@ -74,14 +76,21 @@ _ensure_tool_installed() {
 verify_environment() {
     log_nodate_important "Environment Verification: Ensuring Compatibility..."
 
-    local -a required_tools=("curl" "docker" "jq" "socat" "ncat" "openssl" "git" "python3")
+    # Core dependencies
+    local -a required_tools=("curl" "docker" "jq" "openssl" "git" "python3")
 
     for tool in "${required_tools[@]}"; do
         _ensure_tool_installed "$tool"
     done
 
+    # API server listener — need at least one of socat or ncat
+    if ! command -v socat &>/dev/null && ! command -v ncat &>/dev/null; then
+        log_warning "Neither 'socat' nor 'ncat' found — API server requires one of these"
+        _ensure_tool_installed "socat"
+    fi
+
     # Verify optional but recommended tools
-    local -a optional_tools=("awk" "diff" "tar" "dd" "nproc")
+    local -a optional_tools=("rsync" "tar" "xxd" "perl" "awk" "nproc" "sqlite3")
     for tool in "${optional_tools[@]}"; do
         if ! command -v "$tool" &>/dev/null; then
             log_warning "Optional tool '$tool' not found — some features may be limited"
