@@ -2454,14 +2454,17 @@ handle_containers() {
                 image: .Image,
                 image_id: (.ID[:12] // ""),
                 created: .CreatedAt,
-                uptime_seconds: (if .State == "running" then
-                    ($now - ((.RunningFor // "0") | if test("seconds") then (scan("[0-9]+")[0] | tonumber)
-                             elif test("minutes") then (scan("[0-9]+")[0] | tonumber * 60)
-                             elif test("hours") then (scan("[0-9]+")[0] | tonumber * 3600)
-                             elif test("days") then (scan("[0-9]+")[0] | tonumber * 86400)
-                             elif test("weeks") then (scan("[0-9]+")[0] | tonumber * 604800)
-                             elif test("months") then (scan("[0-9]+")[0] | tonumber * 2592000)
-                             else 0 end)) else 0 end),
+                uptime_seconds: (if .State != "running" then 0
+                    else ((.RunningFor // "0") | try (
+                        (match("[0-9]+").string | tonumber) * (
+                            if test("second") then 1
+                            elif test("minute") then 60
+                            elif test("hour") then 3600
+                            elif test("day") then 86400
+                            elif test("week") then 604800
+                            elif test("month") then 2592000
+                            else 0 end)
+                    ) catch 0) end),
                 ports: .Ports,
                 restart_count: 0,
                 cpu_percent: ($st[.Names].cpu // null),
