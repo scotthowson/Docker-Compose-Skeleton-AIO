@@ -7530,8 +7530,15 @@ handle_images_check_updates_post() {
 
 handle_image_update() {
     local image_name="$1"
-    # URL-decode the image name
-    image_name=$(printf '%b' "${image_name//%/\\x}")
+
+    # Support both URL path (for simple names) and request body (for names with slashes)
+    if [[ -z "$image_name" || "$image_name" == "update" ]] && [[ -n "${2:-}" ]]; then
+        # Read from request body
+        image_name=$(printf '%s' "$2" | jq -r '.image // .name // empty' 2>/dev/null)
+    fi
+
+    # URL-decode if needed
+    [[ "$image_name" == *"%"* ]] && image_name=$(printf '%b' "${image_name//%/\\x}")
 
     if [[ -z "$image_name" ]]; then
         _api_error 400 "Image name is required"
@@ -14139,11 +14146,14 @@ handle_request() {
             /images/check-updates)
                 handle_images_check_updates_post
                 ;;
+            /images/update)
+                # Image name in body: {"image": "lscr.io/linuxserver/plex:latest"}
+                handle_image_update "" "$request_body"
+                ;;
             /images/*/update)
                 local img="${path#/images/}"
                 img="${img%/update}"
-                _api_validate_resource_name "$img" "image" || return
-                handle_image_update "$img"
+                handle_image_update "$img" "$request_body"
                 ;;
             /notifications/rules)
                 handle_notification_rules_create "$request_body"
