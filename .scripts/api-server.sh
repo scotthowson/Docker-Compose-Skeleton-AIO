@@ -2280,6 +2280,7 @@ handle_stack_action() {
             _run_plugin_hooks "pre-stop" "$_hook_ctx"
             ( $DOCKER_COMPOSE_CMD "${compose_args[@]}" down --remove-orphans --timeout 15 >/dev/null 2>&1 ) &
             _run_plugin_hooks "post-stop" "$_hook_ctx"
+            _fire_notifications "stack_down" "stack=$stack" "status=stopped"
             output="Stopping $stack (background)"
             ;;
         restart)
@@ -4384,15 +4385,28 @@ handle_maintenance_orphans() {
 }
 
 handle_maintenance_disk() {
+    # Scan per-stack App-Data directories (DCS stores data inside each stack dir)
     local -a stack_sizes=()
-    if [[ -d "$APP_DATA_DIR" ]]; then
-        while IFS=$'\t' read -r size dir; do
-            [[ -z "$size" ]] && continue
-            local dirname
-            dirname=$(basename "$dir")
-            stack_sizes+=("{\"name\": \"$(_api_json_escape "$dirname")\", \"size\": \"$(_api_json_escape "$size")\"}")
-        done < <(du -sh "$APP_DATA_DIR"/*/ 2>/dev/null | sort -rh)
-    fi
+    local total_bytes=0
+    for _stack_dir in "$COMPOSE_DIR"/*/; do
+        [[ ! -d "$_stack_dir" ]] && continue
+        local stack_name
+        stack_name=$(basename "$_stack_dir")
+        local _ad="$_stack_dir/App-Data"
+        # Also check configured APP_DATA_DIR relative path
+        if [[ ! -d "$_ad" ]]; then
+            local _configured="${APP_DATA_DIR:-./App-Data}"
+            [[ "$_configured" == ./* ]] && _ad="$_stack_dir/${_configured#./}" || _ad="$_configured"
+        fi
+        [[ ! -d "$_ad" ]] && continue
+        local size_raw size_bytes
+        size_raw=$(du -sh "$_ad" 2>/dev/null | cut -f1)
+        [[ -z "$size_raw" ]] && continue
+        # Parse size to bytes for total calculation
+        size_bytes=$(du -sb "$_ad" 2>/dev/null | cut -f1) || size_bytes=0
+        total_bytes=$((total_bytes + size_bytes))
+        stack_sizes+=("{\"name\": \"$(_api_json_escape "$stack_name")\", \"size\": \"$(_api_json_escape "$size_raw")\"}")
+    done
 
     local ss_json
     if [[ ${#stack_sizes[@]} -gt 0 ]]; then
@@ -4402,6 +4416,7 @@ handle_maintenance_disk() {
         ss_json="[]"
     fi
 
+    # Docker system disk usage
     local -a df_entries=()
     while IFS='|' read -r type total active size reclaimable; do
         [[ -z "$type" || "$type" == "TYPE" ]] && continue
@@ -4416,12 +4431,51 @@ handle_maintenance_disk() {
         df_json="[]"
     fi
 
+    # Calculate total app data from per-stack scan
     local total_app_data="N/A"
-    if [[ -d "$APP_DATA_DIR" ]]; then
-        total_app_data=$(du -sh "$APP_DATA_DIR" 2>/dev/null | cut -f1)
+    if [[ $total_bytes -gt 0 ]]; then
+        if [[ $total_bytes -ge 1073741824 ]]; then
+            total_app_data=$(awk "BEGIN { printf \"%.1fG\", $total_bytes / 1073741824 }")
+        elif [[ $total_bytes -ge 1048576 ]]; then
+            total_app_data=$(awk "BEGIN { printf \"%.1fM\", $total_bytes / 1048576 }")
+        else
+            total_app_data=$(awk "BEGIN { printf \"%.0fK\", $total_bytes / 1024 }")
+        fi
     fi
 
-    _api_success "{\"stack_sizes\": $ss_json, \"docker_df\": $df_json, \"total_app_data\": \"$(_api_json_escape "$total_app_data")\"}"
+    # Host disk info (filesystem where stacks live)
+    local disk_total="N/A" disk_used="N/A" disk_avail="N/A" disk_pct="N/A"
+    local _df_line
+    _df_line=$(df -h "$COMPOSE_DIR" 2>/dev/null | tail -1)
+    if [[ -n "$_df_line" ]]; then
+        disk_total=$(echo "$_df_line" | awk '{print $2}')
+        disk_used=$(echo "$_df_line" | awk '{print $3}')
+        disk_avail=$(echo "$_df_line" | awk '{print $4}')
+        disk_pct=$(echo "$_df_line" | awk '{print $5}')
+    fi
+
+    # Docker volume sizes (named volumes with their actual disk usage)
+    local -a vol_entries=()
+    while IFS= read -r vname; do
+        [[ -z "$vname" ]] && continue
+        local vpath
+        vpath=$(docker volume inspect --format '{{.Mountpoint}}' "$vname" 2>/dev/null)
+        local vsize="unknown"
+        if [[ -d "$vpath" ]]; then
+            vsize=$(du -sh "$vpath" 2>/dev/null | cut -f1) || vsize="unknown"
+        fi
+        vol_entries+=("{\"name\": \"$(_api_json_escape "$vname")\", \"size\": \"$(_api_json_escape "$vsize")\"}")
+    done < <(docker volume ls -q 2>/dev/null)
+
+    local vol_json
+    if [[ ${#vol_entries[@]} -gt 0 ]]; then
+        vol_json=$(printf '%s,' "${vol_entries[@]}")
+        vol_json="[${vol_json%,}]"
+    else
+        vol_json="[]"
+    fi
+
+    _api_success "{\"stack_sizes\": $ss_json, \"docker_df\": $df_json, \"total_app_data\": \"$(_api_json_escape "$total_app_data")\", \"host_disk\": {\"total\": \"$disk_total\", \"used\": \"$disk_used\", \"available\": \"$disk_avail\", \"percent\": \"$disk_pct\"}, \"volumes\": $vol_json}"
 }
 
 handle_maintenance_deep_prune() {
@@ -7612,24 +7666,45 @@ handle_notification_rules_create() {
         return
     fi
 
-    local name trigger target priority tags enabled
+    local name trigger target priority tags enabled title_template message_template
     name=$(printf '%s' "$body" | jq -r '.name // empty' 2>/dev/null)
     trigger=$(printf '%s' "$body" | jq -r '.trigger // empty' 2>/dev/null)
     target=$(printf '%s' "$body" | jq -r '.target // "*"' 2>/dev/null)
     priority=$(printf '%s' "$body" | jq -r '.priority // "default"' 2>/dev/null)
     tags=$(printf '%s' "$body" | jq -c '.tags // []' 2>/dev/null)
     enabled=$(printf '%s' "$body" | jq -r '.enabled // true' 2>/dev/null)
+    title_template=$(printf '%s' "$body" | jq -r '.title_template // empty' 2>/dev/null)
+    message_template=$(printf '%s' "$body" | jq -r '.message_template // empty' 2>/dev/null)
 
     if [[ -z "$name" || -z "$trigger" ]]; then
         _api_error 400 "Missing required fields: name, trigger"
         return
     fi
 
-    local rule_id="rule_$(date +%s)_$RANDOM"
+    # If updating an existing rule (same id passed), remove old one first
+    local existing_id
+    existing_id=$(printf '%s' "$body" | jq -r '.id // empty' 2>/dev/null)
+    if [[ -n "$existing_id" ]]; then
+        jq --arg id "$existing_id" '.rules = [.rules[] | select(.id != $id)]' "$NOTIFICATIONS_FILE" > "${NOTIFICATIONS_FILE}.tmp" 2>/dev/null && mv "${NOTIFICATIONS_FILE}.tmp" "$NOTIFICATIONS_FILE"
+    fi
+
+    local rule_id="${existing_id:-rule_$(date +%s)_$RANDOM}"
     local ts
     ts=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
 
-    local rule="{\"id\": \"$rule_id\", \"name\": \"$(_api_json_escape "$name")\", \"enabled\": $enabled, \"trigger\": \"$(_api_json_escape "$trigger")\", \"target\": \"$(_api_json_escape "$target")\", \"priority\": \"$(_api_json_escape "$priority")\", \"tags\": $tags, \"created_at\": \"$ts\"}"
+    local rule
+    rule=$(jq -n \
+        --arg id "$rule_id" \
+        --arg name "$name" \
+        --argjson enabled "$enabled" \
+        --arg trigger "$trigger" \
+        --arg target "$target" \
+        --arg priority "$priority" \
+        --argjson tags "$tags" \
+        --arg title_template "$title_template" \
+        --arg message_template "$message_template" \
+        --arg created_at "$ts" \
+        '{id: $id, name: $name, enabled: $enabled, trigger: $trigger, target: $target, priority: $priority, tags: $tags, title_template: $title_template, message_template: $message_template, created_at: $created_at}')
 
     jq --argjson rule "$rule" '.rules += [$rule]' "$NOTIFICATIONS_FILE" > "${NOTIFICATIONS_FILE}.tmp" 2>/dev/null && mv "${NOTIFICATIONS_FILE}.tmp" "$NOTIFICATIONS_FILE"
 
@@ -7659,6 +7734,88 @@ handle_notification_history() {
     else
         _api_success "{\"history\": []}"
     fi
+}
+
+# Fire notifications for a given event. Evaluates all enabled rules,
+# substitutes variables in title/message templates, and sends via NTFY.
+# Variables: {stack}, {container}, {status}, {event}, {timestamp}, {hostname}
+# Usage: _fire_notifications "container_unhealthy" "stack=media-services" "container=Plex" "status=unhealthy"
+_fire_notifications() {
+    local event="$1"; shift
+    local ntfy_url="${NTFY_URL:-}"
+    [[ -z "$ntfy_url" ]] && return 0
+    [[ ! -f "$NOTIFICATIONS_FILE" ]] && return 0
+
+    # Parse key=value context args into associative array
+    local -A ctx=()
+    ctx[event]="$event"
+    ctx[timestamp]=$(date '+%Y-%m-%d %H:%M:%S')
+    ctx[hostname]=$(hostname 2>/dev/null || echo "unknown")
+    for arg in "$@"; do
+        local k="${arg%%=*}" v="${arg#*=}"
+        ctx["$k"]="$v"
+    done
+
+    # Read all enabled rules matching this event
+    local rules_json
+    rules_json=$(jq -c --arg ev "$event" '[.rules[] | select(.enabled == true and .trigger == $ev)]' "$NOTIFICATIONS_FILE" 2>/dev/null)
+    [[ -z "$rules_json" || "$rules_json" == "[]" ]] && return 0
+
+    # Process each matching rule
+    while IFS= read -r rule; do
+        [[ -z "$rule" ]] && continue
+
+        local target priority title_template message_template tags_str
+        target=$(printf '%s' "$rule" | jq -r '.target // "*"')
+        priority=$(printf '%s' "$rule" | jq -r '.priority // "default"')
+        title_template=$(printf '%s' "$rule" | jq -r '.title_template // ""')
+        message_template=$(printf '%s' "$rule" | jq -r '.message_template // ""')
+        tags_str=$(printf '%s' "$rule" | jq -r '.tags // [] | join(",")')
+
+        # Check target match (wildcard or specific stack/container)
+        if [[ "$target" != "*" && "$target" != "${ctx[stack]:-}" && "$target" != "${ctx[container]:-}" ]]; then
+            continue
+        fi
+
+        # Default templates if user didn't set custom ones
+        [[ -z "$title_template" ]] && title_template="DCS — {event}"
+        [[ -z "$message_template" ]] && message_template="{event} on {stack}: {container} is {status}"
+
+        # Substitute variables: {key} → value
+        local title="$title_template" message="$message_template"
+        for k in "${!ctx[@]}"; do
+            title="${title//\{$k\}/${ctx[$k]}}"
+            message="${message//\{$k\}/${ctx[$k]}}"
+        done
+
+        # Clean up unreplaced variables
+        title=$(echo "$title" | sed 's/{[a-z_]*}//g; s/  */ /g; s/^ *//; s/ *$//')
+        message=$(echo "$message" | sed 's/{[a-z_]*}//g; s/  */ /g; s/^ *//; s/ *$//')
+
+        # Send via NTFY (background, non-blocking)
+        (
+            local _result
+            _result=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 \
+                -H "Title: $title" \
+                -H "Priority: $priority" \
+                ${tags_str:+-H "Tags: $tags_str"} \
+                -d "$message" \
+                "$ntfy_url" 2>&1)
+
+            # Log to history
+            local _ts
+            _ts=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+            local _entry
+            _entry=$(jq -n \
+                --arg ts "$_ts" --arg type "$event" --arg title "$title" \
+                --arg message "$message" --arg priority "$priority" \
+                --argjson code "${_result:-0}" \
+                '{timestamp: $ts, type: $type, title: $title, message: $message, priority: $priority, status_code: $code}')
+            jq --argjson entry "$_entry" '.history = (.history + [$entry]) | .history = .history[-100:]' \
+                "$NOTIFICATIONS_FILE" > "${NOTIFICATIONS_FILE}.tmp" 2>/dev/null && \
+                mv "${NOTIFICATIONS_FILE}.tmp" "$NOTIFICATIONS_FILE"
+        ) &
+    done < <(printf '%s' "$rules_json" | jq -c '.[]')
 }
 
 handle_notification_test() {
@@ -8366,6 +8523,27 @@ handle_template_deploy() {
                 print $0 ":z"; next
             }
             in_vol && /^[ \t]*[a-zA-Z_]/ && !/^[ \t]*-/ { in_vol=0 }
+            { print }
+        ')
+    fi
+
+    # Inject resource limits if provided in the deploy request
+    # Accepts: { "resource_limits": { "mem_limit": "2g", "cpus": 2 } }
+    local _rl_mem _rl_cpus
+    _rl_mem=$(printf '%s' "$body" | jq -r '.resource_limits.mem_limit // empty' 2>/dev/null)
+    _rl_cpus=$(printf '%s' "$body" | jq -r '.resource_limits.cpus // empty' 2>/dev/null)
+    if [[ -n "$_rl_mem" || -n "$_rl_cpus" ]]; then
+        # Inject mem_limit and/or cpus after each service's restart: line (or image: as fallback)
+        template_compose=$(printf '%s' "$template_compose" | awk -v mem="$_rl_mem" -v cpus="$_rl_cpus" '
+            /^  [a-zA-Z_-]+:/ { in_svc=1; svc_indent="    "; printed_limits=0 }
+            in_svc && /^  [a-zA-Z_-]+:/ && printed_limits { printed_limits=0 }
+            in_svc && (/restart:/ || /image:/) && !printed_limits {
+                print
+                if (mem != "") print svc_indent "mem_limit: " mem
+                if (cpus != "") print svc_indent "cpus: " cpus
+                printed_limits=1
+                next
+            }
             { print }
         ')
     fi
