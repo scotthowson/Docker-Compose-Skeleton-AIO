@@ -9503,26 +9503,21 @@ AUTH_ROUTE_EOF
             --arg ping "$app_url" \
             '{json: {name: $name, href: $href, description: $desc, iconUrl: $icon, pingUrl: $ping}}')
 
-        # Write a self-contained registration script and run it detached.
-        # Background subshells from socat handlers get killed when the HTTP
-        # connection closes — a script file with nohup runs independently.
+        # Fire immediately via detached script (socat subshells die on connection close).
+        # Retry if Homarr is briefly restarting from Docker events.
         local _reg_script
         _reg_script=$(mktemp /tmp/dcs-homarr-reg-XXXXXX.sh)
         cat > "$_reg_script" << HOMARR_REG_SCRIPT
 #!/bin/bash
-sleep 15
-for _i in 1 2 3 4 5; do
+for _i in 1 2 3; do
     _code=\$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 \\
         -X POST "$homarr_url/api/trpc/app.create" \\
         -H "ApiKey: $api_key" \\
         -H "Content-Type: application/json" \\
         -d '$payload' 2>/dev/null)
     echo "\$(date): Homarr register '$app_name' attempt \$_i — HTTP \$_code" >> "$BASE_DIR/logs/homarr-register.log"
-    if [[ "\$_code" == "200" ]]; then
-        echo "\$(date): ✓ Registered '$app_name' on Homarr" >> "$BASE_DIR/logs/homarr-register.log"
-        break
-    fi
-    sleep 5
+    [[ "\$_code" == "200" ]] && break
+    sleep 3
 done
 rm -f "$_reg_script"
 HOMARR_REG_SCRIPT
