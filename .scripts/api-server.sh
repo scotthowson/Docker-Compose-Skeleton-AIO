@@ -2424,20 +2424,11 @@ handle_containers() {
         local now_epoch
         now_epoch=$(date +%s)
 
-        # Read container stats from cache file (updated in background)
-        local stats_lookup="{}"
+        # Stats cache — refreshed in background each call, read via jq --slurpfile
         local _stats_cache="$BASE_DIR/.data/container-stats-cache.json"
-        if [[ -f "$_stats_cache" ]]; then
-            # Only use cache if less than 30 seconds old
-            local _cache_age=999
-            local _cache_mtime
-            _cache_mtime=$(stat -c '%Y' "$_stats_cache" 2>/dev/null || echo 0)
-            _cache_age=$(( $(date +%s) - _cache_mtime ))
-            if [[ $_cache_age -lt 30 ]]; then
-                stats_lookup=$(cat "$_stats_cache" 2>/dev/null) || stats_lookup="{}"
-            fi
-        fi
-        # Refresh cache in background (non-blocking — doesn't slow down the response)
+        [[ ! -f "$_stats_cache" ]] && echo '{}' > "$_stats_cache"
+
+        # Refresh cache in background for next request
         (
             mkdir -p "$BASE_DIR/.data" 2>/dev/null
             local _sl
@@ -2449,8 +2440,10 @@ handle_containers() {
             [[ -n "$_sl" ]] && printf '{%s}' "$_sl" > "$_stats_cache"
         ) &
 
+        # Build containers JSON — read stats cache via --slurpfile (avoids shell arg size limits)
         local containers_json
-        containers_json=$(printf '%s\n' "$raw_json" | jq -s --argjson now "$now_epoch" --argjson stats "$stats_lookup" '
+        containers_json=$(printf '%s\n' "$raw_json" | jq -s --argjson now "$now_epoch" --slurpfile stats "$_stats_cache" '
+            ($stats[0] // {}) as $st |
             [.[] | {
                 name: .Names,
                 state: .State,
@@ -2471,8 +2464,8 @@ handle_containers() {
                              else 0 end)) else 0 end),
                 ports: .Ports,
                 restart_count: 0,
-                cpu_percent: ($stats[.Names].cpu // null),
-                mem_percent: ($stats[.Names].mem // null)
+                cpu_percent: ($st[.Names].cpu // null),
+                mem_percent: ($st[.Names].mem // null)
             }]' 2>/dev/null)
 
         if [[ -n "$containers_json" ]]; then
