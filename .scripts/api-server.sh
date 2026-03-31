@@ -9451,23 +9451,30 @@ AUTH_ROUTE_EOF
             --arg ping "$app_url" \
             '{json: {name: $name, href: $href, description: $desc, iconUrl: $icon, pingUrl: $ping}}')
 
-        # Run in background: wait 60s for Docker events to settle, then retry 5x
-        (
-            sleep 60
-            local _i
-            for _i in 1 2 3 4 5; do
-                local _code
-                _code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 \
-                    -X POST "$homarr_url/api/trpc/app.create" \
-                    -H "ApiKey: $api_key" \
-                    -H "Content-Type: application/json" \
-                    -d "$payload" 2>/dev/null)
-                if [[ "$_code" == "200" ]]; then
-                    break
-                fi
-                sleep 15
-            done
-        ) &
+        # Write a self-contained registration script and run it detached.
+        # Background subshells from socat handlers can lose context — a script file
+        # captures all values and runs independently.
+        local _reg_script
+        _reg_script=$(mktemp /tmp/dcs-homarr-reg-XXXXXX.sh)
+        cat > "$_reg_script" << HOMARR_REG_SCRIPT
+#!/bin/bash
+sleep 60
+for _i in 1 2 3 4 5; do
+    _code=\$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 \\
+        -X POST "$homarr_url/api/trpc/app.create" \\
+        -H "ApiKey: $api_key" \\
+        -H "Content-Type: application/json" \\
+        -d '$payload' 2>/dev/null)
+    echo "\$(date): Homarr registration attempt \$_i — HTTP \$_code" >> "$BASE_DIR/logs/homarr-register.log"
+    if [[ "\$_code" == "200" ]]; then
+        break
+    fi
+    sleep 15
+done
+rm -f "$_reg_script"
+HOMARR_REG_SCRIPT
+        chmod +x "$_reg_script"
+        nohup bash "$_reg_script" >/dev/null 2>&1 &
     }
 
     # -----------------------------------------------------------------------
