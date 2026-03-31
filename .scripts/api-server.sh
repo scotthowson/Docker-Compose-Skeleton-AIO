@@ -2424,13 +2424,13 @@ handle_containers() {
         local now_epoch
         now_epoch=$(date +%s)
 
-        # Fetch bulk stats for all running containers — build JSON lookup directly with jq
+        # Fetch bulk stats for all running containers — pipe-delimited to avoid tab/space issues
         local stats_lookup="{}"
         local _raw_stats
-        _raw_stats=$(timeout 10 docker stats --no-stream --format '{{.Name}}\t{{.CPUPerc}}\t{{.MemPerc}}' 2>/dev/null)
+        _raw_stats=$(timeout 10 docker stats --no-stream --format '{{.Name}}|{{.CPUPerc}}|{{.MemPerc}}' 2>/dev/null)
         if [[ -n "$_raw_stats" ]]; then
-            stats_lookup=$(printf '%s\n' "$_raw_stats" | awk -F'\t' '{
-                gsub(/%/, "", $2); gsub(/%/, "", $3); gsub(/^ +| +$/, "", $2); gsub(/^ +| +$/, "", $3)
+            stats_lookup=$(printf '%s\n' "$_raw_stats" | awk -F'|' '{
+                gsub(/%/, "", $2); gsub(/%/, "", $3); gsub(/^ +| +$/, "", $1); gsub(/^ +| +$/, "", $2); gsub(/^ +| +$/, "", $3)
                 if (NR > 1) printf ","
                 printf "\"%s\":{\"cpu\":%s,\"mem\":%s}", $1, ($2+0), ($3+0)
             }')
