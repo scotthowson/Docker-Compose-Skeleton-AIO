@@ -8645,6 +8645,10 @@ handle_template_deploy() {
     local replace_services
     replace_services=$(printf '%s' "$body" | jq -r '.replace_services // false' 2>/dev/null)
 
+    # Homarr integration flag (read early — used in auto-routing loop below)
+    local _add_homarr
+    _add_homarr=$(printf '%s' "$body" | jq -r '.add_to_homarr // false' 2>/dev/null)
+
     if [[ -n "$conflicts" ]]; then
         if [[ "$replace_services" != "true" ]]; then
             _api_error 409 "Service name conflict in target stack: $conflicts"
@@ -9909,10 +9913,9 @@ print('\n'.join(result))
 
     # Auto-start if requested — run in background so API responds immediately.
     # After compose up, fix App-Data ownership for non-root images.
-    local auto_start connect_proxy _add_homarr
+    local auto_start connect_proxy
     auto_start=$(printf '%s' "$body" | jq -r '.auto_start // false' 2>/dev/null)
     connect_proxy=$(printf '%s' "$body" | jq -r '.connect_proxy // false' 2>/dev/null)
-    _add_homarr=$(printf '%s' "$body" | jq -r '.add_to_homarr // false' 2>/dev/null)
     local started=false
     _run_plugin_hooks "post-deploy" "{\"stack\":\"$target_stack\",\"template\":\"$name\"}"
     if [[ "$auto_start" == "true" ]]; then
