@@ -2424,18 +2424,30 @@ handle_containers() {
         local now_epoch
         now_epoch=$(date +%s)
 
-        # Fetch bulk stats for all running containers — pipe-delimited to avoid tab/space issues
+        # Read container stats from cache file (updated in background)
         local stats_lookup="{}"
-        local _raw_stats
-        _raw_stats=$(timeout 10 docker stats --no-stream --format '{{.Name}}|{{.CPUPerc}}|{{.MemPerc}}' 2>/dev/null)
-        if [[ -n "$_raw_stats" ]]; then
-            stats_lookup=$(printf '%s\n' "$_raw_stats" | awk -F'|' '{
+        local _stats_cache="$BASE_DIR/.data/container-stats-cache.json"
+        if [[ -f "$_stats_cache" ]]; then
+            # Only use cache if less than 30 seconds old
+            local _cache_age=999
+            local _cache_mtime
+            _cache_mtime=$(stat -c '%Y' "$_stats_cache" 2>/dev/null || echo 0)
+            _cache_age=$(( $(date +%s) - _cache_mtime ))
+            if [[ $_cache_age -lt 30 ]]; then
+                stats_lookup=$(cat "$_stats_cache" 2>/dev/null) || stats_lookup="{}"
+            fi
+        fi
+        # Refresh cache in background (non-blocking — doesn't slow down the response)
+        (
+            mkdir -p "$BASE_DIR/.data" 2>/dev/null
+            local _sl
+            _sl=$(docker stats --no-stream --format '{{.Name}}|{{.CPUPerc}}|{{.MemPerc}}' 2>/dev/null | awk -F'|' '{
                 gsub(/%/, "", $2); gsub(/%/, "", $3); gsub(/^ +| +$/, "", $1); gsub(/^ +| +$/, "", $2); gsub(/^ +| +$/, "", $3)
                 if (NR > 1) printf ","
                 printf "\"%s\":{\"cpu\":%s,\"mem\":%s}", $1, ($2+0), ($3+0)
             }')
-            stats_lookup="{${stats_lookup}}"
-        fi
+            [[ -n "$_sl" ]] && printf '{%s}' "$_sl" > "$_stats_cache"
+        ) &
 
         local containers_json
         containers_json=$(printf '%s\n' "$raw_json" | jq -s --argjson now "$now_epoch" --argjson stats "$stats_lookup" '
