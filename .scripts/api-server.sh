@@ -7738,14 +7738,28 @@ handle_image_update() {
         return
     }
 
-    # Find and restart containers using this image
+    # Find containers using this image and recreate them with the new image
+    # docker restart alone does NOT use the newly pulled image — must recreate
     local -a restarted=()
     local containers
     containers=$(docker ps -q --filter "ancestor=$image_name" 2>/dev/null)
     for cid in $containers; do
-        local cname
+        local cname svc_name stack_dir compose_project
         cname=$(docker inspect --format '{{.Name}}' "$cid" 2>/dev/null | sed 's|^/||')
-        docker restart "$cid" >/dev/null 2>&1
+        svc_name=$(docker inspect --format '{{index .Config.Labels "com.docker.compose.service"}}' "$cid" 2>/dev/null)
+        compose_project=$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project.working_dir"}}' "$cid" 2>/dev/null)
+
+        if [[ -n "$svc_name" && -n "$compose_project" && -f "$compose_project/docker-compose.yml" ]]; then
+            # Recreate via docker compose — picks up the new image properly
+            local _env_file=""
+            [[ -f "$compose_project/.env" ]] && _env_file="--env-file $compose_project/.env"
+            $DOCKER_COMPOSE_CMD -f "$compose_project/docker-compose.yml" $_env_file up -d --force-recreate --no-deps "$svc_name" >/dev/null 2>&1
+        else
+            # Fallback: stop + rm + start via docker (non-compose containers)
+            docker stop "$cid" >/dev/null 2>&1
+            docker rm "$cid" >/dev/null 2>&1
+            # Can't fully recreate non-compose containers — just log it
+        fi
         restarted+=("\"$(_api_json_escape "$cname")\"")
     done
 
