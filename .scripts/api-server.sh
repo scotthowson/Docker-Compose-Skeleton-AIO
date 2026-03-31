@@ -9359,11 +9359,12 @@ AUTH_ROUTE_EOF
     # Homarr Integration — auto-register services on the Homarr dashboard
     # -----------------------------------------------------------------------
 
-    # Detect running Homarr instance — returns internal API URL or empty
+    # Detect running Homarr instance — returns localhost URL with mapped port
     _detect_homarr() {
         if docker inspect Homarr >/dev/null 2>&1; then
-            echo "http://Homarr:7575"
-            return
+            local _hp
+            _hp=$(docker inspect --format='{{range $p, $conf := .NetworkSettings.Ports}}{{if eq $p "7575/tcp"}}{{(index $conf 0).HostPort}}{{end}}{{end}}' Homarr 2>/dev/null)
+            [[ -n "$_hp" ]] && echo "http://localhost:${_hp}" && return
         fi
         echo "${HOMARR_URL:-}"
     }
@@ -9421,29 +9422,44 @@ AUTH_ROUTE_EOF
         esac
     }
 
-    # Register an app on the Homarr dashboard via API.
+    # Register an app on the Homarr dashboard via tRPC API.
     # Non-blocking, non-fatal — runs in background, errors are silently ignored.
     _homarr_register_app() {
         local app_name="$1" app_url="$2" icon_url="$3" description="$4"
-        local homarr_url
-        homarr_url=$(_detect_homarr)
+
+        # Detect Homarr — use localhost with mapped port (host process can't use container DNS)
+        local homarr_port=""
+        if docker inspect Homarr >/dev/null 2>&1; then
+            homarr_port=$(docker inspect --format='{{range $p, $conf := .NetworkSettings.Ports}}{{if eq $p "7575/tcp"}}{{(index $conf 0).HostPort}}{{end}}{{end}}' Homarr 2>/dev/null)
+        fi
+        local homarr_url=""
+        if [[ -n "$homarr_port" ]]; then
+            homarr_url="http://localhost:${homarr_port}"
+        elif [[ -n "${HOMARR_URL:-}" ]]; then
+            homarr_url="$HOMARR_URL"
+        fi
         [[ -z "$homarr_url" ]] && return 0
 
         local api_key
         api_key=$(_decrypt_secret "HOMARR_API_KEY") || return 0
         [[ -z "$api_key" ]] && return 0
 
+        # Homarr v1 uses tRPC — POST /api/trpc/app.create with {"json": {...}}
+        # All fields required: name, href, description, iconUrl, pingUrl
+        [[ -z "$description" ]] && description="Deployed via DCS"
+        [[ -z "$icon_url" ]] && icon_url=""
         local payload
         payload=$(jq -nc \
             --arg name "$app_name" \
             --arg href "$app_url" \
             --arg icon "$icon_url" \
             --arg desc "$description" \
-            '{name: $name, href: $href, iconUrl: (if $icon == "" then null else $icon end), description: (if $desc == "" then null else $desc end)}')
+            --arg ping "$app_url" \
+            '{json: {name: $name, href: $href, description: $desc, iconUrl: $icon, pingUrl: $ping}}')
 
         (
             curl -sf --max-time 10 \
-                -X POST "$homarr_url/api/apps" \
+                -X POST "$homarr_url/api/trpc/app.create" \
                 -H "ApiKey: $api_key" \
                 -H "Content-Type: application/json" \
                 -d "$payload" \
