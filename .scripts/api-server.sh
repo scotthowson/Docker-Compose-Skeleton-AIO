@@ -2743,8 +2743,10 @@ handle_disks() {
 
         [[ -z "$device" || "$device" == "Filesystem" ]] && continue
         case "$mount" in
-            /sys/*|/proc/*|/dev/*|/run/*|/snap/*|/boot/efi|/boot/grub) continue ;;
+            /|/boot|/boot/*|/sys/*|/proc/*|/dev/*|/run/*|/snap/*) continue ;;
         esac
+        # Skip mergerfs/overlay mounts (device paths contain colons)
+        [[ "$device" == *":"* ]] && continue
         [[ "$device" != /* ]] && continue
         disk_entries+=("{\"device\": \"$(_api_json_escape "$device")\", \"mount\": \"$(_api_json_escape "$mount")\", \"total\": \"$(_api_json_escape "$total")\", \"used\": \"$(_api_json_escape "$used")\", \"available\": \"$(_api_json_escape "$available")\", \"percent\": \"$(_api_json_escape "$percent")\"}")
     done < <(df -h --output=source,target,size,used,avail,pcent -x tmpfs -x devtmpfs -x squashfs -x overlay -x efivarfs -x vfat 2>/dev/null | tail -n +2)
