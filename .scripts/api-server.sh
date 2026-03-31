@@ -8397,6 +8397,29 @@ handle_traefik_status() {
     _api_success "{\"active\": $traefik_active, \"domain\": \"$(_api_json_escape "$traefik_domain")\"}"
 }
 
+# GET /homarr/status — Check if Homarr is deployed and has an API key configured
+handle_homarr_status() {
+    local active="false"
+    local url=""
+
+    # Check if Homarr container exists (running or stopped)
+    if docker inspect Homarr >/dev/null 2>&1; then
+        active="true"
+        url="http://Homarr:7575"
+    elif [[ -n "${HOMARR_URL:-}" ]]; then
+        active="true"
+        url="$HOMARR_URL"
+    fi
+
+    # Check if API key is configured
+    local has_key="false"
+    if _decrypt_secret "HOMARR_API_KEY" >/dev/null 2>&1; then
+        has_key="true"
+    fi
+
+    _api_success "{\"active\": $active, \"has_api_key\": $has_key, \"url\": \"$(_api_json_escape "$url")\"}"
+}
+
 handle_template_deploy() {
     local name="$1"
     local body="$2"
@@ -9333,6 +9356,102 @@ AUTH_ROUTE_EOF
     # -----------------------------------------------------------------------
     # Cloudflare DNS auto-creation helper
     # -----------------------------------------------------------------------
+    # Homarr Integration — auto-register services on the Homarr dashboard
+    # -----------------------------------------------------------------------
+
+    # Detect running Homarr instance — returns internal API URL or empty
+    _detect_homarr() {
+        if docker inspect Homarr >/dev/null 2>&1; then
+            echo "http://Homarr:7575"
+            return
+        fi
+        echo "${HOMARR_URL:-}"
+    }
+
+    # Map template names to dashboard icon URLs (walkxcode/dashboard-icons)
+    _get_template_icon() {
+        local name="$1"
+        local base="https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png"
+        case "$name" in
+            plex) echo "$base/plex.png" ;;
+            sonarr) echo "$base/sonarr.png" ;;
+            radarr) echo "$base/radarr.png" ;;
+            prowlarr) echo "$base/prowlarr.png" ;;
+            jellyfin) echo "$base/jellyfin.png" ;;
+            jellyseerr) echo "$base/jellyseerr.png" ;;
+            seerr|overseerr) echo "$base/overseerr.png" ;;
+            qbittorrent) echo "$base/qbittorrent.png" ;;
+            tautulli) echo "$base/tautulli.png" ;;
+            portainer) echo "$base/portainer.png" ;;
+            nextcloud*) echo "$base/nextcloud.png" ;;
+            vaultwarden) echo "$base/vaultwarden.png" ;;
+            grafana) echo "$base/grafana.png" ;;
+            prometheus) echo "$base/prometheus.png" ;;
+            uptime-kuma) echo "$base/uptime-kuma.png" ;;
+            gitea) echo "$base/gitea.png" ;;
+            ghost) echo "$base/ghost.png" ;;
+            adguard*) echo "$base/adguard-home.png" ;;
+            pihole) echo "$base/pi-hole.png" ;;
+            homeassistant) echo "$base/home-assistant.png" ;;
+            freshrss) echo "$base/freshrss.png" ;;
+            mealie) echo "$base/mealie.png" ;;
+            paperless*) echo "$base/paperless-ngx.png" ;;
+            immich) echo "$base/immich.png" ;;
+            syncthing) echo "$base/syncthing.png" ;;
+            filebrowser) echo "$base/filebrowser.png" ;;
+            audiobookshelf) echo "$base/audiobookshelf.png" ;;
+            calibre*) echo "$base/calibre-web.png" ;;
+            netdata) echo "$base/netdata.png" ;;
+            watchtower) echo "$base/watchtower.png" ;;
+            traefik) echo "$base/traefik.png" ;;
+            authelia) echo "$base/authelia.png" ;;
+            dashy) echo "$base/dashy.png" ;;
+            homepage) echo "$base/homepage.png" ;;
+            homarr) echo "$base/homarr.png" ;;
+            searxng) echo "$base/searxng.png" ;;
+            mysql) echo "$base/mysql.png" ;;
+            postgres*) echo "$base/postgresql.png" ;;
+            redis*) echo "$base/redis.png" ;;
+            influxdb) echo "$base/influxdb.png" ;;
+            loki) echo "$base/loki.png" ;;
+            ntfy) echo "$base/ntfy.png" ;;
+            speedtest*) echo "$base/speedtest-tracker.png" ;;
+            changedetection*) echo "$base/changedetection-io.png" ;;
+            *) echo "" ;;
+        esac
+    }
+
+    # Register an app on the Homarr dashboard via API.
+    # Non-blocking, non-fatal — runs in background, errors are silently ignored.
+    _homarr_register_app() {
+        local app_name="$1" app_url="$2" icon_url="$3" description="$4"
+        local homarr_url
+        homarr_url=$(_detect_homarr)
+        [[ -z "$homarr_url" ]] && return 0
+
+        local api_key
+        api_key=$(_decrypt_secret "HOMARR_API_KEY") || return 0
+        [[ -z "$api_key" ]] && return 0
+
+        local payload
+        payload=$(jq -nc \
+            --arg name "$app_name" \
+            --arg href "$app_url" \
+            --arg icon "$icon_url" \
+            --arg desc "$description" \
+            '{name: $name, href: $href, iconUrl: (if $icon == "" then null else $icon end), description: (if $desc == "" then null else $desc end)}')
+
+        (
+            curl -sf --max-time 10 \
+                -X POST "$homarr_url/api/apps" \
+                -H "ApiKey: $api_key" \
+                -H "Content-Type: application/json" \
+                -d "$payload" \
+                >/dev/null 2>&1 || true
+        ) &
+    }
+
+    # -----------------------------------------------------------------------
     # Creates a CNAME record for a subdomain pointing to the root domain.
     # Requires CF_DNS_API_TOKEN. Zone ID is auto-detected and cached.
     # Non-fatal — errors are logged but never block deployment.
@@ -9517,6 +9636,15 @@ OVERRIDE_EOF
                             _cloudflare_add_dns "$_ro_sub" "$traefik_domain" "$_cf_token"
                             sleep 1
                         fi
+                        # Register route_override with Homarr
+                        if [[ "${_add_homarr:-}" == "true" ]]; then
+                            local _hm_ro_name _hm_ro_icon _hm_ro_desc
+                            _hm_ro_name=$(jq -r '.title // .name // empty' "$tdir/template.json" 2>/dev/null)
+                            [[ -z "$_hm_ro_name" ]] && _hm_ro_name="$name"
+                            _hm_ro_icon=$(_get_template_icon "$name")
+                            _hm_ro_desc=$(jq -r '.description // empty' "$tdir/template.json" 2>/dev/null | head -c 200)
+                            _homarr_register_app "$_hm_ro_name" "https://${_ro_sub}.${traefik_domain}" "$_hm_ro_icon" "$_hm_ro_desc"
+                        fi
                     fi
                 fi
 
@@ -9621,6 +9749,23 @@ ROUTE_EOF
                         fi
                         _cloudflare_add_dns "$_dns_sub" "$traefik_domain" "$_cf_token"
                         sleep 1
+                    fi
+
+                    # Register with Homarr dashboard if enabled
+                    if [[ "${_add_homarr:-}" == "true" ]]; then
+                        local _hm_name _hm_icon _hm_desc
+                        _hm_name=$(jq -r '.title // .name // empty' "$tdir/template.json" 2>/dev/null)
+                        [[ -z "$_hm_name" ]] && _hm_name="$_svc_name"
+                        _hm_icon=$(_get_template_icon "$name")
+                        _hm_desc=$(jq -r '.description // empty' "$tdir/template.json" 2>/dev/null | head -c 200)
+                        # Use subdomain from route file for the URL
+                        local _hm_sub="$_svc_name"
+                        if [[ -f "$traefik_routes_dir/$target_stack/${_svc_name}.yml" ]]; then
+                            local _hm_host
+                            _hm_host=$(sed -n 's/.*Host(`\([^.]*\).*/\1/p' "$traefik_routes_dir/$target_stack/${_svc_name}.yml" 2>/dev/null | head -1)
+                            [[ -n "$_hm_host" ]] && _hm_sub="$_hm_host"
+                        fi
+                        _homarr_register_app "$_hm_name" "https://${_hm_sub}.${traefik_domain}" "$_hm_icon" "$_hm_desc"
                     fi
 
                     # Add proxy network to this service in the target compose file
@@ -9738,9 +9883,10 @@ print('\n'.join(result))
 
     # Auto-start if requested — run in background so API responds immediately.
     # After compose up, fix App-Data ownership for non-root images.
-    local auto_start connect_proxy
+    local auto_start connect_proxy _add_homarr
     auto_start=$(printf '%s' "$body" | jq -r '.auto_start // false' 2>/dev/null)
     connect_proxy=$(printf '%s' "$body" | jq -r '.connect_proxy // false' 2>/dev/null)
+    _add_homarr=$(printf '%s' "$body" | jq -r '.add_to_homarr // false' 2>/dev/null)
     local started=false
     _run_plugin_hooks "post-deploy" "{\"stack\":\"$target_stack\",\"template\":\"$name\"}"
     if [[ "$auto_start" == "true" ]]; then
@@ -13872,6 +14018,7 @@ handle_request() {
             /automations)               handle_automations_list ;;
             /topology)                  handle_topology ;;
             /traefik/status)            handle_traefik_status ;;
+            /homarr/status)             handle_homarr_status ;;
             /metrics/history)           handle_metrics_history ;;
             /metrics/summary)           handle_metrics_summary ;;
             /health/score)              handle_health_score ;;
