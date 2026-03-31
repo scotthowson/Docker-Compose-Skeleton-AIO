@@ -142,7 +142,7 @@ API_SINGLE_SESSION="${API_SINGLE_SESSION:-true}"
 API_MAX_BODY_SIZE="${API_MAX_BODY_SIZE:-1048576}"
 
 # Global rate limiting — max requests per minute per IP (0 = disabled)
-API_RATE_LIMIT="${API_RATE_LIMIT:-120}"
+API_RATE_LIMIT="${API_RATE_LIMIT:-600}"
 API_RATE_WINDOW="${API_RATE_WINDOW:-60}"  # window in seconds
 
 # Rate limit tracking directory
@@ -1782,28 +1782,43 @@ handle_health() {
     local -a results=()
     local total=0 healthy=0 unhealthy=0 stopped=0
 
-    # Single docker inspect for ALL containers — use JSON output for reliability
+    # Get restart threshold from config
+    local _restart_threshold=5
+    if [[ -f "$BASE_DIR/.data/config.json" ]] && command -v jq >/dev/null 2>&1; then
+        local _rt
+        _rt=$(jq -r '.thresholds.restart_threshold // 5' "$BASE_DIR/.data/config.json" 2>/dev/null)
+        [[ "$_rt" =~ ^[0-9]+$ ]] && _restart_threshold="$_rt"
+    fi
+
+    # Single docker inspect for ALL containers — include restart count
     local inspect_data=""
     local all_cids
     all_cids=$(timeout 5 docker ps -a -q 2>/dev/null | tr '\n' ' ')
     if [[ -n "$all_cids" ]] && command -v jq >/dev/null 2>&1; then
-        inspect_data=$(timeout 10 docker inspect $all_cids 2>/dev/null | jq -r '.[] | "\(.Name | ltrimstr("/"))\t\(.State.Status)\t\(if .State.Health then .State.Health.Status else "none" end)"' 2>/dev/null) || inspect_data=""
+        inspect_data=$(timeout 10 docker inspect $all_cids 2>/dev/null | jq -r '.[] | "\(.Name | ltrimstr("/"))\t\(.State.Status)\t\(if .State.Health then .State.Health.Status else "none" end)\t\(.RestartCount // 0)"' 2>/dev/null) || inspect_data=""
     fi
 
-    while IFS=$'\t' read -r name state health; do
+    while IFS=$'\t' read -r name state health restart_count; do
         [[ -z "$name" ]] && continue
         name="${name#/}"
         total=$(( total + 1 ))
 
         if [[ "$state" != "running" ]]; then
             stopped=$(( stopped + 1 ))
+            _fire_notifications "container_stopped" "container=$name" "status=stopped" 2>/dev/null
         elif [[ "$health" == "unhealthy" ]]; then
             unhealthy=$(( unhealthy + 1 ))
+            _fire_notifications "container_unhealthy" "container=$name" "status=unhealthy" 2>/dev/null
         else
             healthy=$(( healthy + 1 ))
         fi
 
-        results+=("{\"name\": \"$(_api_json_escape "$name")\", \"state\": \"$state\", \"health\": \"$health\"}")
+        # Check restart threshold
+        if [[ "${restart_count:-0}" -ge "$_restart_threshold" ]] 2>/dev/null; then
+            _fire_notifications "container_unhealthy" "container=$name" "status=restarting (${restart_count}x)"  2>/dev/null
+        fi
+
+        results+=("{\"name\": \"$(_api_json_escape "$name")\", \"state\": \"$state\", \"health\": \"$health\", \"restart_count\": ${restart_count:-0}}")
     done <<< "$inspect_data"
 
     # Status logic: stopped containers are expected/normal and don't affect health.
