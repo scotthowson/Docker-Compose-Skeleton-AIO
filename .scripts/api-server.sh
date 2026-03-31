@@ -2599,31 +2599,87 @@ handle_container_processes() {
 }
 
 handle_config() {
-    # Return sanitized configuration (exclude passwords/secrets)
+    # Return full configuration — sensitive values (tokens, certs) excluded
     local config="{"
+    # General
     config+="\"environment\": \"${ENVIRONMENT:-production}\","
-    config+="\"log_level\": \"${LOG_LEVEL:-INFO}\","
+    config+="\"server_name\": \"$(_api_json_escape "${SERVER_NAME:-Docker Server}")\","
+    config+="\"timezone\": \"${TZ:-UTC}\","
+    config+="\"puid\": ${PUID:-1000},"
+    config+="\"pgid\": ${PGID:-1000},"
+    config+="\"proxy_domain\": \"$(_api_json_escape "${PROXY_DOMAIN:-}")\","
     config+="\"compose_dir\": \"$(_api_json_escape "$COMPOSE_DIR")\","
     config+="\"app_data_dir\": \"$(_api_json_escape "$APP_DATA_DIR")\","
     config+="\"base_dir\": \"$(_api_json_escape "$BASE_DIR")\","
     config+="\"compose_command\": \"$(_api_json_escape "$DOCKER_COMPOSE_CMD")\","
+    # Startup/Shutdown
     config+="\"skip_healthcheck_wait\": ${SKIP_HEALTHCHECK_WAIT:-false},"
     config+="\"continue_on_failure\": ${CONTINUE_ON_FAILURE:-true},"
     config+="\"remove_volumes_on_stop\": ${REMOVE_VOLUMES_ON_STOP:-false},"
+    config+="\"show_banners\": ${SHOW_BANNERS:-true},"
+    config+="\"show_system_info\": ${SHOW_SYSTEM_INFO:-true},"
+    config+="\"service_start_delay\": ${SERVICE_START_DELAY:-0},"
+    config+="\"service_stop_delay\": ${SERVICE_STOP_DELAY:-0},"
+    # Docker
+    config+="\"docker_stacks\": \"$(_api_json_escape "${DOCKER_STACKS:-}")\","
+    config+="\"docker_timeout\": ${DOCKER_TIMEOUT:-120},"
+    config+="\"force_recreate\": ${FORCE_RECREATE:-false},"
+    config+="\"remove_orphaned_containers\": ${REMOVE_ORPHANED_CONTAINERS:-true},"
+    # Logging
+    config+="\"log_level\": \"${LOG_LEVEL:-INFO}\","
+    config+="\"enable_colors\": ${ENABLE_COLORS:-true},"
+    config+="\"color_mode\": \"${COLOR_MODE:-auto}\","
+    config+="\"color_theme\": \"${COLOR_THEME:-dark}\","
+    config+="\"verbose_mode\": ${VERBOSE_MODE:-false},"
+    config+="\"enable_log_date\": ${ENABLE_LOG_DATE:-true},"
+    config+="\"enable_milliseconds\": ${ENABLE_MILLISECONDS:-false},"
+    config+="\"log_date_format\": \"$(_api_json_escape "${LOG_DATE_FORMAT:-%Y-%m-%d %H:%M:%S}")\","
+    config+="\"enable_log_mood\": ${ENABLE_LOG_MOOD:-true},"
+    config+="\"enable_log_pid\": ${ENABLE_LOG_PID:-false},"
+    config+="\"enable_log_hostname\": ${ENABLE_LOG_HOSTNAME:-false},"
+    config+="\"log_max_size\": \"${LOG_MAX_SIZE:-10M}\","
+    config+="\"log_backup_count\": ${LOG_BACKUP_COUNT:-12},"
+    # Image Updates
     config+="\"aggressive_image_prune\": ${AGGRESSIVE_IMAGE_PRUNE:-false},"
     config+="\"update_notification\": ${UPDATE_NOTIFICATION:-true},"
-    config+="\"show_banners\": ${SHOW_BANNERS:-true},"
-    config+="\"api_port\": $API_PORT,"
-    config+="\"api_bind\": \"$API_BIND\","
+    # Notifications
     config+="\"ntfy_configured\": $([[ -n "${NTFY_URL:-}" ]] && echo true || echo false),"
     config+="\"ntfy_url\": \"$(_api_json_escape "${NTFY_URL:-}")\","
     config+="\"ntfy_topic\": \"$(_api_json_escape "${NTFY_TOPIC:-}")\","
     config+="\"ntfy_priority\": \"$(_api_json_escape "${NTFY_PRIORITY:-default}")\","
-    config+="\"enable_colors\": ${ENABLE_COLORS:-true},"
-    config+="\"color_mode\": \"${COLOR_MODE:-auto}\","
+    config+="\"notification_stacks\": \"$(_api_json_escape "${NOTIFICATION_STACKS:-}")\","
+    # API
     config+="\"api_enabled\": ${API_ENABLED:-true},"
-    config+="\"server_name\": \"$(_api_json_escape "${SERVER_NAME:-Docker Server}")\","
-    config+="\"timezone\": \"${TZ:-UTC}\""
+    config+="\"api_port\": $API_PORT,"
+    config+="\"api_bind\": \"$API_BIND\","
+    config+="\"api_auth_enabled\": ${API_AUTH_ENABLED:-true},"
+    config+="\"api_rate_limit\": ${API_RATE_LIMIT:-600},"
+    config+="\"api_rate_window\": ${API_RATE_WINDOW:-60},"
+    config+="\"api_token_expiry\": ${API_TOKEN_EXPIRY:-86400},"
+    config+="\"api_single_session\": ${API_SINGLE_SESSION:-false},"
+    config+="\"api_cors_origins\": \"$(_api_json_escape "${API_CORS_ORIGINS:-}")\","
+    # Traefik/DNS (tokens excluded)
+    config+="\"traefik_domain\": \"$(_api_json_escape "${TRAEFIK_DOMAIN:-}")\","
+    config+="\"traefik_acme_email\": \"$(_api_json_escape "${TRAEFIK_ACME_EMAIL:-}")\","
+    config+="\"ddns_enabled\": ${DDNS_ENABLED:-false},"
+    config+="\"ddns_interval\": ${DDNS_INTERVAL:-300},"
+    # Health
+    config+="\"enable_post_startup_health_check\": ${ENABLE_POST_STARTUP_HEALTH_CHECK:-true},"
+    config+="\"health_check_delay\": ${HEALTH_CHECK_DELAY:-10},"
+    config+="\"critical_containers\": \"$(_api_json_escape "${CRITICAL_CONTAINERS:-}")\","
+    config+="\"important_containers\": \"$(_api_json_escape "${IMPORTANT_CONTAINERS:-}")\","
+    # Features
+    config+="\"metrics_enabled\": ${METRICS_ENABLED:-true},"
+    config+="\"metrics_collect_interval\": ${METRICS_COLLECT_INTERVAL:-60},"
+    config+="\"rollback_enabled\": ${ROLLBACK_ENABLED:-true},"
+    config+="\"scheduler_enabled\": ${SCHEDULER_ENABLED:-true},"
+    config+="\"plugins_enabled\": ${PLUGINS_ENABLED:-true},"
+    config+="\"plugins_hooks_enabled\": ${PLUGINS_HOOKS_ENABLED:-true},"
+    config+="\"health_score_enabled\": ${HEALTH_SCORE_ENABLED:-true},"
+    # Backup
+    config+="\"backup_source_dir\": \"$(_api_json_escape "${BACKUP_SOURCE_DIR:-}")\","
+    config+="\"backup_dest_dir\": \"$(_api_json_escape "${BACKUP_DEST_DIR:-}")\","
+    config+="\"backup_retention_count\": ${BACKUP_RETENTION_COUNT:-7}"
     config+="}"
 
     _api_success "$config"
@@ -5262,12 +5318,44 @@ handle_config_update() {
 
     # Allowed config keys that can be updated (safety whitelist)
     local -A allowed_keys=(
-        [ENVIRONMENT]=1 [LOG_LEVEL]=1 [SKIP_HEALTHCHECK_WAIT]=1
-        [CONTINUE_ON_FAILURE]=1 [REMOVE_VOLUMES_ON_STOP]=1
+        # General
+        [ENVIRONMENT]=1 [SERVER_NAME]=1 [TZ]=1 [PUID]=1 [PGID]=1
+        [PROXY_DOMAIN]=1 [APP_DATA_DIR]=1
+        # Startup/Shutdown
+        [SKIP_HEALTHCHECK_WAIT]=1 [CONTINUE_ON_FAILURE]=1
+        [REMOVE_VOLUMES_ON_STOP]=1 [SHOW_BANNERS]=1 [SHOW_SYSTEM_INFO]=1
+        [SERVICE_START_DELAY]=1 [SERVICE_STOP_DELAY]=1
+        # Docker
+        [DOCKER_STACKS]=1 [DOCKER_TIMEOUT]=1 [FORCE_RECREATE]=1
+        [REMOVE_ORPHANED_CONTAINERS]=1 [MAX_PARALLEL_OPERATIONS]=1
+        # Logging
+        [LOG_LEVEL]=1 [ENABLE_COLORS]=1 [COLOR_MODE]=1 [COLOR_THEME]=1
+        [VERBOSE_MODE]=1 [ENABLE_LOG_DATE]=1 [ENABLE_MILLISECONDS]=1
+        [LOG_DATE_FORMAT]=1 [ENABLE_LOG_MOOD]=1 [ENABLE_LOG_PID]=1
+        [ENABLE_LOG_HOSTNAME]=1 [LOG_MAX_SIZE]=1 [LOG_BACKUP_COUNT]=1
+        # Image Updates
         [AGGRESSIVE_IMAGE_PRUNE]=1 [UPDATE_NOTIFICATION]=1
-        [SHOW_BANNERS]=1 [API_PORT]=1 [API_BIND]=1 [API_ENABLED]=1
-        [SERVER_NAME]=1 [TZ]=1 [NTFY_URL]=1 [NTFY_TOPIC]=1
-        [NTFY_PRIORITY]=1 [ENABLE_COLORS]=1 [COLOR_MODE]=1
+        # Notifications
+        [NTFY_URL]=1 [NTFY_TOPIC]=1 [NTFY_PRIORITY]=1
+        [NOTIFICATION_STACKS]=1
+        # API
+        [API_ENABLED]=1 [API_PORT]=1 [API_BIND]=1
+        [API_AUTH_ENABLED]=1 [API_RATE_LIMIT]=1 [API_RATE_WINDOW]=1
+        [API_CORS_ORIGINS]=1 [API_IP_WHITELIST]=1
+        [API_TOKEN_EXPIRY]=1 [API_SINGLE_SESSION]=1
+        # Traefik/DNS
+        [TRAEFIK_DOMAIN]=1 [TRAEFIK_ACME_EMAIL]=1
+        [CF_DNS_API_TOKEN]=1 [DDNS_ENABLED]=1 [DDNS_INTERVAL]=1
+        # Health/Monitoring
+        [ENABLE_POST_STARTUP_HEALTH_CHECK]=1 [HEALTH_CHECK_DELAY]=1
+        [CRITICAL_CONTAINERS]=1 [IMPORTANT_CONTAINERS]=1
+        # Metrics/Features
+        [METRICS_ENABLED]=1 [METRICS_COLLECT_INTERVAL]=1
+        [ROLLBACK_ENABLED]=1 [SCHEDULER_ENABLED]=1
+        [PLUGINS_ENABLED]=1 [PLUGINS_HOOKS_ENABLED]=1
+        [HEALTH_SCORE_ENABLED]=1
+        # Backup
+        [BACKUP_SOURCE_DIR]=1 [BACKUP_DEST_DIR]=1 [BACKUP_RETENTION_COUNT]=1
     )
 
     local changed=0
