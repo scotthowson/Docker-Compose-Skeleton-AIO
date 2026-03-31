@@ -9445,9 +9445,9 @@ AUTH_ROUTE_EOF
         [[ -z "$api_key" ]] && return 0
 
         # Homarr v1 uses tRPC — POST /api/trpc/app.create with {"json": {...}}
-        # All fields required: name, href, description, iconUrl, pingUrl
+        # All fields required: name, href, description, iconUrl (min 1 char), pingUrl
         [[ -z "$description" ]] && description="Deployed via DCS"
-        [[ -z "$icon_url" ]] && icon_url=""
+        [[ -z "$icon_url" ]] && icon_url="https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/docker.png"
         local payload
         payload=$(jq -nc \
             --arg name "$app_name" \
