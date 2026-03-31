@@ -1,0 +1,19 @@
+services:
+  sonarr:
+    container_name: Sonarr
+    image: lscr.io/linuxserver/sonarr:latest
+    restart: unless-stopped
+    environment:
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+      - TZ=${TZ:-UTC}
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Sonarr/config:/config
+    ports:
+      - "${PORT_SONARR:-8989}:8989"
+    healthcheck:
+      test: ["CMD", "curl", "-fso", "/dev/null", "http://127.0.0.1:8989/ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s

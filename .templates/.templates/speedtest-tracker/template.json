@@ -1,0 +1,18 @@
+{
+  "name": "speedtest-tracker",
+  "title": "SpeedTest Tracker",
+  "description": "Self-hosted internet speed test tracker that runs automated Ookla speedtests and displays results in a beautiful dashboard with historical graphs.",
+  "category": "monitoring",
+  "target_stack": "monitoring-management",
+  "icon": "\ud83c\udfce\ufe0f",
+  "tags": ["speedtest", "network", "monitoring", "bandwidth", "ookla"],
+  "variables": [
+    {
+      "name": "HOST_PORT",
+      "label": "Host Port",
+      "description": "Port exposed on the host for SpeedTest Tracker web interface",
+      "default": "8765",
+      "required": false
+    }
+  ]
+}

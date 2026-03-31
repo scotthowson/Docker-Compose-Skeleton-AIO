@@ -1,0 +1,25 @@
+{
+  "name": "kavita",
+  "title": "Kavita",
+  "description": "Fast, feature-rich reading server for manga, comics, and ebooks. Beautiful UI with reading progress tracking, collections, and metadata management. Cross-platform with OPDS support.",
+  "category": "media",
+  "target_stack": "media-services",
+  "icon": "\ud83d\udcd5",
+  "tags": [
+    "manga",
+    "comics",
+    "ebooks",
+    "reader",
+    "library",
+    "opds"
+  ],
+  "variables": [
+    {
+      "name": "PORT_KAVITA",
+      "label": "Host Port",
+      "description": "Port to expose Kavita on",
+      "default": "5049",
+      "required": false
+    }
+  ]
+}

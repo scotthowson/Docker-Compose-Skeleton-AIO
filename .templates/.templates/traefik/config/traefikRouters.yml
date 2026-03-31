@@ -1,0 +1,245 @@
+# =============================================================================
+# Traefik Dynamic Configuration — Global Middlewares & TLS
+# =============================================================================
+# Shared middlewares and TLS options used across all route files.
+# Service-specific routes go in custom_routes/<stack-category>/<service>.yml
+# Template variables (${TRAEFIK_DOMAIN}, etc.) are substituted at deploy time.
+# =============================================================================
+
+http:
+  # ---------------------------------------------------------------------------
+  # Middlewares (reusable across all routes)
+  # ---------------------------------------------------------------------------
+  middlewares:
+
+    # --- Redirects -----------------------------------------------------------
+
+    https-redirect:
+      redirectScheme:
+        scheme: https
+        permanent: true
+
+    # --- Security Headers ----------------------------------------------------
+
+    # Default security headers (strict — use for most services)
+    default-headers:
+      headers:
+        frameDeny: true
+        browserXssFilter: true
+        contentTypeNosniff: true
+        forceSTSHeader: true
+        stsIncludeSubdomains: true
+        stsPreload: true
+        stsSeconds: 15552000
+        customFrameOptionsValue: SAMEORIGIN
+        referrerPolicy: strict-origin-when-cross-origin
+        customRequestHeaders:
+          X-Forwarded-Proto: https
+        customResponseHeaders:
+          X-Robots-Tag: "none,noarchive,nosnippet,notranslate,noimageindex"
+          server: ""
+          X-Forwarded-Proto: "https,wss"
+        hostsProxyHeaders:
+          - X-Forwarded-Host
+
+    # Traefik-specific secure headers
+    traefik-secure-headers:
+      headers:
+        customFrameOptionsValue: "SAMEORIGIN"
+        sslProxyHeaders:
+          X-Forwarded-Proto: "https"
+        referrerPolicy: "same-origin"
+        forceSTSHeader: true
+        stsPreload: true
+        stsIncludeSubdomains: true
+        stsSeconds: 15552000
+
+    # Full security headers (maximum protection)
+    security-headers:
+      headers:
+        customResponseHeaders:
+          X-Robots-Tag: "none,noarchive,nosnippet,notranslate,noimageindex"
+          X-Forwarded-Proto: https
+          server: ""
+        customRequestHeaders:
+          X-Forwarded-Proto: https
+        sslProxyHeaders:
+          X-Forwarded-Proto: https
+        referrerPolicy: same-origin
+        hostsProxyHeaders:
+          - X-Forwarded-Host
+        contentTypeNosniff: true
+        browserXssFilter: true
+        forceSTSHeader: true
+        stsIncludeSubdomains: true
+        stsSeconds: 63072000
+        stsPreload: true
+
+    # HSTS header only
+    hsts-header:
+      headers:
+        customResponseHeaders:
+          Strict-Transport-Security: max-age=63072000
+
+    # Nextcloud-specific headers (relaxed frame policy)
+    nextcloud-secure-headers:
+      headers:
+        hostsProxyHeaders:
+          - "X-Forwarded-Host"
+        referrerPolicy: "same-origin"
+
+    # --- Compression ---------------------------------------------------------
+
+    compress-gzip:
+      compress: {}
+
+    # --- Buffering / Limits --------------------------------------------------
+
+    limit:
+      buffering:
+        maxRequestBodyBytes: 200000000
+        maxResponseBodyBytes: 200000000
+        memRequestBodyBytes: 200000000
+        memResponseBodyBytes: 200000000
+
+    # --- IP Allowlists -------------------------------------------------------
+
+    # LAN-only IP allowlist
+    local-ipwhitelist:
+      IPAllowList:
+        sourceRange:
+          - 127.0.0.1/32
+          - ${TRAEFIK_TRUSTED_LAN}
+
+    # --- CORS ----------------------------------------------------------------
+
+    cors-all:
+      headers:
+        customRequestHeaders:
+          X-Forwarded-Proto: https
+        customResponseHeaders:
+          X-Forwarded-Proto: https
+        accessControlAllowMethods:
+          - OPTION
+          - POST
+          - GET
+          - PUT
+          - DELETE
+        accessControlAllowHeaders:
+          - Authorization
+          - Content-Type
+          - X-Requested-With
+          - X-Forwarded-Proto
+        accessControlAllowOriginList:
+          - "*"
+        accessControlMaxAge: 100
+        addVaryHeader: true
+
+    # --- Middleware Chains ----------------------------------------------------
+
+    # Basic secure chain (redirect + headers)
+    secure-chain:
+      chain:
+        middlewares:
+          - https-redirect
+          - default-headers
+
+    # Traefik dashboard chain
+    traefik-chain:
+      chain:
+        middlewares:
+          - https-redirect
+          - security-headers
+
+    # Nextcloud chain (with .well-known redirect)
+    nextcloud-chain:
+      chain:
+        middlewares:
+          - https-redirect
+          - nextcloud-secure-headers
+
+    # --- Nextcloud Redirects -------------------------------------------------
+
+    nextcloud-redirectregex:
+      redirectRegex:
+        permanent: true
+        regex: https://(.*)/.well-known/(?:card|cal)dav
+        replacement: https://${1}/remote.php/dav
+
+    # --- Authelia (uncomment after deploying Authelia) -----------------------
+
+    # authelia:
+    #   forwardauth:
+    #     address: 'http://Authelia:9091/api/verify?rd=https://auth.${TRAEFIK_DOMAIN}/'
+    #     trustForwardHeader: true
+    #     authResponseHeaders:
+    #       - Remote-User
+    #       - Remote-Groups
+    #       - Remote-Name
+    #       - Remote-Email
+
+    # authelia-middlewares:
+    #   chain:
+    #     middlewares:
+    #       - default-headers
+    #       - authelia
+    #       - compress-gzip
+
+    # --- Geoblock Plugin (uncomment after enabling in traefik.yml) -----------
+
+    # my-geoblock:
+    #   plugin:
+    #     geoblock:
+    #       allowLocalRequests: "true"
+    #       allowUnknownCountries: "false"
+    #       api: https://get.geojs.io/v1/ip/country/{ip}
+    #       apiTimeoutMs: "500"
+    #       cacheSize: "15"
+    #       blackListMode: false
+    #       addCountryHeader: false
+    #       xForwardedForReverseProxy: true
+    #       countries:
+    #         - CA
+    #         - US
+    #       forceMonthlyUpdate: "true"
+    #       logAllowedRequests: "false"
+    #       logApiRequests: "true"
+    #       logLocalRequests: "true"
+    #       silentStartUp: "false"
+    #       unknownCountryApiResponse: nil
+
+    # --- Cloudflare WARP Plugin (uncomment after enabling in traefik.yml) ----
+
+    # cloudflarewarp:
+    #   plugin:
+    #     cloudflarewarp:
+    #       disableDefault: false
+
+    # --- Cache Plugin (uncomment after enabling in traefik.yml) --------------
+
+    # cache:
+    #   plugin:
+    #     cache:
+    #       path: /etc/traefik/cache
+
+    # --- Log4Shell Plugin (uncomment after enabling in traefik.yml) ----------
+
+    # log4shell:
+    #   plugin:
+    #     log4shell:
+    #       errorCode: 200
+
+# -----------------------------------------------------------------------------
+# TLS Options
+# -----------------------------------------------------------------------------
+tls:
+  options:
+    default:
+      minVersion: VersionTLS12
+      cipherSuites:
+        - TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
+        - TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+        - TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
+        - TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+        - TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305
+        - TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305

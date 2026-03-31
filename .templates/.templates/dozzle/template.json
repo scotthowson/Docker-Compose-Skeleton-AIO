@@ -1,0 +1,18 @@
+{
+  "name": "dozzle",
+  "title": "Dozzle",
+  "description": "Lightweight real-time Docker container log viewer. Only 7MB, no database, zero storage — pure live log streaming with search, regex filtering, and multi-container support.",
+  "category": "monitoring",
+  "target_stack": "monitoring-management",
+  "icon": "📜",
+  "tags": ["logs", "monitoring", "docker", "real-time", "viewer", "lightweight"],
+  "variables": [
+    {
+      "name": "PORT_DOZZLE",
+      "label": "Host Port",
+      "description": "Port to expose Dozzle on",
+      "default": "9999",
+      "required": false
+    }
+  ]
+}

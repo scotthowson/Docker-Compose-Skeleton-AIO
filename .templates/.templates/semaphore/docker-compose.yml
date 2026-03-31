@@ -1,0 +1,23 @@
+services:
+  semaphore:
+    container_name: Semaphore
+    image: semaphoreui/semaphore:latest
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-UTC}
+      - SEMAPHORE_DB_DIALECT=bolt
+      - SEMAPHORE_ADMIN_PASSWORD=changeme
+      - SEMAPHORE_ADMIN_NAME=admin
+      - SEMAPHORE_ADMIN_EMAIL=admin@localhost
+      - SEMAPHORE_ADMIN=admin
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Semaphore/data:/var/lib/semaphore
+      - ${APP_DATA_DIR:-./App-Data}/Semaphore/config:/etc/semaphore
+    ports:
+      - "${PORT_SEMAPHORE:-3033}:3000"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/api/ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

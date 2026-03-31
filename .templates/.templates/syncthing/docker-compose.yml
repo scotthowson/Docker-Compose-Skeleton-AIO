@@ -1,0 +1,23 @@
+services:
+  syncthing:
+    container_name: Syncthing
+    image: lscr.io/linuxserver/syncthing:latest
+    restart: unless-stopped
+    environment:
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+      - TZ=${TZ:-UTC}
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Syncthing/config:/config
+      - ${APP_DATA_DIR:-./App-Data}/Syncthing/data:/data
+    ports:
+      - "${PORT_SYNCTHING:-8384}:8384"
+      - "22000:22000/tcp"
+      - "22000:22000/udp"
+      - "21027:21027/udp"
+    healthcheck:
+      test: ["CMD", "curl", "-fso", "/dev/null", "http://127.0.0.1:8384/rest/noauth/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

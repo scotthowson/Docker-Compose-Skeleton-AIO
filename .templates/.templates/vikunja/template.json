@@ -1,0 +1,18 @@
+{
+  "name": "vikunja",
+  "title": "Vikunja",
+  "description": "Open-source task management — lists, Kanban boards, Gantt charts, calendars, and team collaboration. Self-hosted Todoist/ClickUp alternative with official mobile apps.",
+  "category": "productivity",
+  "target_stack": "communication-collaboration",
+  "icon": "✅",
+  "tags": ["tasks", "kanban", "project", "todo", "collaboration", "planning"],
+  "variables": [
+    {
+      "name": "PORT_VIKUNJA",
+      "label": "Host Port",
+      "description": "Port to expose Vikunja on",
+      "default": "3456",
+      "required": false
+    }
+  ]
+}

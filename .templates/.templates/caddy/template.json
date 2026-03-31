@@ -1,0 +1,25 @@
+{
+  "name": "caddy",
+  "title": "Caddy Web Server",
+  "description": "Caddy modern web server with automatic HTTPS and reverse proxy capabilities",
+  "category": "web",
+  "target_stack": "networking-security",
+  "icon": "🔒",
+  "tags": ["web", "reverse-proxy", "ssl", "https", "caddy"],
+  "variables": [
+    {
+      "name": "HOST_PORT",
+      "label": "HTTP Port",
+      "description": "Port exposed on the host for HTTP traffic",
+      "default": "80",
+      "required": false
+    },
+    {
+      "name": "HTTPS_PORT",
+      "label": "HTTPS Port",
+      "description": "Port exposed on the host for HTTPS traffic",
+      "default": "443",
+      "required": false
+    }
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "name": "karakeep",
+  "title": "Karakeep",
+  "description": "AI-powered bookmark manager for links, notes, images, and PDFs. Auto-tags and summarizes saved content using local LLMs (Ollama) or cloud AI. Full-text search, browser extension, and mobile app.",
+  "category": "productivity",
+  "target_stack": "communication-collaboration",
+  "icon": "🔖",
+  "tags": ["bookmarks", "notes", "ai", "tagging", "knowledge-base", "read-later"],
+  "variables": [
+    {
+      "name": "PORT_KARAKEEP",
+      "label": "Host Port",
+      "description": "Port to expose Karakeep on",
+      "default": "3010",
+      "required": false
+    },
+    {
+      "name": "KARAKEEP_NEXTAUTH_SECRET",
+      "label": "Auth Secret",
+      "description": "Random secret for session encryption (generate with: openssl rand -base64 36)",
+      "default": "",
+      "required": true
+    }
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "name": "mealie",
+  "title": "Mealie",
+  "description": "Beautiful recipe manager with meal planning, shopping lists, and automatic import from any recipe URL. Material Design UI with category and tag management.",
+  "category": "lifestyle",
+  "target_stack": "entertainment-personal",
+  "icon": "🍽️",
+  "tags": ["recipes", "cooking", "meal-planning", "shopping-list", "food"],
+  "variables": [
+    {
+      "name": "PORT_MEALIE",
+      "label": "Host Port",
+      "description": "Port to expose Mealie on",
+      "default": "9925",
+      "required": false
+    }
+  ]
+}

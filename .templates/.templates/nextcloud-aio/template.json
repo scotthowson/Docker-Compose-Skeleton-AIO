@@ -1,0 +1,73 @@
+{
+  "name": "nextcloud-aio",
+  "title": "Nextcloud All-in-One",
+  "description": "Full-featured Nextcloud deployment with automatic updates, built-in Collabora Office, Talk, backups, and GPU acceleration. Manages its own containers via the AIO mastercontainer. Access the admin interface on port 8080 (HTTPS, self-signed) to complete initial setup.",
+  "category": "web",
+  "target_stack": "web-applications",
+  "icon": "\u2601\ufe0f",
+  "tags": ["nextcloud", "cloud", "file-sync", "collabora", "office", "talk", "backup"],
+  "route_override": {
+    "subdomain": "cloud",
+    "port": 11000,
+    "protocol": "http",
+    "use_host_ip": true
+  },
+  "variables": [
+    {
+      "name": "NEXTCLOUD_DOMAIN",
+      "label": "Nextcloud Domain",
+      "description": "The full domain for your Nextcloud instance (e.g. cloud.example.com). Used for Traefik routing and trusted domain config.",
+      "default": "",
+      "required": true
+    },
+    {
+      "name": "PORT_NEXTCLOUD_AIO",
+      "label": "AIO Admin Port",
+      "description": "Port for the AIO web installer interface (HTTPS with self-signed certificate)",
+      "default": "8080",
+      "required": false
+    },
+    {
+      "name": "APACHE_IP_BINDING",
+      "label": "Apache IP Binding",
+      "description": "IP address Apache will bind to (0.0.0.0 for reverse proxy setups)",
+      "default": "0.0.0.0",
+      "required": false
+    },
+    {
+      "name": "NEXTCLOUD_DATADIR",
+      "label": "Data Directory",
+      "description": "Host path where Nextcloud stores user files. Must be an absolute path on the host.",
+      "default": "/mnt/nextcloud-data",
+      "required": false
+    },
+    {
+      "name": "NEXTCLOUD_UPLOAD_LIMIT",
+      "label": "Upload Limit",
+      "description": "Maximum file upload size",
+      "default": "16G",
+      "required": false
+    },
+    {
+      "name": "NEXTCLOUD_MEMORY_LIMIT",
+      "label": "PHP Memory Limit",
+      "description": "Maximum memory allocation for PHP processes",
+      "default": "512M",
+      "required": false
+    },
+    {
+      "name": "NEXTCLOUD_STARTUP_APPS",
+      "label": "Startup Apps",
+      "description": "Space-separated list of Nextcloud apps to install on first start",
+      "default": "deck twofactor_totp tasks calendar contacts notes",
+      "required": false
+    },
+    {
+      "name": "TALK_PORT",
+      "label": "Talk Port",
+      "description": "UDP port for Nextcloud Talk (video/audio calls)",
+      "default": "3478",
+      "required": false
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+services:
+  n8n:
+    container_name: n8n
+    image: n8nio/n8n:latest
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-UTC}
+      - N8N_HOST=0.0.0.0
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=http
+      - GENERIC_TIMEZONE=${TZ:-UTC}
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/n8n/data:/home/node/.n8n
+    ports:
+      - "${PORT_N8N:-5678}:5678"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:5678/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s

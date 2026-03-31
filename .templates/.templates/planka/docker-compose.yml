@@ -1,0 +1,48 @@
+services:
+  planka:
+    container_name: Planka
+    image: ghcr.io/plankanban/planka:latest
+    restart: unless-stopped
+    command: >
+      bash -c
+        "for i in `seq 1 30`; do
+          ./start.sh &&
+          s=$$? && break || s=$$?;
+          echo \"Trying to start again in 5 seconds...\";
+          sleep 5;
+        done; (exit $$s)"
+    environment:
+      - TZ=${TZ:-UTC}
+      - BASE_URL=http://localhost:${PORT_PLANKA:-1337}
+      - SECRET_KEY=${PLANKA_SECRET_KEY}
+      - DEFAULT_ADMIN_EMAIL=${PLANKA_ADMIN_EMAIL:-admin@example.com}
+      - DEFAULT_ADMIN_PASSWORD=admin
+      - DEFAULT_ADMIN_NAME=Admin
+      - DEFAULT_ADMIN_USERNAME=admin
+      - DATABASE_URL=postgresql://planka:planka@planka-db:5432/planka
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Planka/user-avatars:/app/public/user-avatars
+      - ${APP_DATA_DIR:-./App-Data}/Planka/project-backgrounds:/app/public/project-background-images
+      - ${APP_DATA_DIR:-./App-Data}/Planka/attachments:/app/private/attachments
+    ports:
+      - "${PORT_PLANKA:-1337}:1337"
+    depends_on:
+      planka-db:
+        condition: service_healthy
+
+  planka-db:
+    container_name: Planka-DB
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=planka
+      - POSTGRES_USER=planka
+      - POSTGRES_PASSWORD=planka
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Planka/db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U planka -d planka"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

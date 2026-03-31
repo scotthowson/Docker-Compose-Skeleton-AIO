@@ -1,0 +1,32 @@
+{
+  "name": "jellyfin",
+  "title": "Jellyfin Media Server",
+  "description": "Jellyfin open-source media server for streaming movies, TV shows, and music",
+  "category": "media",
+  "target_stack": "media-services",
+  "icon": "🎬",
+  "tags": ["media", "streaming", "video", "music", "jellyfin"],
+  "variables": [
+    {
+      "name": "HOST_PORT",
+      "label": "Web UI Port",
+      "description": "Port exposed on the host for the Jellyfin web interface",
+      "default": "8096",
+      "required": false
+    },
+    {
+      "name": "MEDIA_PATH",
+      "label": "Media Path",
+      "description": "Host path to your media library (movies, TV shows, music)",
+      "default": "/srv/media",
+      "required": true
+    },
+    {
+      "name": "CONFIG_PATH",
+      "label": "Config Path",
+      "description": "Host path for Jellyfin configuration and metadata",
+      "default": "/srv/jellyfin/config",
+      "required": true
+    }
+  ]
+}

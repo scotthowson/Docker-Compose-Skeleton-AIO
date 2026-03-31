@@ -1,0 +1,39 @@
+services:
+  karakeep:
+    container_name: Karakeep
+    image: ghcr.io/karakeep-app/karakeep:release
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-UTC}
+      - NEXTAUTH_SECRET=${KARAKEEP_NEXTAUTH_SECRET}
+      - NEXTAUTH_URL=http://127.0.0.1:${PORT_KARAKEEP:-3010}
+      - DATA_DIR=/data
+      - MEILI_ADDR=http://karakeep-meilisearch:7700
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Karakeep/data:/data
+    ports:
+      - "${PORT_KARAKEEP:-3010}:3000"
+    depends_on:
+      karakeep-meilisearch:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/api/v1/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  karakeep-meilisearch:
+    container_name: Karakeep-Meilisearch
+    image: getmeili/meilisearch:v1.13
+    restart: unless-stopped
+    environment:
+      - MEILI_NO_ANALYTICS=true
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Karakeep/meilisearch:/meili_data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:7700/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

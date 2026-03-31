@@ -1,0 +1,18 @@
+{
+  "name": "cloudflared",
+  "title": "Cloudflare Tunnel",
+  "description": "Expose local services to the internet securely without port forwarding. Zero-config HTTPS, DDoS protection, and access control via Cloudflare's network. Free tier available.",
+  "category": "network",
+  "target_stack": "networking-security",
+  "icon": "☁️",
+  "tags": ["tunnel", "cloudflare", "remote-access", "https", "zero-trust", "network"],
+  "variables": [
+    {
+      "name": "CLOUDFLARE_TUNNEL_TOKEN",
+      "label": "Tunnel Token",
+      "description": "Token from Cloudflare Zero Trust dashboard (create at dash.teams.cloudflare.com)",
+      "default": "",
+      "required": true
+    }
+  ]
+}

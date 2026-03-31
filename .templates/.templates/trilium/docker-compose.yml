@@ -1,0 +1,17 @@
+services:
+  trilium:
+    container_name: Trilium
+    image: triliumnext/notes:latest
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-UTC}
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Trilium/data:/home/node/trilium-data
+    ports:
+      - "${PORT_TRILIUM:-8082}:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/api/health-check"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

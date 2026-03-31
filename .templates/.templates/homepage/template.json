@@ -1,0 +1,32 @@
+{
+  "name": "homepage",
+  "title": "Homepage",
+  "description": "Homepage modern self-hosted application dashboard with service widgets and Docker integration",
+  "category": "web",
+  "target_stack": "web-applications",
+  "icon": "🏡",
+  "tags": [
+    "dashboard",
+    "homepage",
+    "startpage",
+    "widgets",
+    "docker"
+  ],
+  "variables": [
+    {
+      "name": "HOST_PORT",
+      "label": "Web UI Port",
+      "description": "Port exposed on the host for the Homepage web interface",
+      "default": "3400",
+      "required": false
+    },
+    {
+      "name": "HOMEPAGE_ALLOWED_HOSTS",
+      "label": "Allowed Hosts",
+      "description": "Comma-separated list of allowed hostnames for the Homepage instance",
+      "default": "localhost:3000",
+      "required": false
+    }
+  ],
+  "singleton": true
+}

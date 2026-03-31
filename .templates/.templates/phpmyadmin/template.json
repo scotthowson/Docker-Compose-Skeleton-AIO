@@ -1,0 +1,32 @@
+{
+  "name": "phpmyadmin",
+  "title": "phpMyAdmin",
+  "description": "Web-based MySQL and MariaDB administration tool with an intuitive interface for managing databases, tables, users, and running SQL queries.",
+  "category": "databases",
+  "target_stack": "development-tools",
+  "icon": "\ud83d\udc18",
+  "tags": ["mysql", "mariadb", "database", "admin", "sql", "gui"],
+  "variables": [
+    {
+      "name": "HOST_PORT",
+      "label": "Host Port",
+      "description": "Port exposed on the host for phpMyAdmin web interface",
+      "default": "8090",
+      "required": false
+    },
+    {
+      "name": "PMA_HOST",
+      "label": "MySQL Host",
+      "description": "Hostname or IP of the MySQL/MariaDB server to connect to",
+      "default": "mysql",
+      "required": true
+    },
+    {
+      "name": "MYSQL_ROOT_PASSWORD",
+      "label": "MySQL Root Password",
+      "description": "Root password of the MySQL server for initial authentication",
+      "default": "",
+      "required": true
+    }
+  ]
+}

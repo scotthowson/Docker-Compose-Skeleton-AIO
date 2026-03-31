@@ -1,0 +1,25 @@
+{
+  "name": "vaultwarden",
+  "title": "Vaultwarden",
+  "description": "Lightweight, self-hosted Bitwarden-compatible password manager written in Rust. Uses ~50MB RAM, works with all official Bitwarden clients (browser, desktop, mobile). Requires HTTPS via Traefik or reverse proxy.",
+  "category": "security",
+  "target_stack": "networking-security",
+  "icon": "🔐",
+  "tags": ["password", "bitwarden", "security", "encryption", "vault", "2fa"],
+  "variables": [
+    {
+      "name": "PORT_VAULTWARDEN",
+      "label": "Host Port",
+      "description": "Port to expose Vaultwarden on",
+      "default": "8222",
+      "required": false
+    },
+    {
+      "name": "VAULTWARDEN_DOMAIN",
+      "label": "Domain",
+      "description": "Full URL including https:// (required for client connections)",
+      "default": "https://vault.example.com",
+      "required": true
+    }
+  ]
+}

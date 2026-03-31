@@ -1,0 +1,25 @@
+{
+  "name": "linkwarden",
+  "title": "Linkwarden",
+  "description": "Collaborative bookmark manager that preserves webpages as screenshots and PDFs. Collections, tags, full-text search, and sharing. Never lose a link again.",
+  "category": "productivity",
+  "target_stack": "communication-collaboration",
+  "icon": "🔗",
+  "tags": ["bookmarks", "archive", "links", "collaboration", "web", "preservation"],
+  "variables": [
+    {
+      "name": "PORT_LINKWARDEN",
+      "label": "Host Port",
+      "description": "Port to expose Linkwarden on",
+      "default": "3020",
+      "required": false
+    },
+    {
+      "name": "LINKWARDEN_NEXTAUTH_SECRET",
+      "label": "Auth Secret",
+      "description": "Random secret for session encryption (generate with: openssl rand -base64 36)",
+      "default": "",
+      "required": true
+    }
+  ]
+}

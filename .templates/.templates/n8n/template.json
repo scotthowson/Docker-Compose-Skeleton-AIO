@@ -1,0 +1,18 @@
+{
+  "name": "n8n",
+  "title": "n8n",
+  "description": "Powerful workflow automation platform — self-hosted Zapier/Make alternative. 400+ integrations, visual editor, code when needed. Connect APIs, automate tasks, build AI agents.",
+  "category": "automation",
+  "target_stack": "development-tools",
+  "icon": "⚡",
+  "tags": ["automation", "workflow", "zapier", "integrations", "api", "ai", "no-code"],
+  "variables": [
+    {
+      "name": "PORT_N8N",
+      "label": "Host Port",
+      "description": "Port to expose n8n on",
+      "default": "5678",
+      "required": false
+    }
+  ]
+}

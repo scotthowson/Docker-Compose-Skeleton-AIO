@@ -1,0 +1,47 @@
+services:
+  reactive-resume:
+    container_name: Reactive-Resume
+    image: amruthpillai/reactive-resume:latest
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-UTC}
+      - PORT=3000
+      - NODE_ENV=production
+      - PUBLIC_URL=http://127.0.0.1:${PORT_REACTIVE_RESUME:-3200}
+      - STORAGE_URL=http://127.0.0.1:${PORT_REACTIVE_RESUME:-3200}/default
+      - DATABASE_URL=postgresql://resume:resume@reactive-resume-db:5432/resume
+      - ACCESS_TOKEN_SECRET=access_secret_change_me
+      - REFRESH_TOKEN_SECRET=refresh_secret_change_me
+      - CHROME_TOKEN=chrome_token_change_me
+      - CHROME_URL=ws://reactive-resume-chrome:3000
+    ports:
+      - "${PORT_REACTIVE_RESUME:-3200}:3000"
+    depends_on:
+      reactive-resume-db:
+        condition: service_healthy
+      reactive-resume-chrome:
+        condition: service_started
+  reactive-resume-db:
+    container_name: Reactive-Resume-DB
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=resume
+      - POSTGRES_USER=resume
+      - POSTGRES_PASSWORD=resume
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Reactive-Resume/db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U resume -d resume"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+  reactive-resume-chrome:
+    container_name: Reactive-Resume-Chrome
+    image: ghcr.io/browserless/chromium:latest
+    restart: unless-stopped
+    environment:
+      - TIMEOUT=10000
+      - CONCURRENT=10
+      - TOKEN=chrome_token_change_me

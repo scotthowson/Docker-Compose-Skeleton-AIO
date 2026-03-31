@@ -1,0 +1,22 @@
+services:
+  jellyfin:
+    image: jellyfin/jellyfin:10.9.11
+    container_name: jellyfin
+    restart: unless-stopped
+    environment:
+      - JELLYFIN_PublishedServerUrl=http://127.0.0.1:${HOST_PORT}
+      - TZ=${TZ:-UTC}
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+    ports:
+      - "${HOST_PORT}:8096"
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Jellyfin/config:/config
+      - ${APP_DATA_DIR:-./App-Data}/Jellyfin/cache:/cache
+      - ${MEDIA_PATH}:/media:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://127.0.0.1:8096/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s

@@ -1,0 +1,47 @@
+services:
+  nextcloud-aio:
+    container_name: nextcloud-aio-mastercontainer
+    image: ghcr.io/nextcloud-releases/all-in-one:latest
+    init: true
+    restart: always
+    security_opt:
+      - label:disable
+    volumes:
+      - nextcloud_aio_mastercontainer:/mnt/docker-aio-config
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    ports:
+      - "${PORT_NEXTCLOUD_AIO:-8080}:8080"
+    environment:
+      - TZ=${TZ:-UTC}
+      - APACHE_PORT=11000
+      - APACHE_IP_BINDING=${APACHE_IP_BINDING:-0.0.0.0}
+      - NEXTCLOUD_TRUSTED_DOMAIN=${NEXTCLOUD_DOMAIN:-cloud.example.com}
+      - NEXTCLOUD_TRUSTED_PROXIES=proxy
+      - SKIP_DOMAIN_VALIDATION=true
+      - NEXTCLOUD_DATADIR=${NEXTCLOUD_DATADIR:-/mnt/nextcloud-data}
+      - NEXTCLOUD_MOUNT=/mnt/
+      - NEXTCLOUD_UPLOAD_LIMIT=${NEXTCLOUD_UPLOAD_LIMIT:-16G}
+      - NEXTCLOUD_MAX_TIME=3600
+      - NEXTCLOUD_MEMORY_LIMIT=${NEXTCLOUD_MEMORY_LIMIT:-512M}
+      - NEXTCLOUD_STARTUP_APPS=${NEXTCLOUD_STARTUP_APPS:-deck twofactor_totp tasks calendar contacts notes}
+      - NEXTCLOUD_ADDITIONAL_APKS=imagemagick
+      - NEXTCLOUD_ADDITIONAL_PHP_EXTENSIONS=imagick
+      - NEXTCLOUD_KEEP_DISABLED_APPS=false
+      - TALK_PORT=${TALK_PORT:-3478}
+      - WATCHTOWER_DOCKER_SOCKET_PATH=/var/run/docker.sock
+    networks:
+      - nextcloud-aio
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sfk https://127.0.0.1:8080/api/docker/getwelcome || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+volumes:
+  nextcloud_aio_mastercontainer:
+    name: nextcloud_aio_mastercontainer
+
+networks:
+  nextcloud-aio:
+    name: nextcloud-aio

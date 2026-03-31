@@ -1,0 +1,31 @@
+services:
+  changedetection:
+    container_name: Changedetection
+    image: ghcr.io/dgtlmoon/changedetection.io:latest
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-UTC}
+      - PLAYWRIGHT_DRIVER_URL=ws://changedetection-browser:3000
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Changedetection/data:/datastore
+    ports:
+      - "${PORT_CHANGEDETECTION:-5050}:5000"
+    depends_on:
+      changedetection-browser:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:5000/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  changedetection-browser:
+    container_name: Changedetection-Browser
+    image: browserless/chrome:latest
+    restart: unless-stopped
+    environment:
+      - SCREEN_WIDTH=1920
+      - SCREEN_HEIGHT=1080
+      - SCREEN_DEPTH=24
+      - MAX_CONCURRENT_SESSIONS=10

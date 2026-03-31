@@ -1,0 +1,21 @@
+services:
+  crowdsec:
+    container_name: CrowdSec
+    image: crowdsecurity/crowdsec:latest
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-UTC}
+      - GID=${PGID:-1000}
+      - COLLECTIONS=crowdsecurity/linux crowdsecurity/traefik crowdsecurity/http-cve crowdsecurity/nginx
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/CrowdSec/config:/etc/crowdsec
+      - ${APP_DATA_DIR:-./App-Data}/CrowdSec/data:/var/lib/crowdsec/data
+      - /var/log:/var/log:ro
+    ports:
+      - "${PORT_CROWDSEC:-8070}:8080"
+    healthcheck:
+      test: ["CMD", "cscli", "version"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s

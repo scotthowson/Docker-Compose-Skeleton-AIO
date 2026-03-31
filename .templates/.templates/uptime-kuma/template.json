@@ -1,0 +1,18 @@
+{
+  "name": "uptime-kuma",
+  "title": "Uptime Kuma",
+  "description": "Uptime Kuma self-hosted uptime monitoring tool with status pages and notifications",
+  "category": "monitoring",
+  "target_stack": "monitoring-management",
+  "icon": "📡",
+  "tags": ["monitoring", "uptime", "status-page", "alerts", "health-check"],
+  "variables": [
+    {
+      "name": "HOST_PORT",
+      "label": "Web UI Port",
+      "description": "Port exposed on the host for the Uptime Kuma web interface",
+      "default": "3001",
+      "required": false
+    }
+  ]
+}

@@ -1,0 +1,24 @@
+services:
+  searxng:
+    container_name: SearXNG
+    image: searxng/searxng:latest
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-UTC}
+      - SEARXNG_BASE_URL=http://localhost:${PORT_SEARXNG:-8888}/
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/SearXNG/config:/etc/searxng
+    ports:
+      - "${PORT_SEARXNG:-8888}:8080"
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

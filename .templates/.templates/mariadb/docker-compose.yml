@@ -1,0 +1,18 @@
+services:
+  mariadb:
+    container_name: MariaDB
+    image: mariadb:11
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-UTC}
+      - MARIADB_ROOT_PASSWORD=${MARIADB_ROOT_PASSWORD:-changeme}
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/MariaDB/data:/var/lib/mysql
+    ports:
+      - "${PORT_MARIADB:-3306}:3306"
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 15s

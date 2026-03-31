@@ -1,0 +1,24 @@
+{
+  "name": "searxng",
+  "title": "SearXNG",
+  "description": "Privacy-respecting metasearch engine. Aggregates results from 70+ search engines without tracking, profiling, or storing any user data. Self-hosted Google alternative.",
+  "category": "privacy",
+  "target_stack": "web-applications",
+  "icon": "\ud83d\udd0e",
+  "tags": [
+    "search",
+    "privacy",
+    "metasearch",
+    "google-alternative",
+    "anonymous"
+  ],
+  "variables": [
+    {
+      "name": "PORT_SEARXNG",
+      "label": "Host Port",
+      "description": "Port to expose SearXNG on",
+      "default": "8890",
+      "required": false
+    }
+  ]
+}

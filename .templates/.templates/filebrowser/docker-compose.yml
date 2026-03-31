@@ -1,0 +1,21 @@
+services:
+  filebrowser:
+    container_name: FileBrowser
+    image: filebrowser/filebrowser:latest
+    restart: unless-stopped
+    environment:
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+      - TZ=${TZ:-UTC}
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/FileBrowser/data:/srv
+      - ${APP_DATA_DIR:-./App-Data}/FileBrowser/database.db:/database.db
+      - ${APP_DATA_DIR:-./App-Data}/FileBrowser/settings.json:/.filebrowser.json
+    ports:
+      - "${PORT_FILEBROWSER:-8095}:80"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:80/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s

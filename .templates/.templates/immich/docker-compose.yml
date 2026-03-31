@@ -1,0 +1,53 @@
+services:
+  immich-server:
+    container_name: Immich
+    image: ghcr.io/immich-app/immich-server:release
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-UTC}
+      - DB_HOSTNAME=immich-db
+      - DB_USERNAME=immich
+      - DB_PASSWORD=${IMMICH_DB_PASSWORD:-immich}
+      - DB_DATABASE_NAME=immich
+      - REDIS_HOSTNAME=immich-redis
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Immich/upload:/usr/src/app/upload
+      - /etc/localtime:/etc/localtime:ro
+    ports:
+      - "${PORT_IMMICH:-2283}:2283"
+    depends_on:
+      immich-db:
+        condition: service_healthy
+      immich-redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:2283/api/server/ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+  immich-redis:
+    container_name: Immich-Redis
+    image: redis:alpine
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+  immich-db:
+    container_name: Immich-DB
+    image: tensorchord/pgvecto-rs:pg16-v0.2.0
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=immich
+      - POSTGRES_PASSWORD=${IMMICH_DB_PASSWORD:-immich}
+      - POSTGRES_DB=immich
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Immich/db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U immich -d immich"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 15s

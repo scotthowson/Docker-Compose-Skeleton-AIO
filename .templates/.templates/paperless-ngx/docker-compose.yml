@@ -1,0 +1,41 @@
+services:
+  paperless-ngx:
+    container_name: Paperless-ngx
+    image: ghcr.io/paperless-ngx/paperless-ngx:latest
+    restart: unless-stopped
+    environment:
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+      - TZ=${TZ:-UTC}
+      - PAPERLESS_SECRET_KEY=${PAPERLESS_SECRET_KEY}
+      - PAPERLESS_URL=http://localhost:${PORT_PAPERLESS:-8010}
+      - PAPERLESS_REDIS=redis://paperless-redis:6379
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Paperless/data:/usr/src/paperless/data
+      - ${APP_DATA_DIR:-./App-Data}/Paperless/media:/usr/src/paperless/media
+      - ${APP_DATA_DIR:-./App-Data}/Paperless/export:/usr/src/paperless/export
+      - ${APP_DATA_DIR:-./App-Data}/Paperless/consume:/usr/src/paperless/consume
+    ports:
+      - "${PORT_PAPERLESS:-8010}:8000"
+    depends_on:
+      paperless-redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fso", "/dev/null", "http://127.0.0.1:8000"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  paperless-redis:
+    container_name: Paperless-Redis
+    image: redis:alpine
+    restart: unless-stopped
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Paperless/redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s

@@ -1,0 +1,39 @@
+{
+  "name": "minio",
+  "title": "MinIO Object Storage",
+  "description": "MinIO high-performance S3-compatible object storage server",
+  "category": "storage",
+  "target_stack": "storage-backup",
+  "icon": "🪣",
+  "tags": ["storage", "object-storage", "s3", "compatible", "minio"],
+  "variables": [
+    {
+      "name": "API_PORT",
+      "label": "API Port",
+      "description": "Port exposed on the host for the MinIO S3-compatible API",
+      "default": "9000",
+      "required": false
+    },
+    {
+      "name": "CONSOLE_PORT",
+      "label": "Console Port",
+      "description": "Port exposed on the host for the MinIO web console",
+      "default": "9001",
+      "required": false
+    },
+    {
+      "name": "ROOT_USER",
+      "label": "Root User",
+      "description": "Root access key for MinIO (minimum 3 characters)",
+      "default": "minioadmin",
+      "required": true
+    },
+    {
+      "name": "ROOT_PASSWORD",
+      "label": "Root Password",
+      "description": "Root secret key for MinIO (minimum 8 characters)",
+      "default": "changeme123",
+      "required": true
+    }
+  ]
+}

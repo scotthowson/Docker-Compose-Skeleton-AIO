@@ -1,0 +1,187 @@
+# =============================================================================
+# Traefik Dashboard Route
+# =============================================================================
+# This route file is auto-placed into the target stack's custom_routes
+# directory at deploy time. Template variables (${TRAEFIK_DOMAIN:-example.com}, etc.)
+# are substituted during deployment.
+#
+# Route files in custom_routes/ are auto-discovered by the Traefik file
+# provider — changes are picked up within seconds (no restart needed).
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Router & Service
+# -----------------------------------------------------------------------------
+http:
+  routers:
+    traefik-router:
+      entryPoints:
+        - "websecure"
+      rule: "Host(`traefik.${TRAEFIK_DOMAIN:-example.com}`)"
+      service: "traefik"
+      middlewares:
+        - "traefik-chain"
+        # Uncomment after deploying Authelia:
+        # - "authelia-middlewares"
+        # Uncomment after enabling geoblock plugin:
+        # - "my-geoblock"
+      tls: {}
+
+  services:
+    traefik:
+      loadBalancer:
+        servers:
+          - url: "http://Traefik:${TRAEFIK_PORT_DASHBOARD:-8080}"
+
+# -----------------------------------------------------------------------------
+# Middleware Chains
+# -----------------------------------------------------------------------------
+  middlewares:
+    traefik-chain:
+      chain:
+        middlewares:
+          - "https-redirect"
+          - "securityHeaders"
+
+    authelia-middlewares:
+      chain:
+        middlewares:
+          - traefik-secure-headers
+          - authelia
+          - compress-gzip
+
+# -----------------------------------------------------------------------------
+# Security Middlewares
+# -----------------------------------------------------------------------------
+    https-redirect:
+      redirectScheme:
+        scheme: "https"
+        permanent: true
+
+    securityHeaders:
+      headers:
+        customResponseHeaders:
+          X-Robots-Tag: "none,noarchive,nosnippet,notranslate,noimageindex"
+          server: ""
+          X-Forwarded-Proto: "https"
+        sslProxyHeaders:
+          X-Forwarded-Proto: https
+        referrerPolicy: "strict-origin-when-cross-origin"
+        hostsProxyHeaders:
+          - "X-Forwarded-Host"
+        customRequestHeaders:
+          X-Forwarded-Proto: "https"
+        contentTypeNosniff: true
+        browserXssFilter: true
+        forceSTSHeader: true
+        stsIncludeSubdomains: true
+        stsSeconds: 63072000
+        stsPreload: true
+
+    traefik-secure-headers:
+      headers:
+        customFrameOptionsValue: "SAMEORIGIN"
+        sslProxyHeaders:
+          X-Forwarded-Proto: "https"
+        referrerPolicy: "same-origin"
+        forceSTSHeader: true
+        stsPreload: true
+        stsIncludeSubdomains: true
+        stsSeconds: 15552000
+
+    hsts-header:
+      headers:
+        customResponseHeaders:
+          Strict-Transport-Security: max-age=63072000
+
+# -----------------------------------------------------------------------------
+# Authelia Forward Auth (uncomment authelia-middlewares above to enable)
+# -----------------------------------------------------------------------------
+    authelia:
+      forwardauth:
+        address: "http://Authelia:9091/api/verify?rd=https://auth.${TRAEFIK_DOMAIN:-example.com}/"
+        trustForwardHeader: true
+        authResponseHeaders:
+          - Remote-User
+          - Remote-Groups
+          - Remote-Name
+          - Remote-Email
+
+# -----------------------------------------------------------------------------
+# Access Control
+# -----------------------------------------------------------------------------
+    local-ipwhitelist:
+      IPAllowList:
+        sourceRange:
+          - 127.0.0.1/32     # Localhost
+          - 192.168.2.0/24   # LAN Subnet
+
+# -----------------------------------------------------------------------------
+# Utility Middlewares
+# -----------------------------------------------------------------------------
+    compress-gzip:
+      compress: {}
+
+    limit:
+      buffering:
+        maxRequestBodyBytes: 200000000
+        maxResponseBodyBytes: 200000000
+        memRequestBodyBytes: 200000000
+        memResponseBodyBytes: 200000000
+
+# -----------------------------------------------------------------------------
+# Traefik Plugins (require plugin installation in traefik.yml static config)
+# -----------------------------------------------------------------------------
+    cloudflarewarp:
+      plugin:
+        cloudflarewarp:
+          disableDefault: false
+
+    cache:
+      plugin:
+        cache:
+          path: /etc/traefik/cache
+
+    log4shell:
+      plugin:
+        log4shell:
+          errorCode: 200
+
+    my-geoblock:
+      plugin:
+        geoblock:
+          allowLocalRequests: "true"
+          allowUnknownCountries: "false"
+          api: https://get.geojs.io/v1/ip/country/{ip}
+          apiTimeoutMs: "500"
+          cacheSize: "15"
+          blackListMode: false
+          addCountryHeader: false
+          xForwardedForReverseProxy: true
+          countries:
+            - CA   # Canada
+            - US   # United States
+          forceMonthlyUpdate: "true"
+          logAllowedRequests: "false"
+          logApiRequests: "true"
+          logLocalRequests: "true"
+          silentStartUp: "false"
+          unknownCountryApiResponse: nil
+
+# =============================================================================
+# TLS Configuration
+# =============================================================================
+# Mozilla Intermediate compatibility
+# https://ssl-config.mozilla.org/#server=traefik&version=3.0&config=intermediate
+# =============================================================================
+tls:
+  options:
+    default:
+      minVersion: VersionTLS12
+      cipherSuites:
+        - TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
+        - TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+        - TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
+        - TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+        - TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305
+        - TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305

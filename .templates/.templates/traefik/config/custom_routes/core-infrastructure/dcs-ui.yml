@@ -1,0 +1,24 @@
+# =============================================================================
+# DCS-UI Route
+# =============================================================================
+# Serves the Docker Compose Skeleton web UI behind Traefik with automatic TLS.
+# Template variables are substituted during deployment.
+# =============================================================================
+
+http:
+  routers:
+    dcs-ui-router:
+      entryPoints:
+        - "websecure"
+      rule: "Host(`ui.${TRAEFIK_DOMAIN:-example.com}`)"
+      service: "dcs-ui"
+      middlewares:
+        - "traefik-chain"
+        - "compress-gzip"
+      tls: {}
+
+  services:
+    dcs-ui:
+      loadBalancer:
+        servers:
+          - url: "http://DCS-UI:3000"

@@ -1,0 +1,26 @@
+{
+  "name": "netdata",
+  "title": "Netdata",
+  "description": "Real-time performance monitoring with per-second granularity. 2000+ metrics out of the box — CPU, memory, disk, network, Docker containers, and applications. Beautiful auto-generated dashboards.",
+  "category": "monitoring",
+  "target_stack": "monitoring-management",
+  "icon": "📈",
+  "tags": [
+    "monitoring",
+    "metrics",
+    "performance",
+    "real-time",
+    "dashboard",
+    "system"
+  ],
+  "variables": [
+    {
+      "name": "PORT_NETDATA",
+      "label": "Host Port",
+      "description": "Port to expose Netdata on",
+      "default": "19999",
+      "required": false
+    }
+  ],
+  "singleton": true
+}

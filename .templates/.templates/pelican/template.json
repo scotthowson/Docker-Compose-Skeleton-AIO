@@ -1,0 +1,74 @@
+{
+  "name": "pelican",
+  "title": "Pelican Panel + Wings",
+  "description": "Open-source game server management panel with a companion Wings daemon for running game servers. Includes the web panel for administration and a Wings node for server hosting, both pre-configured to work together.",
+  "category": "web",
+  "target_stack": "entertainment-personal",
+  "icon": "\ud83c\udfae",
+  "tags": ["gaming", "game-server", "panel", "minecraft", "management", "pelican"],
+  "variables": [
+    {
+      "name": "PANEL_PORT_HTTP",
+      "label": "Panel HTTP Port",
+      "description": "Port exposed on the host for the Pelican Panel web interface (HTTP)",
+      "default": "8005",
+      "required": false
+    },
+    {
+      "name": "PANEL_PORT_HTTPS",
+      "label": "Panel HTTPS Port",
+      "description": "Port exposed on the host for the Pelican Panel web interface (HTTPS)",
+      "default": "8006",
+      "required": false
+    },
+    {
+      "name": "PANEL_APP_URL",
+      "label": "Panel URL",
+      "description": "Public URL of the Pelican Panel (e.g. https://panel.example.com)",
+      "default": "http://localhost:8005",
+      "required": true
+    },
+    {
+      "name": "WINGS_SFTP_PORT",
+      "label": "Wings SFTP Port",
+      "description": "Port exposed on the host for Wings SFTP file access",
+      "default": "2024",
+      "required": false
+    },
+    {
+      "name": "WINGS_PORT",
+      "label": "Wings Management Port",
+      "description": "Port exposed on the host for Wings daemon management API",
+      "default": "8444",
+      "required": false
+    },
+    {
+      "name": "WINGS_UID",
+      "label": "Wings User ID",
+      "description": "System user ID for the Wings process",
+      "default": "988",
+      "required": false
+    },
+    {
+      "name": "WINGS_GID",
+      "label": "Wings Group ID",
+      "description": "System group ID for the Wings process",
+      "default": "988",
+      "required": false
+    },
+    {
+      "name": "WINGS_USERNAME",
+      "label": "Wings Username",
+      "description": "System username for the Wings process",
+      "default": "pelican-wings",
+      "required": false
+    },
+    {
+      "name": "PELICAN_SERVER_DIR",
+      "label": "Server Files Directory",
+      "description": "Host path where game server files are stored (must be an absolute path)",
+      "default": "/srv/pelican/servers",
+      "required": false
+    }
+  ]
+}

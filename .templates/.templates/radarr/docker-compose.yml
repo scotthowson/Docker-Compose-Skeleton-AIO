@@ -1,0 +1,19 @@
+services:
+  radarr:
+    container_name: Radarr
+    image: lscr.io/linuxserver/radarr:latest
+    restart: unless-stopped
+    environment:
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+      - TZ=${TZ:-UTC}
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Radarr/config:/config
+    ports:
+      - "${PORT_RADARR:-7878}:7878"
+    healthcheck:
+      test: ["CMD", "curl", "-fso", "/dev/null", "http://127.0.0.1:7878/ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s

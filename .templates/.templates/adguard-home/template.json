@@ -1,0 +1,26 @@
+{
+  "name": "adguard-home",
+  "title": "AdGuard Home",
+  "description": "Network-wide ad and tracker blocker with DNS-over-HTTPS, DNS-over-TLS, and a beautiful dashboard. Simpler Pi-hole alternative — single binary, zero dependencies.",
+  "category": "network",
+  "target_stack": "networking-security",
+  "icon": "🛑",
+  "tags": [
+    "dns",
+    "ad-blocking",
+    "privacy",
+    "network",
+    "tracker",
+    "pihole-alternative"
+  ],
+  "variables": [
+    {
+      "name": "PORT_ADGUARD_WEB",
+      "label": "Web UI Port",
+      "description": "Port for the AdGuard Home web interface",
+      "default": "3080",
+      "required": false
+    }
+  ],
+  "singleton": true
+}

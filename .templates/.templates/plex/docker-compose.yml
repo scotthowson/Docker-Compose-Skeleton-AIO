@@ -1,0 +1,33 @@
+services:
+  plex:
+    container_name: Plex
+    image: lscr.io/linuxserver/plex:latest
+    restart: unless-stopped
+    ports:
+      - "${HOST_PORT:-32400}:32400/tcp"
+      - "3005:3005/tcp"
+      - "8324:8324/tcp"
+      - "32469:32469/tcp"
+      - "32401:1900/udp"
+      - "32410:32410/udp"
+      - "32412:32412/udp"
+      - "32413:32413/udp"
+      - "32414:32414/udp"
+    environment:
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+      - TZ=${TZ:-UTC}
+      - VERSION=${PLEX_VERSION:-docker}
+      - PLEX_CLAIM=${PLEX_CLAIM:-}
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Plex/config:/config
+      - ${APP_DATA_DIR:-./App-Data}/Plex/transcode:/transcode
+      - ${MEDIA_TV:-/mnt/media/tv}:/tv
+      - ${MEDIA_MOVIES:-/mnt/media/movies}:/movies
+      - ${MEDIA_MUSIC:-/mnt/media/music}:/music
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://127.0.0.1:32400/identity || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s

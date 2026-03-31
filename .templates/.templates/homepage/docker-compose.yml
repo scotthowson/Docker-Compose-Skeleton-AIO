@@ -1,0 +1,22 @@
+services:
+  homepage:
+    image: ghcr.io/gethomepage/homepage:latest
+    container_name: Homepage
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-UTC}
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+      - HOMEPAGE_ALLOWED_HOSTS=${HOMEPAGE_ALLOWED_HOSTS:-localhost:3400}
+    ports:
+      - "${HOST_PORT}:3000"
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Homepage/config:/app/config
+      - ${APP_DATA_DIR:-./App-Data}/Homepage/images:/app/public/images
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:3000 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s

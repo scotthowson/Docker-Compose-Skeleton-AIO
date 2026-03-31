@@ -1,0 +1,24 @@
+{
+  "name": "docker-socket-proxy",
+  "title": "Docker Socket Proxy",
+  "description": "Secure Docker socket proxy that restricts API access to read-only operations, protecting your Docker daemon from unauthorized commands.",
+  "category": "web",
+  "target_stack": "core-infrastructure",
+  "icon": "🔒",
+  "tags": [
+    "docker",
+    "socket",
+    "proxy",
+    "security"
+  ],
+  "variables": [
+    {
+      "name": "HOST_PORT",
+      "label": "Host Port",
+      "description": "Port exposed on the host for Docker Socket Proxy connections",
+      "default": "2375",
+      "required": false
+    }
+  ],
+  "singleton": true
+}

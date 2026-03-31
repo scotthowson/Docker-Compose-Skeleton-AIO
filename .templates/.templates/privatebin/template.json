@@ -1,0 +1,18 @@
+{
+  "name": "privatebin",
+  "title": "PrivateBin",
+  "description": "Minimalist, open-source online pastebin where the server has zero knowledge of pasted data. Data is encrypted and decrypted in the browser using 256-bit AES.",
+  "category": "tools",
+  "target_stack": "communication-collaboration",
+  "icon": "📋",
+  "tags": ["pastebin", "privacy", "encryption", "zero-knowledge", "sharing"],
+  "variables": [
+    {
+      "name": "PORT_PRIVATEBIN",
+      "label": "Host Port",
+      "description": "Port to expose PrivateBin on",
+      "default": "8888",
+      "required": false
+    }
+  ]
+}

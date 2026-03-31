@@ -1,0 +1,23 @@
+services:
+  influxdb:
+    container_name: InfluxDB
+    image: influxdb:2
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-UTC}
+      - DOCKER_INFLUXDB_INIT_MODE=setup
+      - DOCKER_INFLUXDB_INIT_USERNAME=admin
+      - DOCKER_INFLUXDB_INIT_PASSWORD=changeme123
+      - DOCKER_INFLUXDB_INIT_ORG=homelab
+      - DOCKER_INFLUXDB_INIT_BUCKET=default
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/InfluxDB/data:/var/lib/influxdb2
+      - ${APP_DATA_DIR:-./App-Data}/InfluxDB/config:/etc/influxdb2
+    ports:
+      - "${PORT_INFLUXDB:-8086}:8086"
+    healthcheck:
+      test: ["CMD", "influx", "ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s

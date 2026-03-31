@@ -1,0 +1,21 @@
+services:
+  privatebin:
+    container_name: PrivateBin
+    image: privatebin/nginx-fpm-alpine:latest
+    restart: unless-stopped
+    environment:
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+      - TZ=${TZ:-UTC}
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/PrivateBin/data:/srv/data
+    ports:
+      - "${PORT_PRIVATEBIN:-8888}:8080"
+    mem_limit: 150M
+    cpus: 0.5
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

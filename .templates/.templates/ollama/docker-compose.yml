@@ -1,0 +1,25 @@
+services:
+  ollama:
+    container_name: Ollama
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-UTC}
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Ollama/data:/root/.ollama
+    ports:
+      - "${PORT_OLLAMA:-11434}:11434"
+    # Uncomment for NVIDIA GPU support:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-fso", "/dev/null", "http://127.0.0.1:11434/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s

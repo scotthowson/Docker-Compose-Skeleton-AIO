@@ -1,0 +1,18 @@
+{
+  "name": "ntfy",
+  "title": "ntfy",
+  "description": "Simple HTTP-based push notification server. Send notifications to your phone or desktop with a single curl command. Android/iOS apps, UnifiedPush support, and topic-based pub/sub.",
+  "category": "notifications",
+  "target_stack": "communication-collaboration",
+  "icon": "🔔",
+  "tags": ["notifications", "push", "alerts", "mobile", "webhook", "messaging"],
+  "variables": [
+    {
+      "name": "PORT_NTFY",
+      "label": "Host Port",
+      "description": "Port to expose ntfy on",
+      "default": "8093",
+      "required": false
+    }
+  ]
+}

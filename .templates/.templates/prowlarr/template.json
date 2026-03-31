@@ -1,0 +1,18 @@
+{
+  "name": "prowlarr",
+  "title": "Prowlarr",
+  "description": "Indexer manager for the *arr stack — centralizes all indexer/tracker configuration and syncs them to Sonarr, Radarr, Lidarr, and Readarr automatically.",
+  "category": "media",
+  "target_stack": "media-services",
+  "icon": "🔍",
+  "tags": ["indexer", "arr", "media", "automation", "tracker", "search"],
+  "variables": [
+    {
+      "name": "PORT_PROWLARR",
+      "label": "Host Port",
+      "description": "Port to expose Prowlarr on",
+      "default": "9696",
+      "required": false
+    }
+  ]
+}

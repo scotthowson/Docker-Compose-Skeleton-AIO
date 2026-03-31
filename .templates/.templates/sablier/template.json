@@ -1,0 +1,10 @@
+{
+  "name": "sablier",
+  "title": "Sablier",
+  "description": "Sablier on-demand container scaling that starts containers when traffic arrives and stops them after idle timeout",
+  "category": "utilities",
+  "target_stack": "core-infrastructure",
+  "icon": "⏱️",
+  "tags": ["scaling", "on-demand", "idle", "proxy", "docker", "resource-management"],
+  "variables": []
+}

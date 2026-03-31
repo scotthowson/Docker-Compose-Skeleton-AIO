@@ -1,0 +1,23 @@
+services:
+  sablier:
+    image: acouvreur/sablier:1.6.1
+    container_name: Sablier
+    restart: unless-stopped
+    command:
+      - start
+      - --provider.name=docker
+      - --configFile=/etc/sablier/sablier.yml
+    environment:
+      - TZ=${TZ:-UTC}
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${APP_DATA_DIR:-./App-Data}/Sablier/sablier.yml:/etc/sablier/sablier.yml
+      - ${APP_DATA_DIR:-./App-Data}/Sablier/state.json:/etc/sablier/state.json
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:10000/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s

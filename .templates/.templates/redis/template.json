@@ -1,0 +1,25 @@
+{
+  "name": "redis",
+  "title": "Redis 7",
+  "description": "Redis 7 in-memory data store with optional password authentication",
+  "category": "databases",
+  "target_stack": "development-tools",
+  "icon": "🔴",
+  "tags": ["database", "cache", "key-value", "in-memory"],
+  "variables": [
+    {
+      "name": "REDIS_PASSWORD",
+      "label": "Redis Password",
+      "description": "Password for Redis authentication (leave empty to disable auth)",
+      "default": "changeme",
+      "required": false
+    },
+    {
+      "name": "HOST_PORT",
+      "label": "Host Port",
+      "description": "Port exposed on the host for Redis connections",
+      "default": "6379",
+      "required": false
+    }
+  ]
+}

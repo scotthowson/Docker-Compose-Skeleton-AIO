@@ -1,0 +1,26 @@
+{
+  "name": "open-webui",
+  "title": "Open WebUI + Ollama",
+  "description": "ChatGPT-style interface for local LLMs. Run AI models entirely on your hardware \u2014 no cloud, no API keys, complete privacy. Supports Ollama, OpenAI API, RAG, voice, and vision.",
+  "category": "ai",
+  "target_stack": "development-tools",
+  "icon": "\ud83e\udd16",
+  "tags": [
+    "ai",
+    "llm",
+    "ollama",
+    "chatgpt",
+    "local",
+    "privacy",
+    "machine-learning"
+  ],
+  "variables": [
+    {
+      "name": "PORT_OPEN_WEBUI",
+      "label": "Host Port",
+      "description": "Port to expose Open WebUI on",
+      "default": "3150",
+      "required": false
+    }
+  ]
+}

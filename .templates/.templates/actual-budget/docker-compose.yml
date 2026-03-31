@@ -1,0 +1,17 @@
+services:
+  actual-budget:
+    container_name: Actual-Budget
+    image: actualbudget/actual-server:latest
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-UTC}
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Actual-Budget/data:/data
+    ports:
+      - "${PORT_ACTUAL:-5006}:5006"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:5006/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

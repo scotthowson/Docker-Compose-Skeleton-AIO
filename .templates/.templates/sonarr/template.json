@@ -1,0 +1,18 @@
+{
+  "name": "sonarr",
+  "title": "Sonarr",
+  "description": "Automated TV series management — monitors RSS feeds, searches indexers, and manages your library. Integrates with download clients and media servers for a fully automated pipeline.",
+  "category": "media",
+  "target_stack": "media-services",
+  "icon": "📺",
+  "tags": ["tv", "automation", "arr", "media", "series", "download"],
+  "variables": [
+    {
+      "name": "PORT_SONARR",
+      "label": "Host Port",
+      "description": "Port to expose Sonarr on",
+      "default": "8989",
+      "required": false
+    }
+  ]
+}

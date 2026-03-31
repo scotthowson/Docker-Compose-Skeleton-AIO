@@ -1,0 +1,25 @@
+{
+  "name": "wg-easy",
+  "title": "WireGuard Easy",
+  "description": "Simplest way to run WireGuard VPN with a web-based management UI. Create clients, generate QR codes, and manage your VPN — all from the browser.",
+  "category": "vpn",
+  "target_stack": "networking-security",
+  "icon": "🔒",
+  "tags": ["vpn", "wireguard", "remote-access", "tunnel", "security", "network"],
+  "variables": [
+    {
+      "name": "WG_HOST",
+      "label": "Public Hostname/IP",
+      "description": "Your server's public IP or domain (clients connect to this)",
+      "default": "",
+      "required": true
+    },
+    {
+      "name": "WG_PASSWORD_HASH",
+      "label": "Admin Password Hash",
+      "description": "bcrypt hash of admin password (generate with: docker run ghcr.io/wg-easy/wg-easy wgpw 'YOUR_PASSWORD')",
+      "default": "",
+      "required": true
+    }
+  ]
+}

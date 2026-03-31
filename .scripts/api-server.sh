@@ -2389,17 +2389,20 @@ handle_images() {
 
         # Override with registry cache — confirmed latest = current, confirmed update = stale
         local full_image="${repo}:${tag}"
+        local update_available="null"
         if [[ "${_ic_cache[$full_image]:-}" == "false" ]]; then
             staleness="current"
+            update_available="false"
         elif [[ "${_ic_cache[$full_image]:-}" == "true" ]]; then
             staleness="stale"
+            update_available="true"
         fi
 
         if [[ "$stale_only" == "true" ]] && [[ "$staleness" != "stale" ]]; then
             continue
         fi
 
-        entries+=("{\"repository\": \"$(_api_json_escape "$repo")\", \"tag\": \"$(_api_json_escape "$tag")\", \"id\": \"$(_api_json_escape "$id")\", \"created\": \"$(_api_json_escape "$created")\", \"size\": \"$(_api_json_escape "$size")\", \"age_days\": $age_days, \"staleness\": \"$staleness\"}")
+        entries+=("{\"repository\": \"$(_api_json_escape "$repo")\", \"tag\": \"$(_api_json_escape "$tag")\", \"id\": \"$(_api_json_escape "$id")\", \"created\": \"$(_api_json_escape "$created")\", \"size\": \"$(_api_json_escape "$size")\", \"age_days\": $age_days, \"staleness\": \"$staleness\", \"update_available\": $update_available}")
     done < <(docker images --format '{{.Repository}}|{{.Tag}}|{{.ID}}|{{.CreatedAt}}|{{.Size}}' 2>/dev/null)
 
     local json
@@ -2604,6 +2607,7 @@ handle_config() {
     # General
     config+="\"environment\": \"${ENVIRONMENT:-production}\","
     config+="\"server_name\": \"$(_api_json_escape "${SERVER_NAME:-Docker Server}")\","
+    config+="\"server_subtitle\": \"$(_api_json_escape "${SERVER_SUBTITLE:-Docker Compose Skeleton}")\","
     config+="\"timezone\": \"${TZ:-UTC}\","
     config+="\"puid\": ${PUID:-1000},"
     config+="\"pgid\": ${PGID:-1000},"
@@ -2661,6 +2665,7 @@ handle_config() {
     # Traefik/DNS (tokens excluded)
     config+="\"traefik_domain\": \"$(_api_json_escape "${TRAEFIK_DOMAIN:-}")\","
     config+="\"traefik_acme_email\": \"$(_api_json_escape "${TRAEFIK_ACME_EMAIL:-}")\","
+    config+="\"cf_dns_api_token_set\": $([[ -n "${CF_DNS_API_TOKEN:-}" ]] && echo true || echo false),"
     config+="\"ddns_enabled\": ${DDNS_ENABLED:-false},"
     config+="\"ddns_interval\": ${DDNS_INTERVAL:-300},"
     # Health
@@ -5319,7 +5324,7 @@ handle_config_update() {
     # Allowed config keys that can be updated (safety whitelist)
     local -A allowed_keys=(
         # General
-        [ENVIRONMENT]=1 [SERVER_NAME]=1 [TZ]=1 [PUID]=1 [PGID]=1
+        [ENVIRONMENT]=1 [SERVER_NAME]=1 [SERVER_SUBTITLE]=1 [TZ]=1 [PUID]=1 [PGID]=1
         [PROXY_DOMAIN]=1 [APP_DATA_DIR]=1
         # Startup/Shutdown
         [SKIP_HEALTHCHECK_WAIT]=1 [CONTINUE_ON_FAILURE]=1

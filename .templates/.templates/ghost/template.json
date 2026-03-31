@@ -1,0 +1,25 @@
+{
+  "name": "ghost",
+  "title": "Ghost",
+  "description": "Professional publishing platform for blogs and newsletters. Beautiful editor, membership/subscription support, native SEO, and blazing performance. Used by major publications worldwide.",
+  "category": "publishing",
+  "target_stack": "web-applications",
+  "icon": "👻",
+  "tags": ["blog", "cms", "publishing", "newsletter", "writing", "seo"],
+  "variables": [
+    {
+      "name": "PORT_GHOST",
+      "label": "Host Port",
+      "description": "Port to expose Ghost on",
+      "default": "2368",
+      "required": false
+    },
+    {
+      "name": "GHOST_URL",
+      "label": "Site URL",
+      "description": "Full URL of your Ghost blog (e.g., https://blog.example.com)",
+      "default": "http://localhost:2368",
+      "required": true
+    }
+  ]
+}

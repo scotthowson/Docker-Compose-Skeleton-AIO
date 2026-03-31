@@ -1,0 +1,18 @@
+{
+  "name": "crowdsec",
+  "title": "CrowdSec",
+  "description": "Community-powered intrusion prevention system. Analyzes logs, detects attacks, blocks malicious IPs, and shares threat intelligence with the CrowdSec network. Modern Fail2ban alternative.",
+  "category": "security",
+  "target_stack": "networking-security",
+  "icon": "🛡️",
+  "tags": ["security", "intrusion-detection", "firewall", "fail2ban", "threat-intelligence", "ips"],
+  "variables": [
+    {
+      "name": "PORT_CROWDSEC",
+      "label": "Local API Port",
+      "description": "Port for the CrowdSec Local API (used by bouncers)",
+      "default": "8070",
+      "required": false
+    }
+  ]
+}
