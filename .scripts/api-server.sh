@@ -9500,17 +9500,17 @@ AUTH_ROUTE_EOF
         local _sq_icon="${icon_url//\'/\'\'}"
         local _sq_desc="${description//\'/\'\'}"
 
+        # SQLite only — no API calls, no SSR trigger. Requires sqlite3 on host.
+        if [[ -z "$db_path" ]] || ! command -v sqlite3 >/dev/null 2>&1; then
+            return 0
+        fi
+
         # Write via detached script (socat kills background subshells)
         local _reg_script
         _reg_script=$(mktemp /tmp/dcs-homarr-reg-XXXXXX.sh)
-        chmod +x "$_reg_script"
-
-        if [[ -n "$db_path" ]] && command -v sqlite3 >/dev/null 2>&1; then
-            # SQLite path: instant, no crash, no API key needed
-            cat > "$_reg_script" << HOMARR_SQLITE_EOF
+        cat > "$_reg_script" << HOMARR_SQLITE_EOF
 #!/bin/bash
 DB="$db_path"
-# Skip if app with same href already exists
 EXISTS=\$(sqlite3 "\$DB" "SELECT COUNT(*) FROM app WHERE href='$_sq_url';" 2>/dev/null)
 if [[ "\$EXISTS" == "0" ]]; then
     sqlite3 "\$DB" "INSERT INTO app (id, name, description, icon_url, href, ping_url) VALUES ('$app_id', '$_sq_name', '$_sq_desc', '$_sq_icon', '$_sq_url', '$_sq_url');" 2>/dev/null
@@ -9520,31 +9520,7 @@ else
 fi
 rm -f "$_reg_script"
 HOMARR_SQLITE_EOF
-        else
-            # Fallback: tRPC API (may cause brief Homarr restart)
-            local homarr_port=""
-            homarr_port=$(docker inspect --format='{{range $p, $conf := .NetworkSettings.Ports}}{{if eq $p "7575/tcp"}}{{(index $conf 0).HostPort}}{{end}}{{end}}' Homarr 2>/dev/null)
-            [[ -z "$homarr_port" ]] && rm -f "$_reg_script" && return 0
-            local homarr_url="http://localhost:${homarr_port}"
-            local api_key
-            api_key=$(_decrypt_secret "HOMARR_API_KEY") || { rm -f "$_reg_script"; return 0; }
-            [[ -z "$api_key" ]] && rm -f "$_reg_script" && return 0
-            local payload
-            payload=$(jq -nc --arg name "$app_name" --arg href "$app_url" --arg icon "$icon_url" --arg desc "$description" --arg ping "$app_url" \
-                '{json: {name: $name, href: $href, description: $desc, iconUrl: $icon, pingUrl: $ping}}')
-            cat > "$_reg_script" << HOMARR_API_EOF
-#!/bin/bash
-sleep 10
-for _i in 1 2 3; do
-    _code=\$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 -X POST "$homarr_url/api/trpc/app.create" -H "ApiKey: $api_key" -H "Content-Type: application/json" -d '$payload' 2>/dev/null)
-    echo "\$(date): Homarr register '$app_name' attempt \$_i — HTTP \$_code" >> "$BASE_DIR/logs/homarr-register.log"
-    [[ "\$_code" == "200" ]] && break
-    sleep 5
-done
-rm -f "$_reg_script"
-HOMARR_API_EOF
-        fi
-
+        chmod +x "$_reg_script"
         nohup bash "$_reg_script" >/dev/null 2>&1 &
     }
 
