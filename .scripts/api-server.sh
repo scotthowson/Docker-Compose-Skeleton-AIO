@@ -9422,56 +9422,40 @@ AUTH_ROUTE_EOF
         esac
     }
 
-    # Register an app on the Homarr dashboard via tRPC API.
-    # Non-blocking, non-fatal — runs in background, errors are silently ignored.
+    # Register an app on the Homarr dashboard by writing directly to its SQLite DB.
+    # Bypasses the tRPC API entirely — no SSR revalidation trigger, no crash.
+    # Non-blocking, non-fatal — runs in background.
     _homarr_register_app() {
         local app_name="$1" app_url="$2" icon_url="$3" description="$4"
 
-        # Detect Homarr — use localhost with mapped port (host process can't use container DNS)
-        local homarr_port=""
-        if docker inspect Homarr >/dev/null 2>&1; then
-            homarr_port=$(docker inspect --format='{{range $p, $conf := .NetworkSettings.Ports}}{{if eq $p "7575/tcp"}}{{(index $conf 0).HostPort}}{{end}}{{end}}' Homarr 2>/dev/null)
-        fi
-        local homarr_url=""
-        if [[ -n "$homarr_port" ]]; then
-            homarr_url="http://localhost:${homarr_port}"
-        elif [[ -n "${HOMARR_URL:-}" ]]; then
-            homarr_url="$HOMARR_URL"
-        fi
-        [[ -z "$homarr_url" ]] && return 0
-
-        local api_key
-        api_key=$(_decrypt_secret "HOMARR_API_KEY") || return 0
-        [[ -z "$api_key" ]] && return 0
-
-        # Homarr v1 uses tRPC — POST /api/trpc/app.create with {"json": {...}}
-        # All fields required: name, href, description, iconUrl (min 1 char), pingUrl
         [[ -z "$description" ]] && description="Deployed via DCS"
         [[ -z "$icon_url" ]] && icon_url="https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/docker.png"
-        local payload
-        payload=$(jq -nc \
-            --arg name "$app_name" \
-            --arg href "$app_url" \
-            --arg icon "$icon_url" \
-            --arg desc "$description" \
-            --arg ping "$app_url" \
-            '{json: {name: $name, href: $href, description: $desc, iconUrl: $icon, pingUrl: $ping}}')
 
-        # Delay registration — during deploy, Docker events flood Homarr's
-        # websocket handler and crash it. Wait for containers to stabilize.
+        # Find Homarr's SQLite database on the host filesystem
+        local db_path=""
+        for _sd in "$COMPOSE_DIR"/*/App-Data/Homarr/appdata/db/db.sqlite; do
+            if [[ -f "$_sd" ]]; then
+                db_path="$_sd"
+                break
+            fi
+        done
+        [[ -z "$db_path" ]] && return 0
+
+        # Check sqlite3 is available
+        command -v sqlite3 >/dev/null 2>&1 || return 0
+
+        # Generate a unique ID (nanoid-style, 24 chars)
+        local app_id
+        app_id=$(head -c 18 /dev/urandom | base64 | tr -dc 'a-z0-9' | head -c 24)
+
+        # Skip if app with same name + href already exists
+        local existing
+        existing=$(sqlite3 "$db_path" "SELECT COUNT(*) FROM app WHERE name='$(echo "$app_name" | sed "s/'/''/g")' AND href='$(echo "$app_url" | sed "s/'/''/g")';" 2>/dev/null)
+        [[ "$existing" -gt 0 ]] 2>/dev/null && return 0
+
+        # Insert directly into Homarr's app table
         (
-            sleep 20
-            local _attempt
-            for _attempt in 1 2 3; do
-                if curl -sf --max-time 10 \
-                    -X POST "$homarr_url/api/trpc/app.create" \
-                    -H "ApiKey: $api_key" \
-                    -H "Content-Type: application/json" \
-                    -d "$payload" 2>/dev/null; then
-                    break
-                fi
-                sleep 10
-            done
+            sqlite3 "$db_path" "INSERT INTO app (id, name, description, icon_url, href, ping_url) VALUES ('$app_id', '$(echo "$app_name" | sed "s/'/''/g")', '$(echo "$description" | sed "s/'/''/g")', '$(echo "$icon_url" | sed "s/'/''/g")', '$(echo "$app_url" | sed "s/'/''/g")', '$(echo "$app_url" | sed "s/'/''/g")');" 2>/dev/null
         ) &
     }
 
