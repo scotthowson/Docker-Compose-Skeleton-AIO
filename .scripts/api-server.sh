@@ -83,7 +83,7 @@ APP_DATA_DIR="${APP_DATA_DIR:-$BASE_DIR/App-Data}"
 
 API_PORT="${API_PORT:-9876}"
 API_BIND="${API_BIND:-127.0.0.1}"
-API_VERSION="1.2.0"
+API_VERSION="1.2.2"
 
 # Plugin system
 PLUGINS_DIR="${BASE_DIR}/.plugins"
@@ -2424,16 +2424,21 @@ handle_containers() {
         local now_epoch
         now_epoch=$(date +%s)
 
-        # Fetch bulk stats for all running containers (single docker command)
-        local -A stats_cpu=() stats_mem=()
-        while IFS='|' read -r _sname _scpu _smem; do
-            [[ -z "$_sname" ]] && continue
-            stats_cpu["$_sname"]="$_scpu"
-            stats_mem["$_sname"]="$_smem"
-        done < <(timeout 10 docker stats --no-stream --format '{{.Name}}|{{.CPUPerc}}|{{.MemPerc}}' 2>/dev/null)
+        # Fetch bulk stats for all running containers — build JSON lookup directly with jq
+        local stats_lookup="{}"
+        local _raw_stats
+        _raw_stats=$(timeout 10 docker stats --no-stream --format '{{.Name}}\t{{.CPUPerc}}\t{{.MemPerc}}' 2>/dev/null)
+        if [[ -n "$_raw_stats" ]]; then
+            stats_lookup=$(printf '%s\n' "$_raw_stats" | awk -F'\t' '{
+                gsub(/%/, "", $2); gsub(/%/, "", $3); gsub(/^ +| +$/, "", $2); gsub(/^ +| +$/, "", $3)
+                if (NR > 1) printf ","
+                printf "\"%s\":{\"cpu\":%s,\"mem\":%s}", $1, ($2+0), ($3+0)
+            }')
+            stats_lookup="{${stats_lookup}}"
+        fi
 
         local containers_json
-        containers_json=$(printf '%s\n' "$raw_json" | jq -s --argjson now "$now_epoch" '
+        containers_json=$(printf '%s\n' "$raw_json" | jq -s --argjson now "$now_epoch" --argjson stats "$stats_lookup" '
             [.[] | {
                 name: .Names,
                 state: .State,
@@ -2454,28 +2459,11 @@ handle_containers() {
                              else 0 end)) else 0 end),
                 ports: .Ports,
                 restart_count: 0,
-                cpu_percent: null,
-                mem_percent: null
+                cpu_percent: ($stats[.Names].cpu // null),
+                mem_percent: ($stats[.Names].mem // null)
             }]' 2>/dev/null)
 
-        # Merge stats into the JSON — build a lookup object and merge in one jq call
         if [[ -n "$containers_json" ]]; then
-            local stats_json="{"
-            local _first_stat=true
-            for _cn in "${!stats_cpu[@]}"; do
-                local _cpu_val="${stats_cpu[$_cn]//%/}"
-                local _mem_val="${stats_mem[$_cn]//%/}"
-                [[ "$_first_stat" == "true" ]] && _first_stat=false || stats_json+=","
-                stats_json+="\"$(_api_json_escape "$_cn")\":{\"cpu\":${_cpu_val:-0},\"mem\":${_mem_val:-0}}"
-            done
-            stats_json+="}"
-
-            containers_json=$(printf '%s' "$containers_json" | jq --argjson stats "$stats_json" '
-                [.[] | . + {
-                    cpu_percent: ($stats[.name].cpu // null),
-                    mem_percent: ($stats[.name].mem // null)
-                }]' 2>/dev/null) || true
-
             local total
             total=$(printf '%s' "$containers_json" | jq 'length' 2>/dev/null)
             _api_success "{\"total\": ${total:-0}, \"containers\": $containers_json}"
