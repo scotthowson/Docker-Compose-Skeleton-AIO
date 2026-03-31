@@ -9457,13 +9457,21 @@ AUTH_ROUTE_EOF
             --arg ping "$app_url" \
             '{json: {name: $name, href: $href, description: $desc, iconUrl: $icon, pingUrl: $ping}}')
 
+        # Delay registration — during deploy, Docker events flood Homarr's
+        # websocket handler and crash it. Wait for containers to stabilize.
         (
-            curl -sf --max-time 10 \
-                -X POST "$homarr_url/api/trpc/app.create" \
-                -H "ApiKey: $api_key" \
-                -H "Content-Type: application/json" \
-                -d "$payload" \
-                >/dev/null 2>&1 || true
+            sleep 20
+            local _attempt
+            for _attempt in 1 2 3; do
+                if curl -sf --max-time 10 \
+                    -X POST "$homarr_url/api/trpc/app.create" \
+                    -H "ApiKey: $api_key" \
+                    -H "Content-Type: application/json" \
+                    -d "$payload" 2>/dev/null; then
+                    break
+                fi
+                sleep 10
+            done
         ) &
     }
 
