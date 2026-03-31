@@ -5,7 +5,15 @@
   "category": "security",
   "target_stack": "networking-security",
   "icon": "🛡️",
-  "tags": ["auth", "sso", "2fa", "security", "oidc", "reverse-proxy", "webauthn"],
+  "tags": [
+    "auth",
+    "sso",
+    "2fa",
+    "security",
+    "oidc",
+    "reverse-proxy",
+    "webauthn"
+  ],
   "config_path": "Authelia/config",
   "variables": [
     {
@@ -43,5 +51,6 @@
       "default": "",
       "required": true
     }
-  ]
+  ],
+  "singleton": true
 }

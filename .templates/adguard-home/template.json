@@ -5,7 +5,14 @@
   "category": "network",
   "target_stack": "networking-security",
   "icon": "🛑",
-  "tags": ["dns", "ad-blocking", "privacy", "network", "tracker", "pihole-alternative"],
+  "tags": [
+    "dns",
+    "ad-blocking",
+    "privacy",
+    "network",
+    "tracker",
+    "pihole-alternative"
+  ],
   "variables": [
     {
       "name": "PORT_ADGUARD_WEB",
@@ -14,5 +21,6 @@
       "default": "3080",
       "required": false
     }
-  ]
+  ],
+  "singleton": true
 }

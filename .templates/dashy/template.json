@@ -1,1 +1,26 @@
-{"name":"dashy","title":"Dashy","description":"Feature-rich homelab dashboard with status checking, widgets, themes, icon packs, and multi-page layouts. YAML-configured, self-hosted, with an interactive config editor built in.","category":"dashboard","target_stack":"web-applications","icon":"🏠","tags":["dashboard","homepage","homelab","status","widgets","monitoring"],"variables":[{"name":"PORT_DASHY","label":"Host Port","description":"Port to expose Dashy on","default":"4000","required":false}]}
+{
+  "name": "dashy",
+  "title": "Dashy",
+  "description": "Feature-rich homelab dashboard with status checking, widgets, themes, icon packs, and multi-page layouts. YAML-configured, self-hosted, with an interactive config editor built in.",
+  "category": "dashboard",
+  "target_stack": "web-applications",
+  "icon": "🏠",
+  "tags": [
+    "dashboard",
+    "homepage",
+    "homelab",
+    "status",
+    "widgets",
+    "monitoring"
+  ],
+  "variables": [
+    {
+      "name": "PORT_DASHY",
+      "label": "Host Port",
+      "description": "Port to expose Dashy on",
+      "default": "4000",
+      "required": false
+    }
+  ],
+  "singleton": true
+}

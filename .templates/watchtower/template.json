@@ -4,8 +4,14 @@
   "description": "Automatic Docker container updater that monitors running containers, pulls new images, and gracefully restarts services with the latest version.",
   "category": "automation",
   "target_stack": "core-infrastructure",
-  "icon": "\ud83d\uddfc\ufe0f",
-  "tags": ["docker", "updates", "automation", "watchtower", "containers"],
+  "icon": "🗼️",
+  "tags": [
+    "docker",
+    "updates",
+    "automation",
+    "watchtower",
+    "containers"
+  ],
   "variables": [
     {
       "name": "WATCHTOWER_POLL_INTERVAL",
@@ -21,5 +27,6 @@
       "default": "",
       "required": false
     }
-  ]
+  ],
+  "singleton": true
 }

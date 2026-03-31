@@ -5,7 +5,13 @@
   "category": "web",
   "target_stack": "web-applications",
   "icon": "🧭",
-  "tags": ["dashboard", "homarr", "startpage", "server-management", "docker"],
+  "tags": [
+    "dashboard",
+    "homarr",
+    "startpage",
+    "server-management",
+    "docker"
+  ],
   "variables": [
     {
       "name": "HOST_PORT",
@@ -22,5 +28,6 @@
       "required": false,
       "generate": "hex64"
     }
-  ]
+  ],
+  "singleton": true
 }

@@ -5,7 +5,13 @@
   "category": "web",
   "target_stack": "web-applications",
   "icon": "🏡",
-  "tags": ["dashboard", "homepage", "startpage", "widgets", "docker"],
+  "tags": [
+    "dashboard",
+    "homepage",
+    "startpage",
+    "widgets",
+    "docker"
+  ],
   "variables": [
     {
       "name": "HOST_PORT",
@@ -21,5 +27,6 @@
       "default": "localhost:3000",
       "required": false
     }
-  ]
+  ],
+  "singleton": true
 }

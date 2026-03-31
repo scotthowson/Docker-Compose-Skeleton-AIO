@@ -5,7 +5,12 @@
   "category": "web",
   "target_stack": "core-infrastructure",
   "icon": "🔒",
-  "tags": ["docker", "socket", "proxy", "security"],
+  "tags": [
+    "docker",
+    "socket",
+    "proxy",
+    "security"
+  ],
   "variables": [
     {
       "name": "HOST_PORT",
@@ -14,5 +19,6 @@
       "default": "2375",
       "required": false
     }
-  ]
+  ],
+  "singleton": true
 }

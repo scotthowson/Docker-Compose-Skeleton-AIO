@@ -4,8 +4,15 @@
   "description": "Modern reverse proxy and load balancer with automatic SSL via Let's Encrypt, Docker integration, Cloudflare DNS challenge, and a file-based routing system organized by stack category. Includes Docker Socket Proxy for secure Docker API access.",
   "category": "web",
   "target_stack": "networking-security",
-  "icon": "\ud83d\udd00",
-  "tags": ["reverse-proxy", "ssl", "lets-encrypt", "cloudflare", "docker", "traefik"],
+  "icon": "🔀",
+  "tags": [
+    "reverse-proxy",
+    "ssl",
+    "lets-encrypt",
+    "cloudflare",
+    "docker",
+    "traefik"
+  ],
   "config_path": "Traefik",
   "optional_services": [
     {
@@ -65,5 +72,6 @@
       "default": "",
       "required": false
     }
-  ]
+  ],
+  "singleton": true
 }

@@ -4,8 +4,14 @@
   "description": "Lightweight Docker management UI with real-time container monitoring, stack deployment, image management, and multi-environment support.",
   "category": "monitoring",
   "target_stack": "monitoring-management",
-  "icon": "\ud83d\udcca",
-  "tags": ["docker", "management", "ui", "containers", "monitoring"],
+  "icon": "📊",
+  "tags": [
+    "docker",
+    "management",
+    "ui",
+    "containers",
+    "monitoring"
+  ],
   "variables": [
     {
       "name": "HOST_PORT",
@@ -14,5 +20,6 @@
       "default": "9443",
       "required": false
     }
-  ]
+  ],
+  "singleton": true
 }
