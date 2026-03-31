@@ -7746,21 +7746,27 @@ handle_image_update() {
     local containers
     containers=$(docker ps -q --filter "ancestor=$image_name" 2>/dev/null)
     for cid in $containers; do
-        local cname svc_name stack_dir compose_project
+        local cname svc_name compose_project
         cname=$(docker inspect --format '{{.Name}}' "$cid" 2>/dev/null | sed 's|^/||')
         svc_name=$(docker inspect --format '{{index .Config.Labels "com.docker.compose.service"}}' "$cid" 2>/dev/null)
+        # working_dir label gives the compose file directory (v2+), fall back to config_files
         compose_project=$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project.working_dir"}}' "$cid" 2>/dev/null)
+        if [[ -z "$compose_project" ]]; then
+            # Fallback: extract directory from config_files label (v1 compat)
+            local _cfg_files
+            _cfg_files=$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project.config_files"}}' "$cid" 2>/dev/null)
+            [[ -n "$_cfg_files" ]] && compose_project=$(dirname "${_cfg_files%%,*}")
+        fi
 
         if [[ -n "$svc_name" && -n "$compose_project" && -f "$compose_project/docker-compose.yml" ]]; then
             # Recreate via docker compose — picks up the new image properly
-            local _env_file=""
-            [[ -f "$compose_project/.env" ]] && _env_file="--env-file $compose_project/.env"
-            $DOCKER_COMPOSE_CMD -f "$compose_project/docker-compose.yml" $_env_file up -d --force-recreate --no-deps "$svc_name" >/dev/null 2>&1
+            local -a _env_args=()
+            [[ -f "$compose_project/.env" ]] && _env_args=(--env-file "$compose_project/.env")
+            $DOCKER_COMPOSE_CMD -f "$compose_project/docker-compose.yml" "${_env_args[@]}" up -d --force-recreate --no-deps "$svc_name" >/dev/null 2>&1
         else
-            # Fallback: stop + rm + start via docker (non-compose containers)
+            # Non-compose container: stop + rm (can't recreate without compose config)
             docker stop "$cid" >/dev/null 2>&1
             docker rm "$cid" >/dev/null 2>&1
-            # Can't fully recreate non-compose containers — just log it
         fi
         restarted+=("\"$(_api_json_escape "$cname")\"")
     done
