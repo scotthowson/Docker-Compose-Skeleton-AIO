@@ -9378,51 +9378,99 @@ AUTH_ROUTE_EOF
         local name="$1"
         local base="https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png"
         case "$name" in
+            # Media
             plex) echo "$base/plex.png" ;;
+            jellyfin) echo "$base/jellyfin.png" ;;
+            emby) echo "$base/emby.png" ;;
+            tautulli) echo "$base/tautulli.png" ;;
+            audiobookshelf) echo "$base/audiobookshelf.png" ;;
+            navidrome) echo "$base/navidrome.png" ;;
+            # *arr stack
             sonarr) echo "$base/sonarr.png" ;;
             radarr) echo "$base/radarr.png" ;;
+            lidarr) echo "$base/lidarr.png" ;;
             prowlarr) echo "$base/prowlarr.png" ;;
-            jellyfin) echo "$base/jellyfin.png" ;;
+            readarr) echo "$base/readarr.png" ;;
+            bazarr) echo "$base/bazarr.png" ;;
+            # Request managers
             jellyseerr) echo "$base/jellyseerr.png" ;;
             seerr|overseerr) echo "$base/overseerr.png" ;;
+            wizarr) echo "$base/wizarr.png" ;;
+            # Download
             qbittorrent) echo "$base/qbittorrent.png" ;;
-            tautulli) echo "$base/tautulli.png" ;;
-            portainer) echo "$base/portainer.png" ;;
-            nextcloud*) echo "$base/nextcloud.png" ;;
-            vaultwarden) echo "$base/vaultwarden.png" ;;
+            transmission) echo "$base/transmission.png" ;;
+            sabnzbd) echo "$base/sabnzbd.png" ;;
+            flaresolverr) echo "$base/flaresolverr.png" ;;
+            # Monitoring
             grafana) echo "$base/grafana.png" ;;
             prometheus) echo "$base/prometheus.png" ;;
             uptime-kuma) echo "$base/uptime-kuma.png" ;;
-            gitea) echo "$base/gitea.png" ;;
+            netdata) echo "$base/netdata.png" ;;
+            dashdot) echo "$base/dash-dot.png" ;;
+            loki) echo "$base/loki.png" ;;
+            # Web & CMS
             ghost) echo "$base/ghost.png" ;;
-            adguard*) echo "$base/adguard-home.png" ;;
-            pihole) echo "$base/pi-hole.png" ;;
-            homeassistant) echo "$base/home-assistant.png" ;;
-            freshrss) echo "$base/freshrss.png" ;;
+            wordpress) echo "$base/wordpress.png" ;;
+            nginx*) echo "$base/nginx.png" ;;
+            # Productivity
+            nextcloud*) echo "$base/nextcloud.png" ;;
             mealie) echo "$base/mealie.png" ;;
             paperless*) echo "$base/paperless-ngx.png" ;;
+            vikunja) echo "$base/vikunja.png" ;;
+            trilium) echo "$base/trilium.png" ;;
+            memos) echo "$base/memos.png" ;;
+            excalidraw) echo "$base/excalidraw.png" ;;
+            actual*) echo "$base/actual.png" ;;
+            tandoor) echo "$base/tandoor.png" ;;
+            # Photos & Storage
             immich) echo "$base/immich.png" ;;
             syncthing) echo "$base/syncthing.png" ;;
             filebrowser) echo "$base/filebrowser.png" ;;
-            audiobookshelf) echo "$base/audiobookshelf.png" ;;
+            privatebin) echo "$base/privatebin.png" ;;
             calibre*) echo "$base/calibre-web.png" ;;
-            netdata) echo "$base/netdata.png" ;;
-            watchtower) echo "$base/watchtower.png" ;;
+            # Security & Network
             traefik) echo "$base/traefik.png" ;;
             authelia) echo "$base/authelia.png" ;;
-            dashy) echo "$base/dashy.png" ;;
-            homepage) echo "$base/homepage.png" ;;
-            homarr) echo "$base/homarr.png" ;;
-            searxng) echo "$base/searxng.png" ;;
+            vaultwarden) echo "$base/vaultwarden.png" ;;
+            adguard*) echo "$base/adguard-home.png" ;;
+            pihole) echo "$base/pi-hole.png" ;;
+            wg-easy) echo "$base/wireguard.png" ;;
+            crowdsec) echo "$base/crowdsec.png" ;;
+            # Development
+            gitea) echo "$base/gitea.png" ;;
+            code-server) echo "$base/code-server.png" ;;
+            it-tools) echo "$base/it-tools.png" ;;
+            # Databases
             mysql) echo "$base/mysql.png" ;;
             postgres*) echo "$base/postgresql.png" ;;
             redis*) echo "$base/redis.png" ;;
             influxdb) echo "$base/influxdb.png" ;;
-            loki) echo "$base/loki.png" ;;
+            mariadb) echo "$base/mariadb.png" ;;
+            mongo*) echo "$base/mongodb.png" ;;
+            pgadmin) echo "$base/pgadmin.png" ;;
+            # Automation & Notifications
+            n8n) echo "$base/n8n.png" ;;
             ntfy) echo "$base/ntfy.png" ;;
-            speedtest*) echo "$base/speedtest-tracker.png" ;;
             changedetection*) echo "$base/changedetection-io.png" ;;
-            *) echo "" ;;
+            komodo) echo "$base/komodo.png" ;;
+            # Dashboards
+            dashy) echo "$base/dashy.png" ;;
+            homepage) echo "$base/homepage.png" ;;
+            homarr) echo "$base/homarr.png" ;;
+            # Infrastructure
+            portainer) echo "$base/portainer.png" ;;
+            watchtower) echo "$base/watchtower.png" ;;
+            # Search & Privacy
+            searxng) echo "$base/searxng.png" ;;
+            freshrss) echo "$base/freshrss.png" ;;
+            # Other
+            homeassistant) echo "$base/home-assistant.png" ;;
+            speedtest*) echo "$base/speedtest-tracker.png" ;;
+            semaphore) echo "$base/semaphore.png" ;;
+            gotify) echo "$base/gotify.png" ;;
+            monkeytype) echo "$base/monkeytype.png" ;;
+            # Smart fallback: try the template name directly (works for many services)
+            *) echo "$base/${name}.png" ;;
         esac
     }
 
@@ -9456,24 +9504,25 @@ AUTH_ROUTE_EOF
             '{json: {name: $name, href: $href, description: $desc, iconUrl: $icon, pingUrl: $ping}}')
 
         # Write a self-contained registration script and run it detached.
-        # Background subshells from socat handlers can lose context — a script file
-        # captures all values and runs independently.
+        # Background subshells from socat handlers get killed when the HTTP
+        # connection closes — a script file with nohup runs independently.
         local _reg_script
         _reg_script=$(mktemp /tmp/dcs-homarr-reg-XXXXXX.sh)
         cat > "$_reg_script" << HOMARR_REG_SCRIPT
 #!/bin/bash
-sleep 60
+sleep 15
 for _i in 1 2 3 4 5; do
     _code=\$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 \\
         -X POST "$homarr_url/api/trpc/app.create" \\
         -H "ApiKey: $api_key" \\
         -H "Content-Type: application/json" \\
         -d '$payload' 2>/dev/null)
-    echo "\$(date): Homarr registration attempt \$_i — HTTP \$_code" >> "$BASE_DIR/logs/homarr-register.log"
+    echo "\$(date): Homarr register '$app_name' attempt \$_i — HTTP \$_code" >> "$BASE_DIR/logs/homarr-register.log"
     if [[ "\$_code" == "200" ]]; then
+        echo "\$(date): ✓ Registered '$app_name' on Homarr" >> "$BASE_DIR/logs/homarr-register.log"
         break
     fi
-    sleep 15
+    sleep 5
 done
 rm -f "$_reg_script"
 HOMARR_REG_SCRIPT
