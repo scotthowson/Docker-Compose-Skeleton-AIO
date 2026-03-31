@@ -9422,40 +9422,51 @@ AUTH_ROUTE_EOF
         esac
     }
 
-    # Register an app on the Homarr dashboard by writing directly to its SQLite DB.
-    # Bypasses the tRPC API entirely — no SSR revalidation trigger, no crash.
-    # Non-blocking, non-fatal — runs in background.
+    # Register an app on the Homarr dashboard via tRPC API.
+    # Waits for Homarr to stabilize after deploy (Docker events cause crash loop).
+    # Non-blocking, non-fatal — runs entirely in background.
     _homarr_register_app() {
         local app_name="$1" app_url="$2" icon_url="$3" description="$4"
 
         [[ -z "$description" ]] && description="Deployed via DCS"
         [[ -z "$icon_url" ]] && icon_url="https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/docker.png"
 
-        # Find Homarr's SQLite database on the host filesystem
-        local db_path=""
-        for _sd in "$COMPOSE_DIR"/*/App-Data/Homarr/appdata/db/db.sqlite; do
-            if [[ -f "$_sd" ]]; then
-                db_path="$_sd"
-                break
-            fi
-        done
-        [[ -z "$db_path" ]] && return 0
+        # Detect Homarr port
+        local homarr_port=""
+        homarr_port=$(docker inspect --format='{{range $p, $conf := .NetworkSettings.Ports}}{{if eq $p "7575/tcp"}}{{(index $conf 0).HostPort}}{{end}}{{end}}' Homarr 2>/dev/null)
+        [[ -z "$homarr_port" ]] && return 0
+        local homarr_url="http://localhost:${homarr_port}"
 
-        # Check sqlite3 is available
-        command -v sqlite3 >/dev/null 2>&1 || return 0
+        # Get API key
+        local api_key
+        api_key=$(_decrypt_secret "HOMARR_API_KEY") || return 0
+        [[ -z "$api_key" ]] && return 0
 
-        # Generate a unique ID (nanoid-style, 24 chars)
-        local app_id
-        app_id=$(head -c 18 /dev/urandom | base64 | tr -dc 'a-z0-9' | head -c 24)
+        local payload
+        payload=$(jq -nc \
+            --arg name "$app_name" \
+            --arg href "$app_url" \
+            --arg icon "$icon_url" \
+            --arg desc "$description" \
+            --arg ping "$app_url" \
+            '{json: {name: $name, href: $href, description: $desc, iconUrl: $icon, pingUrl: $ping}}')
 
-        # Skip if app with same name + href already exists
-        local existing
-        existing=$(sqlite3 "$db_path" "SELECT COUNT(*) FROM app WHERE name='$(echo "$app_name" | sed "s/'/''/g")' AND href='$(echo "$app_url" | sed "s/'/''/g")';" 2>/dev/null)
-        [[ "$existing" -gt 0 ]] 2>/dev/null && return 0
-
-        # Insert directly into Homarr's app table
+        # Run in background: wait 60s for Docker events to settle, then retry 5x
         (
-            sqlite3 "$db_path" "INSERT INTO app (id, name, description, icon_url, href, ping_url) VALUES ('$app_id', '$(echo "$app_name" | sed "s/'/''/g")', '$(echo "$description" | sed "s/'/''/g")', '$(echo "$icon_url" | sed "s/'/''/g")', '$(echo "$app_url" | sed "s/'/''/g")', '$(echo "$app_url" | sed "s/'/''/g")');" 2>/dev/null
+            sleep 60
+            local _i
+            for _i in 1 2 3 4 5; do
+                local _code
+                _code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 \
+                    -X POST "$homarr_url/api/trpc/app.create" \
+                    -H "ApiKey: $api_key" \
+                    -H "Content-Type: application/json" \
+                    -d "$payload" 2>/dev/null)
+                if [[ "$_code" == "200" ]]; then
+                    break
+                fi
+                sleep 15
+            done
         ) &
     }
 
