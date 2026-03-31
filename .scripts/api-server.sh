@@ -2408,6 +2408,15 @@ handle_containers() {
     if command -v jq >/dev/null 2>&1; then
         local now_epoch
         now_epoch=$(date +%s)
+
+        # Fetch bulk stats for all running containers (single docker command)
+        local -A stats_cpu=() stats_mem=()
+        while IFS='|' read -r _sname _scpu _smem; do
+            [[ -z "$_sname" ]] && continue
+            stats_cpu["$_sname"]="$_scpu"
+            stats_mem["$_sname"]="$_smem"
+        done < <(timeout 10 docker stats --no-stream --format '{{.Name}}|{{.CPUPerc}}|{{.MemPerc}}' 2>/dev/null)
+
         local containers_json
         containers_json=$(printf '%s\n' "$raw_json" | jq -s --argjson now "$now_epoch" '
             [.[] | {
@@ -2429,10 +2438,29 @@ handle_containers() {
                              elif test("months") then (scan("[0-9]+")[0] | tonumber * 2592000)
                              else 0 end)) else 0 end),
                 ports: .Ports,
-                restart_count: 0
+                restart_count: 0,
+                cpu_percent: null,
+                mem_percent: null
             }]' 2>/dev/null)
 
+        # Merge stats into the JSON — build a lookup object and merge in one jq call
         if [[ -n "$containers_json" ]]; then
+            local stats_json="{"
+            local _first_stat=true
+            for _cn in "${!stats_cpu[@]}"; do
+                local _cpu_val="${stats_cpu[$_cn]//%/}"
+                local _mem_val="${stats_mem[$_cn]//%/}"
+                [[ "$_first_stat" == "true" ]] && _first_stat=false || stats_json+=","
+                stats_json+="\"$(_api_json_escape "$_cn")\":{\"cpu\":${_cpu_val:-0},\"mem\":${_mem_val:-0}}"
+            done
+            stats_json+="}"
+
+            containers_json=$(printf '%s' "$containers_json" | jq --argjson stats "$stats_json" '
+                [.[] | . + {
+                    cpu_percent: ($stats[.name].cpu // null),
+                    mem_percent: ($stats[.name].mem // null)
+                }]' 2>/dev/null) || true
+
             local total
             total=$(printf '%s' "$containers_json" | jq 'length' 2>/dev/null)
             _api_success "{\"total\": ${total:-0}, \"containers\": $containers_json}"
