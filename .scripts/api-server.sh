@@ -8551,35 +8551,60 @@ handle_traefik_status() {
     _api_success "{\"active\": $traefik_active, \"domain\": \"$(_api_json_escape "$traefik_domain")\"}"
 }
 
+# Helper: find Traefik custom_routes directory (shared by all route handlers)
+_find_traefik_routes_dir() {
+    local _dir=""
+    local _s
+    for _s in $(_api_get_stacks); do
+        local _ad="${APP_DATA_DIR:-$COMPOSE_DIR/$_s/App-Data}"
+        [[ "$_ad" == ./* ]] && _ad="$COMPOSE_DIR/$_s/${_ad#./}"
+        [[ -d "$_ad/Traefik/custom_routes" ]] && { _dir="$_ad/Traefik/custom_routes"; break; }
+        [[ -d "$COMPOSE_DIR/$_s/App-Data/Traefik/custom_routes" ]] && { _dir="$COMPOSE_DIR/$_s/App-Data/Traefik/custom_routes"; break; }
+    done
+    # Last resort: find anywhere under COMPOSE_DIR or BASE_DIR
+    [[ -z "$_dir" ]] && _dir=$(find "$COMPOSE_DIR" -type d -name "custom_routes" -path "*/Traefik/*" 2>/dev/null | head -1)
+    [[ -z "$_dir" ]] && _dir=$(find "$BASE_DIR" -type d -name "custom_routes" -path "*/Traefik/*" 2>/dev/null | head -1)
+    printf '%s' "$_dir"
+}
+
+# Helper: read TRAEFIK_DOMAIN from env files
+_find_traefik_domain() {
+    local _d="" _ef
+    for _ef in "$COMPOSE_DIR"/*/".env" "$BASE_DIR/.env"; do
+        [[ -f "$_ef" ]] || continue
+        _d=$(grep -m1 '^TRAEFIK_DOMAIN=' "$_ef" 2>/dev/null | cut -d'=' -f2- | tr -d '"' | tr -d "'")
+        [[ -n "$_d" ]] && { printf '%s' "$_d"; return; }
+    done
+    for _ef in "$COMPOSE_DIR"/*/".env" "$BASE_DIR/.env"; do
+        [[ -f "$_ef" ]] || continue
+        _d=$(grep -m1 '^PROXY_DOMAIN=' "$_ef" 2>/dev/null | cut -d'=' -f2- | tr -d '"' | tr -d "'")
+        [[ -n "$_d" ]] && { printf '%s' "$_d"; return; }
+    done
+}
+
+# Helper: find CF_DNS_API_TOKEN from env files
+_find_cf_token() {
+    [[ -n "${CF_DNS_API_TOKEN:-}" ]] && { printf '%s' "$CF_DNS_API_TOKEN"; return; }
+    local _ef
+    for _ef in "$COMPOSE_DIR"/*/".env" "$BASE_DIR/.env"; do
+        [[ -f "$_ef" ]] || continue
+        local _t
+        _t=$(grep -m1 '^CF_DNS_API_TOKEN=' "$_ef" 2>/dev/null | cut -d'=' -f2- | tr -d '"' | tr -d "'")
+        [[ -n "$_t" ]] && { printf '%s' "$_t"; return; }
+    done
+}
+
 # GET /routes — List all Traefik routes with subdomains
 handle_routes() {
-    local traefik_routes_dir=""
-    local traefik_domain=""
-
-    # Find Traefik custom_routes directory
-    local _check_stack
-    for _check_stack in $(_api_get_stacks); do
-        local _check_appdata="${APP_DATA_DIR:-$COMPOSE_DIR/$_check_stack/App-Data}"
-        [[ "$_check_appdata" == ./* ]] && _check_appdata="$COMPOSE_DIR/$_check_stack/${_check_appdata#./}"
-        if [[ -d "$_check_appdata/Traefik/custom_routes" ]]; then
-            traefik_routes_dir="$_check_appdata/Traefik/custom_routes"
-            break
-        fi
-    done
+    local traefik_routes_dir
+    traefik_routes_dir=$(_find_traefik_routes_dir)
+    local traefik_domain
+    traefik_domain=$(_find_traefik_domain)
 
     if [[ -z "$traefik_routes_dir" ]]; then
-        _api_success '{"total": 0, "routes": [], "domain": ""}'
+        _api_success "{\"total\": 0, \"routes\": [], \"domain\": \"$(_api_json_escape "$traefik_domain")\"}"
         return
     fi
-
-    # Read domain
-    local _env_file
-    for _env_file in "$COMPOSE_DIR"/*/".env" "$BASE_DIR/.env"; do
-        [[ -f "$_env_file" ]] || continue
-        local _d
-        _d=$(grep -m1 '^TRAEFIK_DOMAIN=\|^PROXY_DOMAIN=' "$_env_file" 2>/dev/null | head -1 | cut -d'=' -f2- | tr -d '"' | tr -d "'")
-        [[ -n "$_d" ]] && { traefik_domain="$_d"; break; }
-    done
 
     # Scan all route YAML files
     local -a route_entries=()
@@ -8623,23 +8648,9 @@ handle_routes_check() {
     local subdomain="${1:-}"
     [[ -z "$subdomain" ]] && { _api_error 400 "subdomain parameter required"; return; }
 
-    local traefik_routes_dir=""
-    local traefik_domain=""
-
-    # Find Traefik routes dir
-    for _check_stack in $(_api_get_stacks); do
-        local _check_appdata="${APP_DATA_DIR:-$COMPOSE_DIR/$_check_stack/App-Data}"
-        [[ "$_check_appdata" == ./* ]] && _check_appdata="$COMPOSE_DIR/$_check_stack/${_check_appdata#./}"
-        [[ -d "$_check_appdata/Traefik/custom_routes" ]] && { traefik_routes_dir="$_check_appdata/Traefik/custom_routes"; break; }
-    done
-
-    # Read domain
-    for _env_file in "$COMPOSE_DIR"/*/".env" "$BASE_DIR/.env"; do
-        [[ -f "$_env_file" ]] || continue
-        local _d
-        _d=$(grep -m1 '^TRAEFIK_DOMAIN=\|^PROXY_DOMAIN=' "$_env_file" 2>/dev/null | head -1 | cut -d'=' -f2- | tr -d '"' | tr -d "'")
-        [[ -n "$_d" ]] && { traefik_domain="$_d"; break; }
-    done
+    local traefik_routes_dir traefik_domain
+    traefik_routes_dir=$(_find_traefik_routes_dir)
+    traefik_domain=$(_find_traefik_domain)
 
     local fqdn="${subdomain}.${traefik_domain}"
     local available="true"
@@ -8711,22 +8722,10 @@ handle_route_update() {
     new_subdomain=$(printf '%s' "$body" | jq -r '.subdomain // empty' 2>/dev/null)
     [[ -z "$new_subdomain" ]] && { _api_error 400 "subdomain is required"; return; }
 
-    # Find Traefik routes dir
-    local traefik_routes_dir="" traefik_domain=""
-    for _check_stack in $(_api_get_stacks); do
-        local _check_appdata="${APP_DATA_DIR:-$COMPOSE_DIR/$_check_stack/App-Data}"
-        [[ "$_check_appdata" == ./* ]] && _check_appdata="$COMPOSE_DIR/$_check_stack/${_check_appdata#./}"
-        [[ -d "$_check_appdata/Traefik/custom_routes" ]] && { traefik_routes_dir="$_check_appdata/Traefik/custom_routes"; break; }
-    done
+    local traefik_routes_dir traefik_domain
+    traefik_routes_dir=$(_find_traefik_routes_dir)
+    traefik_domain=$(_find_traefik_domain)
     [[ -z "$traefik_routes_dir" ]] && { _api_error 404 "Traefik routes directory not found"; return; }
-
-    # Read domain
-    for _env_file in "$COMPOSE_DIR"/*/".env" "$BASE_DIR/.env"; do
-        [[ -f "$_env_file" ]] || continue
-        local _d
-        _d=$(grep -m1 '^TRAEFIK_DOMAIN=\|^PROXY_DOMAIN=' "$_env_file" 2>/dev/null | head -1 | cut -d'=' -f2- | tr -d '"' | tr -d "'")
-        [[ -n "$_d" ]] && { traefik_domain="$_d"; break; }
-    done
 
     local route_file="$traefik_routes_dir/$stack/${service}.yml"
     [[ ! -f "$route_file" ]] && { _api_error 404 "Route file not found: $stack/$service"; return; }
@@ -8754,15 +8753,8 @@ handle_route_update() {
     touch "$traefik_routes_dir/.reload" 2>/dev/null
 
     # Update Cloudflare DNS in background (delete old, create new)
-    local _cf_token=""
-    _cf_token="${CF_DNS_API_TOKEN:-}"
-    if [[ -z "$_cf_token" ]]; then
-        for _env_file in "$COMPOSE_DIR"/*/".env" "$BASE_DIR/.env"; do
-            [[ -f "$_env_file" ]] || continue
-            _cf_token=$(grep -m1 '^CF_DNS_API_TOKEN=' "$_env_file" 2>/dev/null | cut -d'=' -f2- | tr -d '"' | tr -d "'")
-            [[ -n "$_cf_token" ]] && break
-        done
-    fi
+    local _cf_token
+    _cf_token=$(_find_cf_token)
 
     if [[ -n "$_cf_token" && -n "$old_fqdn" && "$old_fqdn" != "$new_fqdn" ]]; then
         # Delete old DNS record in background
@@ -8800,21 +8792,10 @@ handle_route_delete() {
     _api_validate_resource_name "$stack" "stack" || return
     _api_validate_resource_name "$service" "service" || return
 
-    # Find Traefik routes dir
-    local traefik_routes_dir="" traefik_domain=""
-    for _check_stack in $(_api_get_stacks); do
-        local _check_appdata="${APP_DATA_DIR:-$COMPOSE_DIR/$_check_stack/App-Data}"
-        [[ "$_check_appdata" == ./* ]] && _check_appdata="$COMPOSE_DIR/$_check_stack/${_check_appdata#./}"
-        [[ -d "$_check_appdata/Traefik/custom_routes" ]] && { traefik_routes_dir="$_check_appdata/Traefik/custom_routes"; break; }
-    done
+    local traefik_routes_dir traefik_domain
+    traefik_routes_dir=$(_find_traefik_routes_dir)
+    traefik_domain=$(_find_traefik_domain)
     [[ -z "$traefik_routes_dir" ]] && { _api_error 404 "Traefik routes directory not found"; return; }
-
-    for _env_file in "$COMPOSE_DIR"/*/".env" "$BASE_DIR/.env"; do
-        [[ -f "$_env_file" ]] || continue
-        local _d
-        _d=$(grep -m1 '^TRAEFIK_DOMAIN=\|^PROXY_DOMAIN=' "$_env_file" 2>/dev/null | head -1 | cut -d'=' -f2- | tr -d '"' | tr -d "'")
-        [[ -n "$_d" ]] && { traefik_domain="$_d"; break; }
-    done
 
     local route_file="$traefik_routes_dir/$stack/${service}.yml"
     [[ ! -f "$route_file" ]] && { _api_error 404 "Route file not found: $stack/$service"; return; }
@@ -8828,15 +8809,8 @@ handle_route_delete() {
     touch "$traefik_routes_dir/.reload" 2>/dev/null
 
     # Clean up Cloudflare DNS record in background
-    local _cf_token="${CF_DNS_API_TOKEN:-}"
-    if [[ -z "$_cf_token" ]]; then
-        for _env_file in "$COMPOSE_DIR"/*/".env" "$BASE_DIR/.env"; do
-            [[ -f "$_env_file" ]] || continue
-            _cf_token=$(grep -m1 '^CF_DNS_API_TOKEN=' "$_env_file" 2>/dev/null | cut -d'=' -f2- | tr -d '"' | tr -d "'")
-            [[ -n "$_cf_token" ]] && break
-        done
-    fi
-
+    local _cf_token
+    _cf_token=$(_find_cf_token)
     if [[ -n "$_cf_token" && -n "$fqdn" ]]; then
         _cloudflare_delete_dns "${fqdn%%.*}" "$traefik_domain" "$_cf_token" &
     fi
@@ -8845,26 +8819,14 @@ handle_route_delete() {
     _api_success "{\"success\": true, \"deleted\": \"$(_api_json_escape "$fqdn")\", \"service\": \"$(_api_json_escape "$service")\", \"stack\": \"$(_api_json_escape "$stack")\"}"
 }
 
-# GET /dns/records — List all Cloudflare DNS CNAME records
+# GET /dns/records — List Cloudflare CNAME records that point to our domain
 handle_dns_records() {
-    local traefik_domain=""
-    for _env_file in "$COMPOSE_DIR"/*/".env" "$BASE_DIR/.env"; do
-        [[ -f "$_env_file" ]] || continue
-        local _d
-        _d=$(grep -m1 '^TRAEFIK_DOMAIN=\|^PROXY_DOMAIN=' "$_env_file" 2>/dev/null | head -1 | cut -d'=' -f2- | tr -d '"' | tr -d "'")
-        [[ -n "$_d" ]] && { traefik_domain="$_d"; break; }
-    done
-    [[ -z "$traefik_domain" ]] && { _api_success '{"total": 0, "records": [], "domain": ""}'; return; }
+    local traefik_domain
+    traefik_domain=$(_find_traefik_domain)
+    [[ -z "$traefik_domain" ]] && { _api_success '{"total": 0, "records": [], "domain": "", "cf_configured": false}'; return; }
 
-    local _cf_token="${CF_DNS_API_TOKEN:-}"
-    if [[ -z "$_cf_token" ]]; then
-        for _env_file in "$COMPOSE_DIR"/*/".env" "$BASE_DIR/.env"; do
-            [[ -f "$_env_file" ]] || continue
-            _cf_token=$(grep -m1 '^CF_DNS_API_TOKEN=' "$_env_file" 2>/dev/null | cut -d'=' -f2- | tr -d '"' | tr -d "'")
-            [[ -n "$_cf_token" ]] && break
-        done
-    fi
-
+    local _cf_token
+    _cf_token=$(_find_cf_token)
     if [[ -z "$_cf_token" ]]; then
         _api_success "{\"total\": 0, \"records\": [], \"domain\": \"$(_api_json_escape "$traefik_domain")\", \"cf_configured\": false}"
         return
@@ -8888,7 +8850,8 @@ handle_dns_records() {
         printf '%s\n%s\n' "$traefik_domain" "$zone_id" > "$zone_cache" 2>/dev/null
     fi
 
-    # Fetch all CNAME records for this zone that have the DCS auto-create comment
+    # Fetch CNAME records — only include those pointing to our domain
+    # (filters out external records like Zoho mail, Google Workspace, etc.)
     local records_json
     records_json=$(curl -s --max-time 30 \
         -H "Authorization: Bearer $_cf_token" \
@@ -8903,6 +8866,10 @@ handle_dns_records() {
         rec_content=$(printf '%s' "$line" | jq -r '.content // empty' 2>/dev/null)
         rec_proxied=$(printf '%s' "$line" | jq -r '.proxied // false' 2>/dev/null)
         rec_comment=$(printf '%s' "$line" | jq -r '.comment // empty' 2>/dev/null)
+
+        # Only show CNAMEs pointing to our domain (DCS-managed routes)
+        [[ "$rec_content" != "$traefik_domain" ]] && continue
+
         local subdomain="${rec_name%%.*}"
         local managed="false"
         [[ "$rec_comment" == *"DCS"* || "$rec_comment" == *"Auto-created"* ]] && managed="true"
