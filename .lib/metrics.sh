@@ -70,9 +70,10 @@ metrics_collect_snapshot() {
     cpu_count=$(nproc 2>/dev/null || echo 1)
     cpu_percent=$(awk "BEGIN {v=${load_1:-0}/${cpu_count}*100; if(v>100)v=100; printf \"%.1f\", v}")
 
-    # Disk (root filesystem)
+    # Disk: use largest real filesystem (not root/boot/tmpfs) — typically /home
     local disk_info
-    disk_info=$(df -B1 / 2>/dev/null | awk 'NR==2 {print $2, $3, $5}')
+    disk_info=$(df -B1 -x tmpfs -x devtmpfs -x squashfs -x overlay -x efivarfs -x vfat 2>/dev/null | awk 'NR>1 && $6 !~ /^\/$|^\/boot|^\/snap|^\/dev|^\/run|^\/sys|^\/proc/ {print $2, $3, $5}' | sort -k1 -nr | head -1)
+    [[ -z "$disk_info" ]] && disk_info=$(df -B1 / 2>/dev/null | awk 'NR==2 {print $2, $3, $5}')
     if [[ -n "$disk_info" ]]; then
         local d_total d_used d_pct
         read -r d_total d_used d_pct <<< "$disk_info"

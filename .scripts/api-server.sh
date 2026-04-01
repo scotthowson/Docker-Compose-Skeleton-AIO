@@ -1736,8 +1736,10 @@ handle_status() {
     total_volumes=$(timeout 3 docker volume ls -q 2>/dev/null | wc -l)
     total_networks=$(timeout 3 docker network ls --format '{{.Name}}' 2>/dev/null | grep -cv '^bridge$\|^host$\|^none$') || total_networks=0
 
+    # Disk: use largest real filesystem (not root/boot/tmpfs) — typically /home
     local disk_usage
-    disk_usage=$(df -h / 2>/dev/null | tail -1 | awk '{printf "{\"total\": \"%s\", \"used\": \"%s\", \"available\": \"%s\", \"percent\": \"%s\"}", $2, $3, $4, $5}')
+    disk_usage=$(df -h -x tmpfs -x devtmpfs -x squashfs -x overlay -x efivarfs -x vfat 2>/dev/null | awk 'NR>1 && $6 !~ /^\/$|^\/boot|^\/snap|^\/dev|^\/run|^\/sys|^\/proc/ {print $2, $3, $4, $5, $6}' | sort -k1 -hr | head -1 | awk '{printf "{\"total\": \"%s\", \"used\": \"%s\", \"available\": \"%s\", \"percent\": \"%s\", \"mount\": \"%s\"}", $1, $2, $3, $4, $5}')
+    [[ -z "$disk_usage" ]] && disk_usage=$(df -h / 2>/dev/null | tail -1 | awk '{printf "{\"total\": \"%s\", \"used\": \"%s\", \"available\": \"%s\", \"percent\": \"%s\"}", $2, $3, $4, $5}')
 
     local load_avg mem_total mem_available
     load_avg=$(awk '{printf "[%s, %s, %s]", $1, $2, $3}' /proc/loadavg 2>/dev/null || echo "[0,0,0]")
@@ -1773,7 +1775,8 @@ handle_system_info_internal() {
     mem_available=$(awk '/MemAvailable/ {printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || echo 0)
     uptime_seconds=$(awk '{printf "%d", $1}' /proc/uptime 2>/dev/null || echo 0)
     cpu_count=$(nproc 2>/dev/null || echo 0)
-    disk_usage=$(df -h / 2>/dev/null | tail -1 | awk '{printf "{\"total\":\"%s\",\"used\":\"%s\",\"available\":\"%s\",\"percent\":\"%s\"}", $2, $3, $4, $5}')
+    disk_usage=$(df -h -x tmpfs -x devtmpfs -x squashfs -x overlay -x efivarfs -x vfat 2>/dev/null | awk 'NR>1 && $6 !~ /^\/$|^\/boot|^\/snap|^\/dev|^\/run|^\/sys|^\/proc/ {print $2, $3, $4, $5}' | sort -k1 -hr | head -1 | awk '{printf "{\"total\":\"%s\",\"used\":\"%s\",\"available\":\"%s\",\"percent\":\"%s\"}", $1, $2, $3, $4}')
+    [[ -z "$disk_usage" ]] && disk_usage=$(df -h / 2>/dev/null | tail -1 | awk '{printf "{\"total\":\"%s\",\"used\":\"%s\",\"available\":\"%s\",\"percent\":\"%s\"}", $2, $3, $4, $5}')
     printf '{"hostname":"%s","uptime_seconds":%d,"system":{"load_average":%s,"memory_mb":{"total":%d,"available":%d},"disk":%s,"cpu_count":%d}}' \
         "$(_api_json_escape "$(hostname)")" "$uptime_seconds" "$load_avg" "$mem_total" "$mem_available" "${disk_usage:-{}}" "$cpu_count"
 }
@@ -7442,10 +7445,11 @@ handle_metrics_snapshot() {
     local mem_pct=0
     [[ $mem_total -gt 0 ]] && mem_pct=$(awk "BEGIN { printf \"%.1f\", ($mem_used / $mem_total) * 100 }")
 
-    # Disk
+    # Disk: use largest real filesystem (not root/boot/tmpfs)
     local disk_pct="0"
     local disk_line
-    disk_line=$(df -h / 2>/dev/null | tail -1)
+    disk_line=$(df -h -x tmpfs -x devtmpfs -x squashfs -x overlay -x efivarfs -x vfat 2>/dev/null | awk 'NR>1 && $6 !~ /^\/$|^\/boot|^\/snap|^\/dev|^\/run|^\/sys|^\/proc/ {print}' | sort -k2 -hr | head -1)
+    [[ -z "$disk_line" ]] && disk_line=$(df -h / 2>/dev/null | tail -1)
     if [[ -n "$disk_line" ]]; then
         disk_pct=$(echo "$disk_line" | awk '{print $5}' | tr -d '%')
     fi
@@ -15460,6 +15464,44 @@ start_server() {
         _ddns_update_loop &
         local _ddns_pid=$!
         echo "$_ddns_pid" > "${DDNS_PID_FILE:-/tmp/dcs-ddns.pid}" 2>/dev/null
+    fi
+
+    # Start metrics auto-collector (captures CPU/mem/disk every 60s for Trends page)
+    if [[ "${METRICS_ENABLED:-true}" == "true" ]]; then
+        local _metrics_interval="${METRICS_COLLECT_INTERVAL:-60}"
+        (
+            while true; do
+                sleep "$_metrics_interval"
+                # Inline snapshot — same logic as handle_metrics_snapshot
+                local ts epoch cpu_pct load1 load5 load15 mem_used mem_total mem_pct disk_pct
+                ts=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+                epoch=$(date +%s)
+                read -r load1 load5 load15 _ _ < /proc/loadavg 2>/dev/null || { load1=0; load5=0; load15=0; }
+                local cpu_count
+                cpu_count=$(nproc 2>/dev/null || echo 1)
+                cpu_pct=$(awk "BEGIN {v=$load1/$cpu_count*100; if(v>100)v=100; printf \"%.1f\", v}")
+                mem_total=$(awk '/MemTotal/ {printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || echo 0)
+                local mem_avail
+                mem_avail=$(awk '/MemAvailable/ {printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || echo 0)
+                mem_used=$((mem_total - mem_avail))
+                mem_pct=$( [[ "$mem_total" -gt 0 ]] && awk "BEGIN {printf \"%.1f\", $mem_used/$mem_total*100}" || echo 0)
+                local disk_line
+                disk_line=$(df -h -x tmpfs -x devtmpfs -x squashfs -x overlay -x efivarfs -x vfat 2>/dev/null | awk 'NR>1 && $6 !~ /^\/$|^\/boot|^\/snap|^\/dev|^\/run|^\/sys|^\/proc/ {print}' | sort -k2 -hr | head -1)
+                [[ -z "$disk_line" ]] && disk_line=$(df -h / 2>/dev/null | tail -1)
+                disk_pct=$(echo "$disk_line" | awk '{print $5}' | tr -d '%')
+                [[ -z "$disk_pct" ]] && disk_pct=0
+                local entry="{\"ts\":\"$ts\",\"epoch\":$epoch,\"cpu_pct\":$cpu_pct,\"load1\":$load1,\"load5\":$load5,\"load15\":$load15,\"mem_used_mb\":$mem_used,\"mem_total_mb\":$mem_total,\"mem_pct\":$mem_pct,\"disk_pct\":${disk_pct:-0}}"
+                local _mf="$BASE_DIR/.api-auth/metrics-history.jsonl"
+                echo "$entry" >> "$_mf"
+                # Trim to 10080 entries (7 days at 1-min intervals)
+                local _lc
+                _lc=$(wc -l < "$_mf" 2>/dev/null) || _lc=0
+                if [[ "$_lc" -gt 10080 ]]; then
+                    tail -n 10080 "$_mf" > "$_mf.tmp" && mv "$_mf.tmp" "$_mf"
+                fi
+            done
+        ) &
+        echo "  Metrics collector started (interval: ${_metrics_interval}s)"
     fi
 
     # Start the listener — socat/ncat invoke this script with --handle-request
