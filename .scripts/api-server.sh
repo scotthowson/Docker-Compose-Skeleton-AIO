@@ -13420,7 +13420,26 @@ handle_schedule_run() {
             output=$(docker system prune -f 2>&1) || success="false"
             ;;
         health-check)
-            output=$("$BASE_DIR/.scripts/health-check.sh" 2>&1) || success="false"
+            # Inline health check — scan running containers for unhealthy status
+            local _hc_total=0 _hc_healthy=0 _hc_unhealthy=0 _hc_none=0
+            local _hc_bad=""
+            while IFS='|' read -r _cn _cs _ch; do
+                [[ -z "$_cn" ]] && continue
+                _hc_total=$((_hc_total + 1))
+                if [[ "$_ch" == *"healthy"* && "$_ch" != *"unhealthy"* ]]; then
+                    _hc_healthy=$((_hc_healthy + 1))
+                elif [[ "$_ch" == *"unhealthy"* ]]; then
+                    _hc_unhealthy=$((_hc_unhealthy + 1))
+                    _hc_bad="${_hc_bad}${_cn}, "
+                else
+                    _hc_none=$((_hc_none + 1))
+                fi
+            done < <(docker ps --format '{{.Names}}|{{.Status}}|{{.Status}}' 2>/dev/null)
+            if [[ $_hc_unhealthy -gt 0 ]]; then
+                output="Health check: ${_hc_unhealthy} unhealthy (${_hc_bad%, }), ${_hc_healthy} healthy, ${_hc_total} total"
+            else
+                output="Health check: All ${_hc_total} containers healthy (${_hc_healthy} with healthcheck, ${_hc_none} without)"
+            fi
             ;;
         restart)
             if [[ -n "$target" ]]; then
