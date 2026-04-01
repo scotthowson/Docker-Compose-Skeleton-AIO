@@ -10528,17 +10528,19 @@ print('\n'.join(result))
         local _ad="${APP_DATA_DIR:-$target_dir/App-Data}"
         [[ "$_ad" == ./* ]] && _ad="$target_dir/${_ad#./}"
         (
-            # Safety: ensure Traefik directories and files exist before compose up
-            mkdir -p "$_ad/Traefik/custom_routes" "$_ad/Traefik/cache" 2>/dev/null
-            # Ensure bind-mount targets are files, not directories (Docker creates dirs for missing targets)
-            for _bm in traefik.yml acme.json; do
-                local _bm_path="$_ad/Traefik/$_bm"
-                if [[ -d "$_bm_path" ]]; then
-                    rm -rf "$_bm_path"
-                    touch "$_bm_path"
-                    [[ "$_bm" == "acme.json" ]] && chmod 600 "$_bm_path"
-                fi
-            done
+            # Safety: ensure Traefik directories exist ONLY if Traefik is in this stack
+            if grep -q 'container_name: Traefik\|image: traefik' "$target_dir/docker-compose.yml" 2>/dev/null; then
+                mkdir -p "$_ad/Traefik/custom_routes" "$_ad/Traefik/cache" 2>/dev/null
+                # Ensure bind-mount targets are files, not directories (Docker creates dirs for missing targets)
+                for _bm in traefik.yml acme.json; do
+                    local _bm_path="$_ad/Traefik/$_bm"
+                    if [[ -d "$_bm_path" ]]; then
+                        rm -rf "$_bm_path"
+                        touch "$_bm_path"
+                        [[ "$_bm" == "acme.json" ]] && chmod 600 "$_bm_path"
+                    fi
+                done
+            fi
 
             # Start ONLY the newly deployed services — don't restart existing containers
             # in the same stack (prevents Homarr/other services from restarting)
