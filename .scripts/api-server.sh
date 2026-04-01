@@ -171,6 +171,14 @@ if [[ -z "${DOCKER_COMPOSE_CMD:-}" ]]; then
 fi
 
 # =============================================================================
+# SCHEDULER LIBRARY
+# =============================================================================
+
+if [[ -f "$BASE_DIR/.lib/scheduler.sh" ]]; then
+    source "$BASE_DIR/.lib/scheduler.sh"
+fi
+
+# =============================================================================
 # ARGUMENT PARSING
 # =============================================================================
 
@@ -15466,48 +15474,19 @@ start_server() {
         echo "$_ddns_pid" > "${DDNS_PID_FILE:-/tmp/dcs-ddns.pid}" 2>/dev/null
     fi
 
-    # Start metrics auto-collector (captures CPU/mem/disk for Trends page)
-    if [[ "${METRICS_ENABLED:-true}" == "true" ]]; then
-        local _metrics_interval="${METRICS_COLLECT_INTERVAL:-60}"
-        local _metrics_file="$BASE_DIR/.api-auth/metrics-history.jsonl"
-        _dcs_metrics_collect() {
-            local ts epoch load1 load5 load15 cpu_count cpu_pct
-            local mem_total mem_avail mem_used mem_pct disk_pct
-            ts=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
-            epoch=$(date +%s)
-            # CPU from load average
-            read -r load1 load5 load15 _ _ < /proc/loadavg 2>/dev/null || { load1=0; load5=0; load15=0; }
-            cpu_count=$(nproc 2>/dev/null || echo 1)
-            cpu_pct=$(awk "BEGIN {v=$load1/$cpu_count*100; if(v>100)v=100; printf \"%.1f\", v}")
-            # Memory
-            mem_total=$(awk '/MemTotal/ {printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || echo 0)
-            mem_avail=$(awk '/MemAvailable/ {printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || echo 0)
-            mem_used=$((mem_total - mem_avail))
-            if [[ "$mem_total" -gt 0 ]]; then
-                mem_pct=$(awk "BEGIN {printf \"%.1f\", $mem_used/$mem_total*100}")
-            else
-                mem_pct="0"
+    # Start scheduler daemon (runs scheduled tasks including metrics collection)
+    if [[ "${SCHEDULER_ENABLED:-true}" == "true" ]] && type scheduler_daemon_start &>/dev/null; then
+        scheduler_init
+        # Auto-create "Metrics Collection" schedule if none exists
+        if [[ "${METRICS_ENABLED:-true}" == "true" ]]; then
+            local _has_metrics
+            _has_metrics=$(jq '[.[] | select(.action=="metrics-snapshot")] | length' "$SCHEDULER_CONFIG" 2>/dev/null || echo 0)
+            if [[ "$_has_metrics" -eq 0 ]]; then
+                scheduler_add "Metrics Collection" "@hourly" "metrics-snapshot" ""
+                echo "  Created default 'Metrics Collection' schedule (@hourly)"
             fi
-            # Disk: /home with fallback to /
-            disk_pct=$(df -h /home 2>/dev/null | tail -1 | awk '{print $5}' | tr -d '%')
-            [[ -z "$disk_pct" ]] && disk_pct=$(df -h / 2>/dev/null | tail -1 | awk '{print $5}' | tr -d '%')
-            [[ -z "$disk_pct" ]] && disk_pct=0
-            # Write entry
-            echo "{\"ts\":\"$ts\",\"epoch\":$epoch,\"cpu_pct\":$cpu_pct,\"load1\":$load1,\"load5\":$load5,\"load15\":$load15,\"mem_used_mb\":$mem_used,\"mem_total_mb\":$mem_total,\"mem_pct\":$mem_pct,\"disk_pct\":$disk_pct}" >> "$_metrics_file"
-            # Trim
-            local lc
-            lc=$(wc -l < "$_metrics_file" 2>/dev/null) || lc=0
-            [[ "$lc" -gt 10080 ]] && { tail -n 10080 "$_metrics_file" > "$_metrics_file.tmp" && mv "$_metrics_file.tmp" "$_metrics_file"; }
-        }
-        # Collect one snapshot immediately, then loop
-        _dcs_metrics_collect
-        (
-            while true; do
-                sleep "$_metrics_interval"
-                _dcs_metrics_collect
-            done
-        ) &
-        echo "  Metrics collector started (interval: ${_metrics_interval}s)"
+        fi
+        scheduler_daemon_start
     fi
 
     # Start the listener — socat/ncat invoke this script with --handle-request

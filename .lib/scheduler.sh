@@ -178,6 +178,22 @@ _scheduler_calculate_next_run() {
     now=$(date +%s)
 
     case "$expr" in
+        @minutely|@1min)
+            date -u -d "@$((now + 60))" '+%Y-%m-%dT%H:%M:00Z' 2>/dev/null || \
+            date -u -r "$((now + 60))" '+%Y-%m-%dT%H:%M:00Z' 2>/dev/null
+            ;;
+        @5min)
+            date -u -d "@$((now + 300))" '+%Y-%m-%dT%H:%M:00Z' 2>/dev/null || \
+            date -u -r "$((now + 300))" '+%Y-%m-%dT%H:%M:00Z' 2>/dev/null
+            ;;
+        @15min)
+            date -u -d "@$((now + 900))" '+%Y-%m-%dT%H:%M:00Z' 2>/dev/null || \
+            date -u -r "$((now + 900))" '+%Y-%m-%dT%H:%M:00Z' 2>/dev/null
+            ;;
+        @30min)
+            date -u -d "@$((now + 1800))" '+%Y-%m-%dT%H:%M:00Z' 2>/dev/null || \
+            date -u -r "$((now + 1800))" '+%Y-%m-%dT%H:%M:00Z' 2>/dev/null
+            ;;
         @hourly)
             date -u -d "@$((now + 3600))" '+%Y-%m-%dT%H:00:00Z' 2>/dev/null || \
             date -u -r "$((now + 3600))" '+%Y-%m-%dT%H:00:00Z' 2>/dev/null
@@ -251,6 +267,27 @@ _scheduler_execute() {
             else
                 output="No target specified for restart" && success=false
             fi
+            ;;
+        metrics-snapshot)
+            # Capture CPU/mem/disk metrics and append to history
+            local _mf="$BASE_DIR/.api-auth/metrics-history.jsonl"
+            local _ts _ep _l1 _l5 _l15 _ncpu _cpct _mt _ma _mu _mpct _dpct
+            _ts=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+            _ep=$(date +%s)
+            read -r _l1 _l5 _l15 _ _ < /proc/loadavg 2>/dev/null || { _l1=0; _l5=0; _l15=0; }
+            _ncpu=$(nproc 2>/dev/null || echo 1)
+            _cpct=$(awk "BEGIN {v=$_l1/$_ncpu*100; if(v>100)v=100; printf \"%.1f\", v}")
+            _mt=$(awk '/MemTotal/ {printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || echo 0)
+            _ma=$(awk '/MemAvailable/ {printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || echo 0)
+            _mu=$((_mt - _ma))
+            [[ "$_mt" -gt 0 ]] && _mpct=$(awk "BEGIN {printf \"%.1f\", $_mu/$_mt*100}") || _mpct=0
+            _dpct=$(df -h /home 2>/dev/null | tail -1 | awk '{print $5}' | tr -d '%')
+            [[ -z "$_dpct" ]] && _dpct=$(df -h / 2>/dev/null | tail -1 | awk '{print $5}' | tr -d '%')
+            [[ -z "$_dpct" ]] && _dpct=0
+            echo "{\"ts\":\"$_ts\",\"epoch\":$_ep,\"cpu_pct\":$_cpct,\"load1\":$_l1,\"load5\":$_l5,\"load15\":$_l15,\"mem_used_mb\":$_mu,\"mem_total_mb\":$_mt,\"mem_pct\":$_mpct,\"disk_pct\":$_dpct}" >> "$_mf"
+            local _lc; _lc=$(wc -l < "$_mf" 2>/dev/null) || _lc=0
+            [[ "$_lc" -gt 10080 ]] && { tail -n 10080 "$_mf" > "$_mf.tmp" && mv "$_mf.tmp" "$_mf"; }
+            output="Metrics snapshot captured (cpu: ${_cpct}%, mem: ${_mpct}%, disk: ${_dpct}%)"
             ;;
         custom)
             if [[ -n "$target" && -x "$target" ]]; then
