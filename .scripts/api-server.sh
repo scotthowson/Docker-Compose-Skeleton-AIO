@@ -13141,16 +13141,19 @@ handle_schedule_create() {
         return
     fi
 
-    # Validate required fields
+    # Validate required fields (accept both "cron" and "schedule" for the expression)
     local name action cron
     name=$(echo "$body" | jq -r '.name // empty' 2>/dev/null)
     action=$(echo "$body" | jq -r '.action // empty' 2>/dev/null)
-    cron=$(echo "$body" | jq -r '.cron // empty' 2>/dev/null)
+    cron=$(echo "$body" | jq -r '.cron // .schedule // empty' 2>/dev/null)
 
     if [[ -z "$name" ]] || [[ -z "$action" ]] || [[ -z "$cron" ]]; then
-        _api_error 400 "Missing required fields: name, action, and cron"
+        _api_error 400 "Missing required fields: name, action, and schedule"
         return
     fi
+
+    # Normalize: ensure both "cron" and "schedule" fields are present in the stored entry
+    body=$(echo "$body" | jq --arg c "$cron" '. + {cron: $c, schedule: $c}' 2>/dev/null)
 
     # Generate unique ID
     local id
