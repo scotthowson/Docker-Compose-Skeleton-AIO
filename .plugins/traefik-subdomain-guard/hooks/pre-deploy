@@ -1,0 +1,64 @@
+#!/bin/bash
+# =============================================================================
+# traefik-subdomain-guard — pre-deploy hook
+# Checks if the service's subdomain is already claimed by another route.
+# Context JSON is passed via stdin.
+# =============================================================================
+
+set -euo pipefail
+
+PLUGIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+BASE_DIR="$(cd "$PLUGIN_DIR/../.." && pwd)"
+
+# Read context from stdin
+CONTEXT=$(cat)
+TEMPLATE=$(printf '%s' "$CONTEXT" | jq -r '.template // empty' 2>/dev/null)
+STACK=$(printf '%s' "$CONTEXT" | jq -r '.stack // empty' 2>/dev/null)
+
+[[ -z "$TEMPLATE" ]] && exit 0
+
+# Find Traefik routes directory
+ROUTES_DIR=""
+for stack_dir in "$BASE_DIR"/Stacks/*/; do
+    appdata="${stack_dir}App-Data/Traefik/custom_routes"
+    [[ -d "$appdata" ]] && { ROUTES_DIR="$appdata"; break; }
+done
+
+[[ -z "$ROUTES_DIR" ]] && { echo "No Traefik routes directory found — skipping subdomain check"; exit 0; }
+
+# Read domain
+DOMAIN=""
+for env_file in "$BASE_DIR"/Stacks/*/.env "$BASE_DIR/.env"; do
+    [[ -f "$env_file" ]] || continue
+    d=$(grep -m1 '^TRAEFIK_DOMAIN=\|^PROXY_DOMAIN=' "$env_file" 2>/dev/null | head -1 | cut -d'=' -f2- | tr -d '"' | tr -d "'")
+    [[ -n "$d" ]] && { DOMAIN="$d"; break; }
+done
+
+# The template name is typically the subdomain
+SUBDOMAIN="$TEMPLATE"
+FQDN="${SUBDOMAIN}.${DOMAIN}"
+
+# Scan all route files for this subdomain
+CONFLICTS=0
+while IFS= read -r route_file; do
+    [[ -f "$route_file" ]] || continue
+    if grep -q "Host(\`${FQDN}\`)" "$route_file" 2>/dev/null; then
+        existing_stack=$(basename "$(dirname "$route_file")")
+        existing_service=$(basename "$route_file" .yml)
+        echo "CONFLICT: ${FQDN} already routed to ${existing_service} in stack ${existing_stack}"
+        CONFLICTS=$((CONFLICTS + 1))
+    fi
+done < <(find "$ROUTES_DIR" -name '*.yml' -type f 2>/dev/null)
+
+if [[ $CONFLICTS -gt 0 ]]; then
+    echo "WARNING: ${CONFLICTS} subdomain conflict(s) detected for ${FQDN}"
+    # Log to plugin state
+    mkdir -p "$PLUGIN_DIR/state"
+    printf '{"timestamp":"%s","template":"%s","subdomain":"%s","conflicts":%d}\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$TEMPLATE" "$FQDN" "$CONFLICTS" \
+        >> "$PLUGIN_DIR/state/checks.jsonl"
+else
+    echo "OK: ${FQDN} is available"
+fi
+
+exit 0

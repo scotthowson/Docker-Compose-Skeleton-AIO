@@ -1,0 +1,44 @@
+#!/bin/bash
+# =============================================================================
+# deploy-notifier — post-deploy hook
+# Sends NTFY notification when a template is deployed.
+# =============================================================================
+
+set -euo pipefail
+
+PLUGIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+BASE_DIR="$(cd "$PLUGIN_DIR/../.." && pwd)"
+
+# Read plugin config
+NOTIFY_DEPLOYS=$(jq -r '.config.notify_deploys // true' "$PLUGIN_DIR/plugin.json" 2>/dev/null)
+[[ "$NOTIFY_DEPLOYS" != "true" ]] && exit 0
+
+# Read NTFY config from environment
+NTFY_URL="${NTFY_URL:-}"
+NTFY_TOPIC="${NTFY_TOPIC:-}"
+
+# Try to read from .env if not in environment
+if [[ -z "$NTFY_URL" || -z "$NTFY_TOPIC" ]]; then
+    for env_file in "$BASE_DIR/.env" "$BASE_DIR"/Stacks/*/.env; do
+        [[ -f "$env_file" ]] || continue
+        [[ -z "$NTFY_URL" ]] && NTFY_URL=$(grep -m1 '^NTFY_URL=' "$env_file" 2>/dev/null | cut -d'=' -f2- | tr -d '"')
+        [[ -z "$NTFY_TOPIC" ]] && NTFY_TOPIC=$(grep -m1 '^NTFY_TOPIC=' "$env_file" 2>/dev/null | cut -d'=' -f2- | tr -d '"')
+    done
+fi
+
+[[ -z "$NTFY_URL" || -z "$NTFY_TOPIC" ]] && { echo "NTFY not configured — skipping notification"; exit 0; }
+
+CONTEXT=$(cat)
+TEMPLATE=$(printf '%s' "$CONTEXT" | jq -r '.template // "unknown"' 2>/dev/null)
+STACK=$(printf '%s' "$CONTEXT" | jq -r '.stack // "unknown"' 2>/dev/null)
+PRIORITY=$(jq -r '.config.priority // "default"' "$PLUGIN_DIR/plugin.json" 2>/dev/null)
+
+curl -sf \
+    -H "Title: Template Deployed" \
+    -H "Priority: ${PRIORITY}" \
+    -H "Tags: rocket,docker" \
+    -d "${TEMPLATE} deployed to ${STACK}" \
+    "${NTFY_URL}/${NTFY_TOPIC}" >/dev/null 2>&1 || true
+
+echo "Notification sent: ${TEMPLATE} → ${STACK}"
+exit 0

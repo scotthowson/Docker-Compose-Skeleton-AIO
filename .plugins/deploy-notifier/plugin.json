@@ -1,0 +1,15 @@
+{
+  "name": "deploy-notifier",
+  "version": "1.0.0",
+  "description": "Sends NTFY push notifications when templates are deployed or stacks are started/stopped.",
+  "author": "DCS",
+  "enabled": true,
+  "hooks": ["post-deploy", "post-start", "post-stop"],
+  "templates": [],
+  "config": {
+    "notify_deploys": true,
+    "notify_starts": true,
+    "notify_stops": true,
+    "priority": "default"
+  }
+}

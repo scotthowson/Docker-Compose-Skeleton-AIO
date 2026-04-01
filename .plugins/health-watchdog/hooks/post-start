@@ -1,0 +1,55 @@
+#!/bin/bash
+# =============================================================================
+# health-watchdog — post-start hook
+# Waits briefly after stack start, then checks container health status.
+# Logs unhealthy containers to state/health.jsonl for dashboard consumption.
+# =============================================================================
+
+set -euo pipefail
+
+PLUGIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# Read config
+DELAY=$(jq -r '.config.check_delay_seconds // 15' "$PLUGIN_DIR/plugin.json" 2>/dev/null)
+MAX_LOG=$(jq -r '.config.max_log_entries // 500' "$PLUGIN_DIR/plugin.json" 2>/dev/null)
+
+CONTEXT=$(cat)
+STACK=$(printf '%s' "$CONTEXT" | jq -r '.stack // "all"' 2>/dev/null)
+
+# Wait for containers to initialize
+sleep "$DELAY"
+
+# Check all containers for health status
+mkdir -p "$PLUGIN_DIR/state"
+LOG_FILE="$PLUGIN_DIR/state/health.jsonl"
+
+UNHEALTHY=0
+TOTAL=0
+
+while IFS='|' read -r name status health; do
+    [[ -z "$name" ]] && continue
+    TOTAL=$((TOTAL + 1))
+
+    if [[ "$health" == *"unhealthy"* ]]; then
+        UNHEALTHY=$((UNHEALTHY + 1))
+        printf '{"timestamp":"%s","container":"%s","status":"%s","health":"%s","stack":"%s","event":"unhealthy"}\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$name" "$status" "$health" "$STACK" \
+            >> "$LOG_FILE"
+    fi
+done < <(docker ps --format '{{.Names}}|{{.Status}}|{{.Status}}' 2>/dev/null)
+
+# Trim log file if too large
+if [[ -f "$LOG_FILE" ]]; then
+    local_lines=$(wc -l < "$LOG_FILE" 2>/dev/null) || local_lines=0
+    if [[ "$local_lines" -gt "$MAX_LOG" ]]; then
+        tail -n "$MAX_LOG" "$LOG_FILE" > "${LOG_FILE}.tmp" && mv "${LOG_FILE}.tmp" "$LOG_FILE"
+    fi
+fi
+
+if [[ $UNHEALTHY -gt 0 ]]; then
+    echo "WARNING: ${UNHEALTHY}/${TOTAL} containers unhealthy after ${STACK} start"
+else
+    echo "OK: All ${TOTAL} containers healthy after ${STACK} start"
+fi
+
+exit 0

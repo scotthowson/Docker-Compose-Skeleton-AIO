@@ -1,0 +1,8 @@
+{
+  "title": "Subdomain Status",
+  "description": "Shows all active Traefik subdomains and detects conflicts",
+  "icon": "Globe",
+  "color": "cyan",
+  "size": "medium",
+  "refresh_interval": 30
+}

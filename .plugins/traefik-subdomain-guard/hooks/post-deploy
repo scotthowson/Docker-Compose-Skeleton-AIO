@@ -1,0 +1,23 @@
+#!/bin/bash
+# =============================================================================
+# traefik-subdomain-guard — post-deploy hook
+# Logs the newly created route for audit trail.
+# =============================================================================
+
+set -euo pipefail
+
+PLUGIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+CONTEXT=$(cat)
+TEMPLATE=$(printf '%s' "$CONTEXT" | jq -r '.template // empty' 2>/dev/null)
+STACK=$(printf '%s' "$CONTEXT" | jq -r '.stack // empty' 2>/dev/null)
+
+[[ -z "$TEMPLATE" ]] && exit 0
+
+mkdir -p "$PLUGIN_DIR/state"
+printf '{"timestamp":"%s","event":"deployed","template":"%s","stack":"%s"}\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$TEMPLATE" "$STACK" \
+    >> "$PLUGIN_DIR/state/deployments.jsonl"
+
+echo "Logged deployment: ${TEMPLATE} → ${STACK}"
+exit 0

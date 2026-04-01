@@ -16,7 +16,6 @@
 # Runtime data
 .data/
 .compose-history/
-.plugins/
 
 # Logs
 logs/

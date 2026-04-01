@@ -1,0 +1,34 @@
+#!/bin/bash
+# =============================================================================
+# deploy-notifier — post-start hook
+# Sends NTFY notification when a stack starts.
+# =============================================================================
+
+set -euo pipefail
+
+PLUGIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+BASE_DIR="$(cd "$PLUGIN_DIR/../.." && pwd)"
+
+NOTIFY_STARTS=$(jq -r '.config.notify_starts // true' "$PLUGIN_DIR/plugin.json" 2>/dev/null)
+[[ "$NOTIFY_STARTS" != "true" ]] && exit 0
+
+NTFY_URL="${NTFY_URL:-}"
+NTFY_TOPIC="${NTFY_TOPIC:-}"
+if [[ -z "$NTFY_URL" || -z "$NTFY_TOPIC" ]]; then
+    for env_file in "$BASE_DIR/.env" "$BASE_DIR"/Stacks/*/.env; do
+        [[ -f "$env_file" ]] || continue
+        [[ -z "$NTFY_URL" ]] && NTFY_URL=$(grep -m1 '^NTFY_URL=' "$env_file" 2>/dev/null | cut -d'=' -f2- | tr -d '"')
+        [[ -z "$NTFY_TOPIC" ]] && NTFY_TOPIC=$(grep -m1 '^NTFY_TOPIC=' "$env_file" 2>/dev/null | cut -d'=' -f2- | tr -d '"')
+    done
+fi
+
+[[ -z "$NTFY_URL" || -z "$NTFY_TOPIC" ]] && exit 0
+
+CONTEXT=$(cat)
+STACK=$(printf '%s' "$CONTEXT" | jq -r '.stack // "unknown"' 2>/dev/null)
+
+curl -sf -H "Title: Stack Started" -H "Tags: white_check_mark,docker" \
+    -d "Stack ${STACK} is now running" \
+    "${NTFY_URL}/${NTFY_TOPIC}" >/dev/null 2>&1 || true
+
+exit 0

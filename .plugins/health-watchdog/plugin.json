@@ -1,0 +1,14 @@
+{
+  "name": "health-watchdog",
+  "version": "1.0.0",
+  "description": "Monitors container health after stack operations. Logs unhealthy containers and optionally sends alerts.",
+  "author": "DCS",
+  "enabled": true,
+  "hooks": ["post-start", "post-deploy"],
+  "templates": [],
+  "config": {
+    "check_delay_seconds": 15,
+    "alert_on_unhealthy": true,
+    "max_log_entries": 500
+  }
+}

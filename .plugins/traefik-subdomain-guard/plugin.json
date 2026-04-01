@@ -1,0 +1,13 @@
+{
+  "name": "traefik-subdomain-guard",
+  "version": "1.0.0",
+  "description": "Validates subdomain availability before template deployment. Scans all Traefik route files and warns about conflicts.",
+  "author": "DCS",
+  "enabled": true,
+  "hooks": ["pre-deploy", "post-deploy"],
+  "templates": [],
+  "config": {
+    "block_conflicts": false,
+    "log_all_checks": true
+  }
+}

@@ -1,0 +1,30 @@
+<div id="subdomain-status" style="font-family: system-ui; color: #e2e8f0;">
+  <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px;">
+    <span style="font-size: 13px; font-weight: 600; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.05em;">Active Routes</span>
+    <span id="route-count" style="font-size: 10px; padding: 2px 6px; border-radius: 6px; background: rgba(6,182,212,0.1); color: #22d3ee; border: 1px solid rgba(6,182,212,0.15);">—</span>
+  </div>
+  <div id="route-list" style="max-height: 200px; overflow-y: auto; display: flex; flex-direction: column; gap: 4px;">
+    <span style="font-size: 12px; color: #64748b;">Loading...</span>
+  </div>
+</div>
+<script>
+(async () => {
+  try {
+    const res = await fetch('/routes', { headers: { 'Authorization': 'Bearer ' + (window.__DCS_TOKEN || '') } });
+    const data = await res.json();
+    const routes = data.routes || [];
+    document.getElementById('route-count').textContent = routes.length;
+    const list = document.getElementById('route-list');
+    if (routes.length === 0) {
+      list.innerHTML = '<span style="font-size:11px;color:#64748b;">No routes configured</span>';
+      return;
+    }
+    list.innerHTML = routes.map(r => `
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:4px 8px;border-radius:6px;background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.03);">
+        <span style="font-size:11px;color:#e2e8f0;font-family:monospace;">${r.subdomain}</span>
+        <span style="font-size:9px;color:#64748b;">${r.stack}</span>
+      </div>
+    `).join('');
+  } catch { document.getElementById('route-list').innerHTML = '<span style="font-size:11px;color:#f87171;">Failed to load</span>'; }
+})();
+</script>

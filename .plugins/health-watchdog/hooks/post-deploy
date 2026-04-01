@@ -1,0 +1,40 @@
+#!/bin/bash
+# =============================================================================
+# health-watchdog — post-deploy hook
+# Checks the newly deployed service's health after a brief delay.
+# =============================================================================
+
+set -euo pipefail
+
+PLUGIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+DELAY=$(jq -r '.config.check_delay_seconds // 15' "$PLUGIN_DIR/plugin.json" 2>/dev/null)
+
+CONTEXT=$(cat)
+TEMPLATE=$(printf '%s' "$CONTEXT" | jq -r '.template // empty' 2>/dev/null)
+STACK=$(printf '%s' "$CONTEXT" | jq -r '.stack // empty' 2>/dev/null)
+
+[[ -z "$TEMPLATE" ]] && exit 0
+
+sleep "$DELAY"
+
+mkdir -p "$PLUGIN_DIR/state"
+
+# Check if the deployed container is healthy
+CONTAINER_STATUS=$(docker ps --filter "label=com.docker.compose.service=${TEMPLATE}" --format '{{.Names}}|{{.Status}}' 2>/dev/null | head -1)
+
+if [[ -n "$CONTAINER_STATUS" ]]; then
+    IFS='|' read -r cname cstatus <<< "$CONTAINER_STATUS"
+    if [[ "$cstatus" == *"unhealthy"* ]]; then
+        printf '{"timestamp":"%s","container":"%s","status":"%s","template":"%s","stack":"%s","event":"deploy-unhealthy"}\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$cname" "$cstatus" "$TEMPLATE" "$STACK" \
+            >> "$PLUGIN_DIR/state/health.jsonl"
+        echo "WARNING: ${cname} is unhealthy after deploy"
+    else
+        echo "OK: ${cname} is healthy after deploy"
+    fi
+else
+    echo "INFO: Could not find container for ${TEMPLATE} — may use a different name"
+fi
+
+exit 0
