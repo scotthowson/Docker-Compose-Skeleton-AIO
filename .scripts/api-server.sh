@@ -8554,17 +8554,21 @@ handle_traefik_status() {
 # Helper: find Traefik custom_routes directory (shared by all route handlers)
 _find_traefik_routes_dir() {
     local _dir=""
+
+    # 1. Try APP_DATA_DIR resolved relative to BASE_DIR (AIO layout: App-Data at repo root)
+    local _gad="${APP_DATA_DIR:-./App-Data}"
+    [[ "$_gad" == ./* ]] && _gad="$BASE_DIR/${_gad#./}"
+    [[ -d "$_gad/Traefik/custom_routes" ]] && { printf '%s' "$_gad/Traefik/custom_routes"; return; }
+
+    # 2. Try per-stack App-Data (standard DCS layout)
     local _s
     for _s in $(_api_get_stacks); do
-        local _ad="${APP_DATA_DIR:-$COMPOSE_DIR/$_s/App-Data}"
-        [[ "$_ad" == ./* ]] && _ad="$COMPOSE_DIR/$_s/${_ad#./}"
-        [[ -d "$_ad/Traefik/custom_routes" ]] && { _dir="$_ad/Traefik/custom_routes"; break; }
-        [[ -d "$COMPOSE_DIR/$_s/App-Data/Traefik/custom_routes" ]] && { _dir="$COMPOSE_DIR/$_s/App-Data/Traefik/custom_routes"; break; }
+        [[ -d "$COMPOSE_DIR/$_s/App-Data/Traefik/custom_routes" ]] && { printf '%s' "$COMPOSE_DIR/$_s/App-Data/Traefik/custom_routes"; return; }
     done
-    # Last resort: find anywhere under COMPOSE_DIR or BASE_DIR
-    [[ -z "$_dir" ]] && _dir=$(find "$COMPOSE_DIR" -type d -name "custom_routes" -path "*/Traefik/*" 2>/dev/null | head -1)
-    [[ -z "$_dir" ]] && _dir=$(find "$BASE_DIR" -type d -name "custom_routes" -path "*/Traefik/*" 2>/dev/null | head -1)
-    printf '%s' "$_dir"
+
+    # 3. find fallback — search entire BASE_DIR
+    _dir=$(find "$BASE_DIR" -maxdepth 5 -type d -name "custom_routes" -path "*/Traefik/*" 2>/dev/null | head -1)
+    [[ -n "$_dir" ]] && { printf '%s' "$_dir"; return; }
 }
 
 # Helper: read TRAEFIK_DOMAIN from env files
@@ -8595,45 +8599,86 @@ _find_cf_token() {
 }
 
 # GET /routes — List all Traefik routes with subdomains
+# Strategy: scan route YAML files first, then fall back to Traefik's runtime API
 handle_routes() {
     local traefik_routes_dir
     traefik_routes_dir=$(_find_traefik_routes_dir)
     local traefik_domain
     traefik_domain=$(_find_traefik_domain)
 
-    if [[ -z "$traefik_routes_dir" ]]; then
-        _api_success "{\"total\": 0, \"routes\": [], \"domain\": \"$(_api_json_escape "$traefik_domain")\"}"
-        return
-    fi
-
-    # Scan all route YAML files
     local -a route_entries=()
     local -A seen_subdomains=()
-    while IFS= read -r route_file; do
-        [[ -f "$route_file" ]] || continue
-        local fname stack_name subdomain url_target
-        fname=$(basename "$route_file" .yml)
-        stack_name=$(basename "$(dirname "$route_file")")
 
-        # Skip .reload marker and non-yml
-        [[ "$fname" == ".reload" || "$fname" == ".gitkeep" ]] && continue
+    # ── Method 1: Scan route YAML files ──
+    if [[ -n "$traefik_routes_dir" ]]; then
+        while IFS= read -r route_file; do
+            [[ -f "$route_file" ]] || continue
+            local fname stack_name subdomain url_target
+            fname=$(basename "$route_file" .yml)
+            stack_name=$(basename "$(dirname "$route_file")")
 
-        # Extract subdomain from Host() rule
-        subdomain=$(sed -n 's/.*Host(`\([^`]*\)`).*/\1/p' "$route_file" 2>/dev/null | head -1)
-        [[ -z "$subdomain" ]] && continue
+            [[ "$fname" == ".reload" || "$fname" == ".gitkeep" ]] && continue
 
-        # Extract backend URL
-        url_target=$(grep -m1 'url:' "$route_file" 2>/dev/null | sed 's/.*url:[[:space:]]*"\{0,1\}\([^"]*\)"\{0,1\}/\1/' | tr -d ' ')
+            subdomain=$(sed -n 's/.*Host(`\([^`]*\)`).*/\1/p' "$route_file" 2>/dev/null | head -1)
+            [[ -z "$subdomain" ]] && continue
 
-        # Track duplicates
-        local conflict="false"
-        if [[ -n "${seen_subdomains[$subdomain]:-}" ]]; then
-            conflict="true"
+            url_target=$(grep -m1 'url:' "$route_file" 2>/dev/null | sed 's/.*url:[[:space:]]*"\{0,1\}\([^"]*\)"\{0,1\}/\1/' | tr -d ' ')
+
+            local conflict="false"
+            [[ -n "${seen_subdomains[$subdomain]:-}" ]] && conflict="true"
+            seen_subdomains["$subdomain"]="$stack_name/$fname"
+
+            route_entries+=("{\"subdomain\": \"$(_api_json_escape "$subdomain")\", \"service\": \"$(_api_json_escape "$fname")\", \"stack\": \"$(_api_json_escape "$stack_name")\", \"target\": \"$(_api_json_escape "$url_target")\", \"conflict\": $conflict}")
+        done < <(find "$traefik_routes_dir" -name '*.yml' -name '*.yaml' -o -name '*.yml' -type f 2>/dev/null | sort)
+    fi
+
+    # ── Method 2: Query Traefik runtime API (fallback when no files found) ──
+    if [[ ${#route_entries[@]} -eq 0 ]]; then
+        local traefik_api_url=""
+        # Try common Traefik API addresses
+        for _try_url in "http://Traefik:8080" "http://localhost:8080" "http://traefik:8080"; do
+            if curl -sf --max-time 3 "$_try_url/api/version" >/dev/null 2>&1; then
+                traefik_api_url="$_try_url"
+                break
+            fi
+        done
+
+        if [[ -n "$traefik_api_url" ]]; then
+            local routers_json
+            routers_json=$(curl -sf --max-time 10 "$traefik_api_url/api/http/routers" 2>/dev/null)
+            if [[ -n "$routers_json" ]]; then
+                while IFS= read -r router_line; do
+                    [[ -z "$router_line" ]] && continue
+                    local r_name r_rule r_service r_provider
+                    r_name=$(printf '%s' "$router_line" | jq -r '.name // empty' 2>/dev/null)
+                    r_rule=$(printf '%s' "$router_line" | jq -r '.rule // empty' 2>/dev/null)
+                    r_service=$(printf '%s' "$router_line" | jq -r '.service // empty' 2>/dev/null)
+                    r_provider=$(printf '%s' "$router_line" | jq -r '.provider // empty' 2>/dev/null)
+
+                    # Only include file-provider routes (our custom routes)
+                    [[ "$r_provider" != *"file"* ]] && continue
+
+                    # Extract Host() from rule
+                    local subdomain=""
+                    subdomain=$(printf '%s' "$r_rule" | grep -oP 'Host\(`\K[^`]+' 2>/dev/null || printf '%s' "$r_rule" | sed -n 's/.*Host(`\([^`]*\)`).*/\1/p')
+                    [[ -z "$subdomain" ]] && continue
+
+                    # Skip internal Traefik routes (api@internal, etc.)
+                    [[ "$r_name" == *"@internal"* ]] && continue
+
+                    # Extract service name from router name (router names are like "servicename-router@file")
+                    local svc_name="${r_name%%-router@*}"
+                    [[ "$svc_name" == *"@"* ]] && svc_name="${svc_name%%@*}"
+
+                    local conflict="false"
+                    [[ -n "${seen_subdomains[$subdomain]:-}" ]] && conflict="true"
+                    seen_subdomains["$subdomain"]="api/$svc_name"
+
+                    route_entries+=("{\"subdomain\": \"$(_api_json_escape "$subdomain")\", \"service\": \"$(_api_json_escape "$svc_name")\", \"stack\": \"traefik\", \"target\": \"$(_api_json_escape "$r_service")\", \"conflict\": $conflict}")
+                done < <(printf '%s' "$routers_json" | jq -c '.[]' 2>/dev/null)
+            fi
         fi
-        seen_subdomains["$subdomain"]="$stack_name/$fname"
-
-        route_entries+=("{\"subdomain\": \"$(_api_json_escape "$subdomain")\", \"service\": \"$(_api_json_escape "$fname")\", \"stack\": \"$(_api_json_escape "$stack_name")\", \"target\": \"$(_api_json_escape "$url_target")\", \"conflict\": $conflict}")
-    done < <(find "$traefik_routes_dir" -name '*.yml' -type f 2>/dev/null | sort)
+    fi
 
     local json
     json=$(printf '%s,' "${route_entries[@]}")
