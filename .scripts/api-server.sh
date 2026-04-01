@@ -5055,15 +5055,35 @@ handle_backup_trigger() {
     local backup_file="Docker-Compose-Backup-${backup_date}.tar.gz"
     local source_dir="${BACKUP_SOURCE_DIR:-$BASE_DIR}"
 
-    printf '{"status": "running", "started_at": "%s", "filename": "%s", "progress": "Starting backup..."}' \
-        "$(date -Iseconds)" "$backup_file" > "$status_file"
+    local _bpid_file="$API_AUTH_DIR/backup.pid"
+    local _bst="$(date -Iseconds)"
+
+    _backup_progress() {
+        printf '{"status":"running","started_at":"%s","filename":"%s","progress":"%s","percent":%d,"stage":"%s","pid":%d}' \
+            "$_bst" "$backup_file" "$1" "$2" "$3" "${_bpid:-0}" > "$status_file"
+    }
+
+    _backup_progress "Preparing backup..." 0 "prepare"
 
     (
+        echo $BASHPID > "$_bpid_file"
+        _bpid=$BASHPID
+
         local tmpdir
         tmpdir=$(mktemp -d /tmp/dcs-backup-XXXXXX)
 
-        printf '{"status": "running", "started_at": "%s", "filename": "%s", "progress": "Copying files..."}' \
-            "$(date -Iseconds)" "$backup_file" > "$status_file"
+        _backup_progress "Scanning source files..." 5 "scan"
+
+        # Calculate source size for progress estimation
+        local src_size_kb=0
+        if [[ -n "$stack_filter" ]]; then
+            src_size_kb=$(du -sk "$COMPOSE_DIR/$stack_filter" 2>/dev/null | cut -f1)
+        else
+            src_size_kb=$(du -sk --exclude='.git' --exclude='node_modules' "$source_dir" 2>/dev/null | cut -f1)
+        fi
+        [[ "$src_size_kb" -eq 0 ]] && src_size_kb=1
+
+        _backup_progress "Copying files..." 15 "copy"
 
         if [[ -n "$stack_filter" ]]; then
             [[ -d "$COMPOSE_DIR/$stack_filter" ]] && rsync -a "$COMPOSE_DIR/$stack_filter/" "$tmpdir/$stack_filter/" 2>/dev/null || true
@@ -5072,29 +5092,60 @@ handle_backup_trigger() {
             rsync -a --exclude='.git' --exclude='node_modules' "$source_dir/" "$tmpdir/" 2>/dev/null || true
         fi
 
-        printf '{"status": "running", "started_at": "%s", "filename": "%s", "progress": "Creating archive..."}' \
-            "$(date -Iseconds)" "$backup_file" > "$status_file"
+        _backup_progress "Files copied, creating archive..." 55 "archive"
 
         if tar -czf "$backup_dir/$backup_file" -C "$tmpdir" . 2>/dev/null; then
+            _backup_progress "Archive created, cleaning up..." 85 "cleanup"
+            rm -rf "$tmpdir"
+
+            _backup_progress "Enforcing retention policy..." 92 "retention"
+
+            local retention="${BACKUP_RETENTION_COUNT:-5}"
+            local count
+            count=$(ls -1 "$backup_dir"/Docker-Compose-Backup-*.tar.gz 2>/dev/null | wc -l)
+            if [[ "$count" -gt "$retention" ]]; then
+                ls -1t "$backup_dir"/Docker-Compose-Backup-*.tar.gz 2>/dev/null | tail -n "$(( count - retention ))" | xargs -r rm -f
+            fi
+
             local final_size
             final_size=$(du -h "$backup_dir/$backup_file" 2>/dev/null | cut -f1)
-            printf '{"status": "idle", "last_backup": {"filename": "%s", "size": "%s", "timestamp": "%s"}, "progress": null}' \
+            printf '{"status":"idle","last_backup":{"filename":"%s","size":"%s","timestamp":"%s"},"progress":null,"percent":100,"stage":"done"}' \
                 "$backup_file" "$final_size" "$(date -Iseconds)" > "$status_file"
         else
-            printf '{"status": "error", "error": "Archive creation failed", "progress": null}' > "$status_file"
+            rm -rf "$tmpdir"
+            printf '{"status":"error","error":"Archive creation failed","progress":null,"percent":0,"stage":"error"}' > "$status_file"
         fi
 
-        rm -rf "$tmpdir"
-
-        local retention="${BACKUP_RETENTION_COUNT:-5}"
-        local count
-        count=$(ls -1 "$backup_dir"/Docker-Compose-Backup-*.tar.gz 2>/dev/null | wc -l)
-        if [[ "$count" -gt "$retention" ]]; then
-            ls -1t "$backup_dir"/Docker-Compose-Backup-*.tar.gz 2>/dev/null | tail -n "$(( count - retention ))" | xargs -r rm -f
-        fi
+        rm -f "$_bpid_file"
     ) &
 
     _api_success "{\"success\": true, \"message\": \"Backup started in background\", \"filename\": \"$(_api_json_escape "$backup_file")\"}"
+}
+
+# POST /backups/cancel — Kill a running backup
+handle_backup_cancel() {
+    local pid_file="$API_AUTH_DIR/backup.pid"
+    local status_file="$API_AUTH_DIR/backup-status.json"
+
+    if [[ ! -f "$pid_file" ]]; then
+        _api_error 404 "No backup is currently running"
+        return
+    fi
+
+    local pid
+    pid=$(cat "$pid_file" 2>/dev/null)
+    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+        # Kill the backup process and its children (rsync, tar)
+        kill -- -"$pid" 2>/dev/null || kill "$pid" 2>/dev/null
+        # Clean up temp dirs
+        rm -rf /tmp/dcs-backup-* 2>/dev/null
+        rm -f "$pid_file"
+        printf '{"status":"idle","progress":null,"percent":0,"stage":"cancelled","error":"Backup cancelled by user"}' > "$status_file"
+        _api_success '{"success": true, "message": "Backup cancelled"}'
+    else
+        rm -f "$pid_file"
+        _api_error 404 "Backup process not found (may have already completed)"
+    fi
 }
 
 handle_backup_restore() {
@@ -13272,6 +13323,103 @@ handle_schedule_toggle() {
     _api_success "{\"success\": true, \"id\": \"$(_api_json_escape "$sched_id")\", \"enabled\": $new_state}"
 }
 
+# POST /schedules/<id>/run — Execute a schedule immediately
+handle_schedule_run() {
+    local sched_id="$1"
+    local sched_file="$BASE_DIR/.data/schedules/schedules.json"
+
+    if ! command -v jq >/dev/null 2>&1; then
+        _api_error 500 "jq is required"
+        return
+    fi
+
+    if [[ ! -f "$sched_file" ]]; then
+        _api_error 404 "No schedules found"
+        return
+    fi
+
+    local entry
+    entry=$(jq -r --arg id "$sched_id" '.[] | select(.id == $id)' "$sched_file" 2>/dev/null)
+    [[ -z "$entry" || "$entry" == "null" ]] && { _api_error 404 "Schedule not found"; return; }
+
+    local action target name
+    action=$(printf '%s' "$entry" | jq -r '.action // empty' 2>/dev/null)
+    target=$(printf '%s' "$entry" | jq -r '.target // empty' 2>/dev/null)
+    name=$(printf '%s' "$entry" | jq -r '.name // empty' 2>/dev/null)
+
+    [[ -z "$action" ]] && { _api_error 400 "Schedule has no action defined"; return; }
+
+    # Execute the action (same dispatch as the scheduler library)
+    local output="" success="true"
+    case "$action" in
+        backup)
+            output=$("$BASE_DIR/.scripts/backup-server.sh" 2>&1) || success="false"
+            ;;
+        update)
+            if [[ -n "$target" ]]; then
+                output=$(cd "$BASE_DIR/Stacks/$target" 2>/dev/null && ${DOCKER_COMPOSE_CMD:-docker compose} pull 2>&1 && ${DOCKER_COMPOSE_CMD:-docker compose} up -d 2>&1) || success="false"
+            else
+                output="No target specified" && success="false"
+            fi
+            ;;
+        prune)
+            output=$(docker system prune -f 2>&1) || success="false"
+            ;;
+        health-check)
+            output=$("$BASE_DIR/.scripts/health-check.sh" 2>&1) || success="false"
+            ;;
+        restart)
+            if [[ -n "$target" ]]; then
+                output=$(cd "$BASE_DIR/Stacks/$target" 2>/dev/null && ${DOCKER_COMPOSE_CMD:-docker compose} restart 2>&1) || success="false"
+            else
+                output="No target specified" && success="false"
+            fi
+            ;;
+        metrics-snapshot)
+            # Trigger metrics collection via the API endpoint
+            local _mf="$BASE_DIR/.api-auth/metrics-history.jsonl"
+            local _ts _ep _l1 _l5 _l15 _nc _cp _mt _ma _mu _mp _dp
+            _ts=$(date -u '+%Y-%m-%dT%H:%M:%SZ'); _ep=$(date +%s)
+            read -r _l1 _l5 _l15 _ _ < /proc/loadavg 2>/dev/null || { _l1=0; _l5=0; _l15=0; }
+            _nc=$(nproc 2>/dev/null || echo 1)
+            _cp=$(awk "BEGIN {v=$_l1/$_nc*100; if(v>100)v=100; printf \"%.1f\", v}")
+            _mt=$(awk '/MemTotal/ {printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || echo 0)
+            _ma=$(awk '/MemAvailable/ {printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || echo 0)
+            _mu=$((_mt - _ma))
+            [[ "$_mt" -gt 0 ]] && _mp=$(awk "BEGIN {printf \"%.1f\", $_mu/$_mt*100}") || _mp=0
+            _dp=$(df /home 2>/dev/null | tail -1 | awk '{print $5}' | tr -d '%'); [[ -z "$_dp" ]] && _dp=0
+            echo "{\"ts\":\"$_ts\",\"epoch\":$_ep,\"cpu_pct\":$_cp,\"load1\":$_l1,\"load5\":$_l5,\"load15\":$_l15,\"mem_used_mb\":$_mu,\"mem_total_mb\":$_mt,\"mem_pct\":$_mp,\"disk_pct\":$_dp}" >> "$_mf"
+            output="Metrics snapshot captured"
+            ;;
+        custom)
+            if [[ -n "$target" && -x "$target" ]]; then
+                output=$("$target" 2>&1) || success="false"
+            else
+                output="Script not found or not executable: $target" && success="false"
+            fi
+            ;;
+        *)
+            output="Unknown action: $action" && success="false"
+            ;;
+    esac
+
+    # Update run count and last_run in the schedule
+    local ts
+    ts=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+    jq --arg id "$sched_id" --arg ts "$ts" \
+        '[.[] | if .id == $id then .run_count = ((.run_count // 0) + 1) | .last_run = $ts else . end]' \
+        "$sched_file" > "${sched_file}.tmp" && mv "${sched_file}.tmp" "$sched_file"
+
+    # Log to history
+    local history_file="$BASE_DIR/.data/schedules/history.jsonl"
+    local esc_out
+    esc_out=$(printf '%s' "$output" | head -c 500 | sed 's/"/\\"/g; s/$/\\n/' | tr -d '\n')
+    printf '{"timestamp":"%s","schedule_id":"%s","name":"%s","action":"%s","target":"%s","success":%s,"output":"%s","trigger":"manual"}\n' \
+        "$ts" "$sched_id" "$name" "$action" "$target" "$success" "$esc_out" >> "$history_file" 2>/dev/null
+
+    _api_success "{\"success\": $success, \"action\": \"$(_api_json_escape "$action")\", \"output\": \"$(_api_json_escape "$(printf '%s' "$output" | head -c 200)")\"}"
+}
+
 # GET /schedules/<id>/history — Return execution history filtered by schedule id
 handle_schedule_history() {
     local sched_id="$1"
@@ -15082,6 +15230,9 @@ handle_request() {
             /backups/trigger)
                 handle_backup_trigger "$request_body"
                 ;;
+            /backups/cancel)
+                handle_backup_cancel
+                ;;
             /backups/restore)
                 handle_backup_restore "$request_body"
                 ;;
@@ -15267,6 +15418,12 @@ handle_request() {
                 sched_id="${sched_id%/toggle}"
                 _api_validate_resource_name "$sched_id" "schedule" || return
                 handle_schedule_toggle "$sched_id"
+                ;;
+            /schedules/*/run)
+                local sched_id="${path#/schedules/}"
+                sched_id="${sched_id%/run}"
+                _api_validate_resource_name "$sched_id" "schedule" || return
+                handle_schedule_run "$sched_id"
                 ;;
             /plugins/*/toggle)
                 local pname="${path#/plugins/}"
