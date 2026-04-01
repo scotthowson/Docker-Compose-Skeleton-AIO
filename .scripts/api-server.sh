@@ -8661,6 +8661,262 @@ handle_routes_check() {
     _api_success "{\"available\": $available, \"subdomain\": \"$(_api_json_escape "$subdomain")\", \"fqdn\": \"$(_api_json_escape "$fqdn")\", \"existing_service\": \"$(_api_json_escape "$existing_service")\", \"existing_stack\": \"$(_api_json_escape "$existing_stack")\"}"
 }
 
+# Helper: Delete a Cloudflare DNS CNAME record by subdomain
+_cloudflare_delete_dns() {
+    local subdomain="$1" domain="$2" cf_token="$3"
+    [[ -z "$cf_token" || -z "$domain" || -z "$subdomain" ]] && return 0
+    command -v curl >/dev/null 2>&1 || return 0
+    command -v jq >/dev/null 2>&1 || return 0
+
+    local fqdn="${subdomain}.${domain}"
+    local cf_api="https://api.cloudflare.com/client/v4"
+
+    # Get zone ID from cache
+    local zone_id=""
+    local zone_cache="$BASE_DIR/.api-auth/.cf-zone-cache"
+    if [[ -f "$zone_cache" ]]; then
+        local cached_domain cached_zone
+        cached_domain=$(sed -n '1p' "$zone_cache" 2>/dev/null)
+        cached_zone=$(sed -n '2p' "$zone_cache" 2>/dev/null)
+        [[ "$cached_domain" == "$domain" && -n "$cached_zone" ]] && zone_id="$cached_zone"
+    fi
+    [[ -z "$zone_id" ]] && return 0
+
+    # Find the record ID
+    local record_id
+    record_id=$(curl -s --max-time 15 \
+        -H "Authorization: Bearer $cf_token" \
+        "$cf_api/zones/$zone_id/dns_records?name=${fqdn}&type=CNAME" 2>/dev/null \
+        | jq -r '.result[0].id // empty' 2>/dev/null)
+    [[ -z "$record_id" ]] && return 0
+
+    # Delete it
+    curl -s --max-time 15 -X DELETE \
+        -H "Authorization: Bearer $cf_token" \
+        "$cf_api/zones/$zone_id/dns_records/$record_id" >/dev/null 2>&1
+
+    printf '[%s] DELETED %s (CNAME)\n' "$(date -Iseconds)" "$fqdn" >> "$BASE_DIR/.api-auth/cf-dns-audit.log" 2>/dev/null
+    return 0
+}
+
+# PUT /routes/:stack/:service — Update a route file's subdomain
+handle_route_update() {
+    local stack="$1" service="$2" body="$3"
+
+    _api_check_admin || return
+    _api_validate_resource_name "$stack" "stack" || return
+    _api_validate_resource_name "$service" "service" || return
+
+    local new_subdomain
+    new_subdomain=$(printf '%s' "$body" | jq -r '.subdomain // empty' 2>/dev/null)
+    [[ -z "$new_subdomain" ]] && { _api_error 400 "subdomain is required"; return; }
+
+    # Find Traefik routes dir
+    local traefik_routes_dir="" traefik_domain=""
+    for _check_stack in $(_api_get_stacks); do
+        local _check_appdata="${APP_DATA_DIR:-$COMPOSE_DIR/$_check_stack/App-Data}"
+        [[ "$_check_appdata" == ./* ]] && _check_appdata="$COMPOSE_DIR/$_check_stack/${_check_appdata#./}"
+        [[ -d "$_check_appdata/Traefik/custom_routes" ]] && { traefik_routes_dir="$_check_appdata/Traefik/custom_routes"; break; }
+    done
+    [[ -z "$traefik_routes_dir" ]] && { _api_error 404 "Traefik routes directory not found"; return; }
+
+    # Read domain
+    for _env_file in "$COMPOSE_DIR"/*/".env" "$BASE_DIR/.env"; do
+        [[ -f "$_env_file" ]] || continue
+        local _d
+        _d=$(grep -m1 '^TRAEFIK_DOMAIN=\|^PROXY_DOMAIN=' "$_env_file" 2>/dev/null | head -1 | cut -d'=' -f2- | tr -d '"' | tr -d "'")
+        [[ -n "$_d" ]] && { traefik_domain="$_d"; break; }
+    done
+
+    local route_file="$traefik_routes_dir/$stack/${service}.yml"
+    [[ ! -f "$route_file" ]] && { _api_error 404 "Route file not found: $stack/$service"; return; }
+
+    # Check if new subdomain conflicts with existing routes
+    local new_fqdn="${new_subdomain}.${traefik_domain}"
+    local conflict_file
+    conflict_file=$(grep -rl "Host(\`${new_fqdn}\`)" "$traefik_routes_dir" 2>/dev/null | grep -v "$route_file" | head -1)
+    if [[ -n "$conflict_file" ]]; then
+        local conflict_svc conflict_stack
+        conflict_svc=$(basename "$conflict_file" .yml)
+        conflict_stack=$(basename "$(dirname "$conflict_file")")
+        _api_error 409 "Subdomain ${new_subdomain} already used by ${conflict_svc} in ${conflict_stack}"
+        return
+    fi
+
+    # Read old subdomain for DNS cleanup
+    local old_fqdn
+    old_fqdn=$(sed -n 's/.*Host(`\([^`]*\)`).*/\1/p' "$route_file" 2>/dev/null | head -1)
+
+    # Update the Host() rule in the route file
+    sed -i "s|Host(\`[^)]*\`)|Host(\`${new_fqdn}\`)|g" "$route_file"
+
+    # Touch .reload marker for Traefik file watcher
+    touch "$traefik_routes_dir/.reload" 2>/dev/null
+
+    # Update Cloudflare DNS in background (delete old, create new)
+    local _cf_token=""
+    _cf_token="${CF_DNS_API_TOKEN:-}"
+    if [[ -z "$_cf_token" ]]; then
+        for _env_file in "$COMPOSE_DIR"/*/".env" "$BASE_DIR/.env"; do
+            [[ -f "$_env_file" ]] || continue
+            _cf_token=$(grep -m1 '^CF_DNS_API_TOKEN=' "$_env_file" 2>/dev/null | cut -d'=' -f2- | tr -d '"' | tr -d "'")
+            [[ -n "$_cf_token" ]] && break
+        done
+    fi
+
+    if [[ -n "$_cf_token" && -n "$old_fqdn" && "$old_fqdn" != "$new_fqdn" ]]; then
+        # Delete old DNS record in background
+        _cloudflare_delete_dns "${old_fqdn%%.*}" "$traefik_domain" "$_cf_token" &
+        # Create new DNS record in background
+        (
+            local cf_api="https://api.cloudflare.com/client/v4"
+            local zone_cache="$BASE_DIR/.api-auth/.cf-zone-cache"
+            local zone_id=""
+            if [[ -f "$zone_cache" ]]; then
+                local cached_domain cached_zone
+                cached_domain=$(sed -n '1p' "$zone_cache" 2>/dev/null)
+                cached_zone=$(sed -n '2p' "$zone_cache" 2>/dev/null)
+                [[ "$cached_domain" == "$traefik_domain" && -n "$cached_zone" ]] && zone_id="$cached_zone"
+            fi
+            [[ -z "$zone_id" ]] && exit 0
+            curl -s --max-time 15 -X POST \
+                -H "Authorization: Bearer $_cf_token" \
+                -H "Content-Type: application/json" \
+                -d "{\"type\":\"CNAME\",\"name\":\"${new_fqdn}\",\"content\":\"${traefik_domain}\",\"proxied\":true,\"ttl\":1,\"comment\":\"Auto-created by DCS\"}" \
+                "$cf_api/zones/$zone_id/dns_records" >/dev/null 2>&1
+            printf '[%s] RENAMED %s → %s (route update)\n' "$(date -Iseconds)" "$old_fqdn" "$new_fqdn" >> "$BASE_DIR/.api-auth/cf-dns-audit.log" 2>/dev/null
+        ) &
+    fi
+
+    _api_audit_log "$REMOTE_ADDR" "ROUTE_UPDATE" "${_current_user:-system}" "Renamed ${old_fqdn} → ${new_fqdn}"
+    _api_success "{\"success\": true, \"old_subdomain\": \"$(_api_json_escape "$old_fqdn")\", \"new_subdomain\": \"$(_api_json_escape "$new_fqdn")\", \"service\": \"$(_api_json_escape "$service")\", \"stack\": \"$(_api_json_escape "$stack")\"}"
+}
+
+# DELETE /routes/:stack/:service — Delete a route file and optionally clean up DNS
+handle_route_delete() {
+    local stack="$1" service="$2"
+
+    _api_check_admin || return
+    _api_validate_resource_name "$stack" "stack" || return
+    _api_validate_resource_name "$service" "service" || return
+
+    # Find Traefik routes dir
+    local traefik_routes_dir="" traefik_domain=""
+    for _check_stack in $(_api_get_stacks); do
+        local _check_appdata="${APP_DATA_DIR:-$COMPOSE_DIR/$_check_stack/App-Data}"
+        [[ "$_check_appdata" == ./* ]] && _check_appdata="$COMPOSE_DIR/$_check_stack/${_check_appdata#./}"
+        [[ -d "$_check_appdata/Traefik/custom_routes" ]] && { traefik_routes_dir="$_check_appdata/Traefik/custom_routes"; break; }
+    done
+    [[ -z "$traefik_routes_dir" ]] && { _api_error 404 "Traefik routes directory not found"; return; }
+
+    for _env_file in "$COMPOSE_DIR"/*/".env" "$BASE_DIR/.env"; do
+        [[ -f "$_env_file" ]] || continue
+        local _d
+        _d=$(grep -m1 '^TRAEFIK_DOMAIN=\|^PROXY_DOMAIN=' "$_env_file" 2>/dev/null | head -1 | cut -d'=' -f2- | tr -d '"' | tr -d "'")
+        [[ -n "$_d" ]] && { traefik_domain="$_d"; break; }
+    done
+
+    local route_file="$traefik_routes_dir/$stack/${service}.yml"
+    [[ ! -f "$route_file" ]] && { _api_error 404 "Route file not found: $stack/$service"; return; }
+
+    # Read subdomain before deleting
+    local fqdn
+    fqdn=$(sed -n 's/.*Host(`\([^`]*\)`).*/\1/p' "$route_file" 2>/dev/null | head -1)
+
+    # Delete the route file
+    rm -f "$route_file"
+    touch "$traefik_routes_dir/.reload" 2>/dev/null
+
+    # Clean up Cloudflare DNS record in background
+    local _cf_token="${CF_DNS_API_TOKEN:-}"
+    if [[ -z "$_cf_token" ]]; then
+        for _env_file in "$COMPOSE_DIR"/*/".env" "$BASE_DIR/.env"; do
+            [[ -f "$_env_file" ]] || continue
+            _cf_token=$(grep -m1 '^CF_DNS_API_TOKEN=' "$_env_file" 2>/dev/null | cut -d'=' -f2- | tr -d '"' | tr -d "'")
+            [[ -n "$_cf_token" ]] && break
+        done
+    fi
+
+    if [[ -n "$_cf_token" && -n "$fqdn" ]]; then
+        _cloudflare_delete_dns "${fqdn%%.*}" "$traefik_domain" "$_cf_token" &
+    fi
+
+    _api_audit_log "$REMOTE_ADDR" "ROUTE_DELETE" "${_current_user:-system}" "Deleted route ${fqdn} (${stack}/${service})"
+    _api_success "{\"success\": true, \"deleted\": \"$(_api_json_escape "$fqdn")\", \"service\": \"$(_api_json_escape "$service")\", \"stack\": \"$(_api_json_escape "$stack")\"}"
+}
+
+# GET /dns/records — List all Cloudflare DNS CNAME records
+handle_dns_records() {
+    local traefik_domain=""
+    for _env_file in "$COMPOSE_DIR"/*/".env" "$BASE_DIR/.env"; do
+        [[ -f "$_env_file" ]] || continue
+        local _d
+        _d=$(grep -m1 '^TRAEFIK_DOMAIN=\|^PROXY_DOMAIN=' "$_env_file" 2>/dev/null | head -1 | cut -d'=' -f2- | tr -d '"' | tr -d "'")
+        [[ -n "$_d" ]] && { traefik_domain="$_d"; break; }
+    done
+    [[ -z "$traefik_domain" ]] && { _api_success '{"total": 0, "records": [], "domain": ""}'; return; }
+
+    local _cf_token="${CF_DNS_API_TOKEN:-}"
+    if [[ -z "$_cf_token" ]]; then
+        for _env_file in "$COMPOSE_DIR"/*/".env" "$BASE_DIR/.env"; do
+            [[ -f "$_env_file" ]] || continue
+            _cf_token=$(grep -m1 '^CF_DNS_API_TOKEN=' "$_env_file" 2>/dev/null | cut -d'=' -f2- | tr -d '"' | tr -d "'")
+            [[ -n "$_cf_token" ]] && break
+        done
+    fi
+
+    if [[ -z "$_cf_token" ]]; then
+        _api_success "{\"total\": 0, \"records\": [], \"domain\": \"$(_api_json_escape "$traefik_domain")\", \"cf_configured\": false}"
+        return
+    fi
+
+    local cf_api="https://api.cloudflare.com/client/v4"
+    local zone_id=""
+    local zone_cache="$BASE_DIR/.api-auth/.cf-zone-cache"
+    if [[ -f "$zone_cache" ]]; then
+        local cached_domain cached_zone
+        cached_domain=$(sed -n '1p' "$zone_cache" 2>/dev/null)
+        cached_zone=$(sed -n '2p' "$zone_cache" 2>/dev/null)
+        [[ "$cached_domain" == "$traefik_domain" && -n "$cached_zone" ]] && zone_id="$cached_zone"
+    fi
+
+    if [[ -z "$zone_id" ]]; then
+        zone_id=$(curl -s --max-time 15 -H "Authorization: Bearer $_cf_token" \
+            "$cf_api/zones?name=${traefik_domain}&status=active" 2>/dev/null \
+            | jq -r '.result[0].id // empty' 2>/dev/null)
+        [[ -z "$zone_id" ]] && { _api_success "{\"total\": 0, \"records\": [], \"domain\": \"$(_api_json_escape "$traefik_domain")\", \"cf_configured\": true, \"error\": \"Zone not found\"}"; return; }
+        printf '%s\n%s\n' "$traefik_domain" "$zone_id" > "$zone_cache" 2>/dev/null
+    fi
+
+    # Fetch all CNAME records for this zone that have the DCS auto-create comment
+    local records_json
+    records_json=$(curl -s --max-time 30 \
+        -H "Authorization: Bearer $_cf_token" \
+        "$cf_api/zones/$zone_id/dns_records?type=CNAME&per_page=100" 2>/dev/null)
+
+    local -a entries=()
+    while IFS= read -r line; do
+        [[ -z "$line" ]] && continue
+        local rec_name rec_content rec_proxied rec_id rec_comment
+        rec_id=$(printf '%s' "$line" | jq -r '.id // empty' 2>/dev/null)
+        rec_name=$(printf '%s' "$line" | jq -r '.name // empty' 2>/dev/null)
+        rec_content=$(printf '%s' "$line" | jq -r '.content // empty' 2>/dev/null)
+        rec_proxied=$(printf '%s' "$line" | jq -r '.proxied // false' 2>/dev/null)
+        rec_comment=$(printf '%s' "$line" | jq -r '.comment // empty' 2>/dev/null)
+        local subdomain="${rec_name%%.*}"
+        local managed="false"
+        [[ "$rec_comment" == *"DCS"* || "$rec_comment" == *"Auto-created"* ]] && managed="true"
+        entries+=("{\"id\": \"$(_api_json_escape "$rec_id")\", \"name\": \"$(_api_json_escape "$rec_name")\", \"subdomain\": \"$(_api_json_escape "$subdomain")\", \"content\": \"$(_api_json_escape "$rec_content")\", \"proxied\": $rec_proxied, \"managed\": $managed}")
+    done < <(printf '%s' "$records_json" | jq -c '.result[]' 2>/dev/null)
+
+    local json
+    json=$(printf '%s,' "${entries[@]}")
+    json="[${json%,}]"
+    [[ ${#entries[@]} -eq 0 ]] && json="[]"
+
+    _api_success "{\"total\": ${#entries[@]}, \"records\": $json, \"domain\": \"$(_api_json_escape "$traefik_domain")\", \"cf_configured\": true}"
+}
+
 # GET /homarr/status — Check if Homarr is deployed and has an API key configured
 handle_homarr_status() {
     local active="false"
@@ -14381,6 +14637,7 @@ handle_request() {
             /traefik/status)            handle_traefik_status ;;
             /routes)                    handle_routes ;;
             /routes/check)              handle_routes_check "${_QUERY_PARAMS[subdomain]:-}" ;;
+            /dns/records)               handle_dns_records ;;
             /homarr/status)             handle_homarr_status ;;
             /metrics/history)           handle_metrics_history ;;
             /metrics/summary)           handle_metrics_summary ;;
@@ -15016,6 +15273,32 @@ handle_request() {
         return
     fi
 
+    # ── Route: PUT endpoints ──────────────────────────────────────────
+    if [[ "$method" == "PUT" || "$method" == "PATCH" ]]; then
+
+        # All PUT/PATCH endpoints require authentication
+        if ! _api_check_auth; then
+            _api_error 401 "Authentication required. Provide Authorization: Bearer <token> header."
+            return
+        fi
+
+        # SECURITY: Audit log ALL PUT/PATCH requests
+        _api_audit_log "$client_ip" "PUT" "${AUTH_USERNAME:-unknown}" "$path"
+
+        case "$path" in
+            /routes/*/*)
+                local _route_parts="${path#/routes/}"
+                local _route_stack="${_route_parts%%/*}"
+                local _route_svc="${_route_parts#*/}"
+                handle_route_update "$_route_stack" "$_route_svc" "$request_body"
+                ;;
+            *)
+                _api_error 404 "Endpoint not found: $path"
+                ;;
+        esac
+        return
+    fi
+
     # ── Route: DELETE endpoints ────────────────────────────────────────
     if [[ "$method" == "DELETE" ]]; then
 
@@ -15075,6 +15358,12 @@ handle_request() {
                 local pname="${path#/plugins/}"
                 _api_validate_resource_name "$pname" "plugin" || return
                 handle_plugin_remove "$pname"
+                ;;
+            /routes/*/*)
+                local _route_parts="${path#/routes/}"
+                local _route_stack="${_route_parts%%/*}"
+                local _route_svc="${_route_parts#*/}"
+                handle_route_delete "$_route_stack" "$_route_svc"
                 ;;
             *)
                 _api_error 404 "Endpoint not found: $path"
