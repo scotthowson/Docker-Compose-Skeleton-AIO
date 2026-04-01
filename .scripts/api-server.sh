@@ -8551,6 +8551,116 @@ handle_traefik_status() {
     _api_success "{\"active\": $traefik_active, \"domain\": \"$(_api_json_escape "$traefik_domain")\"}"
 }
 
+# GET /routes — List all Traefik routes with subdomains
+handle_routes() {
+    local traefik_routes_dir=""
+    local traefik_domain=""
+
+    # Find Traefik custom_routes directory
+    local _check_stack
+    for _check_stack in $(_api_get_stacks); do
+        local _check_appdata="${APP_DATA_DIR:-$COMPOSE_DIR/$_check_stack/App-Data}"
+        [[ "$_check_appdata" == ./* ]] && _check_appdata="$COMPOSE_DIR/$_check_stack/${_check_appdata#./}"
+        if [[ -d "$_check_appdata/Traefik/custom_routes" ]]; then
+            traefik_routes_dir="$_check_appdata/Traefik/custom_routes"
+            break
+        fi
+    done
+
+    if [[ -z "$traefik_routes_dir" ]]; then
+        _api_success '{"total": 0, "routes": [], "domain": ""}'
+        return
+    fi
+
+    # Read domain
+    local _env_file
+    for _env_file in "$COMPOSE_DIR"/*/".env" "$BASE_DIR/.env"; do
+        [[ -f "$_env_file" ]] || continue
+        local _d
+        _d=$(grep -m1 '^TRAEFIK_DOMAIN=\|^PROXY_DOMAIN=' "$_env_file" 2>/dev/null | head -1 | cut -d'=' -f2- | tr -d '"' | tr -d "'")
+        [[ -n "$_d" ]] && { traefik_domain="$_d"; break; }
+    done
+
+    # Scan all route YAML files
+    local -a route_entries=()
+    local -A seen_subdomains=()
+    while IFS= read -r route_file; do
+        [[ -f "$route_file" ]] || continue
+        local fname stack_name subdomain url_target
+        fname=$(basename "$route_file" .yml)
+        stack_name=$(basename "$(dirname "$route_file")")
+
+        # Skip .reload marker and non-yml
+        [[ "$fname" == ".reload" || "$fname" == ".gitkeep" ]] && continue
+
+        # Extract subdomain from Host() rule
+        subdomain=$(sed -n 's/.*Host(`\([^`]*\)`).*/\1/p' "$route_file" 2>/dev/null | head -1)
+        [[ -z "$subdomain" ]] && continue
+
+        # Extract backend URL
+        url_target=$(grep -m1 'url:' "$route_file" 2>/dev/null | sed 's/.*url:[[:space:]]*"\{0,1\}\([^"]*\)"\{0,1\}/\1/' | tr -d ' ')
+
+        # Track duplicates
+        local conflict="false"
+        if [[ -n "${seen_subdomains[$subdomain]:-}" ]]; then
+            conflict="true"
+        fi
+        seen_subdomains["$subdomain"]="$stack_name/$fname"
+
+        route_entries+=("{\"subdomain\": \"$(_api_json_escape "$subdomain")\", \"service\": \"$(_api_json_escape "$fname")\", \"stack\": \"$(_api_json_escape "$stack_name")\", \"target\": \"$(_api_json_escape "$url_target")\", \"conflict\": $conflict}")
+    done < <(find "$traefik_routes_dir" -name '*.yml' -type f 2>/dev/null | sort)
+
+    local json
+    json=$(printf '%s,' "${route_entries[@]}")
+    json="[${json%,}]"
+    [[ ${#route_entries[@]} -eq 0 ]] && json="[]"
+
+    _api_success "{\"total\": ${#route_entries[@]}, \"routes\": $json, \"domain\": \"$(_api_json_escape "$traefik_domain")\"}"
+}
+
+# GET /routes/check?subdomain=xyz — Check if a subdomain is available
+handle_routes_check() {
+    local subdomain="${1:-}"
+    [[ -z "$subdomain" ]] && { _api_error 400 "subdomain parameter required"; return; }
+
+    local traefik_routes_dir=""
+    local traefik_domain=""
+
+    # Find Traefik routes dir
+    for _check_stack in $(_api_get_stacks); do
+        local _check_appdata="${APP_DATA_DIR:-$COMPOSE_DIR/$_check_stack/App-Data}"
+        [[ "$_check_appdata" == ./* ]] && _check_appdata="$COMPOSE_DIR/$_check_stack/${_check_appdata#./}"
+        [[ -d "$_check_appdata/Traefik/custom_routes" ]] && { traefik_routes_dir="$_check_appdata/Traefik/custom_routes"; break; }
+    done
+
+    # Read domain
+    for _env_file in "$COMPOSE_DIR"/*/".env" "$BASE_DIR/.env"; do
+        [[ -f "$_env_file" ]] || continue
+        local _d
+        _d=$(grep -m1 '^TRAEFIK_DOMAIN=\|^PROXY_DOMAIN=' "$_env_file" 2>/dev/null | head -1 | cut -d'=' -f2- | tr -d '"' | tr -d "'")
+        [[ -n "$_d" ]] && { traefik_domain="$_d"; break; }
+    done
+
+    local fqdn="${subdomain}.${traefik_domain}"
+    local available="true"
+    local existing_stack="" existing_service=""
+
+    if [[ -n "$traefik_routes_dir" ]]; then
+        # Search all route files for this subdomain
+        while IFS= read -r route_file; do
+            [[ -f "$route_file" ]] || continue
+            if grep -q "Host(\`${fqdn}\`)\|Host(\`${subdomain}\.${traefik_domain}\`)" "$route_file" 2>/dev/null; then
+                available="false"
+                existing_service=$(basename "$route_file" .yml)
+                existing_stack=$(basename "$(dirname "$route_file")")
+                break
+            fi
+        done < <(find "$traefik_routes_dir" -name '*.yml' -type f 2>/dev/null)
+    fi
+
+    _api_success "{\"available\": $available, \"subdomain\": \"$(_api_json_escape "$subdomain")\", \"fqdn\": \"$(_api_json_escape "$fqdn")\", \"existing_service\": \"$(_api_json_escape "$existing_service")\", \"existing_stack\": \"$(_api_json_escape "$existing_stack")\"}"
+}
+
 # GET /homarr/status — Check if Homarr is deployed and has an API key configured
 handle_homarr_status() {
     local active="false"
@@ -14269,6 +14379,8 @@ handle_request() {
             /automations)               handle_automations_list ;;
             /topology)                  handle_topology ;;
             /traefik/status)            handle_traefik_status ;;
+            /routes)                    handle_routes ;;
+            /routes/check)              handle_routes_check "${_QUERY_PARAMS[subdomain]:-}" ;;
             /homarr/status)             handle_homarr_status ;;
             /metrics/history)           handle_metrics_history ;;
             /metrics/summary)           handle_metrics_summary ;;
