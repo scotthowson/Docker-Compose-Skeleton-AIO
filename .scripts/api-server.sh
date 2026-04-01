@@ -13353,7 +13353,40 @@ handle_schedule_run() {
     local output="" success="true"
     case "$action" in
         backup)
-            output=$("$BASE_DIR/.scripts/backup-server.sh" 2>&1) || success="false"
+            # Use the API's own backup trigger (same logic as POST /backups/trigger)
+            local _bdir="${BACKUP_DEST_DIR:-}"
+            if [[ -z "$_bdir" ]]; then
+                output="Backup not configured — set BACKUP_DEST_DIR in .env" && success="false"
+            else
+                local _bdate _bfile _bsrc _bstatus
+                _bdate=$(date '+%Y-%m-%d_%H%M%S')
+                _bfile="Docker-Compose-Backup-${_bdate}.tar.gz"
+                _bsrc="${BACKUP_SOURCE_DIR:-$BASE_DIR}"
+                _bstatus="$API_AUTH_DIR/backup-status.json"
+                mkdir -p "$_bdir" 2>/dev/null
+                local _btmp
+                _btmp=$(mktemp -d /tmp/dcs-backup-XXXXXX)
+                if [[ -n "$target" ]]; then
+                    [[ -d "$COMPOSE_DIR/$target" ]] && rsync -a "$COMPOSE_DIR/$target/" "$_btmp/$target/" 2>/dev/null || true
+                else
+                    rsync -a --exclude='.git' --exclude='node_modules' "$_bsrc/" "$_btmp/" 2>/dev/null || true
+                fi
+                if tar -czf "$_bdir/$_bfile" -C "$_btmp" . 2>/dev/null; then
+                    local _bsz
+                    _bsz=$(du -h "$_bdir/$_bfile" 2>/dev/null | cut -f1)
+                    output="Backup created: $_bfile ($_bsz)"
+                    printf '{"status":"idle","last_backup":{"filename":"%s","size":"%s","timestamp":"%s"},"progress":null,"percent":100}' \
+                        "$_bfile" "$_bsz" "$(date -Iseconds)" > "$_bstatus" 2>/dev/null
+                    # Enforce retention
+                    local _ret="${BACKUP_RETENTION_COUNT:-5}"
+                    local _cnt
+                    _cnt=$(ls -1 "$_bdir"/Docker-Compose-Backup-*.tar.gz 2>/dev/null | wc -l)
+                    [[ "$_cnt" -gt "$_ret" ]] && ls -1t "$_bdir"/Docker-Compose-Backup-*.tar.gz | tail -n "$((_cnt - _ret))" | xargs -r rm -f
+                else
+                    output="Archive creation failed" && success="false"
+                fi
+                rm -rf "$_btmp"
+            fi
             ;;
         update)
             if [[ -n "$target" ]]; then
