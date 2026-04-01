@@ -8633,7 +8633,7 @@ handle_routes() {
             seen_subdomains["$subdomain"]="$stack_name/$fname"
 
             route_entries+=("{\"subdomain\": \"$(_api_json_escape "$subdomain")\", \"service\": \"$(_api_json_escape "$fname")\", \"stack\": \"$(_api_json_escape "$stack_name")\", \"target\": \"$(_api_json_escape "$url_target")\", \"conflict\": $conflict}")
-        done < <(find "$traefik_routes_dir" -name '*.yml' -name '*.yaml' -o -name '*.yml' -type f 2>/dev/null | sort)
+        done < <(find "$traefik_routes_dir" \( -name '*.yml' -o -name '*.yaml' \) -type f 2>/dev/null | sort)
     fi
 
     # ── Method 2: Query Traefik runtime API (fallback when no files found) ──
