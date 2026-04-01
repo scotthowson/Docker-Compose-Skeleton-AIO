@@ -8552,23 +8552,27 @@ handle_traefik_status() {
 }
 
 # Helper: find Traefik custom_routes directory (shared by all route handlers)
+# Uses the SAME per-stack resolution as handle_traefik_status() which is known to work
 _find_traefik_routes_dir() {
-    local _dir=""
+    local _s
 
-    # 1. Try APP_DATA_DIR resolved relative to BASE_DIR (AIO layout: App-Data at repo root)
+    # 1. Per-stack resolution: ./App-Data → $COMPOSE_DIR/$stack/App-Data
+    #    This is the pattern used by handle_traefik_status() and template deploy
+    for _s in $(_api_get_stacks); do
+        local _ad="${APP_DATA_DIR:-$COMPOSE_DIR/$_s/App-Data}"
+        [[ "$_ad" == ./* ]] && _ad="$COMPOSE_DIR/$_s/${_ad#./}"
+        [[ -d "$_ad/Traefik/custom_routes" ]] && { printf '%s' "$_ad/Traefik/custom_routes"; return; }
+    done
+
+    # 2. Global APP_DATA_DIR (fallback for layouts with root-level App-Data)
     local _gad="${APP_DATA_DIR:-./App-Data}"
     [[ "$_gad" == ./* ]] && _gad="$BASE_DIR/${_gad#./}"
     [[ -d "$_gad/Traefik/custom_routes" ]] && { printf '%s' "$_gad/Traefik/custom_routes"; return; }
 
-    # 2. Try per-stack App-Data (standard DCS layout)
-    local _s
-    for _s in $(_api_get_stacks); do
-        [[ -d "$COMPOSE_DIR/$_s/App-Data/Traefik/custom_routes" ]] && { printf '%s' "$COMPOSE_DIR/$_s/App-Data/Traefik/custom_routes"; return; }
-    done
-
     # 3. find fallback — search entire BASE_DIR
-    _dir=$(find "$BASE_DIR" -maxdepth 5 -type d -name "custom_routes" -path "*/Traefik/*" 2>/dev/null | head -1)
-    [[ -n "$_dir" ]] && { printf '%s' "$_dir"; return; }
+    local _dir
+    _dir=$(find "$BASE_DIR" -maxdepth 6 -type d -name "custom_routes" -path "*/Traefik/*" 2>/dev/null | head -1)
+    [[ -n "$_dir" ]] && printf '%s' "$_dir"
 }
 
 # Helper: read TRAEFIK_DOMAIN from env files
