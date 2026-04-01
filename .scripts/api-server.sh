@@ -6664,6 +6664,10 @@ handle_system_update_check() {
     local has_changes="false"
     [[ -n "$has_local" ]] && has_changes="true"
 
+    # Include last backup tag for rollback UI (most recent dcs-backup-* tag)
+    local last_backup=""
+    last_backup=$(git tag -l 'dcs-backup-*' --sort=-creatordate 2>/dev/null | head -1)
+
     _api_success "{
   \"available\": $available,
   \"current_version\": \"$(_api_json_escape "$current")\",
@@ -6672,6 +6676,7 @@ handle_system_update_check() {
   \"changelog\": $changelog,
   \"has_local_changes\": $has_changes,
   \"branch\": \"$(_api_json_escape "$branch")\",
+  \"last_backup_tag\": \"$(_api_json_escape "$last_backup")\",
   \"ui_update\": $(_check_ui_image_update)
 }"
 }
