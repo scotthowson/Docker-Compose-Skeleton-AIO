@@ -13353,39 +13353,60 @@ handle_schedule_run() {
     local output="" success="true"
     case "$action" in
         backup)
-            # Use the API's own backup trigger (same logic as POST /backups/trigger)
+            # Run backup in background with progress stages (same as handle_backup_trigger)
             local _bdir="${BACKUP_DEST_DIR:-}"
             if [[ -z "$_bdir" ]]; then
                 output="Backup not configured — set BACKUP_DEST_DIR in .env" && success="false"
             else
-                local _bdate _bfile _bsrc _bstatus
+                local _bdate _bfile _bsrc _bstatus _bpid_file
                 _bdate=$(date '+%Y-%m-%d_%H%M%S')
                 _bfile="Docker-Compose-Backup-${_bdate}.tar.gz"
                 _bsrc="${BACKUP_SOURCE_DIR:-$BASE_DIR}"
                 _bstatus="$API_AUTH_DIR/backup-status.json"
+                _bpid_file="$API_AUTH_DIR/backup.pid"
+                local _bst="$(date -Iseconds)"
                 mkdir -p "$_bdir" 2>/dev/null
-                local _btmp
-                _btmp=$(mktemp -d /tmp/dcs-backup-XXXXXX)
-                if [[ -n "$target" ]]; then
-                    [[ -d "$COMPOSE_DIR/$target" ]] && rsync -a "$COMPOSE_DIR/$target/" "$_btmp/$target/" 2>/dev/null || true
-                else
-                    rsync -a --exclude='.git' --exclude='node_modules' "$_bsrc/" "$_btmp/" 2>/dev/null || true
-                fi
-                if tar -czf "$_bdir/$_bfile" -C "$_btmp" . 2>/dev/null; then
-                    local _bsz
-                    _bsz=$(du -h "$_bdir/$_bfile" 2>/dev/null | cut -f1)
-                    output="Backup created: $_bfile ($_bsz)"
-                    printf '{"status":"idle","last_backup":{"filename":"%s","size":"%s","timestamp":"%s"},"progress":null,"percent":100}' \
-                        "$_bfile" "$_bsz" "$(date -Iseconds)" > "$_bstatus" 2>/dev/null
-                    # Enforce retention
-                    local _ret="${BACKUP_RETENTION_COUNT:-5}"
-                    local _cnt
-                    _cnt=$(ls -1 "$_bdir"/Docker-Compose-Backup-*.tar.gz 2>/dev/null | wc -l)
-                    [[ "$_cnt" -gt "$_ret" ]] && ls -1t "$_bdir"/Docker-Compose-Backup-*.tar.gz | tail -n "$((_cnt - _ret))" | xargs -r rm -f
-                else
-                    output="Archive creation failed" && success="false"
-                fi
-                rm -rf "$_btmp"
+
+                printf '{"status":"running","started_at":"%s","filename":"%s","progress":"Scheduled backup starting...","percent":0,"stage":"prepare"}' \
+                    "$_bst" "$_bfile" > "$_bstatus"
+
+                (
+                    echo $BASHPID > "$_bpid_file"
+                    local _btmp
+                    _btmp=$(mktemp -d /tmp/dcs-backup-XXXXXX)
+
+                    printf '{"status":"running","started_at":"%s","filename":"%s","progress":"Copying files...","percent":15,"stage":"copy"}' \
+                        "$_bst" "$_bfile" > "$_bstatus"
+
+                    if [[ -n "$target" ]]; then
+                        [[ -d "$COMPOSE_DIR/$target" ]] && rsync -a "$COMPOSE_DIR/$target/" "$_btmp/$target/" 2>/dev/null || true
+                    else
+                        rsync -a --exclude='.git' --exclude='node_modules' "$_bsrc/" "$_btmp/" 2>/dev/null || true
+                    fi
+
+                    printf '{"status":"running","started_at":"%s","filename":"%s","progress":"Creating archive...","percent":55,"stage":"archive"}' \
+                        "$_bst" "$_bfile" > "$_bstatus"
+
+                    if tar -czf "$_bdir/$_bfile" -C "$_btmp" . 2>/dev/null; then
+                        printf '{"status":"running","started_at":"%s","filename":"%s","progress":"Cleaning up...","percent":85,"stage":"cleanup"}' \
+                            "$_bst" "$_bfile" > "$_bstatus"
+                        rm -rf "$_btmp"
+                        local _ret="${BACKUP_RETENTION_COUNT:-5}"
+                        local _cnt
+                        _cnt=$(ls -1 "$_bdir"/Docker-Compose-Backup-*.tar.gz 2>/dev/null | wc -l)
+                        [[ "$_cnt" -gt "$_ret" ]] && ls -1t "$_bdir"/Docker-Compose-Backup-*.tar.gz | tail -n "$((_cnt - _ret))" | xargs -r rm -f
+                        local _bsz
+                        _bsz=$(du -h "$_bdir/$_bfile" 2>/dev/null | cut -f1)
+                        printf '{"status":"idle","last_backup":{"filename":"%s","size":"%s","timestamp":"%s"},"progress":null,"percent":100,"stage":"done"}' \
+                            "$_bfile" "$_bsz" "$(date -Iseconds)" > "$_bstatus"
+                    else
+                        rm -rf "$_btmp"
+                        printf '{"status":"error","error":"Archive creation failed","progress":null,"percent":0,"stage":"error"}' > "$_bstatus"
+                    fi
+                    rm -f "$_bpid_file"
+                ) &
+
+                output="Backup started: $_bfile"
             fi
             ;;
         update)
