@@ -18,6 +18,11 @@ COMPOSE_DIR="${COMPOSE_DIR:-$BASE_DIR/Stacks}"
 # UTILITIES
 # =============================================================================
 
+# Escape a string for safe JSON embedding
+_hs_json_escape() {
+    printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\t/\\t/g'
+}
+
 # Convert score to letter grade
 _health_grade() {
     local score="${1:-0}"
@@ -41,7 +46,7 @@ health_score_container() {
     # Get container inspect data
     local inspect
     inspect=$(docker inspect "$container" 2>/dev/null) || {
-        echo "{\"container\":\"$container\",\"score\":0,\"grade\":\"F\",\"factors\":{\"health\":0,\"uptime\":0,\"restarts\":0,\"resources\":0,\"image_age\":0}}"
+        printf '{"container":"%s","score":0,"grade":"F","factors":{"health":0,"uptime":0,"restarts":0,"resources":0,"image_age":0}}' "$(_hs_json_escape "$container")"
         return
     }
 
@@ -133,7 +138,7 @@ health_score_container() {
     grade=$(_health_grade "$total_score")
 
     printf '{"container":"%s","score":%d,"grade":"%s","factors":{"health":%d,"uptime":%d,"restarts":%d,"resources":%d,"image_age":%d}}' \
-        "$container" "$total_score" "$grade" "$health_score" "$uptime_score" "$restart_score" "$resource_score" "$image_age_score"
+        "$(_hs_json_escape "$container")" "$total_score" "$grade" "$health_score" "$uptime_score" "$restart_score" "$resource_score" "$image_age_score"
 }
 
 # =============================================================================
@@ -187,7 +192,7 @@ health_score_stack() {
     grade=$(_health_grade "$stack_score")
 
     printf '{"stack":"%s","score":%d,"grade":"%s","container_count":%d,"healthy_count":%d,"container_scores":%s}' \
-        "$stack_name" "$stack_score" "$grade" "$count" "$healthy_count" "$container_scores"
+        "$(_hs_json_escape "$stack_name")" "$stack_score" "$grade" "$count" "$healthy_count" "$container_scores"
 }
 
 # =============================================================================

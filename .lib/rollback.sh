@@ -149,8 +149,8 @@ rollback_get_snapshot() {
 
     # Escape for JSON embedding
     local esc_compose esc_env
-    esc_compose=$(printf '%s' "$compose_content" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\t/\\t/g' | tr '\n' '\n' | sed ':a;N;$!ba;s/\n/\\n/g')
-    esc_env=$(printf '%s' "$env_content" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\t/\\t/g' | tr '\n' '\n' | sed ':a;N;$!ba;s/\n/\\n/g')
+    esc_compose=$(printf '%s' "$compose_content" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\t/\\t/g' | sed ':a;N;$!ba;s/\n/\\n/g')
+    esc_env=$(printf '%s' "$env_content" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\t/\\t/g' | sed ':a;N;$!ba;s/\n/\\n/g')
 
     printf '{"id":"%s","stack":"%s","compose_file":"%s","env_file":%s,"images":%s,"metadata":%s}' \
         "$snapshot_id" "$stack_name" \
@@ -254,8 +254,8 @@ rollback_diff() {
 
     # Escape diffs for JSON
     local esc_compose esc_env
-    esc_compose=$(printf '%s' "$compose_diff" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\t/\\t/g' | tr '\n' '\n' | sed ':a;N;$!ba;s/\n/\\n/g')
-    esc_env=$(printf '%s' "$env_diff" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\t/\\t/g' | tr '\n' '\n' | sed ':a;N;$!ba;s/\n/\\n/g')
+    esc_compose=$(printf '%s' "$compose_diff" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\t/\\t/g' | sed ':a;N;$!ba;s/\n/\\n/g')
+    esc_env=$(printf '%s' "$env_diff" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\t/\\t/g' | sed ':a;N;$!ba;s/\n/\\n/g')
 
     printf '{"stack":"%s","snapshot_id":"%s","compose_diff":"%s","env_diff":"%s","image_changes":%s}' \
         "$stack_name" "$snapshot_id" "$esc_compose" "$esc_env" "$image_changes"

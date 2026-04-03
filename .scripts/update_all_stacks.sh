@@ -85,6 +85,8 @@ update_all_stacks() {
     local pull_results
     pull_results="$(mktemp /tmp/pull_results.XXXXXX)"
 
+    trap 'rm -f "$change_log_file" "$pull_results"' EXIT
+
     for dir in "$stacks_dir"/*/; do
         [[ -f "$dir/docker-compose.yml" ]] || continue
 

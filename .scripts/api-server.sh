@@ -101,8 +101,8 @@ API_LOCKOUT_DURATION="${API_LOCKOUT_DURATION:-900}"  # 15 minutes in seconds
 # Auto-detect whether auth is required based on bind address
 # Auth is optional for localhost-only, required for external access
 if [[ -n "${API_AUTH_ENABLED:-}" ]]; then
-    # Explicit override from config
-    API_AUTH_ENABLED="${API_AUTH_ENABLED}"
+    # Explicit override from config — keep as-is
+    :
 else
     case "$API_BIND" in
         127.0.0.1|localhost|::1)
@@ -1156,17 +1156,14 @@ _api_scan_compose_security() {
     fi
 
     # Mount /etc directly (system config) — but allow specific subdirs like /etc/localtime
-    # Block: "- /etc:/something" or "- /etc" (bare mount)
+    # Block: "- /etc:/something" or bare "- /etc"
     # Allow: "- /etc/localtime:/etc/localtime:ro" or "- /etc/timezone:/etc/timezone:ro"
-    if printf '%s' "$lower_content" | grep -qE '^\s+-\s*["'"'"']?/etc[:"'"'"'\s]' | grep -vq '/etc/'; then
-        # Only flag if mounting /etc root, not a subdirectory
-        if printf '%s' "$lower_content" | grep -qE '^\s+-\s*["'"'"']?/etc[:"'"'"'\s]'; then
-            local etc_mount
-            etc_mount=$(printf '%s' "$lower_content" | grep -E '^\s+-\s*["'"'"']?/etc[:"'"'"'\s]')
-            # If it's /etc: or /etc" (bare), that's the whole /etc directory
-            if echo "$etc_mount" | grep -qE '/etc["'"'"']?:'; then
-                violations+=("mounting /etc is not allowed (contains system configuration)")
-            fi
+    if printf '%s' "$lower_content" | grep -qE '^\s+-\s*["'"'"']?/etc["'"'"']?(:|[[:space:]]|$)'; then
+        # Only flag if mounting /etc root, not a subdirectory like /etc/localtime
+        local etc_lines
+        etc_lines=$(printf '%s' "$lower_content" | grep -E '^\s+-\s*["'"'"']?/etc["'"'"']?(:|[[:space:]]|$)')
+        if echo "$etc_lines" | grep -qvE '/etc/'; then
+            violations+=("mounting /etc is not allowed (contains system configuration)")
         fi
     fi
 
@@ -1482,19 +1479,12 @@ _api_validate_invite() {
     local now
     now=$(_api_now_epoch)
 
-    if command -v jq >/dev/null 2>&1; then
-        local record
-        record=$(echo "$invites" | jq -r --arg c "$code" --argjson n "$now" \
-            '.[] | select(.code == $c and .expires_at > $n and (.used != true))' 2>/dev/null)
-        if [[ -n "$record" ]]; then
-            echo "$record" | jq -r '.role' 2>/dev/null
-            return 0
-        fi
-    else
-        if echo "$invites" | grep -q "\"code\": *\"$code\""; then
-            echo "user"
-            return 0
-        fi
+    local record
+    record=$(echo "$invites" | jq -r --arg c "$code" --argjson n "$now" \
+        '.[] | select(.code == $c and .expires_at > $n and (.used != true))' 2>/dev/null)
+    if [[ -n "$record" ]]; then
+        echo "$record" | jq -r '.role' 2>/dev/null
+        return 0
     fi
     return 1
 }
@@ -1505,12 +1495,10 @@ _api_consume_invite() {
     local invites
     invites=$(_api_read_auth_file "invites.json")
 
-    if command -v jq >/dev/null 2>&1; then
-        local new_invites
-        new_invites=$(echo "$invites" | jq --arg c "$code" --arg u "$username" \
-            '[.[] | if .code == $c then . + {"used": true, "used_by": $u} else . end]' 2>/dev/null)
-        _api_write_auth_file "invites.json" "$new_invites"
-    fi
+    local new_invites
+    new_invites=$(echo "$invites" | jq --arg c "$code" --arg u "$username" \
+        '[.[] | if .code == $c then . + {"used": true, "used_by": $u} else . end]' 2>/dev/null)
+    _api_write_auth_file "invites.json" "$new_invites"
 }
 
 # Delete a specific invite code by value
@@ -1609,12 +1597,11 @@ _api_container_json() {
         return
     fi
 
-    # Fallback without jq — simple format
-    local name state health image
-    name=$(timeout 3 docker inspect --format='{{.Name}}' "$container_id" 2>/dev/null | sed 's|^/||')
-    state=$(timeout 3 docker inspect --format='{{.State.Status}}' "$container_id" 2>/dev/null)
-    health=$(timeout 3 docker inspect --format='{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$container_id" 2>/dev/null)
-    image=$(timeout 3 docker inspect --format='{{.Config.Image}}' "$container_id" 2>/dev/null)
+    # Fallback without jq — single inspect call
+    local _info name state health image
+    _info=$(timeout 3 docker inspect --format='{{.Name}}|{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}|{{.Config.Image}}' "$container_id" 2>/dev/null) || _info="/$container_id|unknown|none|unknown"
+    _info="${_info#/}"
+    IFS='|' read -r name state health image <<< "$_info"
 
     printf '{"name":"%s","state":"%s","health":"%s","image":"%s","image_id":"","created":"","uptime_seconds":0,"ports":"","restart_count":0}' \
         "$(_api_json_escape "$name")" "$(_api_json_escape "$state")" "$(_api_json_escape "$health")" "$(_api_json_escape "$image")"
@@ -3507,17 +3494,10 @@ handle_auth_users() {
     local users
     users=$(_api_read_auth_file "users.json")
 
-    if command -v jq >/dev/null 2>&1; then
-        # Strip sensitive fields (password_hash, salt)
-        local safe_users
-        safe_users=$(echo "$users" | jq '[.[] | {username: .username, role: .role, created_at: .created_at}]' 2>/dev/null)
-        _api_success "{\"users\": $safe_users}"
-    else
-        # Fallback without jq: manually strip sensitive fields via sed
-        local safe_users
-        safe_users=$(echo "$users" | sed 's/"password_hash" *: *"[^"]*" *,//g; s/"salt" *: *"[^"]*" *,//g; s/"hash_version" *: *[0-9]* *,//g')
-        _api_success "{\"users\": $safe_users}"
-    fi
+    # Strip sensitive fields (password_hash, salt)
+    local safe_users
+    safe_users=$(echo "$users" | jq '[.[] | {username: .username, role: .role, created_at: .created_at}]' 2>/dev/null)
+    _api_success "{\"users\": $safe_users}"
 }
 
 # POST /auth/revoke — Revoke a user's access (admin only)
@@ -3532,11 +3512,7 @@ handle_auth_revoke() {
     fi
 
     local target_username
-    if command -v jq >/dev/null 2>&1; then
-        target_username=$(echo "$body" | jq -r '.username // empty' 2>/dev/null)
-    else
-        target_username=$(echo "$body" | sed -n 's/.*"username" *: *"\([^"]*\)".*/\1/p')
-    fi
+    target_username=$(echo "$body" | jq -r '.username // empty' 2>/dev/null)
 
     if [[ -z "$target_username" ]]; then
         _api_error 400 "Missing required field: username"
@@ -3840,11 +3816,7 @@ handle_auth_logout_all() {
     fi
 
     local target_username
-    if command -v jq >/dev/null 2>&1; then
-        target_username=$(echo "$body" | jq -r '.username // empty' 2>/dev/null)
-    else
-        target_username=$(echo "$body" | sed -n 's/.*"username" *: *"\([^"]*\)".*/\1/p')
-    fi
+    target_username=$(echo "$body" | jq -r '.username // empty' 2>/dev/null)
 
     if [[ -z "$target_username" ]]; then
         _api_error 400 "Missing required field: username"
