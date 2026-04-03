@@ -4,6 +4,12 @@ services:
     image: ghcr.io/pelican-dev/panel:latest
     restart: unless-stopped
     user: "0:0"
+    command: >
+      ash -c "
+      chmod -R 777 /pelican-data /var/www/html/storage 2>/dev/null || true;
+      mkdir -p /var/www/html/storage/logs/supervisord /pelican-data/database /pelican-data/storage /pelican-data/plugins 2>/dev/null;
+      exec supervisord -n -c /etc/supervisord.conf
+      "
     ports:
       - "${PANEL_PORT_HTTP:-8005}:80"
       - "${PANEL_PORT_HTTPS:-8006}:443"
