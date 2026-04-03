@@ -1756,7 +1756,22 @@ handle_status() {
     local cpu_count
     cpu_count=$(nproc 2>/dev/null || echo 0)
 
-    _api_success "{\"timestamp\": \"$(date -u '+%Y-%m-%dT%H:%M:%SZ')\", \"hostname\": \"$(_api_json_escape "$(hostname)")\", \"uptime_seconds\": $uptime_seconds, \"docker\": {\"containers\": {\"total\": $total_containers, \"running\": $running_containers, \"stopped\": $stopped_containers}, \"images\": $total_images, \"volumes\": $total_volumes, \"networks\": $total_networks}, \"stacks\": {\"total\": ${#stacks[@]}, \"running\": $running_stacks}, \"system\": {\"load_average\": $load_avg, \"memory_mb\": {\"total\": $mem_total, \"available\": $mem_available}, \"swap_mb\": {\"total\": $swap_total, \"free\": $swap_free}, \"disk\": $disk_usage, \"cpu_count\": $cpu_count}}"
+    # GPU detection (NVIDIA via nvidia-smi)
+    local gpu_json="null"
+    if command -v nvidia-smi >/dev/null 2>&1; then
+        local _gpu_name _gpu_util _gpu_mem_used _gpu_mem_total _gpu_temp _gpu_fan
+        _gpu_name=$(nvidia-smi --query-gpu=name --format=csv,noheader,nounits 2>/dev/null | head -1)
+        _gpu_util=$(nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d ' ')
+        _gpu_mem_used=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d ' ')
+        _gpu_mem_total=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d ' ')
+        _gpu_temp=$(nvidia-smi --query-gpu=temperature.gpu --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d ' ')
+        _gpu_fan=$(nvidia-smi --query-gpu=fan.speed --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d ' ')
+        if [[ -n "$_gpu_name" ]]; then
+            gpu_json="{\"name\": \"$(_api_json_escape "$_gpu_name")\", \"utilization\": ${_gpu_util:-0}, \"memory_used_mb\": ${_gpu_mem_used:-0}, \"memory_total_mb\": ${_gpu_mem_total:-0}, \"temperature\": ${_gpu_temp:-0}, \"fan_speed\": ${_gpu_fan:-0}}"
+        fi
+    fi
+
+    _api_success "{\"timestamp\": \"$(date -u '+%Y-%m-%dT%H:%M:%SZ')\", \"hostname\": \"$(_api_json_escape "$(hostname)")\", \"uptime_seconds\": $uptime_seconds, \"docker\": {\"containers\": {\"total\": $total_containers, \"running\": $running_containers, \"stopped\": $stopped_containers}, \"images\": $total_images, \"volumes\": $total_volumes, \"networks\": $total_networks}, \"stacks\": {\"total\": ${#stacks[@]}, \"running\": $running_stacks}, \"system\": {\"load_average\": $load_avg, \"memory_mb\": {\"total\": $mem_total, \"available\": $mem_available}, \"swap_mb\": {\"total\": $swap_total, \"free\": $swap_free}, \"gpu\": $gpu_json, \"disk\": $disk_usage, \"cpu_count\": $cpu_count}}"
 }
 
 # Internal variant — returns JSON to stdout (used by export handler)
