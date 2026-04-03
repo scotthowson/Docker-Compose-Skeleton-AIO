@@ -18,7 +18,7 @@
       "name": "PORT_DASHDOT",
       "label": "Host Port",
       "description": "Port to expose dash. on",
-      "default": "3002",
+      "default": "3001",
       "required": false
     }
   ]

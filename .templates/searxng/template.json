@@ -17,7 +17,7 @@
       "name": "PORT_SEARXNG",
       "label": "Host Port",
       "description": "Port to expose SearXNG on",
-      "default": "8890",
+      "default": "8888",
       "required": false
     }
   ]

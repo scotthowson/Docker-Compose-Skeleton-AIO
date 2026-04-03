@@ -18,7 +18,7 @@
       "name": "PORT_FRESHRSS",
       "label": "Host Port",
       "description": "Port to expose FreshRSS on",
-      "default": "8098",
+      "default": "8096",
       "required": false
     }
   ]

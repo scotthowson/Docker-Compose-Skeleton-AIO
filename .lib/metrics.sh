@@ -17,7 +17,7 @@ METRICS_DATA_DIR="${BASE_DIR}/.data/metrics"
 METRICS_FILE="${METRICS_DATA_DIR}/system.jsonl"
 METRICS_COLLECT_INTERVAL="${METRICS_COLLECT_INTERVAL:-30}"
 METRICS_RETENTION_DAYS="${METRICS_RETENTION_DAYS:-7}"
-METRICS_PID_FILE="/tmp/dcs-metrics-collector.pid"
+METRICS_PID_FILE="${BASE_DIR}/.data/metrics-collector.pid"
 
 # =============================================================================
 # INITIALIZATION

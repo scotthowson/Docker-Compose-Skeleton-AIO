@@ -18,7 +18,7 @@
       "name": "PORT_REACTIVE_RESUME",
       "label": "Host Port",
       "description": "Port to expose Reactive Resume on",
-      "default": "3210",
+      "default": "3200",
       "required": false
     }
   ]

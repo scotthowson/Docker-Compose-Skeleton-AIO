@@ -19,7 +19,7 @@
       "name": "PORT_OPEN_WEBUI",
       "label": "Host Port",
       "description": "Port to expose Open WebUI on",
-      "default": "3150",
+      "default": "3100",
       "required": false
     }
   ]

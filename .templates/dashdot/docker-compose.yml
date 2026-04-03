@@ -3,11 +3,13 @@ services:
     container_name: Dashdot
     image: mauricenino/dashdot:latest
     restart: unless-stopped
-    privileged: true
     environment:
       - TZ=${TZ:-UTC}
+      - DASHDOT_WIDGET_LIST=os,cpu,storage,ram,network
     volumes:
-      - /:/mnt/host:ro
+      - /proc:/mnt/host/proc:ro
+      - /sys:/mnt/host/sys:ro
+      - /etc/os-release:/mnt/host/etc/os-release:ro
     ports:
       - "${PORT_DASHDOT:-3001}:3001"
     healthcheck:

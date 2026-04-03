@@ -79,7 +79,7 @@ Type=forking
 User=$DCS_USER
 Group=$DCS_GROUP
 WorkingDirectory=$BASE_DIR
-PIDFile=/tmp/dcs-api-server.pid
+PIDFile=$BASE_DIR/.data/api-server.pid
 ExecStart=$BASE_DIR/.scripts/api-server.sh --bind $API_BIND
 ExecStop=$BASE_DIR/.scripts/api-server.sh --stop
 Restart=on-failure
@@ -128,6 +128,16 @@ echo -e "${GREEN}✓${RST} Created dcs-stacks.service"
 systemctl daemon-reload
 systemctl enable dcs-api.service
 systemctl enable dcs-stacks.service
+
+# Configure SELinux contexts if enforcing
+if command -v getenforce >/dev/null 2>&1 && [[ "$(getenforce 2>/dev/null)" == "Enforcing" ]]; then
+    echo -e "${CYAN}  Configuring SELinux contexts...${RST}"
+    # Restore contexts on scripts and service files
+    restorecon -Rv "$BASE_DIR/.scripts/" 2>/dev/null || true
+    restorecon -Rv "$BASE_DIR/start.sh" "$BASE_DIR/stop.sh" "$BASE_DIR/restart.sh" 2>/dev/null || true
+    restorecon -Rv /etc/systemd/system/dcs-*.service 2>/dev/null || true
+    echo -e "${GREEN}  ✓${RST} SELinux contexts restored"
+fi
 
 echo ""
 echo -e "${GREEN}${BOLD}Services installed and enabled.${RST}"

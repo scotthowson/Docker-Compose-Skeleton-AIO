@@ -15,7 +15,7 @@ fi
 SCHEDULER_DIR="${BASE_DIR}/.data/schedules"
 SCHEDULER_CONFIG="${SCHEDULER_DIR}/schedules.json"
 SCHEDULER_LOG="${SCHEDULER_DIR}/scheduler.log"
-SCHEDULER_PID_FILE="/tmp/dcs-scheduler.pid"
+SCHEDULER_PID_FILE="${BASE_DIR}/.data/scheduler.pid"
 SCHEDULER_CHECK_INTERVAL="${SCHEDULER_CHECK_INTERVAL:-60}"
 
 # =============================================================================
