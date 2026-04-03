@@ -27,7 +27,7 @@ services:
       - ASSET_URL=${PANEL_APP_URL:-http://127.0.0.1:8005}/
       - APP_ENV=production
       - APP_DEBUG=false
-      - TRUSTED_PROXIES=${PANEL_TRUSTED_PROXIES:-*}
+      - TRUSTED_PROXIES=${PANEL_TRUSTED_PROXIES:-0.0.0.0/0}
       - APP_LOCALE=en
       - APP_SERVICE_AUTHOR_EMAIL=${PANEL_ADMIN_EMAIL:-admin@example.com}
       - DB_CONNECTION=${PANEL_DB_CONNECTION:-sqlite}

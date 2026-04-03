@@ -39,8 +39,8 @@
     {
       "name": "PANEL_TRUSTED_PROXIES",
       "label": "Trusted Proxies",
-      "description": "Trusted proxy IPs for HTTPS (use * when behind Traefik/nginx)",
-      "default": "*",
+      "description": "Trusted proxy CIDR for HTTPS (use 0.0.0.0/0 when behind Traefik/nginx)",
+      "default": "0.0.0.0/0",
       "required": false
     },
     {

@@ -11454,11 +11454,17 @@ handle_template_undeploy() {
             # 1. Remove per-service App-Data
             for svc in "${services_to_remove[@]}"; do
                 for dir_name in "$svc" "${svc^}" "${svc^^}"; do
-                    [[ -d "$_app_data/$dir_name" ]] && docker run --rm -v "$_app_data/$dir_name:/d" alpine rm -rf /d 2>/dev/null
+                    if [[ -d "$_app_data/$dir_name" ]]; then
+                        rm -rf "$_app_data/$dir_name" 2>/dev/null || docker run --rm -v "$_app_data/$dir_name:/d" alpine rm -rf /d 2>/dev/null
+                    fi
                 done
             done
-            # 2. Remove config_path data
-            [[ -n "$_config_path" && -d "$_app_data/$_config_path" ]] && docker run --rm -v "$_app_data/$_config_path:/d" alpine rm -rf /d 2>/dev/null
+            # 2. Remove config_path data (e.g. Pelican/ directory for pelican template)
+            if [[ -n "$_config_path" && -d "$_app_data/$_config_path" ]]; then
+                rm -rf "$_app_data/$_config_path" 2>/dev/null || docker run --rm -v "$_app_data/$_config_path:/d" alpine rm -rf /d 2>/dev/null
+                # Also remove any stray files at the config_path level (acme.json, traefik.yml etc)
+                rmdir "$_app_data/$_config_path" 2>/dev/null || true
+            fi
             # 3. Remove Docker images
             for svc in "${services_to_remove[@]}"; do
                 local img
