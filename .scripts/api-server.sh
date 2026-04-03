@@ -1893,7 +1893,7 @@ handle_stacks() {
         local service_count
         service_count=$(grep -c '^\s\+[a-zA-Z]' "$compose_file" 2>/dev/null) || service_count=0
 
-        entries+=("{\"name\": \"$stack\", \"status\": \"$status\", \"running_containers\": $count, \"has_env\": $has_env, \"compose_file\": \"$compose_file\"}")
+        entries+=("{\"name\": \"$stack\", \"status\": \"$status\", \"running_containers\": $count, \"has_env\": $has_env, \"compose_file\": \"$(_api_json_escape "$compose_file")\"}")
     done
 
     local json
@@ -2544,7 +2544,16 @@ handle_container_stats() {
 
     IFS='|' read -r cpu mem_usage mem_perc net_io block_io pids <<< "$stats_line"
 
-    _api_success "{\"container\": \"$name\", \"cpu_percent\": \"$(_api_json_escape "$cpu")\", \"memory_usage\": \"$(_api_json_escape "$mem_usage")\", \"memory_percent\": \"$(_api_json_escape "$mem_perc")\", \"network_io\": \"$(_api_json_escape "$net_io")\", \"block_io\": \"$(_api_json_escape "$block_io")\", \"pids\": \"$(_api_json_escape "$pids")\"}"
+    # Strip % signs and whitespace for numeric fields
+    cpu="${cpu%%%*}"; cpu="${cpu// /}"
+    mem_perc="${mem_perc%%%*}"; mem_perc="${mem_perc// /}"
+    pids="${pids// /}"
+    # Default to 0 if empty or --
+    [[ -z "$cpu" || "$cpu" == "--" ]] && cpu="0"
+    [[ -z "$mem_perc" || "$mem_perc" == "--" ]] && mem_perc="0"
+    [[ -z "$pids" || "$pids" == "--" ]] && pids="0"
+
+    _api_success "{\"container\": \"$(_api_json_escape "$name")\", \"cpu_percent\": $cpu, \"memory_usage\": \"$(_api_json_escape "$mem_usage")\", \"memory_percent\": $mem_perc, \"network_io\": \"$(_api_json_escape "$net_io")\", \"block_io\": \"$(_api_json_escape "$block_io")\", \"pids\": $pids}"
 }
 
 handle_container_processes() {
@@ -2619,8 +2628,10 @@ handle_config() {
     # Docker
     config+="\"docker_stacks\": \"$(_api_json_escape "${DOCKER_STACKS:-}")\","
     config+="\"docker_timeout\": ${DOCKER_TIMEOUT:-120},"
+    config+="\"stack_start_timeout\": ${STACK_START_TIMEOUT:-300},"
     config+="\"force_recreate\": ${FORCE_RECREATE:-false},"
     config+="\"remove_orphaned_containers\": ${REMOVE_ORPHANED_CONTAINERS:-true},"
+    config+="\"max_parallel_operations\": ${MAX_PARALLEL_OPERATIONS:-3},"
     # Logging
     config+="\"log_level\": \"${LOG_LEVEL:-INFO}\","
     config+="\"enable_colors\": ${ENABLE_COLORS:-true},"
@@ -2635,6 +2646,8 @@ handle_config() {
     config+="\"enable_log_hostname\": ${ENABLE_LOG_HOSTNAME:-false},"
     config+="\"log_max_size\": \"${LOG_MAX_SIZE:-10M}\","
     config+="\"log_backup_count\": ${LOG_BACKUP_COUNT:-12},"
+    config+="\"log_retention_days\": ${LOG_RETENTION_DAYS:-30},"
+    config+="\"enable_structured_logging\": ${ENABLE_STRUCTURED_LOGGING:-false},"
     # Image Updates
     config+="\"aggressive_image_prune\": ${AGGRESSIVE_IMAGE_PRUNE:-false},"
     config+="\"update_notification\": ${UPDATE_NOTIFICATION:-true},"
@@ -2654,6 +2667,7 @@ handle_config() {
     config+="\"api_token_expiry\": ${API_TOKEN_EXPIRY:-86400},"
     config+="\"api_single_session\": ${API_SINGLE_SESSION:-false},"
     config+="\"api_cors_origins\": \"$(_api_json_escape "${API_CORS_ORIGINS:-}")\","
+    config+="\"api_ip_whitelist\": \"$(_api_json_escape "${API_IP_WHITELIST:-}")\","
     # Traefik/DNS (tokens excluded)
     config+="\"traefik_domain\": \"$(_api_json_escape "${TRAEFIK_DOMAIN:-}")\","
     config+="\"traefik_acme_email\": \"$(_api_json_escape "${TRAEFIK_ACME_EMAIL:-}")\","
@@ -2668,11 +2682,16 @@ handle_config() {
     # Features
     config+="\"metrics_enabled\": ${METRICS_ENABLED:-true},"
     config+="\"metrics_collect_interval\": ${METRICS_COLLECT_INTERVAL:-60},"
+    config+="\"metrics_retention_days\": ${METRICS_RETENTION_DAYS:-7},"
+    config+="\"include_resource_metrics\": ${INCLUDE_RESOURCE_METRICS:-true},"
     config+="\"rollback_enabled\": ${ROLLBACK_ENABLED:-true},"
     config+="\"scheduler_enabled\": ${SCHEDULER_ENABLED:-true},"
     config+="\"plugins_enabled\": ${PLUGINS_ENABLED:-true},"
     config+="\"plugins_hooks_enabled\": ${PLUGINS_HOOKS_ENABLED:-true},"
     config+="\"health_score_enabled\": ${HEALTH_SCORE_ENABLED:-true},"
+    config+="\"rollback_max_snapshots\": ${ROLLBACK_MAX_SNAPSHOTS:-10},"
+    config+="\"secrets_encryption\": ${SECRETS_ENCRYPTION:-true},"
+    config+="\"scheduler_check_interval\": ${SCHEDULER_CHECK_INTERVAL:-60},"
     # Backup
     config+="\"backup_source_dir\": \"$(_api_json_escape "${BACKUP_SOURCE_DIR:-}")\","
     config+="\"backup_dest_dir\": \"$(_api_json_escape "${BACKUP_DEST_DIR:-}")\","
@@ -3497,7 +3516,7 @@ handle_auth_users() {
     # Strip sensitive fields (password_hash, salt)
     local safe_users
     safe_users=$(echo "$users" | jq '[.[] | {username: .username, role: .role, created_at: .created_at}]' 2>/dev/null)
-    _api_success "{\"users\": $safe_users}"
+    _api_success "{\"total\": $(echo "$safe_users" | jq 'length' 2>/dev/null || echo 0), \"users\": $safe_users}"
 }
 
 # POST /auth/revoke — Revoke a user's access (admin only)
@@ -5362,12 +5381,13 @@ handle_config_update() {
         [SERVICE_START_DELAY]=1 [SERVICE_STOP_DELAY]=1
         # Docker
         [DOCKER_STACKS]=1 [DOCKER_TIMEOUT]=1 [FORCE_RECREATE]=1
-        [REMOVE_ORPHANED_CONTAINERS]=1 [MAX_PARALLEL_OPERATIONS]=1
+        [REMOVE_ORPHANED_CONTAINERS]=1 [STACK_START_TIMEOUT]=1 [MAX_PARALLEL_OPERATIONS]=1
         # Logging
         [LOG_LEVEL]=1 [ENABLE_COLORS]=1 [COLOR_MODE]=1 [COLOR_THEME]=1
         [VERBOSE_MODE]=1 [ENABLE_LOG_DATE]=1 [ENABLE_MILLISECONDS]=1
         [LOG_DATE_FORMAT]=1 [ENABLE_LOG_MOOD]=1 [ENABLE_LOG_PID]=1
         [ENABLE_LOG_HOSTNAME]=1 [LOG_MAX_SIZE]=1 [LOG_BACKUP_COUNT]=1
+        [LOG_RETENTION_DAYS]=1 [ENABLE_STRUCTURED_LOGGING]=1
         # Image Updates
         [AGGRESSIVE_IMAGE_PRUNE]=1 [UPDATE_NOTIFICATION]=1
         # Notifications
@@ -5389,6 +5409,8 @@ handle_config_update() {
         [ROLLBACK_ENABLED]=1 [SCHEDULER_ENABLED]=1
         [PLUGINS_ENABLED]=1 [PLUGINS_HOOKS_ENABLED]=1
         [HEALTH_SCORE_ENABLED]=1
+        [ROLLBACK_MAX_SNAPSHOTS]=1 [SECRETS_ENCRYPTION]=1 [SCHEDULER_CHECK_INTERVAL]=1
+        [METRICS_RETENTION_DAYS]=1 [INCLUDE_RESOURCE_METRICS]=1
         # Backup
         [BACKUP_SOURCE_DIR]=1 [BACKUP_DEST_DIR]=1 [BACKUP_RETENTION_COUNT]=1
     )
@@ -9045,6 +9067,30 @@ handle_template_deploy() {
         return
     fi
 
+    # --- Singleton check: prevent duplicate deployment of singleton templates ---
+    local is_singleton
+    is_singleton=$(printf '%s' "$meta" | jq -r '.singleton // false' 2>/dev/null)
+    if [[ "$is_singleton" == "true" ]]; then
+        local target_compose="$target_dir/docker-compose.yml"
+        local template_services
+        template_services=$(awk '/^services:/{found=1; next} found && /^[a-zA-Z]/{exit} found && /^  [a-zA-Z]/{gsub(/^ +/, ""); gsub(/:.*/, ""); print}' "$tdir/docker-compose.yml" 2>/dev/null)
+        local replace_flag
+        replace_flag=$(printf '%s' "$body" | jq -r '.replace_services // false' 2>/dev/null)
+        if [[ "$replace_flag" != "true" ]]; then
+            local _dup_services=""
+            while IFS= read -r _svc; do
+                [[ -z "$_svc" ]] && continue
+                if grep -qE "^\s+${_svc}:" "$target_compose" 2>/dev/null; then
+                    _dup_services="${_dup_services:+$_dup_services, }$_svc"
+                fi
+            done <<< "$template_services"
+            if [[ -n "$_dup_services" ]]; then
+                _api_error 409 "Singleton template '$name' is already deployed (services: $_dup_services). Pass replace_services: true to replace."
+                return
+            fi
+        fi
+    fi
+
     # Read template compose and substitute variables
     local template_compose
     template_compose=$(cat "$tdir/docker-compose.yml")
@@ -9069,6 +9115,24 @@ handle_template_deploy() {
                 fi
             fi
         done
+    fi
+
+    # --- Required variable validation ---
+    if [[ -f "$tdir/template.json" ]]; then
+        local _req_vars _missing_vars=""
+        _req_vars=$(jq -r '.variables[]? | select(.required == true) | .name' "$tdir/template.json" 2>/dev/null)
+        while IFS= read -r _rv; do
+            [[ -z "$_rv" ]] && continue
+            local _rv_val
+            _rv_val=$(echo "$vars" | grep -m1 "^${_rv}=" | cut -d= -f2-)
+            if [[ -z "$_rv_val" ]]; then
+                _missing_vars="${_missing_vars:+$_missing_vars, }$_rv"
+            fi
+        done <<< "$_req_vars"
+        if [[ -n "$_missing_vars" ]]; then
+            _api_error 400 "Missing required variables: $_missing_vars"
+            return
+        fi
     fi
 
     while IFS='=' read -r key val; do

@@ -14,7 +14,8 @@
         "PROXY_DOMAIN": { "type": "string", "default": "example.com", "description": "Primary domain for reverse proxy routing" },
         "TZ": { "type": "string", "default": "UTC", "description": "Timezone for containers (e.g., America/New_York)" },
         "ENVIRONMENT": { "type": "string", "default": "production", "description": "Environment profile", "enum": ["production", "staging", "testing", "development"] },
-        "SERVER_NAME": { "type": "string", "default": "Docker Server", "description": "Friendly name for this server instance" }
+        "SERVER_NAME": { "type": "string", "default": "Docker Server", "description": "Friendly name for this server instance" },
+        "SERVER_SUBTITLE": { "type": "string", "default": "Docker Compose Skeleton", "description": "Subtitle shown in the UI header" }
       }
     },
     "stacks": {
@@ -28,6 +29,14 @@
         "STACK_START_TIMEOUT": { "type": "integer", "default": 120, "description": "Max seconds to wait for a single stack to start", "minimum": 10, "maximum": 600 },
         "SERVICE_STOP_DELAY": { "type": "integer", "default": 10, "description": "Seconds between stopping stacks", "minimum": 0, "maximum": 60 },
         "REMOVE_VOLUMES_ON_STOP": { "type": "boolean", "default": false, "description": "Remove named volumes when stopping stacks (DESTRUCTIVE)" }
+      }
+    },
+    "startup_shutdown": {
+      "title": "Startup & Shutdown",
+      "description": "Startup and shutdown display behavior",
+      "properties": {
+        "SHOW_BANNERS": { "type": "boolean", "default": true, "description": "Display ASCII art banners during startup/shutdown" },
+        "SHOW_SYSTEM_INFO": { "type": "boolean", "default": true, "description": "Display system information during startup" }
       }
     },
     "docker": {
@@ -47,7 +56,8 @@
       "description": "Push notification configuration via NTFY",
       "properties": {
         "NTFY_URL": { "type": "string", "default": "", "description": "NTFY server endpoint URL (leave empty to disable)", "pattern": "^(https?://.*)?$" },
-        "SERVER_NAME": { "type": "string", "default": "Docker Server", "description": "Server name shown in notifications" },
+        "NTFY_TOPIC": { "type": "string", "default": "", "description": "NTFY notification topic name" },
+        "NTFY_PRIORITY": { "type": "string", "default": "default", "description": "Default notification priority", "enum": ["min", "low", "default", "high", "max"] },
         "NOTIFICATION_STACKS": { "type": "string", "default": "core-infrastructure web-applications communication-collaboration", "description": "Space-separated stacks that trigger notifications" },
         "UPDATE_NOTIFICATION": { "type": "boolean", "default": true, "description": "Send notification after image update cycle" }
       }
@@ -58,6 +68,15 @@
       "properties": {
         "LOG_LEVEL": { "type": "string", "default": "INFO", "description": "Log verbosity level", "enum": ["ERROR", "WARNING", "INFO", "DEBUG", "VERBOSE"] },
         "COLOR_MODE": { "type": "string", "default": "auto", "description": "Color output mode for terminal", "enum": ["auto", "always", "never"] },
+        "ENABLE_COLORS": { "type": "boolean", "default": true, "description": "Enable colored log output" },
+        "COLOR_THEME": { "type": "string", "default": "dark", "description": "Color theme for log output", "enum": ["dark", "light"] },
+        "VERBOSE_MODE": { "type": "boolean", "default": false, "description": "Enable verbose logging output" },
+        "ENABLE_LOG_DATE": { "type": "boolean", "default": true, "description": "Show date in log entries" },
+        "ENABLE_MILLISECONDS": { "type": "boolean", "default": false, "description": "Show milliseconds in log timestamps" },
+        "LOG_DATE_FORMAT": { "type": "string", "default": "%Y-%m-%d %H:%M:%S", "description": "strftime format for log timestamps" },
+        "ENABLE_LOG_MOOD": { "type": "boolean", "default": true, "description": "Show mood icons in log entries" },
+        "ENABLE_LOG_PID": { "type": "boolean", "default": false, "description": "Show process ID in log entries" },
+        "ENABLE_LOG_HOSTNAME": { "type": "boolean", "default": false, "description": "Show hostname in log entries" },
         "LOG_MAX_SIZE": { "type": "string", "default": "10M", "description": "Max log file size before rotation", "pattern": "^[0-9]+[KMG]$" },
         "LOG_BACKUP_COUNT": { "type": "integer", "default": 12, "description": "Number of rotated log files to keep", "minimum": 1, "maximum": 100 },
         "LOG_RETENTION_DAYS": { "type": "integer", "default": 90, "description": "Days to retain log archives", "minimum": 1, "maximum": 365 },
@@ -72,7 +91,23 @@
         "API_PORT": { "type": "integer", "default": 9876, "description": "API listening port", "minimum": 1024, "maximum": 65535 },
         "API_BIND": { "type": "string", "default": "127.0.0.1", "description": "API bind address (0.0.0.0 for all interfaces)" },
         "API_RATE_LIMIT": { "type": "integer", "default": 120, "description": "Max requests per minute per IP (0 = disabled)", "minimum": 0, "maximum": 10000 },
-        "API_TOKEN_EXPIRY": { "type": "integer", "default": 86400, "description": "API token expiry in seconds", "minimum": 300, "maximum": 604800 }
+        "API_RATE_WINDOW": { "type": "integer", "default": 60, "description": "Time window for rate limiting in seconds", "minimum": 10 },
+        "API_TOKEN_EXPIRY": { "type": "integer", "default": 86400, "description": "API token expiry in seconds", "minimum": 300, "maximum": 604800 },
+        "API_AUTH_ENABLED": { "type": "boolean", "default": true, "description": "Enable API authentication" },
+        "API_SINGLE_SESSION": { "type": "boolean", "default": false, "description": "Enforce single active session per user" },
+        "API_CORS_ORIGINS": { "type": "string", "default": "", "description": "Comma-separated list of allowed CORS origins" },
+        "API_IP_WHITELIST": { "type": "string", "default": "", "description": "Comma-separated list of allowed IPs/CIDRs (empty = allow all)" }
+      }
+    },
+    "traefik_dns": {
+      "title": "Traefik & DNS",
+      "description": "Reverse proxy and DNS management",
+      "properties": {
+        "TRAEFIK_DOMAIN": { "type": "string", "default": "", "description": "Base domain for Traefik routing" },
+        "TRAEFIK_ACME_EMAIL": { "type": "string", "default": "", "description": "Email for Let's Encrypt certificates" },
+        "CF_DNS_API_TOKEN": { "type": "string", "default": "", "description": "API token for Cloudflare DNS management", "sensitive": true },
+        "DDNS_ENABLED": { "type": "boolean", "default": false, "description": "Enable dynamic DNS updates via Cloudflare" },
+        "DDNS_INTERVAL": { "type": "integer", "default": 300, "description": "How often to check and update DNS records", "minimum": 60 }
       }
     },
     "health": {
@@ -82,7 +117,9 @@
         "ENABLE_POST_STARTUP_HEALTH_CHECK": { "type": "boolean", "default": true, "description": "Run health check after startup sequence" },
         "HEALTH_CHECK_DELAY": { "type": "integer", "default": 10, "description": "Seconds to wait before health check (stabilization)", "minimum": 0, "maximum": 120 },
         "INCLUDE_RESOURCE_METRICS": { "type": "boolean", "default": false, "description": "Include CPU/memory in health reports" },
-        "HEALTH_SCORE_ENABLED": { "type": "boolean", "default": true, "description": "Enable 0-100 health scoring system" }
+        "HEALTH_SCORE_ENABLED": { "type": "boolean", "default": true, "description": "Enable 0-100 health scoring system" },
+        "CRITICAL_CONTAINERS": { "type": "string", "default": "", "description": "Comma-separated list of containers that trigger critical alerts" },
+        "IMPORTANT_CONTAINERS": { "type": "string", "default": "", "description": "Comma-separated list of containers that trigger important alerts" }
       }
     },
     "metrics": {
