@@ -104,7 +104,6 @@
       "label": "MySQL Password",
       "default": "",
       "required": false,
-      "type": "password",
       "show_if": { "PANEL_DB_CONNECTION": "mysql" }
     },
     {

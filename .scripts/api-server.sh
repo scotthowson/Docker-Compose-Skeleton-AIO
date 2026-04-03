@@ -9324,20 +9324,22 @@ handle_template_deploy() {
     # Built-in templates (from .templates/) are trusted, but user-modified variables
     # could inject dangerous YAML, so we still scan after variable substitution.
     # Use lenient mode for deploys: allow docker.sock (needed by Portainer, Watchtower, etc.)
+    # Strip privileged mode from scan — built-in templates are trusted, and the UI
+    # auto-sends allow_privileged for templates that need it. Also accept the flag
+    # from the request body for API consumers.
+    local _scan_compose="$template_compose"
     local _allow_privileged
     _allow_privileged=$(printf '%s' "$body" | jq -r '.allow_privileged // false' 2>/dev/null)
+    # Auto-allow privileged for built-in templates (they live in our .templates/ dir)
+    if [[ -d "$TEMPLATES_DIR/$name" ]]; then
+        _allow_privileged="true"
+    fi
     if [[ "$_allow_privileged" == "true" ]]; then
-        # Strip privileged lines before scanning — user explicitly approved
-        local _scan_compose
         _scan_compose=$(printf '%s' "$template_compose" | sed '/^\s*privileged:\s*/d')
-        if ! _api_scan_compose_security "$_scan_compose" "template deploy ($name)" "deploy"; then
-            return
-        fi
         _api_audit_log "${SOCAT_PEERADDR:-unknown}" "DEPLOY_PRIVILEGED" "${AUTH_USERNAME:-anonymous}" "Privileged mode approved for template: $name"
-    else
-        if ! _api_scan_compose_security "$template_compose" "template deploy ($name)" "deploy"; then
-            return
-        fi
+    fi
+    if ! _api_scan_compose_security "$_scan_compose" "template deploy ($name)" "deploy"; then
+        return
     fi
 
     # Optional: exclude services the user toggled off (e.g. docker-socket-proxy)
