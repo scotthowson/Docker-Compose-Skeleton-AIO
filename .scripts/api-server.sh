@@ -11088,7 +11088,88 @@ handle_template_dry_run() {
     local has_port_conflict="false"
     [[ -n "$port_conflicts" ]] && has_port_conflict="true"
 
-    _api_success "{\"success\": true, \"template\": \"$(_api_json_escape "$name")\", \"target_stack\": \"$(_api_json_escape "$target_stack")\", \"services\": $services_json, \"service_conflicts\": \"$(_api_json_escape "$service_conflicts")\", \"has_service_conflicts\": $has_svc_conflict, \"port_conflicts\": \"$(_api_json_escape "$port_conflicts")\", \"has_port_conflicts\": $has_port_conflict, \"port_conflicts_detail\": $port_conflicts_detail, \"env_additions\": $env_additions, \"env_existing\": $env_existing, \"lines_added\": ${lines_added:-0}, \"compose_preview\": \"$(_api_json_escape "$tpl_svc_block")\"}"
+    # --- Security scan (non-blocking — report warnings, don't reject) ---
+    local security_warnings="[]"
+    if command -v _api_scan_compose_security >/dev/null 2>&1; then
+        # Capture violations without rejecting
+        local _scan_out
+        _scan_out=$(_api_scan_compose_security "$template_compose" "dry-run ($name)" "deploy" 2>&1) || true
+        if [[ -n "$_scan_out" && "$_scan_out" != *"passed"* ]]; then
+            security_warnings="[\"$(_api_json_escape "$_scan_out")\"]"
+        fi
+    fi
+
+    # --- Singleton check ---
+    local is_singleton="false"
+    local singleton_conflict=""
+    local meta="{}"
+    if [[ -f "$tdir/template.json" ]]; then
+        meta=$(jq -c '.' "$tdir/template.json" 2>/dev/null || echo "{}")
+        local _sing
+        _sing=$(printf '%s' "$meta" | jq -r '.singleton // false' 2>/dev/null)
+        if [[ "$_sing" == "true" ]]; then
+            is_singleton="true"
+            local target_compose="$target_dir/docker-compose.yml"
+            while IFS= read -r _svc; do
+                [[ -z "$_svc" ]] && continue
+                if grep -qF "  ${_svc}:" "$target_compose" 2>/dev/null; then
+                    singleton_conflict="${singleton_conflict:+$singleton_conflict, }$_svc"
+                fi
+            done <<< "$template_services"
+        fi
+    fi
+    local has_singleton_conflict="false"
+    [[ -n "$singleton_conflict" ]] && has_singleton_conflict="true"
+
+    # --- Required variable check ---
+    local missing_vars=""
+    if [[ -f "$tdir/template.json" ]]; then
+        local _req_vars
+        _req_vars=$(jq -r '.variables[]? | select(.required == true) | .name' "$tdir/template.json" 2>/dev/null)
+        local vars
+        vars=$(printf '%s' "$body" | jq -r '.variables // {} | to_entries[] | "\(.key)=\(.value)"' 2>/dev/null)
+        while IFS= read -r _rv; do
+            [[ -z "$_rv" ]] && continue
+            local _rv_val
+            _rv_val=$(echo "$vars" | grep -m1 "^${_rv}=" | cut -d= -f2-)
+            if [[ -z "$_rv_val" ]]; then
+                missing_vars="${missing_vars:+$missing_vars, }$_rv"
+            fi
+        done <<< "$_req_vars"
+    fi
+    local has_missing_vars="false"
+    [[ -n "$missing_vars" ]] && has_missing_vars="true"
+
+    # --- Pre-deploy plugin hooks (non-blocking, collect output) ---
+    local plugin_results="[]"
+    if [[ "${PLUGINS_ENABLED:-true}" == "true" && "${PLUGINS_HOOKS_ENABLED:-true}" == "true" ]]; then
+        local _plugin_dir="${PLUGINS_DIR:-$BASE_DIR/.plugins}"
+        if [[ -d "$_plugin_dir" ]]; then
+            local -a _plugin_outputs=()
+            for _pd in "$_plugin_dir"/*/; do
+                [[ ! -f "$_pd/plugin.json" ]] && continue
+                [[ -f "$_pd/.disabled" ]] && continue
+                local _pname
+                _pname=$(basename "$_pd")
+                local _hook="$_pd/hooks/pre-deploy"
+                [[ ! -x "$_hook" ]] && _hook="${_hook}.sh"
+                [[ ! -x "$_hook" ]] && continue
+                local _ctx="{\"stack\":\"$target_stack\",\"template\":\"$name\",\"compose\":\"$(_api_json_escape "$template_compose")\"}"
+                local _pout
+                _pout=$(echo "$_ctx" | timeout 10 "$_hook" 2>/dev/null | head -c 2048) || _pout=""
+                if [[ -n "$_pout" ]]; then
+                    _plugin_outputs+=("{\"plugin\": \"$(_api_json_escape "$_pname")\", \"output\": \"$(_api_json_escape "$_pout")\"}")
+                fi
+            done
+            if [[ ${#_plugin_outputs[@]} -gt 0 ]]; then
+                local _pj
+                _pj=$(printf '%s,' "${_plugin_outputs[@]}")
+                plugin_results="[${_pj%,}]"
+            fi
+        fi
+    fi
+
+    _api_success "{\"success\": true, \"template\": \"$(_api_json_escape "$name")\", \"target_stack\": \"$(_api_json_escape "$target_stack")\", \"services\": $services_json, \"service_conflicts\": \"$(_api_json_escape "$service_conflicts")\", \"has_service_conflicts\": $has_svc_conflict, \"port_conflicts\": \"$(_api_json_escape "$port_conflicts")\", \"has_port_conflicts\": $has_port_conflict, \"port_conflicts_detail\": $port_conflicts_detail, \"env_additions\": $env_additions, \"env_existing\": $env_existing, \"lines_added\": ${lines_added:-0}, \"compose_preview\": \"$(_api_json_escape "$tpl_svc_block")\", \"is_singleton\": $is_singleton, \"singleton_conflict\": \"$(_api_json_escape "$singleton_conflict")\", \"has_singleton_conflict\": $has_singleton_conflict, \"missing_required_vars\": \"$(_api_json_escape "$missing_vars")\", \"has_missing_vars\": $has_missing_vars, \"security_warnings\": $security_warnings, \"plugin_results\": $plugin_results}"
 }
 
 handle_template_undeploy() {
