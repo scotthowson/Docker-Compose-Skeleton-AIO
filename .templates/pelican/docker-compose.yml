@@ -14,20 +14,6 @@ services:
     volumes:
       - ${APP_DATA_DIR:-./App-Data}/Pelican/Panel:/pelican-data
       - ${APP_DATA_DIR:-./App-Data}/Pelican/Panel/logs:/var/www/html/storage/logs
-    entrypoint: ["/bin/ash", "-c", "
-      mkdir -p /pelican-data/database /pelican-data/storage/avatars /pelican-data/storage/fonts /pelican-data/storage/icons /pelican-data/plugins /var/www/html/storage/logs/supervisord 2>/dev/null;
-      touch /pelican-data/.env 2>/dev/null || true;
-      for v in DB_CONNECTION DB_HOST DB_PORT DB_DATABASE DB_USERNAME DB_PASSWORD; do
-        val=$(eval echo \\$$v);
-        if [ -n \"$val\" ] && ! grep -q \"^$v=\" /pelican-data/.env 2>/dev/null; then
-          echo \"$v=$val\" >> /pelican-data/.env;
-        fi;
-      done;
-      chown -R www-data:www-data /pelican-data 2>/dev/null || true;
-      chown -R www-data:www-data /var/www/html/storage/logs 2>/dev/null || true;
-      chmod +x /entrypoint.sh 2>/dev/null || true;
-      exec /entrypoint.sh
-      "]
     environment:
       - TZ=${TZ:-UTC}
       - XDG_DATA_HOME=/pelican-data

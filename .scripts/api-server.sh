@@ -9783,6 +9783,26 @@ handle_template_deploy() {
                     'cp -rn /src/* /dst/ 2>/dev/null; cp -r /src/* /dst/ 2>/dev/null' || true
             fi
 
+            # Variable substitution on deployed config files (.env, .yml, .yaml, .conf)
+            # Config templates can use ${VAR:-default} patterns just like compose files
+            local _user_vars
+            _user_vars=$(printf '%s' "$body" | jq -r '.variables // {} | to_entries[] | "\(.key)=\(.value)"' 2>/dev/null)
+            if [[ -n "$_user_vars" ]]; then
+                while IFS= read -r _cfg_file; do
+                    [[ -z "$_cfg_file" ]] && continue
+                    while IFS='=' read -r _vk _vv; do
+                        [[ -z "$_vk" ]] && continue
+                        [[ ! "$_vk" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && continue
+                        local _safe_vv
+                        _safe_vv=$(printf '%s' "$_vv" | sed 's/[&/\]/\\&/g')
+                        sed -i "s|\${${_vk}:-[^}]*}|${_safe_vv}|g" "$_cfg_file" 2>/dev/null
+                        sed -i "s|\${${_vk}}|${_safe_vv}|g" "$_cfg_file" 2>/dev/null
+                    done <<< "$_user_vars"
+                    # Resolve remaining ${VAR:-default} to their defaults
+                    sed -i 's/${[A-Za-z_][A-Za-z0-9_]*:-\([^}]*\)}/\1/g' "$_cfg_file" 2>/dev/null
+                done < <(find "$config_target" -maxdepth 3 -type f \( -name '.env' -o -name '*.yml' -o -name '*.yaml' -o -name '*.conf' \) 2>/dev/null)
+            fi
+
             # Create custom_routes subdirectories for ALL existing stacks
             if [[ -d "$config_target/custom_routes" ]]; then
                 local all_stacks
