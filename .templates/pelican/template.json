@@ -39,16 +39,26 @@
     {
       "name": "PANEL_TRUSTED_PROXIES",
       "label": "Trusted Proxies",
-      "description": "Trusted proxy CIDR for HTTPS termination (0.0.0.0/0 = trust all, use behind Traefik)",
+      "description": "Which IPs to trust for HTTPS forwarding headers",
       "default": "0.0.0.0/0",
-      "required": false
+      "required": false,
+      "options": [
+        { "value": "0.0.0.0/0", "label": "Trust all (behind any reverse proxy)" },
+        { "value": "173.245.48.0/20,103.21.244.0/22,103.22.200.0/22,103.31.4.0/22,141.101.64.0/18,108.162.192.0/18,190.93.240.0/20,188.114.96.0/20,197.234.240.0/22,198.41.128.0/17,162.158.0.0/15,104.16.0.0/13,104.24.0.0/14,172.64.0.0/13,131.0.72.0/22", "label": "Cloudflare IPs only" },
+        { "value": "172.16.0.0/12", "label": "Docker internal networks only" },
+        { "value": "", "label": "None (direct TLS, no proxy)" }
+      ]
     },
     {
       "name": "PANEL_DB_CONNECTION",
       "label": "Database",
-      "description": "sqlite = built-in zero-config, mysql = connect to your existing MySQL server",
+      "description": "Database backend for Pelican Panel",
       "default": "sqlite",
-      "required": false
+      "required": false,
+      "options": [
+        { "value": "sqlite", "label": "SQLite (built-in, zero config)" },
+        { "value": "mysql", "label": "MySQL (external server)" }
+      ]
     },
     {
       "name": "PANEL_DB_HOST",
