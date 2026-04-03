@@ -3,6 +3,7 @@ services:
     container_name: Pelican-Panel
     image: ghcr.io/pelican-dev/panel:latest
     restart: unless-stopped
+    user: "0:0"
     ports:
       - "${PANEL_PORT_HTTP:-8005}:80"
       - "${PANEL_PORT_HTTPS:-8006}:443"
