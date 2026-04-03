@@ -3,43 +3,39 @@ services:
     container_name: Pelican-Panel
     image: ghcr.io/pelican-dev/panel:latest
     restart: unless-stopped
-    stdin_open: true
-    tty: true
-    user: "0:0"
     ports:
       - "${PANEL_PORT_HTTP:-8005}:80"
       - "${PANEL_PORT_HTTPS:-8006}:443"
     extra_hosts:
-      - "host-gateway:host-gateway"
+      - "host.docker.internal:host-gateway"
     networks:
       - default
       - proxy
     volumes:
-      - ${APP_DATA_DIR:-./App-Data}/Pelican/Panel/data:/pelican-data
+      - ${APP_DATA_DIR:-./App-Data}/Pelican/Panel:/pelican-data
       - ${APP_DATA_DIR:-./App-Data}/Pelican/Panel/logs:/var/www/html/storage/logs
-      - ${APP_DATA_DIR:-./App-Data}/Pelican/Panel/plugins:/var/www/html/plugins
-      - /etc/machine-id:/etc/machine-id:ro
-      - /var/lib/dbus/machine-id:/var/lib/dbus/machine-id:ro
     entrypoint: ["/bin/ash", "-c", "
-      # Seed /pelican-data/.env with DB vars if not already present (entrypoint reads from file, not Docker env)
-      touch /pelican-data/.env 2>/dev/null;
+      mkdir -p /pelican-data/database /pelican-data/storage/avatars /pelican-data/storage/fonts /pelican-data/storage/icons /pelican-data/plugins /var/www/html/storage/logs/supervisord 2>/dev/null;
+      touch /pelican-data/.env 2>/dev/null || true;
       for v in DB_CONNECTION DB_HOST DB_PORT DB_DATABASE DB_USERNAME DB_PASSWORD; do
         val=$(eval echo \\$$v);
-        [ -n \"$val\" ] && ! grep -q \"^$v=\" /pelican-data/.env 2>/dev/null && echo \"$v=$val\" >> /pelican-data/.env;
+        if [ -n \"$val\" ] && ! grep -q \"^$v=\" /pelican-data/.env 2>/dev/null; then
+          echo \"$v=$val\" >> /pelican-data/.env;
+        fi;
       done;
+      chown -R www-data:www-data /pelican-data /var/www/html/storage/logs 2>/dev/null || true;
       exec /entrypoint.sh
       "]
     environment:
       - TZ=${TZ:-UTC}
       - XDG_DATA_HOME=/pelican-data
       - APP_URL=${PANEL_APP_URL:-http://127.0.0.1:8005}
-      - ASSET_URL=${PANEL_APP_URL:-http://127.0.0.1:8005}/
       - APP_ENV=production
       - APP_DEBUG=false
       - APP_LOCALE=en
-      - TRUSTED_PROXIES=${PANEL_TRUSTED_PROXIES:-0.0.0.0/0}
       - BEHIND_PROXY=${PANEL_BEHIND_PROXY:-true}
       - LE_EMAIL=${PANEL_ADMIN_EMAIL:-admin@example.com}
+      - TRUSTED_PROXIES=${PANEL_TRUSTED_PROXIES:-0.0.0.0/0}
       - DB_CONNECTION=${PANEL_DB_CONNECTION:-sqlite}
       - DB_HOST=${PANEL_DB_HOST:-}
       - DB_PORT=${PANEL_DB_PORT:-3306}
@@ -47,11 +43,11 @@ services:
       - DB_USERNAME=${PANEL_DB_USER:-pelican}
       - DB_PASSWORD=${PANEL_DB_PASSWORD:-}
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:80/ || exit 1"]
-      interval: 30s
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:80/up || curl -sf http://127.0.0.1:80/ || exit 1"]
+      interval: 60s
       timeout: 10s
       retries: 5
-      start_period: 60s
+      start_period: 90s
 
   pelican-wings:
     container_name: Pelican-Wings
