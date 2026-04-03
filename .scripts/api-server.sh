@@ -146,12 +146,12 @@ API_RATE_LIMIT="${API_RATE_LIMIT:-600}"
 API_RATE_WINDOW="${API_RATE_WINDOW:-60}"  # window in seconds
 
 # Rate limit tracking directory
-API_RATE_DIR="/tmp/dcs-api-rates"
+API_RATE_DIR="${API_RATE_DIR:-$BASE_DIR/.data/rates}"
 mkdir -p "$API_RATE_DIR" 2>/dev/null
 
 # API server start time (epoch) — used by /health for uptime & request counters
 API_START_EPOCH="$(date +%s)"
-API_STATS_FILE="/tmp/dcs-api-stats"
+API_STATS_FILE="${API_STATS_FILE:-$BASE_DIR/.data/api-stats}"
 # Initialize stats file (request count, error count) — shared across forked handlers
 [[ -f "$API_STATS_FILE" ]] || printf '0\n0\n' > "$API_STATS_FILE"
 
@@ -401,7 +401,7 @@ _api_error() {
     local escaped
     escaped="$(_api_json_escape "$message")"
     # Increment error counter
-    if [[ -f "${API_STATS_FILE:-/tmp/dcs-api-stats}" ]]; then
+    if [[ -f "${API_STATS_FILE}" ]]; then
         local _rc _ec
         _rc=$(sed -n '1p' "$API_STATS_FILE" 2>/dev/null || echo 0)
         _ec=$(sed -n '2p' "$API_STATS_FILE" 2>/dev/null || echo 0)
@@ -1590,7 +1590,7 @@ _api_container_json() {
                 image_id: (.Image | split(":") | .[1][:12] // ""),
                 created: .Created,
                 uptime_seconds: (if .State.Status == "running" and .State.StartedAt != "0001-01-01T00:00:00Z" then
-                    ($now - (.State.StartedAt | split(".")[0] + "Z" | fromdateiso8601)) else 0 end),
+                    (($now - (.State.StartedAt | split(".")[0] + "Z" | fromdateiso8601)) // 0) else 0 end),
                 ports: ([.NetworkSettings.Ports | to_entries[] |
                     select(.value != null) | .value[] |
                     (if .HostIp == "" or .HostIp == "0.0.0.0" then "0.0.0.0" else .HostIp end) +
@@ -2537,7 +2537,7 @@ handle_container_detail() {
             image_id: (.Image | split(":") | .[1][:12] // ""),
             created: .Created,
             uptime_seconds: (if .State.Status == "running" and .State.StartedAt != "0001-01-01T00:00:00Z" then
-                ($now - (.State.StartedAt | split(".")[0] + "Z" | fromdateiso8601)) else 0 end),
+                (($now - (.State.StartedAt | split(".")[0] + "Z" | fromdateiso8601)) // 0) else 0 end),
             ports: ([.NetworkSettings.Ports | to_entries[] |
                 select(.value != null) | .value[] |
                 (if .HostIp == "" or .HostIp == "0.0.0.0" then "0.0.0.0" else .HostIp end) +
@@ -3839,6 +3839,8 @@ handle_totp_validate() {
         if [[ -f "$_totp_attempts_file" ]]; then
             _totp_fails=$(grep -c "^${_totp_key}$" "$_totp_attempts_file" 2>/dev/null) || _totp_fails=0
         fi
+        touch "$_totp_attempts_file" 2>/dev/null
+        chmod 600 "$_totp_attempts_file" 2>/dev/null
         echo "$_totp_key" >> "$_totp_attempts_file"
         _totp_fails=$(( _totp_fails + 1 ))
 
@@ -14875,9 +14877,11 @@ handle_request() {
     while IFS= read -r -t 10 header; do
         (( ++_hdr_count ))
         if [[ $_hdr_count -gt 100 ]]; then
+            printf 'HTTP/1.1 431 Request Header Fields Too Large\r\nContent-Length: 0\r\nConnection: close\r\n\r\n'
             return
         fi
         if [[ ${#header} -gt 16384 ]]; then
+            printf 'HTTP/1.1 431 Request Header Fields Too Large\r\nContent-Length: 0\r\nConnection: close\r\n\r\n'
             return
         fi
         header="${header%%$'\r'}"
