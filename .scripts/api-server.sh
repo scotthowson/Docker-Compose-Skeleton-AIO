@@ -2627,6 +2627,7 @@ handle_config() {
     config+="\"service_stop_delay\": ${SERVICE_STOP_DELAY:-0},"
     # Docker
     config+="\"docker_stacks\": \"$(_api_json_escape "${DOCKER_STACKS:-}")\","
+    config+="\"docker_compose_version\": \"$(_api_json_escape "${DOCKER_COMPOSE_VERSION:-auto}")\","
     config+="\"docker_timeout\": ${DOCKER_TIMEOUT:-120},"
     config+="\"stack_start_timeout\": ${STACK_START_TIMEOUT:-300},"
     config+="\"force_recreate\": ${FORCE_RECREATE:-false},"
@@ -2668,12 +2669,21 @@ handle_config() {
     config+="\"api_single_session\": ${API_SINGLE_SESSION:-false},"
     config+="\"api_cors_origins\": \"$(_api_json_escape "${API_CORS_ORIGINS:-}")\","
     config+="\"api_ip_whitelist\": \"$(_api_json_escape "${API_IP_WHITELIST:-}")\","
+    config+="\"api_max_login_attempts\": ${API_MAX_LOGIN_ATTEMPTS:-5},"
+    config+="\"api_lockout_duration\": ${API_LOCKOUT_DURATION:-900},"
+    config+="\"api_tls_enabled\": ${API_TLS_ENABLED:-false},"
+    config+="\"api_behind_tls_proxy\": ${API_BEHIND_TLS_PROXY:-false},"
+    config+="\"api_invite_expiry\": ${API_INVITE_EXPIRY:-604800},"
+    config+="\"api_max_body_size\": ${API_MAX_BODY_SIZE:-1048576},"
+    config+="\"terminal_session_expiry\": ${TERMINAL_SESSION_EXPIRY:-14400},"
     # Traefik/DNS (tokens excluded)
     config+="\"traefik_domain\": \"$(_api_json_escape "${TRAEFIK_DOMAIN:-}")\","
     config+="\"traefik_acme_email\": \"$(_api_json_escape "${TRAEFIK_ACME_EMAIL:-}")\","
+    config+="\"traefik_trusted_lan\": \"$(_api_json_escape "${TRAEFIK_TRUSTED_LAN:-}")\","
     config+="\"cf_dns_api_token_set\": $([[ -n "${CF_DNS_API_TOKEN:-}" ]] && echo true || echo false),"
     config+="\"ddns_enabled\": ${DDNS_ENABLED:-false},"
     config+="\"ddns_interval\": ${DDNS_INTERVAL:-300},"
+    config+="\"ddns_subdomains\": \"$(_api_json_escape "${DDNS_SUBDOMAINS:-@}")\","
     # Health
     config+="\"enable_post_startup_health_check\": ${ENABLE_POST_STARTUP_HEALTH_CHECK:-true},"
     config+="\"health_check_delay\": ${HEALTH_CHECK_DELAY:-10},"
@@ -2692,6 +2702,9 @@ handle_config() {
     config+="\"rollback_max_snapshots\": ${ROLLBACK_MAX_SNAPSHOTS:-10},"
     config+="\"secrets_encryption\": ${SECRETS_ENCRYPTION:-true},"
     config+="\"scheduler_check_interval\": ${SCHEDULER_CHECK_INTERVAL:-60},"
+    # Dashboard
+    config+="\"portainer_url\": \"$(_api_json_escape "${PORTAINER_URL:-}")\","
+    config+="\"dashboard_icon_url\": \"$(_api_json_escape "${DASHBOARD_ICON_URL:-}")\","
     # Backup
     config+="\"backup_source_dir\": \"$(_api_json_escape "${BACKUP_SOURCE_DIR:-}")\","
     config+="\"backup_dest_dir\": \"$(_api_json_escape "${BACKUP_DEST_DIR:-}")\","
@@ -5398,9 +5411,14 @@ handle_config_update() {
         [API_AUTH_ENABLED]=1 [API_RATE_LIMIT]=1 [API_RATE_WINDOW]=1
         [API_CORS_ORIGINS]=1 [API_IP_WHITELIST]=1
         [API_TOKEN_EXPIRY]=1 [API_SINGLE_SESSION]=1
+        [API_MAX_LOGIN_ATTEMPTS]=1 [API_LOCKOUT_DURATION]=1
+        [API_TLS_ENABLED]=1 [API_BEHIND_TLS_PROXY]=1
+        [API_INVITE_EXPIRY]=1 [API_MAX_BODY_SIZE]=1
+        [TERMINAL_SESSION_EXPIRY]=1
         # Traefik/DNS
         [TRAEFIK_DOMAIN]=1 [TRAEFIK_ACME_EMAIL]=1
         [CF_DNS_API_TOKEN]=1 [DDNS_ENABLED]=1 [DDNS_INTERVAL]=1
+        [TRAEFIK_TRUSTED_LAN]=1 [DDNS_SUBDOMAINS]=1
         # Health/Monitoring
         [ENABLE_POST_STARTUP_HEALTH_CHECK]=1 [HEALTH_CHECK_DELAY]=1
         [CRITICAL_CONTAINERS]=1 [IMPORTANT_CONTAINERS]=1
@@ -5411,6 +5429,8 @@ handle_config_update() {
         [HEALTH_SCORE_ENABLED]=1
         [ROLLBACK_MAX_SNAPSHOTS]=1 [SECRETS_ENCRYPTION]=1 [SCHEDULER_CHECK_INTERVAL]=1
         [METRICS_RETENTION_DAYS]=1 [INCLUDE_RESOURCE_METRICS]=1
+        # Dashboard/General
+        [PORTAINER_URL]=1 [DASHBOARD_ICON_URL]=1 [DOCKER_COMPOSE_VERSION]=1
         # Backup
         [BACKUP_SOURCE_DIR]=1 [BACKUP_DEST_DIR]=1 [BACKUP_RETENTION_COUNT]=1
     )
