@@ -25,9 +25,9 @@
         "DOCKER_STACKS": { "type": "string", "default": "core-infrastructure networking-security monitoring-management development-tools media-services web-applications storage-backup communication-collaboration entertainment-personal miscellaneous-services", "description": "Space-separated stack categories (defines startup order, shutdown is reversed)" },
         "CONTINUE_ON_FAILURE": { "type": "boolean", "default": true, "description": "Continue starting remaining stacks if one fails" },
         "SKIP_HEALTHCHECK_WAIT": { "type": "boolean", "default": false, "description": "Skip waiting for healthchecks during startup (faster but riskier)" },
-        "SERVICE_START_DELAY": { "type": "integer", "default": 5, "description": "Seconds between starting stacks", "minimum": 0, "maximum": 60 },
-        "STACK_START_TIMEOUT": { "type": "integer", "default": 120, "description": "Max seconds to wait for a single stack to start", "minimum": 10, "maximum": 600 },
-        "SERVICE_STOP_DELAY": { "type": "integer", "default": 10, "description": "Seconds between stopping stacks", "minimum": 0, "maximum": 60 },
+        "SERVICE_START_DELAY": { "type": "integer", "default": 0, "description": "Seconds between starting stacks", "minimum": 0, "maximum": 60 },
+        "STACK_START_TIMEOUT": { "type": "integer", "default": 300, "description": "Max seconds to wait for a single stack to start", "minimum": 10, "maximum": 600 },
+        "SERVICE_STOP_DELAY": { "type": "integer", "default": 0, "description": "Seconds between stopping stacks", "minimum": 0, "maximum": 60 },
         "REMOVE_VOLUMES_ON_STOP": { "type": "boolean", "default": false, "description": "Remove named volumes when stopping stacks (DESTRUCTIVE)" }
       }
     },
@@ -44,7 +44,7 @@
       "description": "Docker daemon and container management settings",
       "properties": {
         "DOCKER_COMPOSE_VERSION": { "type": "string", "default": "auto", "description": "Which Compose version to use", "enum": ["auto", "v1", "v2"] },
-        "DOCKER_TIMEOUT": { "type": "integer", "default": 300, "description": "Timeout for Docker operations (seconds)", "minimum": 30, "maximum": 3600 },
+        "DOCKER_TIMEOUT": { "type": "integer", "default": 120, "description": "Timeout for Docker operations (seconds)", "minimum": 30, "maximum": 3600 },
         "REMOVE_ORPHANED_CONTAINERS": { "type": "boolean", "default": true, "description": "Remove orphaned containers during startup cleanup" },
         "FORCE_RECREATE": { "type": "boolean", "default": false, "description": "Force recreate containers on every start" },
         "MAX_PARALLEL_OPERATIONS": { "type": "integer", "default": 3, "description": "Max parallel Docker operations", "minimum": 1, "maximum": 10 },
@@ -79,18 +79,18 @@
         "ENABLE_LOG_HOSTNAME": { "type": "boolean", "default": false, "description": "Show hostname in log entries" },
         "LOG_MAX_SIZE": { "type": "string", "default": "10M", "description": "Max log file size before rotation", "pattern": "^[0-9]+[KMG]$" },
         "LOG_BACKUP_COUNT": { "type": "integer", "default": 12, "description": "Number of rotated log files to keep", "minimum": 1, "maximum": 100 },
-        "LOG_RETENTION_DAYS": { "type": "integer", "default": 90, "description": "Days to retain log archives", "minimum": 1, "maximum": 365 },
-        "ENABLE_STRUCTURED_LOGGING": { "type": "boolean", "default": true, "description": "Enable JSONL structured log output alongside plain text" }
+        "LOG_RETENTION_DAYS": { "type": "integer", "default": 30, "description": "Days to retain log archives", "minimum": 1, "maximum": 365 },
+        "ENABLE_STRUCTURED_LOGGING": { "type": "boolean", "default": false, "description": "Enable JSONL structured log output alongside plain text" }
       }
     },
     "api": {
       "title": "REST API",
       "description": "Built-in REST API server for remote management",
       "properties": {
-        "API_ENABLED": { "type": "boolean", "default": false, "description": "Enable the REST API server" },
+        "API_ENABLED": { "type": "boolean", "default": true, "description": "Enable the REST API server" },
         "API_PORT": { "type": "integer", "default": 9876, "description": "API listening port", "minimum": 1024, "maximum": 65535 },
         "API_BIND": { "type": "string", "default": "127.0.0.1", "description": "API bind address (0.0.0.0 for all interfaces)" },
-        "API_RATE_LIMIT": { "type": "integer", "default": 120, "description": "Max requests per minute per IP (0 = disabled)", "minimum": 0, "maximum": 10000 },
+        "API_RATE_LIMIT": { "type": "integer", "default": 600, "description": "Max requests per minute per IP (0 = disabled)", "minimum": 0, "maximum": 10000 },
         "API_RATE_WINDOW": { "type": "integer", "default": 60, "description": "Time window for rate limiting in seconds", "minimum": 10 },
         "API_TOKEN_EXPIRY": { "type": "integer", "default": 86400, "description": "API token expiry in seconds", "minimum": 300, "maximum": 604800 },
         "API_AUTH_ENABLED": { "type": "boolean", "default": true, "description": "Enable API authentication" },
@@ -116,7 +116,7 @@
       "properties": {
         "ENABLE_POST_STARTUP_HEALTH_CHECK": { "type": "boolean", "default": true, "description": "Run health check after startup sequence" },
         "HEALTH_CHECK_DELAY": { "type": "integer", "default": 10, "description": "Seconds to wait before health check (stabilization)", "minimum": 0, "maximum": 120 },
-        "INCLUDE_RESOURCE_METRICS": { "type": "boolean", "default": false, "description": "Include CPU/memory in health reports" },
+        "INCLUDE_RESOURCE_METRICS": { "type": "boolean", "default": true, "description": "Include CPU/memory in health reports" },
         "HEALTH_SCORE_ENABLED": { "type": "boolean", "default": true, "description": "Enable 0-100 health scoring system" },
         "CRITICAL_CONTAINERS": { "type": "string", "default": "", "description": "Comma-separated list of containers that trigger critical alerts" },
         "IMPORTANT_CONTAINERS": { "type": "string", "default": "", "description": "Comma-separated list of containers that trigger important alerts" }
@@ -127,7 +127,7 @@
       "description": "Persistent time-series metrics for historical analysis",
       "properties": {
         "METRICS_ENABLED": { "type": "boolean", "default": true, "description": "Enable persistent metrics collection" },
-        "METRICS_COLLECT_INTERVAL": { "type": "integer", "default": 30, "description": "Seconds between metric samples", "minimum": 10, "maximum": 300 },
+        "METRICS_COLLECT_INTERVAL": { "type": "integer", "default": 60, "description": "Seconds between metric samples", "minimum": 10, "maximum": 300 },
         "METRICS_RETENTION_DAYS": { "type": "integer", "default": 7, "description": "Days to retain historical metrics data", "minimum": 1, "maximum": 90 }
       }
     },
@@ -150,7 +150,7 @@
       "title": "Scheduled Operations",
       "description": "Background scheduler for automated tasks",
       "properties": {
-        "SCHEDULER_ENABLED": { "type": "boolean", "default": false, "description": "Enable background scheduler daemon" },
+        "SCHEDULER_ENABLED": { "type": "boolean", "default": true, "description": "Enable background scheduler daemon" },
         "SCHEDULER_CHECK_INTERVAL": { "type": "integer", "default": 60, "description": "Seconds between schedule checks", "minimum": 10, "maximum": 600 }
       }
     },
@@ -168,7 +168,7 @@
       "properties": {
         "BACKUP_SOURCE_DIR": { "type": "string", "default": "", "description": "Source directory for backups" },
         "BACKUP_DEST_DIR": { "type": "string", "default": "", "description": "Destination directory for backup archives" },
-        "BACKUP_RETENTION_COUNT": { "type": "integer", "default": 6, "description": "Number of backup archives to keep", "minimum": 1, "maximum": 100 }
+        "BACKUP_RETENTION_COUNT": { "type": "integer", "default": 7, "description": "Number of backup archives to keep", "minimum": 1, "maximum": 100 }
       }
     }
   }

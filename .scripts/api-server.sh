@@ -9080,7 +9080,9 @@ handle_template_deploy() {
             local _dup_services=""
             while IFS= read -r _svc; do
                 [[ -z "$_svc" ]] && continue
-                if grep -qE "^\s+${_svc}:" "$target_compose" 2>/dev/null; then
+                local _svc_escaped
+                _svc_escaped=$(printf '%s' "$_svc" | sed 's/[.[\*^$()+?{|\\]/\\&/g')
+                if grep -qE "^\s+${_svc_escaped}:" "$target_compose" 2>/dev/null; then
                     _dup_services="${_dup_services:+$_dup_services, }$_svc"
                 fi
             done <<< "$template_services"
