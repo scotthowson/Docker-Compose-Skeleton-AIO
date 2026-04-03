@@ -29,7 +29,13 @@ services:
       - APP_DEBUG=false
       - TRUSTED_PROXIES=${PANEL_TRUSTED_PROXIES:-*}
       - APP_LOCALE=en
-      - DB_CONNECTION=sqlite
+      - APP_SERVICE_AUTHOR_EMAIL=${PANEL_ADMIN_EMAIL:-admin@example.com}
+      - DB_CONNECTION=${PANEL_DB_CONNECTION:-sqlite}
+      - DB_HOST=${PANEL_DB_HOST:-pelican-db}
+      - DB_PORT=${PANEL_DB_PORT:-3306}
+      - DB_DATABASE=${PANEL_DB_NAME:-pelican}
+      - DB_USERNAME=${PANEL_DB_USER:-pelican}
+      - DB_PASSWORD=${PANEL_DB_PASSWORD:-}
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://127.0.0.1:80/ || exit 1"]
       interval: 30s
