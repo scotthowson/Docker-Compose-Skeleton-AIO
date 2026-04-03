@@ -1,0 +1,60 @@
+{
+  "name": "your-spotify",
+  "title": "Your Spotify",
+  "description": "Self-hosted Spotify listening history tracker and statistics dashboard. Includes a client web UI and a backend API server that connects to the Spotify API to track and visualize your listening habits.",
+  "category": "entertainment",
+  "target_stack": "entertainment-personal",
+  "icon": "\ud83c\udfb5",
+  "tags": ["spotify", "music", "statistics", "tracking", "dashboard", "entertainment"],
+  "variables": [
+    {
+      "name": "PORT_CLIENT_SPOTIFY",
+      "label": "Client Port",
+      "description": "Port for the Your Spotify web dashboard",
+      "default": "3005",
+      "required": false
+    },
+    {
+      "name": "PORT_SERVER_SPOTIFY",
+      "label": "Server Port",
+      "description": "Port for the Your Spotify API server",
+      "default": "8085",
+      "required": false
+    },
+    {
+      "name": "SPOTIFY_API_ENDPOINT",
+      "label": "API Endpoint URL",
+      "description": "Public URL where the API server is accessible (e.g. https://spotify-api.example.com)",
+      "default": "http://localhost:8085",
+      "required": true
+    },
+    {
+      "name": "SPOTIFY_CLIENT_ENDPOINT",
+      "label": "Client Endpoint URL",
+      "description": "Public URL where the client dashboard is accessible (e.g. https://spotify.example.com)",
+      "default": "http://localhost:3005",
+      "required": true
+    },
+    {
+      "name": "SPOTIFY_PUBLIC",
+      "label": "Spotify Client ID",
+      "description": "Spotify API application client ID (from developer.spotify.com)",
+      "default": "",
+      "required": true
+    },
+    {
+      "name": "SPOTIFY_SECRET",
+      "label": "Spotify Client Secret",
+      "description": "Spotify API application client secret",
+      "default": "",
+      "required": true
+    },
+    {
+      "name": "MONGO_PORT",
+      "label": "MongoDB Port",
+      "description": "Port for the MongoDB database (internal use)",
+      "default": "27018",
+      "required": false
+    }
+  ]
+}

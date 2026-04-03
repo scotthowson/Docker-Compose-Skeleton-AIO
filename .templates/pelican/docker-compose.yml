@@ -10,6 +10,9 @@ services:
       - "${PANEL_PORT_HTTPS:-8006}:443"
     extra_hosts:
       - "host-gateway:host-gateway"
+    networks:
+      - default
+      - proxy
     volumes:
       - ${APP_DATA_DIR:-./App-Data}/Pelican/Panel/data:/pelican-data
       - ${APP_DATA_DIR:-./App-Data}/Pelican/Panel/logs:/var/www/html/storage/logs
@@ -25,7 +28,7 @@ services:
       interval: 30s
       timeout: 10s
       retries: 5
-      start_period: 30s
+      start_period: 60s
 
   pelican-wings:
     container_name: Pelican-Wings
@@ -35,6 +38,8 @@ services:
     ports:
       - "${WINGS_SFTP_PORT:-2024}:2022"
       - "${WINGS_PORT:-8444}:8080"
+    networks:
+      - default
     environment:
       - TZ=${TZ:-UTC}
       - WINGS_UID=${WINGS_UID:-988}
@@ -58,3 +63,7 @@ services:
       timeout: 10s
       retries: 5
       start_period: 30s
+
+networks:
+  proxy:
+    external: true

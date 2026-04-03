@@ -1,0 +1,67 @@
+services:
+  your-spotify-client:
+    container_name: Your_Spotify_Client
+    image: yooooomi/your_spotify_client:latest
+    restart: always
+    ports:
+      - "${PORT_CLIENT_SPOTIFY:-3005}:3000"
+    networks:
+      - default
+      - proxy
+    environment:
+      - API_ENDPOINT=${SPOTIFY_API_ENDPOINT:-http://localhost:8085}
+    depends_on:
+      your-spotify-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/ || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+  your-spotify-server:
+    container_name: Your_Spotify_Server
+    image: yooooomi/your_spotify_server:latest
+    restart: always
+    ports:
+      - "${PORT_SERVER_SPOTIFY:-8085}:8080"
+    networks:
+      - default
+      - proxy
+    environment:
+      - API_ENDPOINT=${SPOTIFY_API_ENDPOINT:-http://localhost:8085}
+      - CLIENT_ENDPOINT=${SPOTIFY_CLIENT_ENDPOINT:-http://localhost:3005}
+      - SPOTIFY_PUBLIC=${SPOTIFY_PUBLIC}
+      - SPOTIFY_SECRET=${SPOTIFY_SECRET}
+      - MONGO_ENDPOINT=mongodb://your-spotify-mongo:27017/your_spotify
+    depends_on:
+      your-spotify-mongo:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/ || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+  your-spotify-mongo:
+    container_name: Your_Spotify_Mongo
+    image: mongo:6
+    restart: always
+    ports:
+      - "${MONGO_PORT:-27018}:27017"
+    networks:
+      - default
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/YourSpotify/mongo:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+networks:
+  proxy:
+    external: true

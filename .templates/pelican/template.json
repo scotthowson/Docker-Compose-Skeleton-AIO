@@ -1,11 +1,12 @@
 {
   "name": "pelican",
   "title": "Pelican Panel + Wings",
-  "description": "Open-source game server management panel with a companion Wings daemon for running game servers. Includes the web panel for administration and a Wings node for server hosting, both pre-configured to work together.",
-  "category": "web",
+  "description": "Open-source game server management panel with a companion Wings daemon for running game servers. Includes the web panel for administration and a Wings node for server hosting, both pre-configured to work together. After deploy, configure Wings via the template editor config.yml with your panel token.",
+  "category": "gaming",
   "target_stack": "entertainment-personal",
   "icon": "\ud83c\udfae",
-  "tags": ["gaming", "game-server", "panel", "minecraft", "management", "pelican"],
+  "tags": ["gaming", "game-server", "panel", "minecraft", "management", "pelican", "wings"],
+  "config_path": "Pelican",
   "variables": [
     {
       "name": "PANEL_PORT_HTTP",
@@ -45,7 +46,7 @@
     {
       "name": "WINGS_UID",
       "label": "Wings User ID",
-      "description": "System user ID for the Wings process",
+      "description": "System user ID for the Wings process (match your host pelican-wings user)",
       "default": "988",
       "required": false
     },
