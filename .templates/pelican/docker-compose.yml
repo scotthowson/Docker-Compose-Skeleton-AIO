@@ -20,6 +20,15 @@ services:
       - ${APP_DATA_DIR:-./App-Data}/Pelican/Panel/plugins:/var/www/html/plugins
       - /etc/machine-id:/etc/machine-id:ro
       - /var/lib/dbus/machine-id:/var/lib/dbus/machine-id:ro
+    entrypoint: ["/bin/ash", "-c", "
+      # Seed /pelican-data/.env with DB vars if not already present (entrypoint reads from file, not Docker env)
+      touch /pelican-data/.env 2>/dev/null;
+      for v in DB_CONNECTION DB_HOST DB_PORT DB_DATABASE DB_USERNAME DB_PASSWORD; do
+        val=$(eval echo \\$$v);
+        [ -n \"$val\" ] && ! grep -q \"^$v=\" /pelican-data/.env 2>/dev/null && echo \"$v=$val\" >> /pelican-data/.env;
+      done;
+      exec /entrypoint.sh
+      "]
     environment:
       - TZ=${TZ:-UTC}
       - XDG_DATA_HOME=/pelican-data
@@ -27,11 +36,12 @@ services:
       - ASSET_URL=${PANEL_APP_URL:-http://127.0.0.1:8005}/
       - APP_ENV=production
       - APP_DEBUG=false
-      - TRUSTED_PROXIES=${PANEL_TRUSTED_PROXIES:-0.0.0.0/0}
       - APP_LOCALE=en
-      - APP_SERVICE_AUTHOR_EMAIL=${PANEL_ADMIN_EMAIL:-admin@example.com}
+      - TRUSTED_PROXIES=${PANEL_TRUSTED_PROXIES:-0.0.0.0/0}
+      - BEHIND_PROXY=${PANEL_BEHIND_PROXY:-true}
+      - LE_EMAIL=${PANEL_ADMIN_EMAIL:-admin@example.com}
       - DB_CONNECTION=${PANEL_DB_CONNECTION:-sqlite}
-      - DB_HOST=${PANEL_DB_HOST:-pelican-db}
+      - DB_HOST=${PANEL_DB_HOST:-}
       - DB_PORT=${PANEL_DB_PORT:-3306}
       - DB_DATABASE=${PANEL_DB_NAME:-pelican}
       - DB_USERNAME=${PANEL_DB_USER:-pelican}

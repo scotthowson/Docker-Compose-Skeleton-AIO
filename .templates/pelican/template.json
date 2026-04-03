@@ -1,7 +1,7 @@
 {
   "name": "pelican",
   "title": "Pelican Panel + Wings",
-  "description": "Open-source game server management panel with a companion Wings daemon. Supports SQLite (default) or MySQL. After deploy, configure Wings via the template editor config.yml with your panel token from the Wings node setup page.",
+  "description": "Open-source game server management panel with a companion Wings daemon. Supports SQLite or MySQL, works behind Traefik/Cloudflare. After deploy, configure Wings via the template editor config.yml with your panel token.",
   "category": "gaming",
   "target_stack": "entertainment-personal",
   "icon": "\ud83c\udfae",
@@ -18,36 +18,46 @@
     {
       "name": "PANEL_ADMIN_EMAIL",
       "label": "Admin Email",
-      "description": "Administrator email (used for panel identity and certificate requests)",
+      "description": "Email for panel identity and Let's Encrypt certificates",
       "default": "admin@example.com",
       "required": false
     },
     {
       "name": "PANEL_PORT_HTTP",
       "label": "Panel HTTP Port",
-      "description": "Host port for the Panel web interface (HTTP)",
+      "description": "Host port for the Panel web interface",
       "default": "8005",
       "required": false
     },
     {
       "name": "PANEL_PORT_HTTPS",
       "label": "Panel HTTPS Port",
-      "description": "Host port for the Panel web interface (HTTPS)",
+      "description": "Host port for HTTPS (only used when not behind proxy)",
       "default": "8006",
       "required": false
     },
     {
+      "name": "PANEL_BEHIND_PROXY",
+      "label": "Behind Reverse Proxy",
+      "description": "Set to true when using Traefik, Cloudflare, or any reverse proxy for TLS",
+      "default": "true",
+      "options": [
+        { "value": "true", "label": "Yes — Traefik/Cloudflare handles TLS" },
+        { "value": "false", "label": "No — Panel handles TLS directly (needs Let's Encrypt)" }
+      ]
+    },
+    {
       "name": "PANEL_TRUSTED_PROXIES",
       "label": "Trusted Proxies",
-      "description": "Which IPs to trust for HTTPS forwarding headers",
+      "description": "Which IPs to trust for forwarded HTTPS headers",
       "default": "0.0.0.0/0",
       "required": false,
       "options": [
-        { "value": "0.0.0.0/0", "label": "Trust all (behind any reverse proxy)" },
+        { "value": "0.0.0.0/0", "label": "Trust all (any reverse proxy)" },
         { "value": "173.245.48.0/20,103.21.244.0/22,103.22.200.0/22,103.31.4.0/22,141.101.64.0/18,108.162.192.0/18,190.93.240.0/20,188.114.96.0/20,197.234.240.0/22,198.41.128.0/17,162.158.0.0/15,104.16.0.0/13,104.24.0.0/14,172.64.0.0/13,131.0.72.0/22", "label": "Cloudflare IPs only" },
-        { "value": "172.16.0.0/12", "label": "Docker internal networks only" },
-        { "value": "", "label": "None (direct TLS, no proxy)" }
-      ]
+        { "value": "172.16.0.0/12", "label": "Docker internal networks only" }
+      ],
+      "show_if": { "PANEL_BEHIND_PROXY": "true" }
     },
     {
       "name": "PANEL_DB_CONNECTION",
@@ -71,7 +81,6 @@
     {
       "name": "PANEL_DB_PORT",
       "label": "MySQL Port",
-      "description": "MySQL server port",
       "default": "3306",
       "required": false,
       "show_if": { "PANEL_DB_CONNECTION": "mysql" }
@@ -79,7 +88,6 @@
     {
       "name": "PANEL_DB_NAME",
       "label": "MySQL Database",
-      "description": "Database name to use for Pelican",
       "default": "pelican",
       "required": false,
       "show_if": { "PANEL_DB_CONNECTION": "mysql" }
@@ -87,7 +95,6 @@
     {
       "name": "PANEL_DB_USER",
       "label": "MySQL Username",
-      "description": "MySQL user with access to the database",
       "default": "pelican",
       "required": false,
       "show_if": { "PANEL_DB_CONNECTION": "mysql" }
@@ -95,7 +102,6 @@
     {
       "name": "PANEL_DB_PASSWORD",
       "label": "MySQL Password",
-      "description": "Password for the MySQL user",
       "default": "",
       "required": false,
       "type": "password",
@@ -104,35 +110,31 @@
     {
       "name": "WINGS_SFTP_PORT",
       "label": "Wings SFTP Port",
-      "description": "Host port for Wings SFTP file access",
       "default": "2024",
       "required": false
     },
     {
       "name": "WINGS_PORT",
       "label": "Wings API Port",
-      "description": "Host port for Wings daemon management API",
       "default": "8444",
       "required": false
     },
     {
       "name": "WINGS_UID",
       "label": "Wings User ID",
-      "description": "System UID for the Wings process (match your host pelican-wings user)",
+      "description": "System UID for Wings (match your host pelican-wings user)",
       "default": "988",
       "required": false
     },
     {
       "name": "WINGS_GID",
       "label": "Wings Group ID",
-      "description": "System GID for the Wings process",
       "default": "988",
       "required": false
     },
     {
       "name": "WINGS_USERNAME",
       "label": "Wings Username",
-      "description": "System username for the Wings process",
       "default": "pelican-wings",
       "required": false
     },
