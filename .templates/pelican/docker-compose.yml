@@ -23,7 +23,9 @@ services:
           echo \"$v=$val\" >> /pelican-data/.env;
         fi;
       done;
-      chown -R www-data:www-data /pelican-data /var/www/html/storage/logs 2>/dev/null || true;
+      chown -R www-data:www-data /pelican-data 2>/dev/null || true;
+      chown -R www-data:www-data /var/www/html/storage/logs 2>/dev/null || true;
+      chmod +x /entrypoint.sh 2>/dev/null || true;
       exec /entrypoint.sh
       "]
     environment:
