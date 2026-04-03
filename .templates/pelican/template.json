@@ -9,20 +9,6 @@
   "config_path": "Pelican",
   "variables": [
     {
-      "name": "PANEL_PORT_HTTP",
-      "label": "Panel HTTP Port",
-      "description": "Port exposed on the host for the Pelican Panel web interface (HTTP)",
-      "default": "8005",
-      "required": false
-    },
-    {
-      "name": "PANEL_PORT_HTTPS",
-      "label": "Panel HTTPS Port",
-      "description": "Port exposed on the host for the Pelican Panel web interface (HTTPS)",
-      "default": "8006",
-      "required": false
-    },
-    {
       "name": "PANEL_APP_URL",
       "label": "Panel URL",
       "description": "Public URL of the Pelican Panel (e.g. https://pelican.example.com)",
@@ -32,84 +18,104 @@
     {
       "name": "PANEL_ADMIN_EMAIL",
       "label": "Admin Email",
-      "description": "Administrator email address (used for Let's Encrypt and panel identity)",
+      "description": "Administrator email (used for panel identity and certificate requests)",
       "default": "admin@example.com",
+      "required": false
+    },
+    {
+      "name": "PANEL_PORT_HTTP",
+      "label": "Panel HTTP Port",
+      "description": "Host port for the Panel web interface (HTTP)",
+      "default": "8005",
+      "required": false
+    },
+    {
+      "name": "PANEL_PORT_HTTPS",
+      "label": "Panel HTTPS Port",
+      "description": "Host port for the Panel web interface (HTTPS)",
+      "default": "8006",
       "required": false
     },
     {
       "name": "PANEL_TRUSTED_PROXIES",
       "label": "Trusted Proxies",
-      "description": "Trusted proxy CIDR for HTTPS (use 0.0.0.0/0 when behind Traefik/nginx)",
+      "description": "Trusted proxy CIDR for HTTPS termination (0.0.0.0/0 = trust all, use behind Traefik)",
       "default": "0.0.0.0/0",
       "required": false
     },
     {
       "name": "PANEL_DB_CONNECTION",
-      "label": "Database Type",
-      "description": "Database backend: sqlite (default, zero config) or mysql (requires external MySQL)",
+      "label": "Database",
+      "description": "sqlite = built-in zero-config, mysql = connect to your existing MySQL server",
       "default": "sqlite",
       "required": false
     },
     {
       "name": "PANEL_DB_HOST",
       "label": "MySQL Host",
-      "description": "MySQL server hostname (only used when Database Type is mysql)",
-      "default": "pelican-db",
-      "required": false
+      "description": "Hostname or IP of your MySQL server",
+      "default": "",
+      "required": false,
+      "show_if": { "PANEL_DB_CONNECTION": "mysql" }
     },
     {
       "name": "PANEL_DB_PORT",
       "label": "MySQL Port",
-      "description": "MySQL server port (only used when Database Type is mysql)",
+      "description": "MySQL server port",
       "default": "3306",
-      "required": false
+      "required": false,
+      "show_if": { "PANEL_DB_CONNECTION": "mysql" }
     },
     {
       "name": "PANEL_DB_NAME",
-      "label": "MySQL Database Name",
-      "description": "MySQL database name (only used when Database Type is mysql)",
+      "label": "MySQL Database",
+      "description": "Database name to use for Pelican",
       "default": "pelican",
-      "required": false
+      "required": false,
+      "show_if": { "PANEL_DB_CONNECTION": "mysql" }
     },
     {
       "name": "PANEL_DB_USER",
       "label": "MySQL Username",
-      "description": "MySQL username (only used when Database Type is mysql)",
+      "description": "MySQL user with access to the database",
       "default": "pelican",
-      "required": false
+      "required": false,
+      "show_if": { "PANEL_DB_CONNECTION": "mysql" }
     },
     {
       "name": "PANEL_DB_PASSWORD",
       "label": "MySQL Password",
-      "description": "MySQL password (only used when Database Type is mysql)",
+      "description": "Password for the MySQL user",
       "default": "",
-      "required": false
+      "required": false,
+      "type": "password",
+      "show_if": { "PANEL_DB_CONNECTION": "mysql" }
     },
     {
       "name": "WINGS_SFTP_PORT",
       "label": "Wings SFTP Port",
-      "description": "Port exposed on the host for Wings SFTP file access",
+      "description": "Host port for Wings SFTP file access",
       "default": "2024",
       "required": false
     },
     {
       "name": "WINGS_PORT",
-      "label": "Wings Management Port",
-      "description": "Port exposed on the host for Wings daemon management API",
+      "label": "Wings API Port",
+      "description": "Host port for Wings daemon management API",
       "default": "8444",
       "required": false
     },
     {
       "name": "WINGS_UID",
       "label": "Wings User ID",
-      "description": "System user ID for the Wings process (match your host pelican-wings user)",
+      "description": "System UID for the Wings process (match your host pelican-wings user)",
       "default": "988",
       "required": false
     },
     {
       "name": "WINGS_GID",
       "label": "Wings Group ID",
-      "description": "System group ID for the Wings process",
+      "description": "System GID for the Wings process",
       "default": "988",
       "required": false
     },
@@ -123,7 +129,7 @@
     {
       "name": "PELICAN_SERVER_DIR",
       "label": "Server Files Directory",
-      "description": "Host path where game server files are stored (must be an absolute path)",
+      "description": "Absolute host path where game server files are stored",
       "default": "/srv/pelican/servers",
       "required": false
     }
