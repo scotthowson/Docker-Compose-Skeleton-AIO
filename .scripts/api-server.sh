@@ -9282,12 +9282,14 @@ handle_template_deploy() {
     # SELinux: append :z to volume mounts that don't already have a mode suffix.
     # The :z flag relabels files for container access (required on Fedora/RHEL/CentOS).
     # Harmless on non-SELinux systems (Ubuntu, Debian, Arch).
-    # Pattern: matches "- host/path:/container/path" but NOT environment vars like "tcp://host:port"
+    # SKIP system paths: docker.sock, /etc/*, /var/run/*, /var/lib/dbus/* — relabeling these breaks the host.
     if command -v getenforce >/dev/null 2>&1 && [[ "$(getenforce 2>/dev/null)" != "Disabled" ]]; then
         template_compose=$(printf '%s' "$template_compose" | awk '
             /^[ \t]*volumes:[ \t]*$/ { in_vol=1; print; next }
             in_vol && /^[ \t]*-[ \t]/ && /:\// {
                 if (/:z/ || /:Z/) { print; next }
+                # Skip system paths that must not be relabeled
+                if (/docker\.sock/ || /\/etc\// || /\/var\/run\// || /\/var\/lib\/dbus\// || /\/proc\// || /\/sys\//) { print; next }
                 if (/:ro$/) { sub(/:ro$/, ":ro,z"); print; next }
                 if (/:rw$/) { sub(/:rw$/, ":rw,z"); print; next }
                 print $0 ":z"; next
