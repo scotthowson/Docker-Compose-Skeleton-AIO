@@ -1356,7 +1356,10 @@ _api_validate_url() {
 _api_check_rate_limit() {
     local client_ip="${1:-unknown}"
     local rate_file="$API_AUTH_DIR/rate_limits.json"
-    [[ ! -f "$rate_file" ]] && return 0
+    if [[ ! -f "$rate_file" ]]; then
+        printf '{}' > "$rate_file" 2>/dev/null
+        chmod 600 "$rate_file" 2>/dev/null
+    fi
 
     if command -v jq >/dev/null 2>&1; then
         local now
@@ -3797,11 +3800,36 @@ handle_totp_validate() {
         real_token=$(_api_generate_token)
         _api_store_token "$real_token" "$username" "$role"
 
+        # Clean up TOTP attempt tracking on success
+        sed -i "/^${totp_token:0:16}$/d" "$API_AUTH_DIR/.totp-attempts" 2>/dev/null
+
         _api_audit_log "${SOCAT_PEERADDR:-unknown}" "TOTP_LOGIN_OK" "$username" "2FA verified"
         _api_success "{\"success\": true, \"token\": \"$real_token\", \"username\": \"$(_api_json_escape "$username")\", \"role\": \"$(_api_json_escape "$role")\"}"
     else
         _api_audit_log "${SOCAT_PEERADDR:-unknown}" "TOTP_LOGIN_FAIL" "$username" "Invalid 2FA code"
+
+        # Track failed TOTP attempts — revoke token after 5 failures
+        local _totp_attempts_file="$API_AUTH_DIR/.totp-attempts"
+        local _totp_key="${totp_token:0:16}"
+        local _totp_fails=0
+        if [[ -f "$_totp_attempts_file" ]]; then
+            _totp_fails=$(grep -c "^${_totp_key}$" "$_totp_attempts_file" 2>/dev/null) || _totp_fails=0
+        fi
+        echo "$_totp_key" >> "$_totp_attempts_file"
+        _totp_fails=$(( _totp_fails + 1 ))
+
+        if [[ "$_totp_fails" -ge 5 ]]; then
+            # Revoke the TOTP pending token
+            local new_tokens
+            new_tokens=$(echo "$tokens" | jq --arg t "$totp_token" '[.[] | select(.token != $t)]' 2>/dev/null)
+            _api_write_auth_file "tokens.json" "$new_tokens"
+            _api_audit_log "${SOCAT_PEERADDR:-unknown}" "TOTP_REVOKED" "$username" "TOTP token revoked after 5 failed attempts"
+            _api_error 401 "Too many failed TOTP attempts. Please log in again."
+            return
+        fi
+
         _api_error 401 "Invalid TOTP code"
+        return
     fi
 }
 
@@ -14782,7 +14810,15 @@ handle_request() {
     local header="" content_length=0
     REQUEST_AUTH_HEADER=""
     REQUEST_ORIGIN_HEADER=""
-    while IFS= read -r header; do
+    local _hdr_count=0
+    while IFS= read -r -t 10 header; do
+        (( ++_hdr_count ))
+        if [[ $_hdr_count -gt 100 ]]; then
+            return
+        fi
+        if [[ ${#header} -gt 16384 ]]; then
+            return
+        fi
         header="${header%%$'\r'}"
         [[ -z "$header" ]] && break
         # Capture content-length (case-insensitive)
@@ -15798,6 +15834,15 @@ start_server() {
         _dcs_metrics_loop &
         echo "  Metrics collector started (interval: ${_m_interval}s)"
     fi
+
+    # Periodic cleanup: stale rate-limit files and TOTP tracking
+    (
+        while true; do
+            sleep 3600
+            find "${API_RATE_DIR:-$API_AUTH_DIR/rates}" -type f -mmin +1440 -delete 2>/dev/null
+            : > "$API_AUTH_DIR/.totp-attempts" 2>/dev/null
+        done
+    ) &
 
     # Start the listener — socat/ncat invoke this script with --handle-request
     # which triggers the internal request handler (see ENTRY POINT below)
