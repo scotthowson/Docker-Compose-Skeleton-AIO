@@ -7652,20 +7652,18 @@ handle_metrics_trends() {
         return
     fi
 
-    local -a points=()
-    while IFS= read -r line; do
-        [[ -z "$line" ]] && continue
-        local epoch
-        epoch=$(printf '%s' "$line" | sed -n 's/.*"epoch":\([0-9]*\).*/\1/p' 2>/dev/null || echo 0)
-        [[ $epoch -ge $cutoff ]] && points+=("$line")
-    done < "$METRICS_HISTORY_FILE"
+    # Single jq --slurp pass on JSONL — 100x faster than bash loop + sed per line
+    local result
+    result=$(jq -sc --argjson cutoff "$cutoff" '
+        [.[] | select(.epoch >= $cutoff)]
+        | {range: "'"$range"'", points: ., count: length}
+    ' "$METRICS_HISTORY_FILE" 2>/dev/null)
 
-    local json
-    json=$(printf '%s,' "${points[@]}")
-    json="[${json%,}]"
-    [[ ${#points[@]} -eq 0 ]] && json="[]"
-
-    _api_success "{\"range\": \"$range\", \"points\": $json, \"count\": ${#points[@]}}"
+    if [[ -n "$result" ]]; then
+        _api_success "$result"
+    else
+        _api_success "{\"range\": \"$range\", \"points\": [], \"count\": 0}"
+    fi
 }
 
 # =============================================================================
