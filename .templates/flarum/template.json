@@ -1,0 +1,101 @@
+{
+  "name": "flarum",
+  "title": "Flarum Forum",
+  "description": "Modern, fast, and free community forum platform. Includes a built-in MariaDB database by default, or connect to your own external MySQL server. Extensible with plugins, automatic extension updates, and Traefik-ready.",
+  "category": "web",
+  "target_stack": "web-applications",
+  "icon": "\ud83d\udcac",
+  "tags": ["forum", "community", "flarum", "discussion", "social", "php"],
+  "variables": [
+    {
+      "name": "FLARUM_SITE_URL",
+      "label": "Site URL",
+      "description": "Public URL of the forum (e.g. https://forum.example.com)",
+      "default": "http://localhost:8090",
+      "required": true
+    },
+    {
+      "name": "FLARUM_SITE_TITLE",
+      "label": "Site Title",
+      "description": "Name of your forum",
+      "default": "My Forum",
+      "required": false
+    },
+    {
+      "name": "FLARUM_ADMIN_USER",
+      "label": "Admin Username",
+      "description": "Username for the admin account",
+      "default": "admin",
+      "required": false
+    },
+    {
+      "name": "FLARUM_ADMIN_PASS",
+      "label": "Admin Password",
+      "description": "Password for the admin account",
+      "default": "",
+      "required": true
+    },
+    {
+      "name": "FLARUM_ADMIN_EMAIL",
+      "label": "Admin Email",
+      "description": "Email address for the admin account",
+      "default": "admin@example.com",
+      "required": true
+    },
+    {
+      "name": "FLARUM_PORT",
+      "label": "HTTP Port",
+      "description": "Host port for the Flarum web interface",
+      "default": "8090",
+      "required": false
+    },
+    {
+      "name": "FLARUM_DB_TYPE",
+      "label": "Database",
+      "description": "Use the built-in MariaDB or connect to your own MySQL server",
+      "default": "builtin",
+      "options": [
+        { "value": "builtin", "label": "Built-in MariaDB (zero config)" },
+        { "value": "external", "label": "External MySQL (your own server)" }
+      ]
+    },
+    {
+      "name": "FLARUM_DB_HOST",
+      "label": "MySQL Host",
+      "description": "Hostname or IP of your MySQL server",
+      "default": "",
+      "required": false,
+      "show_if": { "FLARUM_DB_TYPE": "external" }
+    },
+    {
+      "name": "FLARUM_DB_NAME",
+      "label": "Database Name",
+      "default": "flarum",
+      "required": false,
+      "show_if": { "FLARUM_DB_TYPE": "external" }
+    },
+    {
+      "name": "FLARUM_DB_USER",
+      "label": "Database Username",
+      "default": "flarum",
+      "required": false,
+      "show_if": { "FLARUM_DB_TYPE": "external" }
+    },
+    {
+      "name": "FLARUM_DB_PASS",
+      "label": "Database Password",
+      "default": "",
+      "required": false,
+      "show_if": { "FLARUM_DB_TYPE": "external" }
+    },
+    {
+      "name": "FLARUM_DB_ROOT_PASS",
+      "label": "MariaDB Root Password",
+      "description": "Root password for the built-in MariaDB (auto-generated if empty)",
+      "default": "",
+      "required": false,
+      "show_if": { "FLARUM_DB_TYPE": "builtin" }
+    }
+  ],
+  "optional_services": ["flarum-db"]
+}

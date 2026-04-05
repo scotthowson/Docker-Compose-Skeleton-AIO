@@ -1,0 +1,59 @@
+services:
+  flarum:
+    container_name: Flarum
+    image: tiredofit/flarum:latest
+    restart: always
+    ports:
+      - "${FLARUM_PORT:-8090}:80"
+    networks:
+      - default
+      - proxy
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Flarum/data:/data
+      - ${APP_DATA_DIR:-./App-Data}/Flarum/logs:/www/logs
+    environment:
+      - TIMEZONE=${TZ:-UTC}
+      - SITE_URL=${FLARUM_SITE_URL:-http://localhost:8090}
+      - SITE_TITLE=${FLARUM_SITE_TITLE:-My Forum}
+      - ADMIN_USER=${FLARUM_ADMIN_USER:-admin}
+      - ADMIN_PASS=${FLARUM_ADMIN_PASS:-changeme}
+      - ADMIN_EMAIL=${FLARUM_ADMIN_EMAIL:-admin@example.com}
+      - DB_HOST=${FLARUM_DB_HOST:-flarum-db}
+      - DB_NAME=${FLARUM_DB_NAME:-flarum}
+      - DB_USER=${FLARUM_DB_USER:-flarum}
+      - DB_PASS=${FLARUM_DB_PASS:-}
+      - DB_PREFIX=flarum_
+      - EXTENSIONS_AUTO_UPDATE=TRUE
+    depends_on:
+      flarum-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:80/ || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  flarum-db:
+    container_name: Flarum-DB
+    image: mariadb:10.11
+    restart: always
+    networks:
+      - default
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Flarum/db:/var/lib/mysql
+    environment:
+      - MARIADB_ROOT_PASSWORD=${FLARUM_DB_ROOT_PASS:-rootpass}
+      - MARIADB_DATABASE=${FLARUM_DB_NAME:-flarum}
+      - MARIADB_USER=${FLARUM_DB_USER:-flarum}
+      - MARIADB_PASSWORD=${FLARUM_DB_PASS:-}
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+networks:
+  proxy:
+    external: true
