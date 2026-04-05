@@ -9,18 +9,16 @@ services:
     security_opt:
       - no-new-privileges:true
     environment:
-      - PGID=${PGID:-1000}
-      - PUID=${PUID:-1000}
-      - CF_API_TOKEN=${CF_API_TOKEN}
+      - CLOUDFLARE_API_TOKEN=${CF_API_TOKEN}
       - DOMAINS=${CF_ZONE}
       - SUBDOMAINS=${CF_DDNS_SUBDOMAINS:-@}
       - PROXIED=${CF_DDNS_PROXIED:-true}
       - IP4_PROVIDER=cloudflare.trace
       - IP6_PROVIDER=none
-      - UPDATE_CRON=@every ${CF_DDNS_INTERVAL:-300}s
+      - UPDATE_CRON=@every ${CF_DDNS_INTERVAL:-5m}
       - DELETE_ON_STOP=false
-      - DETECTION_TIMEOUT=15
-      - UPDATE_TIMEOUT=30
+      - DETECTION_TIMEOUT=15s
+      - UPDATE_TIMEOUT=30s
       - TZ=${TZ:-UTC}
     mem_limit: 64M
     cpus: 0.25
