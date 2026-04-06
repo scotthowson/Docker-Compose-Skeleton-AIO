@@ -7562,8 +7562,10 @@ handle_system_metrics() {
 
         [[ -z "$dev" || "$dev" != /* ]] && continue
         case "$mount" in
-            /sys/*|/proc/*|/dev/*|/run/*|/snap/*) continue ;;
+            /|/boot|/boot/*|/sys/*|/proc/*|/dev/*|/run/*|/snap/*) continue ;;
         esac
+        # Skip mergerfs/overlay mounts (device paths contain colons)
+        [[ "$dev" == *":"* ]] && continue
         $first || disk_json+=","
         first=false
         disk_json+="{\"device\": \"$(_api_json_escape "$dev")\", \"mount\": \"$(_api_json_escape "$mount")\", \"total\": \"$total\", \"used\": \"$used\", \"available\": \"$avail\", \"percent\": \"$pct\"}"
