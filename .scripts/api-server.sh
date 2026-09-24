@@ -1,59 +1,24 @@
 #!/bin/bash
 # =============================================================================
-# Docker Compose Skeleton — REST API Server v1.0
-# Lightweight HTTP API for remote management — zero external dependencies.
-# Uses socat or ncat to serve JSON responses over HTTP.
-#
-# Designed as the backend foundation for the Electron desktop app.
+# Docker Compose Skeleton — REST API Server
+# Lightweight HTTP/JSON API for remote management, served by socat or ncat.
+# Each connection is handled by a fresh `--handle-request` instance of this
+# script: handlers are plain bash functions that read the request on stdin and
+# write the HTTP response to stdout.
 #
 # Usage:
 #   ./api-server.sh [--port PORT] [--bind ADDR] [--daemon] [--stop] [--help]
 #
-# Endpoints:
-#   GET  /                          API info and available endpoints
-#   GET  /status                    Overall system status
-#   GET  /health                    Container health report (JSON)
-#   GET  /stacks                    List all stacks with status
-#   GET  /stacks/:name              Detailed info for a specific stack
-#   GET  /stacks/:name/containers   Containers in a specific stack
-#   GET  /stacks/:name/logs         Recent logs for a stack (last 50 lines)
-#   GET  /stacks/:name/compose      Raw docker-compose.yml content for a stack
-#   POST /stacks/:name/start        Start a specific stack
-#   POST /stacks/:name/stop         Stop a specific stack
-#   POST /stacks/:name/restart      Restart a specific stack
-#   POST /stacks/:name/update       Pull, detect changes, recreate if needed
-#   GET  /images                    All images with age/size/staleness
-#   GET  /images/stale              Only stale images (>30 days)
-#   GET  /containers                All containers with status
-#   GET  /containers/:name          Detailed info for a specific container
-#   GET  /containers/:name/stats    Live resource stats for a container
-#   GET  /containers/:name/processes Process list for a container
-#   GET  /config                    Current configuration (sanitized)
-#   GET  /system                    System resource information
-#   GET  /networks                  Docker networks and connections
-#   GET  /volumes                   Docker volumes and usage
-#   GET  /logs                      Framework log (last 100 lines)
-#   GET  /events                    Recent Docker events (last 50)
-#   GET  /version                   API and framework version info
+# Endpoint reference: docs/API.md — generated from the router at the bottom of
+# this file by .scripts/api-docs.sh (run it after adding or changing a route).
 #
-# Authentication Endpoints:
-#   POST   /auth/setup              Create first admin account (no auth required)
-#   POST   /auth/login              Authenticate and get session token (no auth required)
-#   POST   /auth/register           Register with invite code (no auth required)
-#   GET    /auth/verify             Verify a token is valid (no auth required)
-#   POST   /auth/invite             Generate an invite code (admin only)
-#   GET    /auth/users              List all users (admin only)
-#   POST   /auth/revoke             Revoke a user's access (admin only)
-#   GET    /auth/invites            List active invite codes (admin only)
-#   DELETE /auth/invite/:code       Delete an invite code (admin only)
-#
-# System Update Endpoints:
-#   GET  /system/update/check       Check for available updates via git
-#   POST /system/update/apply       Apply update (git pull --ff-only with backup)
-#   POST /system/update/rollback    Rollback to a previous backup tag
-#
-# All responses are JSON with Content-Type: application/json.
-# CORS headers are included for Electron app compatibility.
+# Security model (details in SECURITY.md):
+#   - Authentication is mandatory unless the listener is bound to loopback.
+#   - Bearer tokens over PBKDF2-hashed passwords, optional TOTP, invite-only
+#     registration, per-client rate limits and login lockouts.
+#   - Two roles: "user" (read-only viewer) and "admin" (everything else).
+#   - Compose content is scanned for container-escape vectors before it is
+#     written or deployed; .env is read as data, never sourced.
 # =============================================================================
 
 set -euo pipefail
@@ -68,11 +33,72 @@ if [[ -z "${BASE_DIR:-}" ]]; then
     unset _API_SCRIPT_DIR
 fi
 
-if [[ -f "$BASE_DIR/.env" ]]; then
-    set -a
-    source "$BASE_DIR/.env"
-    set +a
-fi
+# Keys that must never be set from .env: they change how bash or the dynamic
+# loader behave for every command this server runs.
+_API_ENV_RESERVED_KEYS='PATH|IFS|PS4|ENV|BASH_ENV|BASH_XTRACEFD|SHELLOPTS|BASHOPTS|CDPATH|GLOBIGNORE|PROMPT_COMMAND|LD_PRELOAD|LD_LIBRARY_PATH|LD_AUDIT|BASE_DIR|HANDLE_REQUEST|DAEMON_MODE|STOP_SERVER'
+
+# Load a .env file as DATA, never as code. Only `KEY=value` lines are accepted,
+# values are taken literally (matching surrounding quotes are stripped) and
+# reserved keys are ignored. Sourcing the file would turn write access to .env
+# (which the API grants to admins) into command execution on the host.
+_api_load_env_file() {
+    local file="$1" line key val
+    [[ -f "$file" ]] || return 0
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line="${line%%$'\r'}"
+        [[ -z "${line//[[:space:]]/}" || "$line" =~ ^[[:space:]]*# ]] && continue
+        [[ "$line" =~ ^[[:space:]]*(export[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]] || continue
+        key="${BASH_REMATCH[2]}"
+        val="${BASH_REMATCH[3]}"
+        [[ "$key" =~ ^(${_API_ENV_RESERVED_KEYS})$ || "$key" == BASH_FUNC_* ]] && continue
+        if [[ ${#val} -ge 2 && "$val" == \"*\" ]]; then
+            val="${val:1:${#val}-2}"
+        elif [[ ${#val} -ge 2 && "$val" == \'*\' ]]; then
+            val="${val:1:${#val}-2}"
+        else
+            val="${val%%[[:space:]]#*}"
+            val="${val%"${val##*[![:space:]]}"}"
+        fi
+        export "$key=$val"
+    done < "$file"
+}
+
+# Validate .env content before it is written by the API (raw editor, config
+# update, setup wizard). Prints the first problem and returns 1 on rejection.
+_api_validate_env_content() {
+    local content="$1" line n=0 key val
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        n=$(( n + 1 ))
+        line="${line%%$'\r'}"
+        [[ -z "${line//[[:space:]]/}" || "$line" =~ ^[[:space:]]*# ]] && continue
+        if [[ ! "$line" =~ ^[[:space:]]*(export[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]]; then
+            echo "line $n is not KEY=value"
+            return 1
+        fi
+        key="${BASH_REMATCH[2]}"
+        val="${BASH_REMATCH[3]}"
+        if [[ "$key" =~ ^(${_API_ENV_RESERVED_KEYS})$ || "$key" == BASH_FUNC_* ]]; then
+            echo "line $n sets reserved variable $key"
+            return 1
+        fi
+        if [[ "$val" == *'$('* || "$val" == *'`'* || "$val" =~ [[:cntrl:]] ]]; then
+            echo "line $n: values may not contain command substitution or control characters"
+            return 1
+        fi
+    done <<< "$content"
+    return 0
+}
+
+# Validate a single KEY=value pair destined for .env
+_api_validate_env_kv() {
+    local key="$1" val="$2"
+    [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || { echo "invalid key '$key'"; return 1; }
+    [[ "$key" =~ ^(${_API_ENV_RESERVED_KEYS})$ || "$key" == BASH_FUNC_* ]] && { echo "reserved variable $key"; return 1; }
+    [[ "$val" == *'$('* || "$val" == *'`'* || "$val" =~ [[:cntrl:]] ]] && { echo "value of $key contains command substitution or control characters"; return 1; }
+    return 0
+}
+
+_api_load_env_file "$BASE_DIR/.env"
 
 COMPOSE_DIR="${COMPOSE_DIR:-$BASE_DIR/Stacks}"
 APP_DATA_DIR="${APP_DATA_DIR:-$BASE_DIR/App-Data}"
@@ -81,9 +107,13 @@ APP_DATA_DIR="${APP_DATA_DIR:-$BASE_DIR/App-Data}"
 # CONFIGURATION
 # =============================================================================
 
-API_PORT="${API_PORT:-9876}"
-API_BIND="${API_BIND:-127.0.0.1}"
-API_VERSION="1.2.2"
+# The server process exports the values it actually listens with; per-request
+# handlers (spawned by socat) take those over anything in .env so that every
+# process agrees on the bind address, port and authentication policy.
+API_PORT="${DCS_API_EFFECTIVE_PORT:-${API_PORT:-9876}}"
+API_BIND="${DCS_API_EFFECTIVE_BIND:-${API_BIND:-127.0.0.1}}"
+API_VERSION="1.3.0"
+DCS_VERSION="$(cat "${BASE_DIR}/VERSION" 2>/dev/null || echo "unknown")"
 
 # Plugin system
 PLUGINS_DIR="${BASE_DIR}/.plugins"
@@ -98,24 +128,48 @@ API_INVITE_EXPIRY="${API_INVITE_EXPIRY:-604800}"     # 7 days in seconds
 API_MAX_LOGIN_ATTEMPTS="${API_MAX_LOGIN_ATTEMPTS:-5}"
 API_LOCKOUT_DURATION="${API_LOCKOUT_DURATION:-900}"  # 15 minutes in seconds
 
-# Auto-detect whether auth is required based on bind address
-# Auth is optional for localhost-only, required for external access
-if [[ -n "${API_AUTH_ENABLED:-}" ]]; then
-    # Explicit override from config — keep as-is
-    :
-else
-    case "$API_BIND" in
-        127.0.0.1|localhost|::1)
-            API_AUTH_ENABLED="false"
-            ;;
-        *)
-            API_AUTH_ENABLED="true"
-            ;;
-    esac
-fi
+# Authentication policy — resolved by _api_resolve_auth_policy once the command
+# line has been parsed (so --bind counts) and exported to the request handlers.
+#
+#   Loopback bind (127.x / localhost / ::1): auth optional, off unless enabled.
+#   Any other bind address: auth is mandatory. API_AUTH_ENABLED=false is ignored
+#   there unless API_INSECURE_NO_AUTH=true is ALSO set, because an open API on a
+#   reachable interface hands out full control of the Docker host.
+API_AUTH_ENABLED="${DCS_API_EFFECTIVE_AUTH:-${API_AUTH_ENABLED:-}}"
+API_INSECURE_NO_AUTH="${API_INSECURE_NO_AUTH:-false}"
+API_AUTH_FORCED="false"
+SETUP_MODE="${DCS_API_SETUP_MODE:-false}"
 
-# NOTE: API_AUTH_ENABLED is respected as-is from .env or auto-detection above.
-# When the user explicitly sets API_AUTH_ENABLED=false, we honor that choice.
+# Peers listed here (comma-separated IPs/CIDRs) are trusted to set
+# X-Forwarded-For. The DCS-UI container proxies browser traffic to this API,
+# so without it every UI user would share one rate-limit bucket and one
+# login-lockout counter, and audit logs would only ever show the container IP.
+API_TRUSTED_PROXIES="${API_TRUSTED_PROXIES:-}"
+
+_api_bind_is_loopback() {
+    case "$1" in
+        127.*|localhost|::1|'') return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+_api_resolve_auth_policy() {
+    if _api_bind_is_loopback "$API_BIND"; then
+        [[ -z "$API_AUTH_ENABLED" ]] && API_AUTH_ENABLED="false"
+    elif [[ "$API_AUTH_ENABLED" != "true" ]]; then
+        if [[ "$API_INSECURE_NO_AUTH" == "true" ]]; then
+            API_AUTH_ENABLED="false"
+        else
+            API_AUTH_ENABLED="true"
+            API_AUTH_FORCED="true"
+        fi
+    fi
+    [[ "$API_AUTH_ENABLED" == "true" ]] || API_AUTH_ENABLED="false"
+    export DCS_API_EFFECTIVE_AUTH="$API_AUTH_ENABLED"
+    export DCS_API_EFFECTIVE_BIND="$API_BIND"
+    export DCS_API_EFFECTIVE_PORT="$API_PORT"
+    export DCS_API_SETUP_MODE="$SETUP_MODE"
+}
 
 # IP Whitelist — comma-separated list of allowed IPs/CIDRs (empty = allow all)
 # Example: API_IP_WHITELIST="192.168.1.0/24,10.0.0.5"
@@ -169,6 +223,9 @@ if [[ -z "${DOCKER_COMPOSE_CMD:-}" ]]; then
         exit 1
     fi
 fi
+# Exported so the per-request processes skip the detection (one docker CLI
+# round-trip per request otherwise).
+export DOCKER_COMPOSE_CMD
 
 # =============================================================================
 # ARGUMENT PARSING
@@ -177,7 +234,6 @@ fi
 DAEMON_MODE=false
 STOP_SERVER=false
 HANDLE_REQUEST=false
-SETUP_MODE=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -212,36 +268,65 @@ EOF
     esac
 done
 
+_api_resolve_auth_policy
+
 # =============================================================================
 # DAEMON MANAGEMENT
 # =============================================================================
 
+# PIDs of processes listening on a TCP port (ss preferred, lsof fallback)
+_api_port_listeners() {
+    local port="$1" pids=""
+    if command -v ss >/dev/null 2>&1; then
+        pids=$(ss -Hltnp "sport = :${port}" 2>/dev/null | grep -oE 'pid=[0-9]+' | cut -d= -f2 | sort -u | tr '\n' ' ')
+    fi
+    if [[ -z "${pids// /}" ]] && command -v lsof >/dev/null 2>&1; then
+        pids=$(lsof -ti "tcp:${port}" -sTCP:LISTEN 2>/dev/null | tr '\n' ' ')
+    fi
+    printf '%s' "${pids% }"
+}
+
 if [[ "$STOP_SERVER" == "true" ]]; then
     stopped=false
     if [[ -f "$API_PID_FILE" ]]; then
-        pid=$(cat "$API_PID_FILE")
-        if kill -0 "$pid" 2>/dev/null; then
-            # Kill the process group to ensure socat children are also stopped
-            kill -- -"$pid" 2>/dev/null || kill "$pid" 2>/dev/null
-            rm -f "$API_PID_FILE"
+        pid=$(cat "$API_PID_FILE" 2>/dev/null)
+        if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+            # SIGTERM lets the server's trap stop the listener and its helpers
+            kill -TERM "$pid" 2>/dev/null
+            for _ in $(seq 1 50); do
+                kill -0 "$pid" 2>/dev/null || break
+                sleep 0.1
+            done
+            if kill -0 "$pid" 2>/dev/null; then
+                pkill -KILL -P "$pid" 2>/dev/null || true
+                kill -KILL "$pid" 2>/dev/null || true
+            fi
             echo "API server stopped (PID $pid)"
             stopped=true
-        else
-            rm -f "$API_PID_FILE"
         fi
+        rm -f "$API_PID_FILE"
     fi
 
-    # Also try to kill any socat listening on API_PORT as a fallback
-    if [[ "$stopped" == "false" ]]; then
-        found_pid=$(lsof -ti "tcp:${API_PORT}" -sTCP:LISTEN 2>/dev/null || true)
-        if [[ -n "$found_pid" ]]; then
-            kill $found_pid 2>/dev/null
-            rm -f "$API_PID_FILE"
-            echo "API server stopped (found listening on port ${API_PORT})"
-        else
-            echo "API server is not running"
-        fi
+    # Fallback: anything still bound to the port (an orphaned listener from an
+    # older version, or a server started without a PID file)
+    _leftover=$(_api_port_listeners "$API_PORT")
+    if [[ -n "$_leftover" ]]; then
+        kill -TERM $_leftover 2>/dev/null || true
+        sleep 0.5
+        kill -KILL $_leftover 2>/dev/null || true
+        echo "Stopped listener on port ${API_PORT} (PID ${_leftover})"
+        stopped=true
     fi
+    # Long-lived request handlers (SSE and log streams) outlive the listener.
+    # They belong to this installation (matched by this script's absolute
+    # path), so end them as well.
+    _self="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+    _self_re=$(printf '%s' "$_self" | sed 's/[][\.*^$+?(){}|]/\\&/g')
+    if pkill -TERM -f -- "${_self_re} --handle-request$" 2>/dev/null; then
+        echo "Stopped lingering request handlers"
+        stopped=true
+    fi
+    [[ "$stopped" == "false" ]] && echo "API server is not running"
     exit 0
 fi
 
@@ -369,7 +454,7 @@ _api_response() {
     cors_origin=$(_api_cors_origin)
     if [[ -n "$cors_origin" ]]; then
         printf "Access-Control-Allow-Origin: %s\r\n" "$cors_origin"
-        printf "Access-Control-Allow-Methods: GET, POST, DELETE, OPTIONS\r\n"
+        printf "Access-Control-Allow-Methods: GET, POST, PUT, PATCH, DELETE, OPTIONS\r\n"
         printf "Access-Control-Allow-Headers: Content-Type, Authorization\r\n"
         printf "Access-Control-Allow-Private-Network: true\r\n"
         printf "Vary: Origin\r\n"
@@ -460,6 +545,8 @@ _api_audit_log() {
     printf '%s | %-15s | %-14s | %-15s | %s\n' \
         "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$ip" "$event" "$username" "$detail" \
         >> "${API_AUTH_DIR}/auth-audit.log" 2>/dev/null
+    # Mirror into the JSON audit log that GET /audit, the UI and webhooks consume
+    _audit_log "auth.${event,,}" "${username:-anonymous}@${ip}${detail:+ — $detail}"
 }
 
 # Initialize auth data directory and files
@@ -514,15 +601,16 @@ _api_hash_password() {
 # Hash a password with PBKDF2-SHA256 (v2 — secure, requires python3)
 _api_hash_password_v2() {
     local salt="$1" password="$2" iters="${API_PBKDF2_ITERATIONS:-100000}"
-    python3 -c "
-import hashlib, sys
+    # The password travels in the environment, never on the command line
+    # (argv is readable by every local user via /proc).
+    DCS_PW="$password" DCS_SALT="$salt" DCS_ITERS="$iters" python3 -c '
+import hashlib, os
 print(hashlib.pbkdf2_hmac(
-    'sha256',
-    sys.argv[1].encode(),
-    bytes.fromhex(sys.argv[2]),
-    int(sys.argv[3])
-).hex())
-" "$password" "$salt" "$iters"
+    "sha256",
+    os.environ["DCS_PW"].encode(),
+    bytes.fromhex(os.environ["DCS_SALT"]),
+    int(os.environ["DCS_ITERS"])
+).hex())'
 }
 
 # Verify a password against a stored hash, dispatching to v1 or v2 based on hash_version
@@ -536,10 +624,9 @@ _api_verify_password() {
     fi
     # SECURITY: Constant-time comparison to prevent timing attacks.
     # Python's hmac.compare_digest is guaranteed constant-time.
-    python3 -c "
-import hmac, sys
-sys.exit(0 if hmac.compare_digest(sys.argv[1], sys.argv[2]) else 1)
-" "$computed_hash" "$stored_hash"
+    DCS_A="$computed_hash" DCS_B="$stored_hash" python3 -c '
+import hmac, os
+raise SystemExit(0 if hmac.compare_digest(os.environ["DCS_A"], os.environ["DCS_B"]) else 1)'
 }
 
 # Update a user's password hash in users.json (for transparent migration)
@@ -602,8 +689,10 @@ sys.exit(1)
 # Args: $1=base32_secret $2=username $3=issuer
 _api_totp_uri() {
     local b32="$1" username="$2" issuer="${3:-DCS}"
+    # Usernames are validated to [A-Za-z0-9_-] at signup and the issuer is a
+    # fixed label, so no URL encoding is needed here.
     printf 'otpauth://totp/%s:%s?secret=%s&issuer=%s&algorithm=SHA1&digits=6&period=30' \
-        "$(_api_json_escape "$issuer")" "$(_api_json_escape "$username")" "$b32" "$(_api_json_escape "$issuer")"
+        "$issuer" "$username" "$b32" "$issuer"
 }
 
 # Update a user's TOTP fields in users.json
@@ -861,45 +950,71 @@ _api_ip_in_cidr() {
     net="${cidr%/*}"
     mask="${cidr#*/}"
     [[ "$mask" == "$cidr" ]] && mask=32  # no slash means exact match
+    [[ "$ip" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ && "$net" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ && "$mask" =~ ^[0-9]{1,2}$ && "$mask" -le 32 ]] || return 1
 
     # Convert IP to integer
     local IFS='.'
-    local -a ip_parts=($ip) net_parts=($net)
+    local -a ip_parts net_parts
+    read -ra ip_parts <<< "$ip"
+    read -ra net_parts <<< "$net"
     local ip_int=$(( (ip_parts[0] << 24) + (ip_parts[1] << 16) + (ip_parts[2] << 8) + ip_parts[3] ))
     local net_int=$(( (net_parts[0] << 24) + (net_parts[1] << 16) + (net_parts[2] << 8) + net_parts[3] ))
-    local mask_int=$(( 0xFFFFFFFF << (32 - mask) ))
+    local mask_int=0
+    (( mask > 0 )) && mask_int=$(( (0xFFFFFFFF << (32 - mask)) & 0xFFFFFFFF ))
 
     (( (ip_int & mask_int) == (net_int & mask_int) ))
 }
 
-# Check if the connecting IP is allowed
-# Uses SOCAT_PEERADDR environment variable set by socat
+# Is $1 an exact entry or inside a CIDR of the comma-separated list $2?
+_api_ip_in_list() {
+    local ip="$1" list="$2" entry
+    local IFS=','
+    for entry in $list; do
+        entry="${entry// /}"
+        [[ -z "$entry" ]] && continue
+        [[ "$ip" == "$entry" ]] && return 0
+        [[ "$entry" == */* ]] && _api_ip_in_cidr "$ip" "$entry" && return 0
+    done
+    return 1
+}
+
+# Resolve the client IP for this request into CLIENT_IP. socat exposes the TCP
+# peer as SOCAT_PEERADDR (ncat: NCAT_REMOTE_ADDR). When that peer is a trusted
+# proxy, X-Forwarded-For is walked from the right, skipping trusted hops, so a
+# client cannot spoof its address by sending its own X-Forwarded-For header.
+_api_resolve_client_ip() {
+    CLIENT_IP="${SOCAT_PEERADDR-}"
+    [[ -z "$CLIENT_IP" ]] && CLIENT_IP="${NCAT_REMOTE_ADDR-}"
+    [[ -z "$CLIENT_IP" ]] && CLIENT_IP="127.0.0.1"
+    if [[ -n "$API_TRUSTED_PROXIES" && -n "${REQUEST_XFF_HEADER:-}" ]] && _api_ip_in_list "$CLIENT_IP" "$API_TRUSTED_PROXIES"; then
+        local -a hops
+        local IFS=','
+        read -ra hops <<< "$REQUEST_XFF_HEADER"
+        local i hop
+        for (( i = ${#hops[@]} - 1; i >= 0; i-- )); do
+            hop="${hops[$i]//[[:space:]]/}"
+            [[ "$hop" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || break
+            if _api_ip_in_list "$hop" "$API_TRUSTED_PROXIES"; then
+                continue
+            fi
+            CLIENT_IP="$hop"
+            break
+        done
+    fi
+}
+
+# Check if the connecting IP is allowed (CLIENT_IP is set by handle_request)
 _api_check_ip_whitelist() {
     [[ -z "$API_IP_WHITELIST" ]] && return 0  # no whitelist = allow all
 
-    local client_ip="${SOCAT_PEERADDR:-127.0.0.1}"
+    local client_ip="${CLIENT_IP:-127.0.0.1}"
 
     # Always allow localhost
     case "$client_ip" in
         127.0.0.1|::1|localhost) return 0 ;;
     esac
 
-    # Check each entry in the whitelist
-    local IFS=','
-    for entry in $API_IP_WHITELIST; do
-        entry="${entry// /}"  # trim spaces
-        [[ -z "$entry" ]] && continue
-
-        # Exact match
-        [[ "$client_ip" == "$entry" ]] && return 0
-
-        # CIDR match
-        if [[ "$entry" == */* ]]; then
-            _api_ip_in_cidr "$client_ip" "$entry" && return 0
-        fi
-    done
-
-    return 1  # not in whitelist
+    _api_ip_in_list "$client_ip" "$API_IP_WHITELIST"
 }
 
 # Check global rate limit for the connecting IP
@@ -907,7 +1022,7 @@ _api_check_ip_whitelist() {
 _api_check_global_rate_limit() {
     (( API_RATE_LIMIT <= 0 )) && return 0  # rate limiting disabled
 
-    local client_ip="${SOCAT_PEERADDR:-127.0.0.1}"
+    local client_ip="${CLIENT_IP:-127.0.0.1}"
     local now
     now=$(date +%s)
 
@@ -959,14 +1074,21 @@ _api_check_auth() {
         return 0
     fi
 
-    # If no users exist yet, allow anonymous access for initial setup.
-    # This covers both fresh installs AND factory resets (which delete users + .setup-complete).
+    # First-run window: no account exists yet and setup has never completed
+    # (fresh install or factory reset). Only what the setup wizard needs is
+    # reachable anonymously — the public routes handled before this check plus
+    # GET /version — so that an API exposed on the network can't be driven by
+    # a bystander before the owner has created the admin account.
     local user_count
     user_count=$(_api_user_count)
     if [[ "$user_count" -eq 0 ]] && [[ ! -f "$API_AUTH_DIR/.setup-complete" ]]; then
-        AUTH_USERNAME="anonymous"
-        AUTH_ROLE="admin"
-        return 0
+        if [[ "${REQUEST_METHOD:-GET}" == "GET" && "${REQUEST_PATH:-/}" == "/version" ]]; then
+            AUTH_USERNAME="anonymous"
+            AUTH_ROLE="admin"
+            return 0
+        fi
+        AUTH_ERROR="Setup required: create the first admin account with POST /auth/setup before using this endpoint."
+        return 1
     fi
 
     _api_init_auth_dir
@@ -995,6 +1117,71 @@ _api_check_auth() {
 # Check if authenticated user is admin — call after _api_check_auth
 _api_check_admin() {
     if [[ "${AUTH_ROLE:-}" != "admin" ]]; then
+        return 1
+    fi
+    return 0
+}
+
+# Role policy for a route, applied by the router right after authentication.
+# Admins may call everything. The "user" role is a viewer: it can read
+# operational data and manage its own session/profile, but every request that
+# changes the system, executes code or exposes secrets requires admin.
+# Handlers keep their own _api_check_admin calls as defence in depth.
+_api_route_allowed() {
+    local method="$1" path="$2"
+    [[ "${AUTH_ROLE:-}" == "admin" ]] && return 0
+    case "$method" in
+        GET)
+            case "$path" in
+                /env|/stacks/*/env|/snapshots|/snapshots/*|/audit|/terminal/history|\
+                /backups|/backups/*|/secrets|/secrets/*|/system/crontab|/system/crontab/*|\
+                /system/update/check|/system/os-update/*|/ddns/status|/dns/records|\
+                /plugins/*/hooks|/plugins/*/hooks/*|/plugins/*/logs|\
+                /containers/*/files|/containers/*/files/*|/export/config|\
+                /auth/users|/auth/invites|/auth/sessions|/templates/deploy-history)
+                    return 1 ;;
+            esac
+            return 0 ;;
+        *)
+            case "$path" in
+                /auth/logout|/auth/refresh|/auth/totp/*|/settings/dashboard|/settings/profile|\
+                /setup/configure|/setup/complete|/compose/validate|/stacks/*/compose/validate|\
+                /env/validate|/templates/*/dry-run)
+                    return 0 ;;
+            esac
+            return 1 ;;
+    esac
+}
+
+# Apply a jq filter to a JSON state file atomically under an exclusive lock.
+# Usage: _api_jq_update_file FILE [jq options...] FILTER
+_api_jq_update_file() {
+    local file="$1"; shift
+    (
+        flock -w 5 200 || exit 1
+        local out
+        out=$(jq "$@" "$file" 2>/dev/null) || exit 1
+        [[ -n "$out" ]] || exit 1
+        printf '%s\n' "$out" > "$file.tmp" && chmod 600 "$file.tmp" 2>/dev/null && mv -f "$file.tmp" "$file"
+    ) 200>"$file.lock"
+}
+
+# Format a byte count for humans (K/M/G with one decimal)
+_api_fmt_bytes() {
+    local b="${1:-0}"
+    [[ "$b" =~ ^[0-9]+$ ]] || b=0
+    if (( b >= 1073741824 )); then printf '%d.%dG' $(( b / 1073741824 )) $(( (b % 1073741824) * 10 / 1073741824 ))
+    elif (( b >= 1048576 )); then printf '%d.%dM' $(( b / 1048576 )) $(( (b % 1048576) * 10 / 1048576 ))
+    elif (( b >= 1024 )); then printf '%dK' $(( b / 1024 ))
+    else printf '%dB' "$b"; fi
+}
+
+# Validate an image reference (name[:tag][@digest]) — rejects option-like and
+# shell-hostile values before it reaches docker.
+_api_validate_image_ref() {
+    local ref="$1"
+    if [[ -z "$ref" || ${#ref} -gt 255 || ! "$ref" =~ ^[a-zA-Z0-9][a-zA-Z0-9._:/@-]*$ ]]; then
+        _api_error 400 "Invalid image reference"
         return 1
     fi
     return 0
@@ -1287,6 +1474,11 @@ _api_scan_compose_security() {
         for v in "${violations[@]}"; do
             details="${details}${details:+; }$v"
         done
+        if [[ "${_API_SCAN_QUIET:-false}" == "true" ]]; then
+            # Collect-only mode: print the findings and let the caller decide
+            printf '%s' "$details"
+            return 1
+        fi
         _api_error 403 "Security policy violation in ${context}: ${details}"
         return 1
     fi
@@ -1367,8 +1559,7 @@ _api_check_rate_limit() {
         local record
         record=$(cat "$rate_file" | jq -r --arg ip "$client_ip" '.[$ip] // empty' 2>/dev/null)
         if [[ -n "$record" ]]; then
-            local attempts locked_until
-            attempts=$(echo "$record" | jq -r '.attempts // 0' 2>/dev/null)
+            local locked_until
             locked_until=$(echo "$record" | jq -r '.locked_until // 0' 2>/dev/null)
             if [[ "$locked_until" -gt "$now" ]] 2>/dev/null; then
                 return 1  # Still locked out
@@ -1614,97 +1805,27 @@ _api_container_json() {
 # ENDPOINT HANDLERS
 # =============================================================================
 
+# GET / — API name, version, authentication mode and the endpoint list
 handle_root() {
-    local endpoints='[
-    {"method": "GET",  "path": "/",                          "description": "API info and available endpoints"},
-    {"method": "GET",  "path": "/status",                    "description": "Overall system status"},
-    {"method": "GET",  "path": "/health",                    "description": "Container health report"},
-    {"method": "GET",  "path": "/stacks",                    "description": "List all stacks with status"},
-    {"method": "GET",  "path": "/stacks/:name",              "description": "Detailed info for a stack"},
-    {"method": "GET",  "path": "/stacks/:name/containers",   "description": "Containers in a stack"},
-    {"method": "GET",  "path": "/stacks/:name/logs",         "description": "Recent logs for a stack"},
-    {"method": "GET",  "path": "/stacks/:name/compose",      "description": "Raw docker-compose.yml content"},
-    {"method": "POST", "path": "/stacks/:name/start",        "description": "Start a stack"},
-    {"method": "POST", "path": "/stacks/:name/stop",         "description": "Stop a stack"},
-    {"method": "POST", "path": "/stacks/:name/restart",      "description": "Restart a stack"},
-    {"method": "POST", "path": "/stacks/:name/update",       "description": "Pull, detect, recreate"},
-    {"method": "GET",  "path": "/images",                    "description": "All images with metadata"},
-    {"method": "GET",  "path": "/images/stale",              "description": "Only stale images older than 30 days"},
-    {"method": "GET",  "path": "/containers",                "description": "All containers with status"},
-    {"method": "GET",  "path": "/containers/:name",          "description": "Detailed container info"},
-    {"method": "GET",  "path": "/containers/:name/stats",    "description": "Live resource stats"},
-    {"method": "GET",  "path": "/containers/:name/processes","description": "Container process list"},
-    {"method": "GET",  "path": "/config",                    "description": "Current configuration"},
-    {"method": "GET",  "path": "/system",                    "description": "System resource info"},
-    {"method": "GET",  "path": "/networks",                  "description": "Docker networks"},
-    {"method": "GET",  "path": "/volumes",                   "description": "Docker volumes"},
-    {"method": "GET",  "path": "/logs",                      "description": "Framework log tail"},
-    {"method": "GET",  "path": "/events",                    "description": "Recent Docker events"},
-    {"method": "GET",  "path": "/version",                   "description": "Version information"},
-    {"method": "GET",    "path": "/setup/status",             "description": "Check if server needs first-run setup", "auth": false},
-    {"method": "GET",    "path": "/setup/defaults",           "description": "Get setup defaults and system info", "auth": false},
-    {"method": "POST",   "path": "/setup/configure",          "description": "Apply setup configuration", "auth": true},
-    {"method": "POST",   "path": "/setup/complete",            "description": "Finalize first-run setup", "auth": true},
-    {"method": "POST",   "path": "/stacks/rename",             "description": "Rename a stack directory", "auth": "admin"},
-    {"method": "POST",   "path": "/stacks/reorder",            "description": "Set stack startup order", "auth": "admin"},
-    {"method": "POST",   "path": "/auth/setup",              "description": "Create first admin account", "auth": false},
-    {"method": "POST",   "path": "/auth/login",              "description": "Authenticate and get token", "auth": false},
-    {"method": "POST",   "path": "/auth/register",           "description": "Register with invite code", "auth": false},
-    {"method": "GET",    "path": "/auth/verify",             "description": "Verify a token", "auth": false},
-    {"method": "POST",   "path": "/auth/invite",             "description": "Generate invite code", "auth": "admin"},
-    {"method": "GET",    "path": "/auth/users",              "description": "List all users", "auth": "admin"},
-    {"method": "POST",   "path": "/auth/revoke",             "description": "Revoke user access", "auth": "admin"},
-    {"method": "GET",    "path": "/auth/invites",            "description": "List active invites", "auth": "admin"},
-    {"method": "DELETE",  "path": "/auth/invite/:code",      "description": "Delete invite code", "auth": "admin"},
-    {"method": "POST",   "path": "/auth/factory-reset",     "description": "Wipe auth state and return to setup wizard", "auth": "admin"},
-    {"method": "POST",   "path": "/metrics/snapshot",        "description": "Capture system metrics snapshot"},
-    {"method": "GET",    "path": "/metrics/trends",           "description": "Query metrics history (range: 1h|6h|24h|7d)"},
-    {"method": "GET",    "path": "/images/check-updates",     "description": "Quick local image staleness check"},
-    {"method": "POST",   "path": "/images/check-updates",     "description": "Registry check for image updates (slow)"},
-    {"method": "POST",   "path": "/images/:name/update",      "description": "Pull image and restart containers"},
-    {"method": "GET",    "path": "/notifications/rules",      "description": "List notification rules"},
-    {"method": "POST",   "path": "/notifications/rules",      "description": "Create a notification rule"},
-    {"method": "DELETE", "path": "/notifications/rules/:id",  "description": "Delete a notification rule"},
-    {"method": "GET",    "path": "/notifications/history",    "description": "Notification send history"},
-    {"method": "POST",   "path": "/notifications/test",       "description": "Send a test NTFY notification"},
-    {"method": "GET",    "path": "/snapshots",                "description": "List all config snapshots"},
-    {"method": "POST",   "path": "/snapshots/create",         "description": "Create a new config snapshot"},
-    {"method": "GET",    "path": "/snapshots/:id/download",   "description": "Download a snapshot archive"},
-    {"method": "POST",   "path": "/snapshots/:id/restore",    "description": "Restore from a snapshot"},
-    {"method": "DELETE", "path": "/snapshots/:id",            "description": "Delete a snapshot"},
-    {"method": "GET",    "path": "/stacks/:name/compose/history", "description": "Compose file version history"},
-    {"method": "GET",    "path": "/stacks/:name/compose/history/:id", "description": "View a specific compose version content"},
-    {"method": "POST",   "path": "/stacks/:name/compose/rollback", "description": "Rollback compose to a previous version"},
-    {"method": "GET",    "path": "/templates",                "description": "List available templates"},
-    {"method": "GET",    "path": "/templates/:name",          "description": "Template detail with compose content"},
-    {"method": "POST",   "path": "/templates/:name/deploy",   "description": "Deploy a template to a new stack"},
-    {"method": "POST",   "path": "/templates/import",         "description": "Import a custom template"},
-    {"method": "POST",   "path": "/templates/:name/update",   "description": "Update an existing template"},
-    {"method": "DELETE", "path": "/templates/:name",           "description": "Delete a template"},
-    {"method": "GET",    "path": "/automations",              "description": "List automation rules"},
-    {"method": "POST",   "path": "/automations",              "description": "Create an automation rule"},
-    {"method": "POST",   "path": "/automations/:id/update",   "description": "Update an automation rule"},
-    {"method": "DELETE", "path": "/automations/:id",          "description": "Delete an automation rule"},
-    {"method": "GET",    "path": "/automations/:id/history",  "description": "Automation run history"},
-    {"method": "GET",    "path": "/topology",                 "description": "Network topology graph data"},
-    {"method": "GET",    "path": "/auth/sessions",            "description": "List active sessions", "auth": "admin"},
-    {"method": "DELETE", "path": "/auth/sessions/:prefix",    "description": "Revoke a session by token prefix", "auth": "admin"},
-    {"method": "GET",    "path": "/system/update/check",     "description": "Check for available DCS updates via git"},
-    {"method": "POST",   "path": "/system/update/apply",     "description": "Apply update safely with backup tag"},
-    {"method": "POST",   "path": "/system/update/rollback",  "description": "Rollback to a previous backup tag"}
-  ]'
+    # Endpoint catalogue — generated by .scripts/api-docs.sh (do not edit by hand)
+    local endpoints
+    read -r -d '' endpoints <<'DCS_ENDPOINTS' || true
+[{"method":"GET","path":"/","access":"public","description":"API name, version, authentication mode and the endpoint list"},{"method":"GET","path":"/auth/verify","access":"public","description":"Verify a token is valid"},{"method":"GET","path":"/setup/status","access":"public","description":"Always available, no auth. Reports whether server needs setup."},{"method":"GET","path":"/setup/defaults","access":"public","description":"Defaults and detected system values for the setup wizard (anonymous until setup is complete, admin afterwards)"},{"method":"GET","path":"/auth/users","access":"admin","description":"List all users (admin only)"},{"method":"GET","path":"/auth/invites","access":"admin","description":"List active invite codes (admin only)"},{"method":"GET","path":"/auth/sessions","access":"admin","description":"List active sessions (admin only)"},{"method":"GET","path":"/status","access":"user","description":"Host and Docker overview: containers, images, stacks, load, memory, disk, GPU"},{"method":"GET","path":"/health","access":"user","description":"Health report for every container (running, unhealthy, stopped, restart loops)"},{"method":"GET","path":"/stacks","access":"user","description":"All stacks with running-container counts"},{"method":"GET","path":"/images","access":"user","description":"Images with age, size and staleness (/images/stale lists only stale ones)"},{"method":"GET","path":"/images/stale","access":"user","description":"Images with age, size and staleness (/images/stale lists only stale ones)"},{"method":"GET","path":"/containers","access":"user","description":"All containers with state, health, ports and cached CPU/memory usage"},{"method":"GET","path":"/config","access":"user","description":"Effective configuration (secrets masked)"},{"method":"GET","path":"/system","access":"user","description":"Host resources: CPU, memory, uptime, kernel"},{"method":"GET","path":"/disks","access":"user","description":"Mounted filesystems and their usage"},{"method":"GET","path":"/networks","access":"user","description":"Docker networks with connected containers"},{"method":"GET","path":"/volumes","access":"user","description":"Docker volumes"},{"method":"GET","path":"/logs","access":"user","description":"Tail of the framework log"},{"method":"GET","path":"/logs/stats","access":"user","description":"Log file size and per-level counts"},{"method":"GET","path":"/logs/archives","access":"user","description":"Rotated log archives"},{"method":"GET","path":"/events","access":"user","description":"Recent Docker events"},{"method":"GET","path":"/version","access":"user","description":"API, framework, Docker and Compose versions"},{"method":"GET","path":"/maintenance/report","access":"user","description":"Docker disk usage report"},{"method":"GET","path":"/maintenance/orphans","access":"user","description":"Containers, volumes and networks no stack references"},{"method":"GET","path":"/maintenance/disk","access":"user","description":"Per-stack App-Data sizes, Docker disk usage and volume sizes"},{"method":"GET","path":"/env","access":"admin","description":"The root .env file, raw and parsed"},{"method":"GET","path":"/backups","access":"admin","description":"Backup archives in BACKUP_DEST_DIR"},{"method":"GET","path":"/backups/status","access":"admin","description":"Progress of the running backup or the last result"},{"method":"GET","path":"/backups/config","access":"admin","description":"Backup source, destination and retention"},{"method":"GET","path":"/terminal/history","access":"admin","description":"Recent terminal commands from the audit log"},{"method":"GET","path":"/system/metrics","access":"user","description":"CPU load, memory and per-mount disk usage"},{"method":"GET","path":"/system/update/check","access":"admin","description":"Check for available DCS updates via git"},{"method":"GET","path":"/system/os-update/status","access":"admin","description":"Poll background OS update progress"},{"method":"GET","path":"/ddns/status","access":"admin","description":"Check DDNS status and current IP"},{"method":"GET","path":"/alerts/config","access":"user","description":"Read alert thresholds"},{"method":"GET","path":"/system/crontab","access":"admin","description":"User crontab entries"},{"method":"GET","path":"/system/crontab/system","access":"admin","description":"System-level cron entries"},{"method":"GET","path":"/metrics/trends","access":"user","description":"Metrics samples for a range (range=1h|6h|24h|7d)"},{"method":"GET","path":"/images/check-updates","access":"user","description":"Image staleness from age plus the cached registry check"},{"method":"GET","path":"/notifications/rules","access":"user","description":"NTFY notification rules"},{"method":"GET","path":"/notifications/history","access":"user","description":"Recently sent notifications"},{"method":"GET","path":"/snapshots","access":"admin","description":"Configuration snapshots"},{"method":"GET","path":"/templates","access":"user","description":"Available templates"},{"method":"GET","path":"/templates/deploy-history","access":"admin","description":"Template deploy and undeploy events"},{"method":"GET","path":"/automations","access":"user","description":"Automation rules"},{"method":"GET","path":"/topology","access":"user","description":"Container and network topology graph"},{"method":"GET","path":"/traefik/status","access":"user","description":"Check if Traefik is deployed and return domain"},{"method":"GET","path":"/routes","access":"user","description":"Traefik routes: subdomain, service, stack and target"},{"method":"GET","path":"/routes/check","access":"user","description":"Check if a subdomain is available"},{"method":"GET","path":"/dns/records","access":"admin","description":"List Cloudflare CNAME records that point to our domain"},{"method":"GET","path":"/homarr/status","access":"user","description":"Check if Homarr is deployed and has an API key configured"},{"method":"GET","path":"/metrics/history","access":"user","description":"Metrics samples for a range (range=1h|6h|24h|7d)"},{"method":"GET","path":"/metrics/summary","access":"user","description":"Min, max and average CPU and memory over a range"},{"method":"GET","path":"/health/score","access":"user","description":"System health score (0-100) with its factors"},{"method":"GET","path":"/health/score/history","access":"user","description":"Recorded health scores over a range"},{"method":"GET","path":"/settings/dashboard","access":"user","description":"Fetch user's dashboard layout"},{"method":"GET","path":"/settings/profile","access":"user","description":"Fetch user's profile settings"},{"method":"GET","path":"/secrets","access":"admin","description":"List secret key names (never values)"},{"method":"GET","path":"/schedules","access":"user","description":"Return schedules.json content"},{"method":"GET","path":"/plugins","access":"user","description":"Scan .plugins/ directory, return plugin manifest data"},{"method":"GET","path":"/plugins/cards","access":"user","description":"List all available plugin cards across all enabled plugins"},{"method":"GET","path":"/plugins/{plugin}/cards/{card}","access":"user","description":"Return card HTML content as JSON"},{"method":"GET","path":"/plugins/{plugin}/hooks/{hook}","access":"admin","description":"Read hook script content"},{"method":"GET","path":"/plugins/{plugin}/hooks","access":"admin","description":"List all hooks with metadata"},{"method":"GET","path":"/plugins/{plugin}/logs","access":"admin","description":"Execution history"},{"method":"GET","path":"/config/schema","access":"user","description":"Return contents of .config/schema.json"},{"method":"GET","path":"/stream","access":"user","description":"SSE endpoint: docker events + periodic metrics"},{"method":"GET","path":"/rollback/{stack}/snapshots/{snapshot}","access":"user","description":"Content of a rollback snapshot"},{"method":"GET","path":"/rollback/{stack}/snapshots","access":"user","description":"Rollback snapshots of a stack"},{"method":"GET","path":"/rollback/{stack}/diff/{snapshot}","access":"user","description":"Diff between a snapshot and the current stack files"},{"method":"GET","path":"/secrets/{key}/exists","access":"admin","description":"Check if a secret exists (boolean)"},{"method":"GET","path":"/health/score/{stack}","access":"user","description":"Compute health score for a specific stack"},{"method":"GET","path":"/schedules/{id}/history","access":"user","description":"Return execution history filtered by schedule id"},{"method":"GET","path":"/templates/gallery","access":"user","description":"List templates from gallery catalog"},{"method":"GET","path":"/templates/{template}","access":"user","description":"Template metadata, compose file and .env"},{"method":"GET","path":"/images/search","access":"user","description":"Search Docker Hub for images"},{"method":"GET","path":"/export/{health|system|config}","access":"user","description":"Export data"},{"method":"GET","path":"/audit","access":"admin","description":"Get audit log entries"},{"method":"GET","path":"/webhooks","access":"user","description":"List webhooks"},{"method":"GET","path":"/snapshots/{snapshot}/download","access":"admin","description":"Download a snapshot archive"},{"method":"GET","path":"/stacks/{stack}/compose/history/{version}","access":"user","description":"View a specific compose version's content"},{"method":"GET","path":"/stacks/{stack}/compose/history","access":"user","description":"Saved versions of a stack's compose file"},{"method":"GET","path":"/automations/{id}/history","access":"user","description":"Run history of an automation"},{"method":"GET","path":"/containers/{container}/files","access":"admin","description":"List directory contents inside a container"},{"method":"GET","path":"/containers/{container}/files/content","access":"admin","description":"Read file contents inside a container"},{"method":"GET","path":"/containers/{container}/logs/live","access":"user","description":"Fetch recent logs for polling"},{"method":"GET","path":"/logs/live","access":"user","description":"Stream DCS application log"},{"method":"GET","path":"/stacks/{stack}/services","access":"user","description":"Services of a stack with container state, health and image"},{"method":"GET","path":"/stacks/{stack}/containers","access":"user","description":"Containers of one stack"},{"method":"GET","path":"/stacks/{stack}/logs","access":"user","description":"Recent log lines of a stack"},{"method":"GET","path":"/stacks/{stack}/compose","access":"user","description":"The stack's docker-compose.yml"},{"method":"GET","path":"/stacks/{stack}/env","access":"admin","description":"The stack's .env file"},{"method":"GET","path":"/stacks/{stack}","access":"user","description":"Stack detail: services, containers and images"},{"method":"GET","path":"/containers/{container}/stats","access":"user","description":"Live CPU, memory, network and block I/O of a container"},{"method":"GET","path":"/containers/{container}/logs","access":"user","description":"Recent log lines of a container"},{"method":"GET","path":"/containers/{container}/processes","access":"user","description":"Process list inside a container"},{"method":"GET","path":"/networks/{network}","access":"user","description":"Network detail with its members"},{"method":"GET","path":"/containers/{container}","access":"user","description":"Container detail"},{"method":"POST","path":"/auth/setup","access":"public","description":"Create the first admin account (only when no users exist)"},{"method":"POST","path":"/auth/login","access":"public","description":"Authenticate and get a session token"},{"method":"POST","path":"/auth/register","access":"public","description":"Register a new account with an invite code"},{"method":"POST","path":"/auth/totp/validate","access":"public","description":"Validate TOTP code during login (second step)"},{"method":"POST","path":"/setup/configure","access":"user","description":"Apply the setup wizard's settings and stack list"},{"method":"POST","path":"/setup/complete","access":"user","description":"Mark first-run setup as finished"},{"method":"POST","path":"/auth/logout","access":"user","description":"Invalidate the current session token"},{"method":"POST","path":"/auth/refresh","access":"user","description":"Refresh the current session token"},{"method":"POST","path":"/auth/totp/setup","access":"user","description":"Generate TOTP secret and return QR URI (not yet enabled)"},{"method":"POST","path":"/auth/totp/verify","access":"user","description":"Verify a TOTP code and enable 2FA"},{"method":"POST","path":"/auth/totp/disable","access":"user","description":"Disable 2FA (requires password confirmation)"},{"method":"POST","path":"/auth/invite","access":"admin","description":"Generate an invite code (admin only)"},{"method":"POST","path":"/auth/revoke","access":"admin","description":"Revoke a user's access (admin only)"},{"method":"POST","path":"/auth/logout-all","access":"admin","description":"Invalidate all sessions for a user (admin only)"},{"method":"POST","path":"/auth/factory-reset","access":"admin","description":"Wipe auth state and return server to first-run mode"},{"method":"POST","path":"/stacks/rename","access":"admin","description":"Rename a stack directory"},{"method":"POST","path":"/stacks/reorder","access":"admin","description":"Set stack startup order"},{"method":"POST","path":"/terminal/exec","access":"admin","description":"Run a shell command on the host (terminal session required, 60 s limit)"},{"method":"POST","path":"/terminal/auth","access":"admin","description":"Authenticate with Linux credentials"},{"method":"POST","path":"/terminal/auth/verify","access":"admin","description":"Verify a terminal session token"},{"method":"POST","path":"/terminal/auth/logout","access":"admin","description":"Invalidate a terminal session"},{"method":"POST","path":"/alerts/config","access":"admin","description":"Update alert thresholds"},{"method":"POST","path":"/system/crontab","access":"admin","description":"Update user crontab"},{"method":"POST","path":"/system/update/apply","access":"admin","description":"Apply update safely using git pull --ff-only"},{"method":"POST","path":"/system/ui-update/apply","access":"admin","description":"Pull latest DCS-UI image and recreate container"},{"method":"POST","path":"/system/update/rollback","access":"admin","description":"Rollback to a previously created backup tag"},{"method":"POST","path":"/system/os-update/check","access":"admin","description":"List available OS package updates (terminal session required)"},{"method":"POST","path":"/system/os-update/apply","access":"admin","description":"Apply OS package updates in the background (terminal session required)"},{"method":"POST","path":"/stacks","access":"admin","description":"Create an empty stack directory"},{"method":"POST","path":"/stacks/{stack}/delete","access":"admin","description":"Delete a stopped stack directory"},{"method":"POST","path":"/config","access":"admin","description":"Update allow-listed .env settings"},{"method":"POST","path":"/containers/{container}/start","access":"admin","description":"Start, stop, restart, recreate (Compose-managed only) or remove a container"},{"method":"POST","path":"/containers/{container}/stop","access":"admin","description":"Start, stop, restart, recreate (Compose-managed only) or remove a container"},{"method":"POST","path":"/containers/{container}/restart","access":"admin","description":"Start, stop, restart, recreate (Compose-managed only) or remove a container"},{"method":"POST","path":"/containers/{container}/recreate","access":"admin","description":"Start, stop, restart, recreate (Compose-managed only) or remove a container"},{"method":"POST","path":"/containers/{container}/remove","access":"admin","description":"Start, stop, restart, recreate (Compose-managed only) or remove a container"},{"method":"POST","path":"/containers/{container}/exec","access":"admin","description":"Run a command inside a container (30 s limit)"},{"method":"POST","path":"/containers/{container}/rename","access":"admin","description":"Rename a container"},{"method":"POST","path":"/networks","access":"admin","description":"Create a Docker network"},{"method":"POST","path":"/networks/{network}/delete","access":"admin","description":"Remove a Docker network"},{"method":"POST","path":"/networks/{network}/connect","access":"admin","description":"Connect a container to a network"},{"method":"POST","path":"/networks/{network}/disconnect","access":"admin","description":"Disconnect a container from a network"},{"method":"POST","path":"/images/{image}/delete","access":"admin","description":"Remove an image"},{"method":"POST","path":"/volumes/{volume}/delete","access":"admin","description":"Remove a Docker volume"},{"method":"POST","path":"/maintenance/prune","access":"admin","description":"Prune stopped containers, dangling images and unused networks"},{"method":"POST","path":"/maintenance/image-prune","access":"admin","description":"Prune unused images"},{"method":"POST","path":"/maintenance/deep-prune","access":"admin","description":"Prune everything unused, volumes included (confirmation required)"},{"method":"POST","path":"/maintenance/log-rotate","access":"admin","description":"Rotate and archive the framework log"},{"method":"POST","path":"/batch/stacks","access":"admin","description":"Start, stop or restart several stacks in dependency order"},{"method":"POST","path":"/batch/update","access":"admin","description":"Pull images for several stacks and recreate what changed"},{"method":"POST","path":"/env","access":"admin","description":"Save the root .env file (validated as plain KEY=value data)"},{"method":"POST","path":"/env/validate","access":"user","description":"Validate .env content without saving it"},{"method":"POST","path":"/backups/trigger","access":"admin","description":"Start a backup in the background (optionally one stack)"},{"method":"POST","path":"/backups/cancel","access":"admin","description":"Kill a running backup"},{"method":"POST","path":"/backups/restore","access":"admin","description":"Restore a backup archive (confirmation required)"},{"method":"POST","path":"/stacks/{stack}/compose/validate","access":"user","description":"Validate compose content for a stack without saving it"},{"method":"POST","path":"/stacks/{stack}/compose","access":"admin","description":"Save the stack's docker-compose.yml (policy-scanned, previous version kept)"},{"method":"POST","path":"/stacks/{stack}/env","access":"admin","description":"Save the stack's .env file"},{"method":"POST","path":"/stacks/{stack}/compose/rollback","access":"admin","description":"Restore a saved compose version"},{"method":"POST","path":"/settings/dashboard","access":"user","description":"Save user's dashboard layout"},{"method":"POST","path":"/settings/profile","access":"user","description":"Save user's profile settings"},{"method":"POST","path":"/metrics/snapshot","access":"admin","description":"Record a metrics sample now"},{"method":"POST","path":"/images/check-updates","access":"admin","description":"Compare local image digests with their registries (slow)"},{"method":"POST","path":"/images/update","access":"admin","description":"Pull an image and recreate the Compose services that use it"},{"method":"POST","path":"/images/{image}/update","access":"admin","description":"Pull an image and recreate the Compose services that use it"},{"method":"POST","path":"/notifications/rules","access":"admin","description":"Create or update a notification rule"},{"method":"POST","path":"/notifications/test","access":"admin","description":"Send a test NTFY notification"},{"method":"POST","path":"/snapshots/create","access":"admin","description":"Create a configuration snapshot (compose files, .env files, templates)"},{"method":"POST","path":"/snapshots/{snapshot}/restore","access":"admin","description":"Restore a snapshot (confirmation required, policy-scanned)"},{"method":"POST","path":"/templates/{template}/deploy","access":"admin","description":"Deploy a template into a stack (merge, routes, DNS, optional start)"},{"method":"POST","path":"/templates/{template}/undeploy","access":"admin","description":"Remove a template's services from a stack (optionally data, images, routes)"},{"method":"POST","path":"/templates/{template}/dry-run","access":"user","description":"Preview a deployment: conflicts, ports, variables and policy findings"},{"method":"POST","path":"/templates/import","access":"admin","description":"Import a template from compose content"},{"method":"POST","path":"/templates/fetch-url","access":"admin","description":"Fetch compose content from URL without saving"},{"method":"POST","path":"/templates/import-url","access":"admin","description":"Import a template from a URL"},{"method":"POST","path":"/stacks/{stack}/clone","access":"admin","description":"Clone a stack"},{"method":"POST","path":"/compose/validate","access":"user","description":"Validate a compose file"},{"method":"POST","path":"/webhooks","access":"admin","description":"Create a webhook"},{"method":"POST","path":"/webhooks/{id}/test","access":"admin","description":"Test a webhook"},{"method":"POST","path":"/templates/{template}/update","access":"admin","description":"Update an existing template's compose, metadata, and .env"},{"method":"POST","path":"/automations","access":"admin","description":"Create an automation rule"},{"method":"POST","path":"/automations/{id}/update","access":"admin","description":"Update an automation rule"},{"method":"POST","path":"/stacks/{stack}/start","access":"admin","description":"Start, stop, restart or update (pull + recreate) a stack"},{"method":"POST","path":"/stacks/{stack}/stop","access":"admin","description":"Start, stop, restart or update (pull + recreate) a stack"},{"method":"POST","path":"/stacks/{stack}/restart","access":"admin","description":"Start, stop, restart or update (pull + recreate) a stack"},{"method":"POST","path":"/stacks/{stack}/update","access":"admin","description":"Start, stop, restart or update (pull + recreate) a stack"},{"method":"POST","path":"/secrets","access":"admin","description":"Store an encrypted secret (also POST /secrets/{key})"},{"method":"POST","path":"/secrets/{key}","access":"admin","description":"Store an encrypted secret (also POST /secrets/{key})"},{"method":"POST","path":"/schedules","access":"admin","description":"Create a scheduled task"},{"method":"POST","path":"/plugins/install","access":"admin","description":"Install a plugin from a git URL (installed disabled)"},{"method":"POST","path":"/plugins/scaffold","access":"admin","description":"Create a plugin from an inline manifest, hooks and cards"},{"method":"POST","path":"/rollback/{stack}/restore","access":"admin","description":"Restore a stack from a rollback snapshot (policy-scanned)"},{"method":"POST","path":"/schedules/{id}/update","access":"admin","description":"Update a scheduled task"},{"method":"POST","path":"/schedules/{id}/toggle","access":"admin","description":"Enable/disable a schedule"},{"method":"POST","path":"/schedules/{id}/run","access":"admin","description":"Execute a schedule immediately"},{"method":"POST","path":"/plugins/{plugin}/toggle","access":"admin","description":"Enable/disable by writing to plugin.json"},{"method":"POST","path":"/plugins/{plugin}/hooks/{hook}/test","access":"admin","description":"Dry-run a hook"},{"method":"POST","path":"/plugins/{plugin}/hooks/{hook}/update","access":"admin","description":"Update hook script"},{"method":"POST","path":"/plugins/{plugin}/config","access":"admin","description":"Update plugin configuration"},{"method":"PUT","path":"/routes/{stack}/{service}","access":"admin","description":"Update a route file's subdomain"},{"method":"DELETE","path":"/auth/sessions/{token-prefix}","access":"admin","description":"Revoke a specific session by token prefix (admin only)"},{"method":"DELETE","path":"/auth/invite/{code}","access":"admin","description":"Delete an invite code (admin only)"},{"method":"DELETE","path":"/notifications/rules/{id}","access":"admin","description":"Delete a notification rule"},{"method":"DELETE","path":"/snapshots/{snapshot}","access":"admin","description":"Delete a snapshot"},{"method":"DELETE","path":"/webhooks/{id}","access":"admin","description":"Delete a webhook"},{"method":"DELETE","path":"/templates/{template}","access":"admin","description":"Delete a template"},{"method":"DELETE","path":"/automations/{id}","access":"admin","description":"Delete an automation rule"},{"method":"DELETE","path":"/secrets/{key}","access":"admin","description":"Securely delete a secret"},{"method":"DELETE","path":"/schedules/{id}","access":"admin","description":"Remove a schedule"},{"method":"DELETE","path":"/plugins/{plugin}","access":"admin","description":"Remove plugin directory"},{"method":"DELETE","path":"/routes/{stack}/{service}","access":"admin","description":"Delete a route file and optionally clean up DNS"}]
+DCS_ENDPOINTS
 
     _api_success "{\"name\": \"Docker Compose Skeleton API\", \"version\": \"$API_VERSION\", \"auth_enabled\": $API_AUTH_ENABLED, \"endpoints\": $endpoints}"
 }
 
+# GET /version — API, framework, Docker and Compose versions
 handle_version() {
     local docker_version compose_version
     docker_version=$(_api_json_escape "$(docker --version 2>/dev/null)")
     compose_version=$(_api_json_escape "$($DOCKER_COMPOSE_CMD version 2>/dev/null)")
 
-    _api_success "{\"api_version\": \"$API_VERSION\", \"framework_version\": \"${SCRIPT_VERSION:-2.0.0}\", \"docker_version\": \"$(_api_json_escape "$docker_version")\", \"compose_version\": \"$(_api_json_escape "$compose_version")\", \"compose_command\": \"$(_api_json_escape "$DOCKER_COMPOSE_CMD")\"}"
+    _api_success "{\"api_version\": \"$API_VERSION\", \"framework_version\": \"$(_api_json_escape "$DCS_VERSION")\", \"docker_version\": \"$docker_version\", \"compose_version\": \"$compose_version\", \"compose_command\": \"$(_api_json_escape "$DOCKER_COMPOSE_CMD")\"}"
 }
 
+# GET /status — Host and Docker overview: containers, images, stacks, load, memory, disk, GPU
 handle_status() {
     # PERFORMANCE: Use docker system info for counts (single command) + parallel for the rest
     local total_containers=0 running_containers=0 stopped_containers=0
@@ -1726,10 +1847,10 @@ handle_status() {
     total_volumes=$(timeout 3 docker volume ls -q 2>/dev/null | wc -l)
     total_networks=$(timeout 3 docker network ls --format '{{.Name}}' 2>/dev/null | grep -cv '^bridge$\|^host$\|^none$') || total_networks=0
 
-    # Disk: prefer /home, fall back to /
+    # Disk: the filesystem that holds this installation (stacks and App-Data)
     local disk_usage
-    disk_usage=$(df -h /home 2>/dev/null | tail -1 | awk '{printf "{\"total\": \"%s\", \"used\": \"%s\", \"available\": \"%s\", \"percent\": \"%s\", \"mount\": \"/home\"}", $2, $3, $4, $5}')
-    [[ -z "$disk_usage" || "$disk_usage" == *'""'* ]] && disk_usage=$(df -h / 2>/dev/null | tail -1 | awk '{printf "{\"total\": \"%s\", \"used\": \"%s\", \"available\": \"%s\", \"percent\": \"%s\"}", $2, $3, $4, $5}')
+    disk_usage=$(df -hP "$BASE_DIR" 2>/dev/null | tail -1 | awk '{printf "{\"total\": \"%s\", \"used\": \"%s\", \"available\": \"%s\", \"percent\": \"%s\", \"mount\": \"%s\"}", $2, $3, $4, $5, $6}')
+    [[ -z "$disk_usage" || "$disk_usage" == *'""'* ]] && disk_usage=$(df -hP / 2>/dev/null | tail -1 | awk '{printf "{\"total\": \"%s\", \"used\": \"%s\", \"available\": \"%s\", \"percent\": \"%s\", \"mount\": \"/\"}", $2, $3, $4, $5}')
 
     local load_avg mem_total mem_available swap_total swap_free
     load_avg=$(awk '{printf "[%s, %s, %s]", $1, $2, $3}' /proc/loadavg 2>/dev/null || echo "[0,0,0]")
@@ -1743,7 +1864,7 @@ handle_status() {
 
     # Fast stack count: use docker compose ls (single command, lists all projects)
     local stacks
-    stacks=($(_api_get_stacks))
+    read -ra stacks <<< "$(_api_get_stacks)"
     local running_stacks=0
     local active_projects
     active_projects=$(timeout 5 docker compose ls --format json 2>/dev/null | jq -r '.[].Name' 2>/dev/null) || active_projects=""
@@ -1782,12 +1903,13 @@ handle_system_info_internal() {
     mem_available=$(awk '/MemAvailable/ {printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || echo 0)
     uptime_seconds=$(awk '{printf "%d", $1}' /proc/uptime 2>/dev/null || echo 0)
     cpu_count=$(nproc 2>/dev/null || echo 0)
-    disk_usage=$(df -h /home 2>/dev/null | tail -1 | awk '{printf "{\"total\":\"%s\",\"used\":\"%s\",\"available\":\"%s\",\"percent\":\"%s\"}", $2, $3, $4, $5}')
-    [[ -z "$disk_usage" || "$disk_usage" == *'""'* ]] && disk_usage=$(df -h / 2>/dev/null | tail -1 | awk '{printf "{\"total\":\"%s\",\"used\":\"%s\",\"available\":\"%s\",\"percent\":\"%s\"}", $2, $3, $4, $5}')
+    disk_usage=$(df -hP "$BASE_DIR" 2>/dev/null | tail -1 | awk '{printf "{\"total\":\"%s\",\"used\":\"%s\",\"available\":\"%s\",\"percent\":\"%s\"}", $2, $3, $4, $5}')
+    [[ -z "$disk_usage" || "$disk_usage" == *'""'* ]] && disk_usage=$(df -hP / 2>/dev/null | tail -1 | awk '{printf "{\"total\":\"%s\",\"used\":\"%s\",\"available\":\"%s\",\"percent\":\"%s\"}", $2, $3, $4, $5}')
     printf '{"hostname":"%s","uptime_seconds":%d,"system":{"load_average":%s,"memory_mb":{"total":%d,"available":%d},"disk":%s,"cpu_count":%d}}' \
         "$(_api_json_escape "$(hostname)")" "$uptime_seconds" "$load_avg" "$mem_total" "$mem_available" "${disk_usage:-{}}" "$cpu_count"
 }
 
+# GET /health — Health report for every container (running, unhealthy, stopped, restart loops)
 handle_health() {
     local -a results=()
     local total=0 healthy=0 unhealthy=0 stopped=0
@@ -1892,9 +2014,10 @@ handle_health_internal() {
         "$overall" "$total" "$healthy" "$unhealthy" "$stopped" "$cj"
 }
 
+# GET /stacks — All stacks with running-container counts
 handle_stacks() {
     local stacks
-    stacks=($(_api_get_stacks))
+    read -ra stacks <<< "$(_api_get_stacks)"
 
     local -a entries=()
     for stack in "${stacks[@]}"; do
@@ -1921,6 +2044,7 @@ handle_stacks() {
     _api_success "{\"total\": ${#stacks[@]}, \"stacks\": $json}"
 }
 
+# GET /stacks/{stack} — Stack detail: services, containers and images
 handle_stack_detail() {
     local stack="$1"
     local compose_file="$COMPOSE_DIR/$stack/docker-compose.yml"
@@ -1977,6 +2101,7 @@ handle_stack_detail() {
     _api_success "{\"name\": \"$stack\", \"status\": \"$status\", \"running_containers\": $count, \"has_env\": $([[ -f "$env_file" ]] && echo true || echo false), \"services\": $services_json, \"containers\": $containers_json, \"images\": $images_json}"
 }
 
+# GET /stacks/{stack}/containers — Containers of one stack
 handle_stack_containers() {
     local stack="$1"
     local compose_file="$COMPOSE_DIR/$stack/docker-compose.yml"
@@ -2003,6 +2128,7 @@ handle_stack_containers() {
     _api_success "{\"stack\": \"$stack\", \"containers\": $json}"
 }
 
+# GET /stacks/{stack}/logs — Recent log lines of a stack
 handle_stack_logs() {
     local stack="$1"
     local compose_file="$COMPOSE_DIR/$stack/docker-compose.yml"
@@ -2024,6 +2150,7 @@ handle_stack_logs() {
     _api_success "{\"stack\": \"$stack\", \"lines\": 50, \"logs\": \"$escaped\"}"
 }
 
+# GET /stacks/{stack}/compose — The stack's docker-compose.yml
 handle_stack_compose() {
     local stack="$1"
     local compose_file="$COMPOSE_DIR/$stack/docker-compose.yml"
@@ -2049,6 +2176,7 @@ handle_stack_compose() {
 # COMPOSE EDITOR & STACK ENV HANDLERS (Phase 1)
 # =============================================================================
 
+# POST /stacks/{stack}/compose/validate — Validate compose content for a stack without saving it
 handle_stack_compose_validate() {
     local stack="$1"
     local body="$2"
@@ -2110,6 +2238,7 @@ handle_stack_compose_validate() {
     _api_success "{\"valid\": $valid, \"stack\": \"$(_api_json_escape "$stack")\", \"output\": \"$escaped_output\"}"
 }
 
+# POST /stacks/{stack}/compose — Save the stack's docker-compose.yml (policy-scanned, previous version kept)
 handle_stack_compose_save() {
     local stack="$1"
     local body="$2"
@@ -2189,6 +2318,7 @@ handle_stack_compose_save() {
     _api_success "{\"success\": true, \"stack\": \"$(_api_json_escape "$stack")\", \"message\": \"Compose file saved successfully\", \"validated\": true}"
 }
 
+# GET /stacks/{stack}/env — The stack's .env file
 handle_stack_env() {
     local stack="$1"
     local env_file="$COMPOSE_DIR/$stack/.env"
@@ -2239,6 +2369,7 @@ handle_stack_env() {
     _api_success "{\"stack\": \"$(_api_json_escape "$stack")\", \"raw\": \"$escaped_raw\", \"variables\": $vars_json}"
 }
 
+# POST /stacks/{stack}/env — Save the stack's .env file
 handle_stack_env_save() {
     local stack="$1"
     local body="$2"
@@ -2276,6 +2407,7 @@ handle_stack_env_save() {
     _api_success "{\"success\": true, \"stack\": \"$(_api_json_escape "$stack")\", \"message\": \"Stack .env file saved successfully\"}"
 }
 
+# POST /stacks/{stack}/start — Start, stop, restart or update (pull + recreate) a stack
 handle_stack_action() {
     local stack="$1"
     local action="$2"
@@ -2297,13 +2429,13 @@ handle_stack_action() {
     case "$action" in
         start)
             _run_plugin_hooks "pre-start" "$_hook_ctx"
-            ( _compose_with_secrets "$compose_file" "$env_file" up -d --remove-orphans >/dev/null 2>&1 ) &
+            ( _compose_with_secrets "$compose_file" "$env_file" up -d --remove-orphans ) </dev/null >/dev/null 2>&1 &
             _run_plugin_hooks "post-start" "$_hook_ctx"
             output="Starting $stack (background)"
             ;;
         stop)
             _run_plugin_hooks "pre-stop" "$_hook_ctx"
-            ( $DOCKER_COMPOSE_CMD "${compose_args[@]}" down --remove-orphans --timeout 15 >/dev/null 2>&1 ) &
+            ( $DOCKER_COMPOSE_CMD "${compose_args[@]}" down --remove-orphans --timeout 15 ) </dev/null >/dev/null 2>&1 &
             _run_plugin_hooks "post-stop" "$_hook_ctx"
             _fire_notifications "stack_down" "stack=$stack" "status=stopped"
             output="Stopping $stack (background)"
@@ -2311,7 +2443,7 @@ handle_stack_action() {
         restart)
             _run_plugin_hooks "pre-stop" "$_hook_ctx"
             ( $DOCKER_COMPOSE_CMD "${compose_args[@]}" down --remove-orphans --timeout 15 >/dev/null 2>&1
-              _compose_with_secrets "$compose_file" "$env_file" up -d --remove-orphans >/dev/null 2>&1 ) &
+              _compose_with_secrets "$compose_file" "$env_file" up -d --remove-orphans ) </dev/null >/dev/null 2>&1 &
             _run_plugin_hooks "post-start" "$_hook_ctx"
             output="Restarting $stack (background)"
             ;;
@@ -2343,7 +2475,7 @@ handle_stack_action() {
 
             if [[ "$changes_found" == "true" ]] && [[ "$success" == "true" ]]; then
                 output+=$'\n'
-                output+=($(_compose_with_secrets "$compose_file" "$env_file" up -d --remove-orphans 2>&1)) || success=false
+                output+=$(_compose_with_secrets "$compose_file" "$env_file" up -d --remove-orphans 2>&1) || success=false
             fi
 
             local changes_json
@@ -2363,6 +2495,7 @@ handle_stack_action() {
     _api_success "{\"stack\": \"$stack\", \"action\": \"$action\", \"success\": $success, \"output\": \"$escaped_output\"}"
 }
 
+# GET /images — Images with age, size and staleness (/images/stale lists only stale ones)
 handle_images() {
     local stale_only="${1:-false}"
 
@@ -2422,6 +2555,7 @@ handle_images() {
     _api_success "{\"total\": ${#entries[@]}, \"images\": $json}"
 }
 
+# GET /containers — All containers with state, health, ports and cached CPU/memory usage
 handle_containers() {
     # PERFORMANCE: Single docker command to get all container data as JSON
     # Then use jq to transform — fast, reliable, no delimiter issues
@@ -2451,7 +2585,7 @@ handle_containers() {
                 printf "\"%s\":{\"cpu\":%s,\"mem\":%s}", $1, ($2+0), ($3+0)
             }')
             [[ -n "$_sl" ]] && printf '{%s}' "$_sl" > "$_stats_cache"
-        ) &
+        ) </dev/null >/dev/null 2>&1 &
 
         # Build containers JSON — read stats cache via --slurpfile (avoids shell arg size limits)
         local containers_json
@@ -2509,6 +2643,7 @@ handle_containers() {
     _api_success "{\"total\": ${#entries[@]}, \"containers\": $json}"
 }
 
+# GET /containers/{container} — Container detail
 handle_container_detail() {
     local name="$1"
 
@@ -2558,6 +2693,7 @@ handle_container_detail() {
     _api_success "$full_json"
 }
 
+# GET /containers/{container}/stats — Live CPU, memory, network and block I/O of a container
 handle_container_stats() {
     local name="$1"
 
@@ -2583,6 +2719,7 @@ handle_container_stats() {
     _api_success "{\"container\": \"$(_api_json_escape "$name")\", \"cpu_percent\": $cpu, \"memory_usage\": \"$(_api_json_escape "$mem_usage")\", \"memory_percent\": $mem_perc, \"network_io\": \"$(_api_json_escape "$net_io")\", \"block_io\": \"$(_api_json_escape "$block_io")\", \"pids\": $pids}"
 }
 
+# GET /containers/{container}/processes — Process list inside a container
 handle_container_processes() {
     local name="$1"
 
@@ -2629,6 +2766,7 @@ handle_container_processes() {
     _api_success "{\"container\": \"$(_api_json_escape "$name")\", \"processes\": $json}"
 }
 
+# GET /config — Effective configuration (secrets masked)
 handle_config() {
     # Return full configuration — sensitive values (tokens, certs) excluded
     local config="{"
@@ -2741,6 +2879,7 @@ handle_config() {
     _api_success "$config"
 }
 
+# GET /system — Host resources: CPU, memory, uptime, kernel
 handle_system() {
     local docker_info
     docker_info=$(docker system df --format '{{.Type}}|{{.TotalCount}}|{{.Active}}|{{.Size}}|{{.Reclaimable}}' 2>/dev/null)
@@ -2767,6 +2906,7 @@ handle_system() {
     _api_success "{\"hostname\": \"$(_api_json_escape "$(hostname)")\", \"kernel\": \"$(_api_json_escape "$kernel_version")\", \"cpu_count\": $cpu_count, \"memory_total_mb\": $mem_total_mb, \"swap_total_mb\": $swap_total_mb, \"docker_version\": \"$docker_version\", \"docker_disk_usage\": $df_json}"
 }
 
+# GET /disks — Mounted filesystems and their usage
 handle_disks() {
     local -a disk_entries=()
     # Parse df output handling mount paths with spaces (e.g. "/media/user/Dev Drive")
@@ -2809,6 +2949,7 @@ handle_disks() {
     _api_success "{\"total\": ${#disk_entries[@]}, \"disks\": $json}"
 }
 
+# GET /networks — Docker networks with connected containers
 handle_networks() {
     local -a entries=()
 
@@ -2835,6 +2976,7 @@ handle_networks() {
     _api_success "{\"total\": ${#entries[@]}, \"networks\": $json}"
 }
 
+# GET /volumes — Docker volumes
 handle_volumes() {
     local -a entries=()
 
@@ -2856,6 +2998,7 @@ handle_volumes() {
     _api_success "{\"total\": ${#entries[@]}, \"volumes\": $json}"
 }
 
+# POST /networks — Create a Docker network
 handle_create_network() {
     local body="$1"
     if ! command -v jq >/dev/null 2>&1; then
@@ -2930,6 +3073,7 @@ handle_create_network() {
     _api_success "{\"success\": true, \"name\": \"$(_api_json_escape "$name")\", \"driver\": \"$(_api_json_escape "$driver")\", \"message\": \"Network '$name' created successfully\"}"
 }
 
+# POST /networks/{network}/delete — Remove a Docker network
 handle_delete_network() {
     local name="$1"
 
@@ -2969,6 +3113,7 @@ handle_delete_network() {
     _api_success "{\"success\": true, \"name\": \"$(_api_json_escape "$name")\", \"message\": \"Network '$name' deleted successfully\"}"
 }
 
+# POST /networks/{network}/connect — Connect a container to a network
 handle_network_connect() {
     local name="$1" body="$2"
     if ! command -v jq >/dev/null 2>&1; then
@@ -2997,6 +3142,7 @@ handle_network_connect() {
     _api_success "{\"success\": true, \"network\": \"$(_api_json_escape "$name")\", \"container\": \"$(_api_json_escape "$container")\", \"message\": \"Connected '$container' to '$name'\"}"
 }
 
+# POST /networks/{network}/disconnect — Disconnect a container from a network
 handle_network_disconnect() {
     local name="$1" body="$2"
     if ! command -v jq >/dev/null 2>&1; then
@@ -3024,6 +3170,7 @@ handle_network_disconnect() {
     _api_success "{\"success\": true, \"network\": \"$(_api_json_escape "$name")\", \"container\": \"$(_api_json_escape "$container")\", \"message\": \"Disconnected '$container' from '$name'\"}"
 }
 
+# GET /networks/{network} — Network detail with its members
 handle_network_detail() {
     local name="$1"
 
@@ -3057,6 +3204,7 @@ handle_network_detail() {
     _api_success "{\"id\": \"$(_api_json_escape "$id")\", \"name\": \"$(_api_json_escape "$name")\", \"driver\": \"$(_api_json_escape "$driver")\", \"scope\": \"$(_api_json_escape "$scope")\", \"internal\": $internal, \"subnet\": \"$(_api_json_escape "$ipam_subnet")\", \"gateway\": \"$(_api_json_escape "$ipam_gateway")\", \"containers\": $ce_json}"
 }
 
+# POST /volumes/{volume}/delete — Remove a Docker volume
 handle_delete_volume() {
     local name="$1"
 
@@ -3082,6 +3230,7 @@ handle_delete_volume() {
     _api_success "{\"success\": true, \"name\": \"$(_api_json_escape "$name")\", \"message\": \"Volume '$name' deleted successfully\"}"
 }
 
+# GET /logs — Tail of the framework log
 handle_logs() {
     local log_file="${BASE_DIR}/logs/docker-services.log"
 
@@ -3119,6 +3268,7 @@ handle_logs() {
     _api_success "{\"log_file\": \"$(_api_json_escape "$log_file")\", \"lines\": $actual_lines, \"logs\": \"$escaped\"}"
 }
 
+# GET /logs/stats — Log file size and per-level counts
 handle_logs_stats() {
     local log_file="${BASE_DIR}/logs/docker-services.log"
 
@@ -3156,6 +3306,7 @@ handle_logs_stats() {
     _api_success "{\"total_lines\": $total_lines, \"file_size\": \"$(_api_json_escape "${file_size:-0}")\", \"levels\": {\"error\": $errors, \"critical\": $criticals, \"warning\": $warnings, \"success\": $successes, \"info\": $infos, \"debug\": $debugs, \"step\": $steps, \"timing\": $timings}, \"sessions\": $sessions, \"archives\": {\"count\": $archive_count, \"total_size\": \"$(_api_json_escape "${archive_size:-0}")\"}}"
 }
 
+# GET /logs/archives — Rotated log archives
 handle_logs_archives() {
     local archive_dir="${BASE_DIR}/logs/archive"
 
@@ -3188,6 +3339,7 @@ handle_logs_archives() {
     _api_success "{\"archives\": $archives_json, \"total_size\": \"$(_api_json_escape "${total_size:-0}")\"}"
 }
 
+# GET /events — Recent Docker events
 handle_events() {
     local events_raw
     events_raw=$(docker events --since '1h' --until "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" --format '{{.Time}}|{{.Type}}|{{.Action}}|{{.Actor.Attributes.name}}' 2>/dev/null | tail -50)
@@ -3216,7 +3368,7 @@ handle_auth_setup() {
     _api_init_auth_dir
 
     # Rate limit check
-    local client_ip="${SOCAT_PEERADDR:-unknown}"
+    local client_ip="${CLIENT_IP:-unknown}"
     if ! _api_check_rate_limit "$client_ip"; then
         _api_audit_log "$client_ip" "LOCKOUT" "" "Rate limit lockout on /auth/setup"
         _api_error 429 "Too many attempts. Please try again later."
@@ -3266,7 +3418,7 @@ handle_auth_setup() {
     # NOTE: Do NOT touch .setup-complete here — that's done by /setup/complete
     # (the final step of the wizard). Marking it here would block steps 3-5.
 
-    local client_ip="${SOCAT_PEERADDR:-unknown}"
+    local client_ip="${CLIENT_IP:-unknown}"
     _api_audit_log "$client_ip" "SETUP" "$username" "Admin account created"
 
     local token
@@ -3283,7 +3435,7 @@ handle_auth_login() {
     _api_init_auth_dir
 
     # Rate limit check (use SOCAT_PEERADDR if available, fallback to "unknown")
-    local client_ip="${SOCAT_PEERADDR:-unknown}"
+    local client_ip="${CLIENT_IP:-unknown}"
     if ! _api_check_rate_limit "$client_ip"; then
         _api_audit_log "$client_ip" "LOCKOUT" "" "Rate limit lockout triggered"
         _api_error 429 "Too many failed login attempts. Please try again later."
@@ -3424,7 +3576,7 @@ handle_auth_invite() {
 
     _api_store_invite "$code" "$role" "${AUTH_USERNAME:-unknown}"
 
-    local client_ip="${SOCAT_PEERADDR:-unknown}"
+    local client_ip="${CLIENT_IP:-unknown}"
     _api_audit_log "$client_ip" "INVITE_CREATE" "${AUTH_USERNAME:-unknown}" "Role: $role"
 
     local now
@@ -3443,7 +3595,7 @@ handle_auth_register() {
     _api_init_auth_dir
 
     # Rate limit check
-    local client_ip="${SOCAT_PEERADDR:-unknown}"
+    local client_ip="${CLIENT_IP:-unknown}"
     if ! _api_check_rate_limit "$client_ip"; then
         _api_audit_log "$client_ip" "LOCKOUT" "" "Rate limit lockout on /auth/register"
         _api_error 429 "Too many attempts. Please try again later."
@@ -3507,7 +3659,7 @@ handle_auth_register() {
     # Consume the invite code
     _api_consume_invite "$invite_code" "$username"
 
-    local client_ip="${SOCAT_PEERADDR:-unknown}"
+    local client_ip="${CLIENT_IP:-unknown}"
     _api_audit_log "$client_ip" "REGISTER" "$username" "Registered with invite code"
 
     # Generate session token
@@ -3601,7 +3753,7 @@ handle_auth_revoke() {
         _api_write_auth_file "users.json" "$new_users"
     fi
 
-    local client_ip="${SOCAT_PEERADDR:-unknown}"
+    local client_ip="${CLIENT_IP:-unknown}"
     _api_audit_log "$client_ip" "REVOKE" "$target_username" "Revoked by ${AUTH_USERNAME:-unknown}"
 
     _api_success "{\"success\": true, \"username\": \"$(_api_json_escape "$target_username")\", \"message\": \"User access revoked and all sessions invalidated\"}"
@@ -3735,7 +3887,7 @@ handle_totp_verify() {
     if _api_totp_verify "$hex_secret" "$code"; then
         # Enable TOTP
         _api_totp_update_user "$AUTH_USERNAME" "$hex_secret" "true"
-        _api_audit_log "${SOCAT_PEERADDR:-unknown}" "TOTP_ENABLED" "$AUTH_USERNAME" "2FA enabled"
+        _api_audit_log "${CLIENT_IP:-unknown}" "TOTP_ENABLED" "$AUTH_USERNAME" "2FA enabled"
         _api_success "{\"success\": true, \"message\": \"Two-factor authentication is now enabled.\"}"
     else
         _api_error 401 "Invalid TOTP code. Make sure your authenticator app is synced."
@@ -3771,7 +3923,7 @@ handle_totp_disable() {
 
     # Disable TOTP
     _api_totp_update_user "$AUTH_USERNAME" "" "false"
-    _api_audit_log "${SOCAT_PEERADDR:-unknown}" "TOTP_DISABLED" "$AUTH_USERNAME" "2FA disabled"
+    _api_audit_log "${CLIENT_IP:-unknown}" "TOTP_DISABLED" "$AUTH_USERNAME" "2FA disabled"
     _api_success "{\"success\": true, \"message\": \"Two-factor authentication has been disabled.\"}"
 }
 
@@ -3827,10 +3979,10 @@ handle_totp_validate() {
         # Clean up TOTP attempt tracking on success
         sed -i "/^${totp_token:0:16}$/d" "$API_AUTH_DIR/.totp-attempts" 2>/dev/null
 
-        _api_audit_log "${SOCAT_PEERADDR:-unknown}" "TOTP_LOGIN_OK" "$username" "2FA verified"
+        _api_audit_log "${CLIENT_IP:-unknown}" "TOTP_LOGIN_OK" "$username" "2FA verified"
         _api_success "{\"success\": true, \"token\": \"$real_token\", \"username\": \"$(_api_json_escape "$username")\", \"role\": \"$(_api_json_escape "$role")\"}"
     else
-        _api_audit_log "${SOCAT_PEERADDR:-unknown}" "TOTP_LOGIN_FAIL" "$username" "Invalid 2FA code"
+        _api_audit_log "${CLIENT_IP:-unknown}" "TOTP_LOGIN_FAIL" "$username" "Invalid 2FA code"
 
         # Track failed TOTP attempts — revoke token after 5 failures
         local _totp_attempts_file="$API_AUTH_DIR/.totp-attempts"
@@ -3849,7 +4001,7 @@ handle_totp_validate() {
             local new_tokens
             new_tokens=$(echo "$tokens" | jq --arg t "$totp_token" '[.[] | select(.token != $t)]' 2>/dev/null)
             _api_write_auth_file "tokens.json" "$new_tokens"
-            _api_audit_log "${SOCAT_PEERADDR:-unknown}" "TOTP_REVOKED" "$username" "TOTP token revoked after 5 failed attempts"
+            _api_audit_log "${CLIENT_IP:-unknown}" "TOTP_REVOKED" "$username" "TOTP token revoked after 5 failed attempts"
             _api_error 401 "Too many failed TOTP attempts. Please log in again."
             return
         fi
@@ -3884,7 +4036,7 @@ handle_auth_logout() {
         _api_write_auth_file "tokens.json" "$new_tokens"
     fi
 
-    local client_ip="${SOCAT_PEERADDR:-unknown}"
+    local client_ip="${CLIENT_IP:-unknown}"
     _api_audit_log "$client_ip" "LOGOUT" "${AUTH_USERNAME:-unknown}" "Token invalidated"
 
     _api_success '{"success": true, "message": "Logged out successfully"}'
@@ -3911,7 +4063,7 @@ handle_auth_logout_all() {
 
     _api_revoke_user_tokens "$target_username"
 
-    local client_ip="${SOCAT_PEERADDR:-unknown}"
+    local client_ip="${CLIENT_IP:-unknown}"
     _api_audit_log "$client_ip" "LOGOUT_ALL" "$target_username" "All sessions revoked by ${AUTH_USERNAME:-unknown}"
 
     _api_success "{\"success\": true, \"username\": \"$(_api_json_escape "$target_username")\", \"message\": \"All sessions invalidated\"}"
@@ -3986,7 +4138,7 @@ handle_auth_session_revoke() {
         new_tokens=$(echo "$tokens" | jq --arg p "$token_prefix" '[.[] | select(.token | startswith($p) | not)]' 2>/dev/null)
         _api_write_auth_file "tokens.json" "$new_tokens"
 
-        local client_ip="${SOCAT_PEERADDR:-unknown}"
+        local client_ip="${CLIENT_IP:-unknown}"
         _api_audit_log "$client_ip" "SESSION_REVOKE" "${AUTH_USERNAME:-unknown}" "Revoked session ${token_prefix}..."
 
         _api_success "{\"success\": true, \"revoked\": $match_count, \"message\": \"Session revoked\"}"
@@ -4032,7 +4184,7 @@ handle_auth_refresh() {
     new_token=$(_api_generate_token)
     _api_store_token "$new_token" "$username" "$role"
 
-    local client_ip="${SOCAT_PEERADDR:-unknown}"
+    local client_ip="${CLIENT_IP:-unknown}"
     _api_audit_log "$client_ip" "TOKEN_REFRESH" "$username" "Token refreshed"
 
     _api_success "{\"success\": true, \"token\": \"$new_token\", \"username\": \"$(_api_json_escape "$username")\", \"role\": \"$(_api_json_escape "$role")\"}"
@@ -4107,10 +4259,10 @@ handle_auth_factory_reset() {
         if command -v docker >/dev/null 2>&1; then
             containers_stopped=$(docker ps -q 2>/dev/null | wc -l) || containers_stopped=0
             # Kill all containers at once (instant SIGKILL)
-            docker kill $(docker ps -q 2>/dev/null) >/dev/null 2>&1 || true
+            docker ps -q 2>/dev/null | xargs -r docker kill >/dev/null 2>&1 || true
             # Remove stopped containers + prune images in background (can be slow)
             images_removed=$(docker images -q 2>/dev/null | wc -l) || images_removed=0
-            ( docker container prune -f >/dev/null 2>&1; docker image prune -af >/dev/null 2>&1 ) &
+            ( docker container prune -f; docker image prune -af ) </dev/null >/dev/null 2>&1 &
             disown
         fi
 
@@ -4127,7 +4279,7 @@ handle_auth_factory_reset() {
                     fi
                 done
             fi
-        ) &
+        ) </dev/null >/dev/null 2>&1 &
         disown
 
         if command -v git >/dev/null 2>&1 && [[ -d "$BASE_DIR/.git" ]]; then
@@ -4268,7 +4420,7 @@ handle_auth_factory_reset() {
                     [[ "$page" -gt 10 ]] && break  # safety limit
                 done
                 echo "$(date -Iseconds) CF cleanup complete: $deleted records deleted" >> "$_cf_log" 2>/dev/null
-            ) &
+            ) </dev/null >/dev/null 2>&1 &
             disown
         fi
         rm -f "$auth_dir/.cf-zone-cache" "$auth_dir/cf-dns-audit.log" "$auth_dir/ddns.log" "$auth_dir/os-update-status.json" 2>/dev/null || true
@@ -4297,7 +4449,7 @@ handle_auth_factory_reset() {
     fi
     unset DOCKER_STACKS
 
-    local client_ip="${SOCAT_PEERADDR:-unknown}"
+    local client_ip="${CLIENT_IP:-unknown}"
     _api_audit_log "$client_ip" "FACTORY_RESET" "${AUTH_USERNAME:-unknown}" "Factory reset performed. compose_reset=$compose_reset containers_stopped=$containers_stopped images_removed=$images_removed"
 
     _api_success "{\"success\": true, \"files_removed\": $removed_json, \"compose_reset\": $compose_reset, \"stacks_removed\": $stacks_removed_json, \"env_reset\": $env_reset, \"containers_stopped\": $containers_stopped, \"images_removed\": $images_removed}"
@@ -4307,6 +4459,7 @@ handle_auth_factory_reset() {
 # CONTAINER ACTION HANDLERS
 # =============================================================================
 
+# POST /containers/{container}/start — Start, stop, restart, recreate (Compose-managed only) or remove a container
 handle_container_action() {
     local name="$1"
     local action="$2"
@@ -4326,33 +4479,26 @@ handle_container_action() {
         stop)     output=$(docker stop -- "$name" 2>&1) || success=false ;;
         restart)  output=$(docker restart -- "$name" 2>&1) || success=false ;;
         recreate)
-            local img
-            img=$(docker inspect --format='{{.Config.Image}}' "$name" 2>/dev/null)
-            docker pull "$img" >/dev/null 2>&1 || true
-            output=$(docker stop -- "$name" 2>&1 && docker rm -- "$name" 2>&1) || success=false
-            if [[ "$success" == "true" ]]; then
-                # Find the compose file and SERVICE name that owns this container
-                local _stack_dir="" _svc_name=""
-                for _sd in "$COMPOSE_DIR"/*/docker-compose.yml; do
-                    if grep -q "container_name: $name" "$_sd" 2>/dev/null; then
-                        _stack_dir=$(dirname "$_sd")
-                        # Extract the service name (the YAML key above container_name)
-                        _svc_name=$(awk -v cn="container_name: $name" '
-                            /^  [a-zA-Z0-9_-]+:/ { svc=$1; gsub(/:$/,"",svc) }
-                            $0 ~ cn { print svc; exit }
-                        ' "$_sd" 2>/dev/null)
-                        break
-                    fi
-                done
-                if [[ -n "$_stack_dir" && -n "$_svc_name" ]]; then
-                    local _rec_env=""
-                    [[ -f "$_stack_dir/.env" ]] && _rec_env="$_stack_dir/.env"
-                    output=$(_compose_with_secrets "$_stack_dir/docker-compose.yml" "$_rec_env" up -d --force-recreate --no-deps "$_svc_name" 2>&1) || success=false
-                else
-                    output="Container recreated but no compose file found — started from pulled image"
-                    docker run -d --name "$name" "$img" >/dev/null 2>&1 || success=false
-                fi
+            # Only Compose-managed containers can be recreated faithfully: the
+            # compose labels give the project directory and service, and
+            # `up --force-recreate` rebuilds the container with all of its
+            # volumes, networks, ports and environment. Anything else is
+            # refused rather than replaced by a bare `docker run`.
+            local _proj_dir _svc_name _cfg_files
+            _proj_dir=$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project.working_dir"}}' "$name" 2>/dev/null)
+            _svc_name=$(docker inspect --format '{{index .Config.Labels "com.docker.compose.service"}}' "$name" 2>/dev/null)
+            if [[ -z "$_proj_dir" ]]; then
+                _cfg_files=$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project.config_files"}}' "$name" 2>/dev/null)
+                [[ -n "$_cfg_files" ]] && _proj_dir=$(dirname "${_cfg_files%%,*}")
             fi
+            if [[ -z "$_proj_dir" || -z "$_svc_name" || ! -f "$_proj_dir/docker-compose.yml" ]]; then
+                _api_error 400 "Container '$name' is not managed by a Compose stack, so it cannot be recreated safely. Use its stack's update action or recreate it manually."
+                return
+            fi
+            local _rec_env=""
+            [[ -f "$_proj_dir/.env" ]] && _rec_env="$_proj_dir/.env"
+            output=$(_compose_with_secrets "$_proj_dir/docker-compose.yml" "$_rec_env" pull "$_svc_name" 2>&1) || true
+            output+=$'\n'"$(_compose_with_secrets "$_proj_dir/docker-compose.yml" "$_rec_env" up -d --force-recreate --no-deps "$_svc_name" 2>&1)" || success=false
             ;;
         remove)   output=$(docker rm -f -- "$name" 2>&1) || success=false ;;
         *)        _api_error 400 "Unknown action: $action"; return ;;
@@ -4364,6 +4510,7 @@ handle_container_action() {
     _api_success "{\"container\": \"$(_api_json_escape "$name")\", \"action\": \"$action\", \"success\": $success, \"output\": \"$escaped_output\"}"
 }
 
+# POST /containers/{container}/exec — Run a command inside a container (30 s limit)
 handle_container_exec() {
     local name="$1"
     local body="$2"
@@ -4418,6 +4565,7 @@ handle_container_exec() {
     _api_success "{\"container\": \"$(_api_json_escape "$name")\", \"command\": \"$escaped_command\", \"exit_code\": $exit_code, \"output\": \"$escaped_output\", \"success\": $success}"
 }
 
+# GET /containers/{container}/logs — Recent log lines of a container
 handle_container_logs() {
     local name="$1"
 
@@ -4438,6 +4586,7 @@ handle_container_logs() {
 # MAINTENANCE HANDLERS
 # =============================================================================
 
+# POST /maintenance/prune — Prune stopped containers, dangling images and unused networks
 handle_maintenance_prune() {
     if ! _api_check_admin; then _api_error 403 "Admin access required"; return; fi
 
@@ -4451,6 +4600,7 @@ handle_maintenance_prune() {
     _api_success "{\"action\": \"prune\", \"success\": $success, \"output\": \"$escaped\"}"
 }
 
+# POST /maintenance/image-prune — Prune unused images
 handle_maintenance_image_prune() {
     if ! _api_check_admin; then _api_error 403 "Admin access required"; return; fi
 
@@ -4472,6 +4622,7 @@ handle_maintenance_image_prune() {
 # ADVANCED MAINTENANCE HANDLERS (Phase 2)
 # =============================================================================
 
+# GET /maintenance/report — Docker disk usage report
 handle_maintenance_report() {
     local running stopped total_containers total_images dangling_images
     local total_volumes dangling_volumes total_networks custom_networks
@@ -4503,6 +4654,7 @@ handle_maintenance_report() {
     _api_success "{\"containers\": {\"total\": $total_containers, \"running\": $running, \"stopped\": $stopped}, \"images\": {\"total\": $total_images, \"dangling\": $dangling_images}, \"volumes\": {\"total\": $total_volumes, \"dangling\": $dangling_volumes}, \"networks\": {\"total\": $total_networks, \"custom\": $custom_networks}, \"docker_df\": \"$docker_df\", \"app_data_size\": \"$(_api_json_escape "$app_data_size")\", \"log_size\": \"$(_api_json_escape "$log_size")\"}"
 }
 
+# GET /maintenance/orphans — Containers, volumes and networks no stack references
 handle_maintenance_orphans() {
     local -a orphan_containers=()
     while IFS='|' read -r name image status; do
@@ -4549,6 +4701,7 @@ handle_maintenance_orphans() {
     _api_success "{\"containers\": $oc_json, \"images\": $di_json, \"volumes\": $dv_json}"
 }
 
+# GET /maintenance/disk — Per-stack App-Data sizes, Docker disk usage and volume sizes
 handle_maintenance_disk() {
     # Scan per-stack App-Data directories (DCS stores data inside each stack dir)
     local -a stack_sizes=()
@@ -4557,20 +4710,16 @@ handle_maintenance_disk() {
         [[ ! -d "$_stack_dir" ]] && continue
         local stack_name
         stack_name=$(basename "$_stack_dir")
+        # Each stack keeps its data in its own App-Data directory (the root .env
+        # default is the relative ./App-Data); a shared absolute directory is
+        # deliberately not charged to every stack.
         local _ad="$_stack_dir/App-Data"
-        # Also check configured APP_DATA_DIR relative path
-        if [[ ! -d "$_ad" ]]; then
-            local _configured="${APP_DATA_DIR:-./App-Data}"
-            [[ "$_configured" == ./* ]] && _ad="$_stack_dir/${_configured#./}" || _ad="$_configured"
-        fi
         [[ ! -d "$_ad" ]] && continue
-        local size_raw size_bytes
-        size_raw=$(du -sh "$_ad" 2>/dev/null | cut -f1)
-        [[ -z "$size_raw" ]] && continue
-        # Parse size to bytes for total calculation
-        size_bytes=$(du -sb "$_ad" 2>/dev/null | cut -f1) || size_bytes=0
+        local size_bytes
+        size_bytes=$(du -sb "$_ad" 2>/dev/null | cut -f1)
+        [[ "$size_bytes" =~ ^[0-9]+$ ]] || continue
         total_bytes=$((total_bytes + size_bytes))
-        stack_sizes+=("{\"name\": \"$(_api_json_escape "$stack_name")\", \"size\": \"$(_api_json_escape "$size_raw")\"}")
+        stack_sizes+=("{\"name\": \"$(_api_json_escape "$stack_name")\", \"size\": \"$(_api_fmt_bytes "$size_bytes")\", \"bytes\": $size_bytes}")
     done
 
     local ss_json
@@ -4598,15 +4747,7 @@ handle_maintenance_disk() {
 
     # Calculate total app data from per-stack scan
     local total_app_data="N/A"
-    if [[ $total_bytes -gt 0 ]]; then
-        if [[ $total_bytes -ge 1073741824 ]]; then
-            total_app_data=$(awk "BEGIN { printf \"%.1fG\", $total_bytes / 1073741824 }")
-        elif [[ $total_bytes -ge 1048576 ]]; then
-            total_app_data=$(awk "BEGIN { printf \"%.1fM\", $total_bytes / 1048576 }")
-        else
-            total_app_data=$(awk "BEGIN { printf \"%.0fK\", $total_bytes / 1024 }")
-        fi
-    fi
+    [[ $total_bytes -gt 0 ]] && total_app_data=$(_api_fmt_bytes "$total_bytes")
 
     # Host disk info (filesystem where stacks live)
     local disk_total="N/A" disk_used="N/A" disk_avail="N/A" disk_pct="N/A"
@@ -4619,18 +4760,22 @@ handle_maintenance_disk() {
         disk_pct=$(echo "$_df_line" | awk '{print $5}')
     fi
 
-    # Docker volume sizes (named volumes with their actual disk usage)
+    # Docker volume sizes — the daemon computes them (the API user usually cannot
+    # read /var/lib/docker/volumes), one call for all volumes
     local -a vol_entries=()
-    while IFS= read -r vname; do
-        [[ -z "$vname" ]] && continue
-        local vpath
-        vpath=$(docker volume inspect --format '{{.Mountpoint}}' "$vname" 2>/dev/null)
-        local vsize="unknown"
-        if [[ -d "$vpath" ]]; then
-            vsize=$(du -sh "$vpath" 2>/dev/null | cut -f1) || vsize="unknown"
-        fi
-        vol_entries+=("{\"name\": \"$(_api_json_escape "$vname")\", \"size\": \"$(_api_json_escape "$vsize")\"}")
-    done < <(docker volume ls -q 2>/dev/null)
+    local _vols_json
+    _vols_json=$(timeout 20 docker system df -v --format '{{json .Volumes}}' 2>/dev/null)
+    if [[ -n "$_vols_json" ]] && jq -e 'type == "array"' <<< "$_vols_json" >/dev/null 2>&1; then
+        while IFS=$'\t' read -r vname vsize; do
+            [[ -z "$vname" ]] && continue
+            vol_entries+=("{\"name\": \"$(_api_json_escape "$vname")\", \"size\": \"$(_api_json_escape "${vsize:-unknown}")\"}")
+        done < <(jq -r '.[] | [(.Name // ""), (.Size // "unknown")] | @tsv' <<< "$_vols_json" 2>/dev/null)
+    else
+        while IFS= read -r vname; do
+            [[ -z "$vname" ]] && continue
+            vol_entries+=("{\"name\": \"$(_api_json_escape "$vname")\", \"size\": \"unknown\"}")
+        done < <(docker volume ls -q 2>/dev/null)
+    fi
 
     local vol_json
     if [[ ${#vol_entries[@]} -gt 0 ]]; then
@@ -4643,6 +4788,7 @@ handle_maintenance_disk() {
     _api_success "{\"stack_sizes\": $ss_json, \"docker_df\": $df_json, \"total_app_data\": \"$(_api_json_escape "$total_app_data")\", \"host_disk\": {\"total\": \"$disk_total\", \"used\": \"$disk_used\", \"available\": \"$disk_avail\", \"percent\": \"$disk_pct\"}, \"volumes\": $vol_json}"
 }
 
+# POST /maintenance/deep-prune — Prune everything unused, volumes included (confirmation required)
 handle_maintenance_deep_prune() {
     local body="$1"
 
@@ -4669,6 +4815,7 @@ handle_maintenance_deep_prune() {
     _api_success "{\"action\": \"deep_prune\", \"success\": $success, \"output\": \"$escaped\"}"
 }
 
+# POST /maintenance/log-rotate — Rotate and archive the framework log
 handle_maintenance_log_rotate() {
     local log_file="${BASE_DIR}/logs/docker-services.log"
     local archive_dir="${BASE_DIR}/logs/archive"
@@ -4708,13 +4855,14 @@ handle_maintenance_log_rotate() {
         done
     fi
 
-    _api_success "{\"success\": true, \"message\": \"Log rotated successfully\", \"archived_as\": \"$(_api_json_escape "$archive_name")\", \"previous_size\": \"$(_api_json_escape "$log_size")\", \"previous_lines\": $log_lines, \"purged_archives\": $purged}"
+    _api_success "{\"success\": true, \"message\": \"Log rotated successfully\", \"archived_as\": \"$(_api_json_escape "$archive_name")\", \"previous_size\": \"$(_api_json_escape "$log_size")\", \"previous_lines\": ${log_lines:-0}, \"purged_archives\": ${purged:-0}}"
 }
 
 # =============================================================================
 # BATCH OPERATION HANDLERS (Phase 4)
 # =============================================================================
 
+# POST /batch/stacks — Start, stop or restart several stacks in dependency order
 handle_batch_stacks() {
     local body="$1"
 
@@ -4763,7 +4911,11 @@ handle_batch_stacks() {
         local -a selected=()
         while IFS= read -r s; do
             [[ -n "$s" ]] && selected+=("$s")
-        done < <(printf '%s' "$body" | jq -r '.stacks[]' 2>/dev/null)
+        done < <(printf '%s' "$body" | jq -r '.stacks[]?' 2>/dev/null)
+        local _sel
+        for _sel in "${selected[@]}"; do
+            _api_validate_stack_name "$_sel" || return
+        done
         for s in "${ordered_stacks[@]}"; do
             for sel in "${selected[@]}"; do
                 if [[ "$s" == "$sel" ]]; then
@@ -4805,9 +4957,9 @@ handle_batch_stacks() {
 
         # Run each stack action in background — API responds immediately
         case "$action" in
-            start)   ( _compose_with_secrets "$compose_file" "$_batch_env" up -d >/dev/null 2>&1 ) & ;;
-            stop)    ( $DOCKER_COMPOSE_CMD "${compose_args[@]}" down --timeout 10 >/dev/null 2>&1 ) & ;;
-            restart) ( $DOCKER_COMPOSE_CMD "${compose_args[@]}" down --timeout 10 >/dev/null 2>&1; _compose_with_secrets "$compose_file" "$_batch_env" up -d >/dev/null 2>&1 ) & ;;
+            start)   ( _compose_with_secrets "$compose_file" "$_batch_env" up -d ) </dev/null >/dev/null 2>&1 & ;;
+            stop)    ( $DOCKER_COMPOSE_CMD "${compose_args[@]}" down --timeout 10 ) </dev/null >/dev/null 2>&1 & ;;
+            restart) ( $DOCKER_COMPOSE_CMD "${compose_args[@]}" down --timeout 10; _compose_with_secrets "$compose_file" "$_batch_env" up -d ) </dev/null >/dev/null 2>&1 & ;;
         esac
 
         results+=("{\"stack\": \"$(_api_json_escape "$stack")\", \"success\": true, \"message\": \"$action queued\"}")
@@ -4824,6 +4976,7 @@ handle_batch_stacks() {
     _api_success "{\"action\": \"$action\", \"total\": ${#target_stacks[@]}, \"results\": $results_json}"
 }
 
+# POST /batch/update — Pull images for several stacks and recreate what changed
 handle_batch_update() {
     local body="$1"
 
@@ -4861,8 +5014,10 @@ handle_batch_update() {
         done
     else
         while IFS= read -r s; do
-            [[ -n "$s" ]] && target_stacks+=("$s")
-        done < <(printf '%s' "$body" | jq -r '.stacks[]' 2>/dev/null)
+            [[ -n "$s" ]] || continue
+            _api_validate_stack_name "$s" || return
+            target_stacks+=("$s")
+        done < <(printf '%s' "$body" | jq -r '.stacks[]?' 2>/dev/null)
     fi
 
     local -a results=()
@@ -4879,19 +5034,19 @@ handle_batch_update() {
         local before_shas
         before_shas=$($DOCKER_COMPOSE_CMD "${compose_args[@]}" images -q 2>/dev/null | sort)
 
-        local pull_output
-        pull_output=$($DOCKER_COMPOSE_CMD "${compose_args[@]}" pull 2>&1)
+        local pull_output stack_ok=true
+        pull_output=$($DOCKER_COMPOSE_CMD "${compose_args[@]}" pull 2>&1) || stack_ok=false
 
         local after_shas
         after_shas=$($DOCKER_COMPOSE_CMD "${compose_args[@]}" images -q 2>/dev/null | sort)
 
         local changes_detected=false
-        if [[ "$before_shas" != "$after_shas" ]]; then
+        if [[ "$stack_ok" == "true" && "$before_shas" != "$after_shas" ]]; then
             changes_detected=true
-            $DOCKER_COMPOSE_CMD "${compose_args[@]}" up -d 2>&1 || true
+            _compose_with_secrets "$compose_file" "$COMPOSE_DIR/$stack/.env" up -d >/dev/null 2>&1 || stack_ok=false
         fi
 
-        results+=("{\"stack\": \"$(_api_json_escape "$stack")\", \"success\": true, \"changes_detected\": $changes_detected, \"message\": \"$(_api_json_escape "$pull_output")\"}")
+        results+=("{\"stack\": \"$(_api_json_escape "$stack")\", \"success\": $stack_ok, \"changes_detected\": $changes_detected, \"message\": \"$(_api_json_escape "$pull_output")\"}")
     done
 
     local results_json
@@ -4909,6 +5064,7 @@ handle_batch_update() {
 # ROOT ENVIRONMENT HANDLERS (Phase 5)
 # =============================================================================
 
+# GET /env — The root .env file, raw and parsed
 handle_root_env() {
     local env_file="$BASE_DIR/.env"
 
@@ -4951,6 +5107,7 @@ handle_root_env() {
     _api_success "{\"raw\": \"$escaped_raw\", \"variables\": $vars_json}"
 }
 
+# POST /env — Save the root .env file (validated as plain KEY=value data)
 handle_root_env_update() {
     local body="$1"
     local env_file="$BASE_DIR/.env"
@@ -4969,18 +5126,26 @@ handle_root_env_update() {
         return
     fi
 
-    if [[ -f "$env_file" ]]; then
-        cp "$env_file" "${env_file}.bak" 2>/dev/null
+    local problem
+    if ! problem=$(_api_validate_env_content "$content"); then
+        _api_error 400 "Rejected .env content: $problem"
+        return
     fi
 
-    printf '%s' "$content" > "$env_file" 2>/dev/null || {
+    if [[ -f "$env_file" ]]; then
+        cp -p "$env_file" "${env_file}.bak" 2>/dev/null
+    fi
+
+    if ! (umask 077; printf '%s\n' "${content%$'\n'}" > "${env_file}.tmp") 2>/dev/null || ! mv -f "${env_file}.tmp" "$env_file" 2>/dev/null; then
+        rm -f "${env_file}.tmp" 2>/dev/null
         _api_error 500 "Failed to write .env file"
         return
-    }
+    fi
 
     _api_success "{\"success\": true, \"message\": \"Root .env file saved successfully\"}"
 }
 
+# POST /env/validate — Validate .env content without saving it
 handle_env_validate() {
     local body="$1"
 
@@ -5018,6 +5183,11 @@ handle_env_validate() {
         seen_keys+=("$key")
     done <<< "$content"
 
+    local _policy
+    if ! _policy=$(_api_validate_env_content "$content"); then
+        errors+=("{\"line\": 0, \"message\": \"$(_api_json_escape "Policy: $_policy")\"}")
+    fi
+
     local valid=true
     [[ ${#errors[@]} -gt 0 ]] && valid=false
 
@@ -5042,6 +5212,7 @@ handle_env_validate() {
 # BACKUP & RESTORE HANDLERS (Phase 6)
 # =============================================================================
 
+# GET /backups — Backup archives in BACKUP_DEST_DIR
 handle_backup_list() {
     local backup_dir="${BACKUP_DEST_DIR:-}"
 
@@ -5071,18 +5242,20 @@ handle_backup_list() {
     _api_success "{\"backups\": $entries_json, \"total\": ${#entries[@]}}"
 }
 
+# GET /backups/status — Progress of the running backup or the last result
 handle_backup_status() {
     local status_file="$API_AUTH_DIR/backup-status.json"
 
-    if [[ -f "$status_file" ]]; then
-        local status_content
-        status_content=$(cat "$status_file" 2>/dev/null)
+    local status_content=""
+    [[ -f "$status_file" ]] && status_content=$(cat "$status_file" 2>/dev/null)
+    if [[ -n "$status_content" ]] && jq -e . <<< "$status_content" >/dev/null 2>&1; then
         _api_success "$status_content"
     else
         _api_success "{\"status\": \"idle\", \"last_backup\": null, \"progress\": null}"
     fi
 }
 
+# GET /backups/config — Backup source, destination and retention
 handle_backup_config() {
     local backup_dest="${BACKUP_DEST_DIR:-}"
     local backup_source="${BACKUP_SOURCE_DIR:-$BASE_DIR}"
@@ -5093,6 +5266,7 @@ handle_backup_config() {
     _api_success "{\"configured\": $configured, \"destination\": \"$(_api_json_escape "$backup_dest")\", \"source\": \"$(_api_json_escape "$backup_source")\", \"retention_count\": $retention}"
 }
 
+# POST /backups/trigger — Start a backup in the background (optionally one stack)
 handle_backup_trigger() {
     local body="$1"
     local backup_dir="${BACKUP_DEST_DIR:-}"
@@ -5108,6 +5282,9 @@ handle_backup_trigger() {
     if command -v jq >/dev/null 2>&1 && [[ -n "$body" ]]; then
         stack_filter=$(printf '%s' "$body" | jq -r '.stack // empty' 2>/dev/null)
     fi
+    if [[ -n "$stack_filter" ]]; then
+        _api_validate_stack_name "$stack_filter" || return
+    fi
 
     local status_file="$API_AUTH_DIR/backup-status.json"
     local backup_date
@@ -5116,7 +5293,12 @@ handle_backup_trigger() {
     local source_dir="${BACKUP_SOURCE_DIR:-$BASE_DIR}"
 
     local _bpid_file="$API_AUTH_DIR/backup.pid"
-    local _bst="$(date -Iseconds)"
+    if [[ -f "$_bpid_file" ]] && kill -0 "$(cat "$_bpid_file" 2>/dev/null)" 2>/dev/null; then
+        _api_error 409 "A backup is already running"
+        return
+    fi
+    local _bst
+    _bst="$(date -Iseconds)"
 
     _backup_progress() {
         printf '{"status":"running","started_at":"%s","filename":"%s","progress":"%s","percent":%d,"stage":"%s","pid":%d}' \
@@ -5126,30 +5308,30 @@ handle_backup_trigger() {
     _backup_progress "Preparing backup..." 0 "prepare"
 
     (
+        # Archives hold .env and per-stack secrets: keep everything private
+        umask 077
         echo $BASHPID > "$_bpid_file"
         _bpid=$BASHPID
 
         local tmpdir
-        tmpdir=$(mktemp -d /tmp/dcs-backup-XXXXXX)
-
-        _backup_progress "Scanning source files..." 5 "scan"
-
-        # Calculate source size for progress estimation
-        local src_size_kb=0
-        if [[ -n "$stack_filter" ]]; then
-            src_size_kb=$(du -sk "$COMPOSE_DIR/$stack_filter" 2>/dev/null | cut -f1)
-        else
-            src_size_kb=$(du -sk --exclude='.git' --exclude='node_modules' "$source_dir" 2>/dev/null | cut -f1)
+        if ! tmpdir=$(mktemp -d /tmp/dcs-backup-XXXXXX 2>/dev/null) || [[ -z "$tmpdir" ]]; then
+            printf '{"status":"error","error":"Could not create a temporary directory","progress":null,"percent":0,"stage":"error"}' > "$status_file"
+            rm -f "$_bpid_file"
+            exit 1
         fi
-        [[ "$src_size_kb" -eq 0 ]] && src_size_kb=1
 
         _backup_progress "Copying files..." 15 "copy"
 
+        # Session tokens, rate-limit state, caches and logs are transient and
+        # must not travel in a backup; accounts and encrypted secrets do.
+        local -a _bx=(--exclude='.git' --exclude='node_modules' --exclude='.data' --exclude='logs'
+                      --exclude='.api-auth/tokens.json' --exclude='.api-auth/terminal-sessions.json'
+                      --exclude='.api-auth/rate_limits.json' --exclude='.api-auth/*.log' --exclude='.api-auth/rates')
         if [[ -n "$stack_filter" ]]; then
             [[ -d "$COMPOSE_DIR/$stack_filter" ]] && rsync -a "$COMPOSE_DIR/$stack_filter/" "$tmpdir/$stack_filter/" 2>/dev/null || true
             [[ -d "$APP_DATA_DIR/$stack_filter" ]] && rsync -a "$APP_DATA_DIR/$stack_filter/" "$tmpdir/App-Data/$stack_filter/" 2>/dev/null || true
         else
-            rsync -a --exclude='.git' --exclude='node_modules' "$source_dir/" "$tmpdir/" 2>/dev/null || true
+            rsync -a "${_bx[@]}" "$source_dir/" "$tmpdir/" 2>/dev/null || true
         fi
 
         _backup_progress "Files copied, creating archive..." 55 "archive"
@@ -5177,7 +5359,7 @@ handle_backup_trigger() {
         fi
 
         rm -f "$_bpid_file"
-    ) &
+    ) </dev/null >/dev/null 2>&1 &
 
     _api_success "{\"success\": true, \"message\": \"Backup started in background\", \"filename\": \"$(_api_json_escape "$backup_file")\"}"
 }
@@ -5196,7 +5378,11 @@ handle_backup_cancel() {
     pid=$(cat "$pid_file" 2>/dev/null)
     if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
         # Kill the backup process and its children (rsync, tar)
-        kill -- -"$pid" 2>/dev/null || kill "$pid" 2>/dev/null
+        pkill -TERM -P "$pid" 2>/dev/null || true
+        kill -TERM "$pid" 2>/dev/null || true
+        sleep 0.5
+        pkill -KILL -P "$pid" 2>/dev/null || true
+        kill -KILL "$pid" 2>/dev/null || true
         # Clean up temp dirs
         rm -rf /tmp/dcs-backup-* 2>/dev/null
         rm -f "$pid_file"
@@ -5208,6 +5394,7 @@ handle_backup_cancel() {
     fi
 }
 
+# POST /backups/restore — Restore a backup archive (confirmation required)
 handle_backup_restore() {
     local body="$1"
     local backup_dir="${BACKUP_DEST_DIR:-}"
@@ -5216,6 +5403,11 @@ handle_backup_restore() {
 
     if ! command -v jq >/dev/null 2>&1; then
         _api_error 500 "jq is required for restore"
+        return
+    fi
+
+    if [[ -z "$backup_dir" ]]; then
+        _api_error 400 "Backup not configured. Set BACKUP_DEST_DIR in .env"
         return
     fi
 
@@ -5257,20 +5449,24 @@ handle_backup_restore() {
         return
     fi
 
-    if ! tar -tzf "$archive_path" >/dev/null 2>&1; then
+    # List the archive once. (Piping tar into `grep -q` would let grep exit early
+    # and turn a match into a SIGPIPE failure under pipefail — the check would
+    # pass exactly when it matched.)
+    local _listing
+    if ! _listing=$(tar -tvzf "$archive_path" 2>/dev/null); then
         _api_error 400 "Backup archive is corrupt or invalid"
         return
     fi
 
     # SECURITY: Check for path traversal in archive (../../ etc) before extracting
-    if tar -tzf "$archive_path" 2>/dev/null | grep -qE '^\.\./|/\.\./|^/'; then
+    if awk '{print $NF}' <<< "$_listing" | grep -qE '^\.\./|/\.\./|^/'; then
         _api_error 403 "Backup archive contains path traversal entries — refusing to extract"
         return
     fi
 
     # SECURITY: Check for symlinks in archive (symlink-following traversal attack)
     # A symlink entry pointing to /etc/cron.d followed by a file entry writes through it
-    if tar -tvf "$archive_path" 2>/dev/null | grep -q '^l'; then
+    if grep -q '^l' <<< "$_listing"; then
         _api_error 403 "Backup archive contains symbolic links — refusing to extract for security"
         return
     fi
@@ -5287,7 +5483,7 @@ handle_backup_restore() {
         else
             printf '{"status": "error", "error": "Restore failed", "progress": null}' > "$status_file"
         fi
-    ) &
+    ) </dev/null >/dev/null 2>&1 &
 
     _api_success "{\"success\": true, \"message\": \"Restore started in background\", \"filename\": \"$(_api_json_escape "$filename")\"}"
 }
@@ -5296,6 +5492,7 @@ handle_backup_restore() {
 # STACK CREATE / DELETE HANDLERS
 # =============================================================================
 
+# POST /stacks — Create an empty stack directory
 handle_create_stack() {
     local body="$1"
 
@@ -5368,6 +5565,7 @@ ENV_EOF
     _api_success "{\"success\": true, \"name\": \"$name\", \"message\": \"Stack '$name' created successfully\"}"
 }
 
+# POST /stacks/{stack}/delete — Delete a stopped stack directory
 handle_delete_stack() {
     local name="$1"
 
@@ -5411,6 +5609,7 @@ handle_delete_stack() {
 # CONFIG UPDATE HANDLER
 # =============================================================================
 
+# POST /config — Update allow-listed .env settings
 handle_config_update() {
     local body="$1"
     local env_file="$BASE_DIR/.env"
@@ -5483,6 +5682,7 @@ handle_config_update() {
         [HEALTH_SCORE_ENABLED]=1
         [ROLLBACK_MAX_SNAPSHOTS]=1 [SECRETS_ENCRYPTION]=1 [SCHEDULER_CHECK_INTERVAL]=1
         [METRICS_RETENTION_DAYS]=1 [INCLUDE_RESOURCE_METRICS]=1
+        [API_TRUSTED_PROXIES]=1 [DCS_UI_PORT]=1
         # Dashboard/General
         [PORTAINER_URL]=1 [DASHBOARD_ICON_URL]=1 [DOCKER_COMPOSE_VERSION]=1
         # Backup
@@ -5496,43 +5696,38 @@ handle_config_update() {
             _api_error 400 "Key not allowed: $key"
             return
         fi
-        local value
-        value=$(echo "$body" | jq -r ".[\"$key\"]" 2>/dev/null)
+        local value problem
+        value=$(echo "$body" | jq -r --arg k "$key" 'if .[$k] == null then "" else .[$k] end' 2>/dev/null)
+        # Reject anything that would not survive as plain data in .env
+        if ! problem=$(_api_validate_env_kv "$key" "$value"); then
+            _api_error 400 "Rejected value: $problem"
+            return
+        fi
         updates["$key"]="$value"
     done <<< "$keys"
 
     # Backup current .env
-    cp "$env_file" "${env_file}.bak" 2>/dev/null
+    cp -p "$env_file" "${env_file}.bak" 2>/dev/null
 
-    # Apply updates to .env file
+    # Apply updates to .env file (grep + temp file: no sed metacharacter issues)
     for key in "${!updates[@]}"; do
         local value="${updates[$key]}"
-        # Security: reject values containing newlines (could inject additional env entries)
-        if [[ "$value" == *$'\n'* ]] || [[ "$value" == *$'\r'* ]]; then
-            _api_error 400 "Value for $key contains invalid characters"
-            return
-        fi
-        # Use grep+temp file approach instead of sed to avoid sed injection
         if grep -q "^${key}=" "$env_file" 2>/dev/null; then
-            # Remove existing key line and rewrite (avoids sed metacharacter issues)
             grep -v "^${key}=" "$env_file" > "${env_file}.tmp" 2>/dev/null
             printf '%s=%s\n' "$key" "$value" >> "${env_file}.tmp"
-            mv "${env_file}.tmp" "$env_file"
+            chmod --reference="$env_file" "${env_file}.tmp" 2>/dev/null
+            mv -f "${env_file}.tmp" "$env_file"
         else
-            # Append new key
+            [[ -s "$env_file" && "$(tail -c1 "$env_file")" != "" ]] && printf '\n' >> "$env_file"
             printf '%s=%s\n' "$key" "$value" >> "$env_file"
         fi
         changed=$(( changed + 1 ))
     done
 
-    # Re-source .env to pick up changes — preserve runtime CLI overrides
-    local _saved_api_bind="$API_BIND"
-    local _saved_api_port="$API_PORT"
-    set -a
-    source "$env_file"
-    set +a
-    API_BIND="$_saved_api_bind"
-    API_PORT="$_saved_api_port"
+    # Reload .env as data — the listener's own bind/port/auth stay as started
+    _api_load_env_file "$env_file"
+    API_BIND="${DCS_API_EFFECTIVE_BIND:-$API_BIND}"
+    API_PORT="${DCS_API_EFFECTIVE_PORT:-$API_PORT}"
 
     _api_success "{\"success\": true, \"updated\": $changed, \"message\": \"Configuration updated. Some changes may require a restart.\"}"
 }
@@ -5555,6 +5750,9 @@ p = pam.pam()
 sys.exit(0 if p.authenticate(os.environ['TERM_AUTH_USER'], os.environ['TERM_AUTH_PASS']) else 1)
 PYEOF
         [[ $? -eq 0 ]] && { echo "$auth_method"; return 0; }
+        # PAM can verify the service account's own password without root; that
+        # answer is final. (Other accounts fall through to su, which prompts.)
+        [[ "$username" == "$(id -un)" ]] && return 1
     fi
 
     # Strategy 2: Python3 pty + su (built-in — works on any system with su)
@@ -5612,7 +5810,8 @@ PYEOF
     # Strategy 3: expect + su
     if command -v expect >/dev/null 2>&1; then
         auth_method="expect"
-        local marker="AUTH_OK_$$_$(date +%s)"
+        local marker
+        marker="AUTH_OK_$$_$(date +%s)"
         # SECURITY: Quote all variables via env() to prevent shell injection
         TERM_AUTH_USER="$username" TERM_AUTH_PASS="$password" TERM_AUTH_MARKER="$marker" expect << 'EXPEOF' 2>/dev/null
 log_user 0
@@ -5628,12 +5827,13 @@ EXPEOF
         [[ $? -eq 0 ]] && { echo "$auth_method"; return 0; }
     fi
 
-    # Strategy 4: sshpass + ssh localhost
+    # Strategy 4: sshpass + ssh localhost (password via environment, never argv;
+    # username as -l so it can never be parsed as an ssh option)
     if command -v sshpass >/dev/null 2>&1; then
         auth_method="sshpass"
-        sshpass -p "$password" ssh -o StrictHostKeyChecking=no \
-            -o ConnectTimeout=5 -o BatchMode=no \
-            "$username@127.0.0.1" 'echo AUTH_OK' 2>/dev/null | grep -q AUTH_OK && { echo "$auth_method"; return 0; }
+        SSHPASS="$password" sshpass -e ssh -o StrictHostKeyChecking=no \
+            -o ConnectTimeout=5 -o BatchMode=no -l "$username" \
+            127.0.0.1 'echo AUTH_OK' 2>/dev/null | grep -q AUTH_OK && { echo "$auth_method"; return 0; }
     fi
 
     return 1
@@ -5691,17 +5891,32 @@ handle_terminal_auth() {
 
     [[ -z "$username" ]] && { _api_error 400 "Missing 'username' field"; return; }
     [[ -z "$password" ]] && { _api_error 400 "Missing 'password' field"; return; }
+    if [[ ! "$username" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]]; then
+        _api_error 400 "Invalid username"
+        return
+    fi
 
     local auth_audit="$BASE_DIR/.api-auth/terminal-auth-audit.log"
     local rate_file="$BASE_DIR/.api-auth/terminal-auth-rate.json"
     local sessions_file="$BASE_DIR/.api-auth/terminal-sessions.json"
     mkdir -p "$BASE_DIR/.api-auth"
 
+    # Terminal commands run as the API service account whoever authenticated,
+    # so only that account (or root) may unlock it. Otherwise any local login —
+    # a guest, a service user — would hand out a shell in the docker group.
+    local _svc_user
+    _svc_user=$(id -un)
+    if [[ "$username" != "$_svc_user" && "$username" != "root" ]]; then
+        echo "$(date -u '+%Y-%m-%dT%H:%M:%SZ') | REJECTED | ip=${CLIENT_IP:-unknown} | user=$username | reason=not-service-account" >> "$auth_audit"
+        _api_error 403 "Terminal access requires the credentials of the service account (${_svc_user}) or root"
+        return
+    fi
+
     # Initialize sessions file if needed
-    [[ ! -f "$sessions_file" ]] && echo '{"sessions":[]}' > "$sessions_file"
+    [[ ! -f "$sessions_file" ]] && { echo '{"sessions":[]}' > "$sessions_file"; chmod 600 "$sessions_file" 2>/dev/null; }
 
     # Rate limit: 5 failed attempts per 15 minutes per IP
-    local client_ip="${SOCAT_PEERADDR:-127.0.0.1}"
+    local client_ip="${CLIENT_IP:-127.0.0.1}"
     local now
     now=$(date +%s)
     local window_start=$(( now - 900 ))
@@ -5719,7 +5934,7 @@ handle_terminal_auth() {
     fi
 
     # Initialize rate file if needed
-    [[ ! -f "$rate_file" ]] && echo '{"attempts":[]}' > "$rate_file"
+    [[ ! -f "$rate_file" ]] && { echo '{"attempts":[]}' > "$rate_file"; chmod 600 "$rate_file" 2>/dev/null; }
 
     # Authenticate against Linux system
     local auth_method
@@ -5730,14 +5945,9 @@ handle_terminal_auth() {
         # Log failed attempt
         echo "$(date -u '+%Y-%m-%dT%H:%M:%SZ') | FAILED | ip=$client_ip | user=$username" >> "$auth_audit"
 
-        # Record rate limit
-        if command -v jq >/dev/null 2>&1; then
-            local tmp_rate
-            tmp_rate=$(jq --arg ip "$client_ip" --argjson ts "$now" \
-                '.attempts += [{"ip": $ip, "timestamp": $ts, "success": false}]' \
-                "$rate_file" 2>/dev/null)
-            [[ -n "$tmp_rate" ]] && echo "$tmp_rate" > "$rate_file"
-        fi
+        # Record rate limit (and drop attempts older than the 15-minute window)
+        _api_jq_update_file "$rate_file" --arg ip "$client_ip" --argjson ts "$now" \
+            '.attempts = [.attempts[] | select(.timestamp > ($ts - 900))] + [{"ip": $ip, "timestamp": $ts, "success": false}]'
 
         _api_error 401 "Invalid Linux credentials"
         return
@@ -5750,36 +5960,19 @@ handle_terminal_auth() {
     local expiry_seconds="${TERMINAL_SESSION_EXPIRY:-14400}"
     local expires_at=$(( now + expiry_seconds ))
 
-    # Store session
-    if command -v jq >/dev/null 2>&1; then
-        local tmp_sessions
-        # Clean expired sessions first
-        tmp_sessions=$(jq --argjson now "$now" \
-            '.sessions = [.sessions[] | select(.expires_at > $now)]' \
-            "$sessions_file" 2>/dev/null)
-        [[ -n "$tmp_sessions" ]] && echo "$tmp_sessions" > "$sessions_file"
-
-        # Add new session
-        tmp_sessions=$(jq --arg t "$token" --arg u "$username" --argjson c "$now" --argjson e "$expires_at" --arg m "$auth_method" \
-            '.sessions += [{"token": $t, "username": $u, "created_at": $c, "expires_at": $e, "auth_method": $m}]' \
-            "$sessions_file" 2>/dev/null)
-        [[ -n "$tmp_sessions" ]] && echo "$tmp_sessions" > "$sessions_file"
-    else
-        # Fallback: append to a simple log
-        echo "{\"token\":\"$token\",\"username\":\"$username\",\"created_at\":$now,\"expires_at\":$expires_at}" >> "$sessions_file.fallback"
+    # Store session (expired sessions are pruned in the same locked update)
+    if ! _api_jq_update_file "$sessions_file" --arg t "$token" --arg u "$username" --argjson c "$now" --argjson e "$expires_at" --arg m "$auth_method" \
+        '.sessions = [.sessions[] | select(.expires_at > $c)] + [{"token": $t, "username": $u, "created_at": $c, "expires_at": $e, "auth_method": $m}]'; then
+        _api_error 500 "Failed to store terminal session"
+        return
     fi
 
     # Log success
     echo "$(date -u '+%Y-%m-%dT%H:%M:%SZ') | SUCCESS | ip=$client_ip | user=$username | method=$auth_method" >> "$auth_audit"
 
     # Record rate limit (success)
-    if command -v jq >/dev/null 2>&1; then
-        local tmp_rate
-        tmp_rate=$(jq --arg ip "$client_ip" --argjson ts "$now" \
-            '.attempts += [{"ip": $ip, "timestamp": $ts, "success": true}]' \
-            "$rate_file" 2>/dev/null)
-        [[ -n "$tmp_rate" ]] && echo "$tmp_rate" > "$rate_file"
-    fi
+    _api_jq_update_file "$rate_file" --arg ip "$client_ip" --argjson ts "$now" \
+        '.attempts = [.attempts[] | select(.timestamp > ($ts - 900))] + [{"ip": $ip, "timestamp": $ts, "success": true}]'
 
     _api_success "{\"success\": true, \"token\": \"$token\", \"username\": \"$(_api_json_escape "$username")\", \"expires_in\": $expiry_seconds, \"auth_method\": \"$auth_method\", \"message\": \"Terminal session authenticated\"}"
 }
@@ -5830,10 +6023,8 @@ handle_terminal_logout() {
 
     local sessions_file="$BASE_DIR/.api-auth/terminal-sessions.json"
 
-    if command -v jq >/dev/null 2>&1 && [[ -f "$sessions_file" ]]; then
-        local tmp
-        tmp=$(jq --arg t "$token" '.sessions = [.sessions[] | select(.token != $t)]' "$sessions_file" 2>/dev/null)
-        [[ -n "$tmp" ]] && echo "$tmp" > "$sessions_file"
+    if [[ -f "$sessions_file" ]]; then
+        _api_jq_update_file "$sessions_file" --arg t "$token" '.sessions = [.sessions[] | select(.token != $t)]'
     fi
 
     local auth_audit="$BASE_DIR/.api-auth/terminal-auth-audit.log"
@@ -5846,6 +6037,7 @@ handle_terminal_logout() {
 # TERMINAL EXEC / HISTORY
 # =============================================================================
 
+# POST /terminal/exec — Run a shell command on the host (terminal session required, 60 s limit)
 handle_terminal_exec() {
     local body="$1"
 
@@ -5922,31 +6114,15 @@ handle_terminal_exec() {
         "/etc/shadow"       # password file access
         "/etc/passwd"       # user file access
         "/etc/sudoers"      # sudo file access
-        "curl.*| *bash"     # pipe-to-shell
-        "wget.*| *bash"     # pipe-to-shell
-        "curl.*| *sh"       # pipe-to-shell
-        "wget.*| *sh"       # pipe-to-shell
-        "shutdown"          # system shutdown
-        "reboot"            # system reboot
         "init 0"            # system halt
-        "poweroff"          # system poweroff
-        "halt"              # system halt
-        "systemctl.*halt"   # systemd halt
-        "systemctl.*poweroff" # systemd poweroff
-        "systemctl.*reboot" # systemd reboot
         "crontab -r"        # cron wipe
         "iptables -f"       # firewall flush
         "nft flush"         # nftables flush
-        "visudo"            # sudo editor
-        "passwd"            # password change
-        "useradd"           # user creation
-        "userdel"           # user deletion
-        "groupdel"          # group deletion
     )
 
     for _pat in "${_blocked_patterns[@]}"; do
         if [[ "$_cmd_lower" == *"${_pat,,}"* ]]; then
-            local client_ip="${SOCAT_PEERADDR:-unknown}"
+            local client_ip="${CLIENT_IP:-unknown}"
             _api_audit_log "$client_ip" "TERM_BLOCKED" "$session_user" "Blocked: $command"
             _api_error 403 "Command blocked by security policy"
             return
@@ -5962,10 +6138,12 @@ handle_terminal_exec() {
         'python[23]?\s+-c\s.*os\.(system|exec|popen)'  # python os exec
         'perl\s+-e\s.*system\('      # perl system exec
         'ruby\s+-e\s.*system\('      # ruby system exec
+        # whole-word matches only, so `getent passwd` or `last reboot` still work
+        '(^|[;&|[:space:]])(sudo\s+)?(shutdown|reboot|poweroff|halt|passwd|useradd|userdel|groupdel|visudo)([[:space:]]|$)'
     )
     for _rpat in "${_blocked_regex[@]}"; do
         if printf '%s' "$_cmd_lower" | grep -qE "$_rpat"; then
-            local client_ip="${SOCAT_PEERADDR:-unknown}"
+            local client_ip="${CLIENT_IP:-unknown}"
             _api_audit_log "$client_ip" "TERM_BLOCKED" "$session_user" "Blocked(regex): $command"
             _api_error 403 "Command blocked by security policy"
             return
@@ -5981,8 +6159,8 @@ handle_terminal_exec() {
     now=$(date +%s)
     local one_min_ago=$(( now - 60 ))
 
+    local recent_count=0
     if [[ -f "$rate_file" ]]; then
-        local recent_count
         recent_count=$(awk -v cutoff="$one_min_ago" '$1 >= cutoff' "$rate_file" 2>/dev/null | wc -l)
         if (( recent_count >= 10 )); then
             _api_error 429 "Rate limit exceeded: 10 commands per minute"
@@ -5990,15 +6168,19 @@ handle_terminal_exec() {
         fi
     fi
 
-    echo "$now" >> "$rate_file"
+    # Keep only the current window in the rate log (it must not grow forever)
+    { [[ -f "$rate_file" ]] && awk -v cutoff="$one_min_ago" '$1 >= cutoff' "$rate_file" 2>/dev/null; echo "$now"; } > "$rate_file.tmp" && mv -f "$rate_file.tmp" "$rate_file"
 
-    # Execute command
+    # Execute command (handlers run with errexit off, so $? is the real status)
     local output exit_code
-    output=$(cd "$cwd" 2>/dev/null && timeout 60 bash -c "$command" 2>&1) || true
-    exit_code=${PIPESTATUS[0]:-$?}
+    output=$(cd "$cwd" 2>/dev/null && timeout 60 bash -c "$command" 2>&1)
+    exit_code=$?
 
-    # Audit log (includes Linux username)
-    echo "$(date -u '+%Y-%m-%dT%H:%M:%SZ') | linux_user=$session_user | exit=$exit_code | cwd=$cwd | cmd=$command" >> "$audit_file"
+    # Audit log (includes Linux username); one line per command, no injection
+    local _cmd_log="${command//$'\n'/ }" _cwd_log="${cwd//$'\n'/ }"
+    _cmd_log="${_cmd_log//$'\r'/}"
+    _cwd_log="${_cwd_log//$'\r'/}"
+    echo "$(date -u '+%Y-%m-%dT%H:%M:%SZ') | linux_user=$session_user | exit=$exit_code | cwd=$_cwd_log | cmd=$_cmd_log" >> "$audit_file"
 
     local success="true"
     [[ "$exit_code" -ne 0 ]] && success="false"
@@ -6006,6 +6188,7 @@ handle_terminal_exec() {
     _api_success "{\"command\": \"$(_api_json_escape "$command")\", \"cwd\": \"$(_api_json_escape "$cwd")\", \"exit_code\": $exit_code, \"output\": \"$(_api_json_escape "$output")\", \"success\": $success, \"timestamp\": \"$(date -u '+%Y-%m-%dT%H:%M:%SZ')\"}"
 }
 
+# GET /terminal/history — Recent terminal commands from the audit log
 handle_terminal_history() {
     if ! _api_check_admin; then _api_error 403 "Admin access required"; return; fi
 
@@ -6068,8 +6251,8 @@ handle_container_files() {
     # List directory with detailed info
     local output
     # Use ls -la; try --time-style=long-iso (GNU) first, fall back to plain ls -la (BusyBox)
-    output=$(docker exec "$container" ls -la --time-style=long-iso "$query_path" 2>/dev/null) || \
-    output=$(docker exec "$container" ls -la "$query_path" 2>&1)
+    output=$(timeout 10 docker exec "$container" ls -la --time-style=long-iso "$query_path" 2>/dev/null) || \
+    output=$(timeout 10 docker exec "$container" ls -la "$query_path" 2>&1)
     local exit_code=$?
 
     if [[ $exit_code -ne 0 ]]; then
@@ -6087,20 +6270,24 @@ handle_container_files() {
         [[ "$line" =~ ^total ]] && continue
         [[ -z "$line" ]] && continue
 
+        # Parse in bash (no subprocesses per entry): perms links owner group size ...
         local perms type_char name_field size_field date_field
-        perms=$(echo "$line" | awk '{print $1}')
-        size_field=$(echo "$line" | awk '{print $5}')
-        # Detect format: GNU --time-style=long-iso has YYYY-MM-DD in col 6
-        local col6
-        col6=$(echo "$line" | awk '{print $6}')
-        if [[ "$col6" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
-            # GNU format: date(6) time(7) name(8+)
-            date_field=$(echo "$line" | awk '{print $6" "$7}')
-            name_field=$(echo "$line" | awk '{for(i=8;i<=NF;i++) printf "%s ", $i; print ""}' | sed 's/ *$//')
+        local _links _owner _group _f6 _f7 _f8 _rest
+        read -r perms _links _owner _group size_field _f6 _f7 _f8 _rest <<< "$line"
+        if [[ "$size_field" == *, ]]; then
+            # Device nodes print "major, minor" in place of a size
+            read -r perms _links _owner _group size_field _ _f6 _f7 _f8 _rest <<< "$line"
+            size_field=0
+        fi
+        [[ "$size_field" =~ ^[0-9]+$ ]] || size_field=0
+        if [[ "$_f6" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+            # GNU --time-style=long-iso: date(6) time(7) name(8+)
+            date_field="$_f6 $_f7"
+            name_field="${_f8}${_rest:+ $_rest}"
         else
-            # BusyBox format: month(6) day(7) time-or-year(8) name(9+)
-            date_field=$(echo "$line" | awk '{print $6" "$7" "$8}')
-            name_field=$(echo "$line" | awk '{for(i=9;i<=NF;i++) printf "%s ", $i; print ""}' | sed 's/ *$//')
+            # BusyBox: month(6) day(7) time-or-year(8) name(9+)
+            date_field="$_f6 $_f7 $_f8"
+            name_field="$_rest"
         fi
 
         # Skip . and ..
@@ -6146,26 +6333,37 @@ handle_container_file_content() {
     [[ -z "$state" ]] && { _api_error 404 "Container not found: $container"; return; }
     [[ "$state" != "running" ]] && { _api_error 400 "Container is not running"; return; }
 
-    # Get file size first (limit to 1MB)
+    # Only regular files: FIFOs, device nodes and /proc entries can block the
+    # handler or grow without bound (stat reports 0 bytes for them)
+    local _ftype
+    _ftype=$(timeout 10 docker exec "$container" stat -c %F "$file_path" 2>/dev/null)
+    if [[ "$_ftype" != "regular file" && "$_ftype" != "regular empty file" ]]; then
+        _api_error 400 "Not a regular file (${_ftype:-not found})"
+        return
+    fi
+
+    # Size limit: 1MB
     local file_size
-    file_size=$(docker exec "$container" stat -c %s "$file_path" 2>/dev/null || echo "0")
+    file_size=$(timeout 10 docker exec "$container" stat -c %s "$file_path" 2>/dev/null || echo "0")
+    [[ "$file_size" =~ ^[0-9]+$ ]] || file_size=0
     if (( file_size > 1048576 )); then
         _api_error 400 "File too large (${file_size} bytes). Maximum 1MB."
         return
     fi
 
-    # Check if file is binary (contains null bytes) — reject gracefully
-    if docker exec "$container" grep -qP '\x00' "$file_path" 2>/dev/null; then
-        _api_error 400 "Binary file cannot be displayed as text"
-        return
-    fi
-
     local content
-    content=$(docker exec "$container" cat "$file_path" 2>/dev/null)
+    content=$(timeout 15 docker exec "$container" head -c 1048576 "$file_path" 2>/dev/null)
     local exit_code=$?
 
     if [[ $exit_code -ne 0 ]]; then
         _api_error 400 "Failed to read file: $(_api_json_escape "$content")"
+        return
+    fi
+
+    # Reject binary content (control bytes other than tab/newline/CR)
+    local _binre=$'[\x01-\x08\x0e-\x1f]'
+    if [[ "$content" =~ $_binre ]]; then
+        _api_error 400 "Binary file cannot be displayed as text"
         return
     fi
 
@@ -6256,7 +6454,7 @@ handle_crontab() {
     raw_crontab=$(crontab -l 2>&1 || echo "")
 
     # Parse cron entries into structured format
-    local entries="["
+    local entries_json="["
     local first=true
 
     while IFS= read -r line; do
@@ -6265,30 +6463,36 @@ handle_crontab() {
         [[ "$line" =~ ^# ]] && continue
         [[ "$line" =~ "no crontab for" ]] && continue
 
-        # Parse: min hour day month dow command
+        # Parse: min hour day month dow command  (or @reboot/@daily shortcuts)
         local schedule cmd human_readable
-        schedule=$(echo "$line" | awk '{print $1,$2,$3,$4,$5}')
-        cmd=$(echo "$line" | awk '{for(i=6;i<=NF;i++) printf "%s ", $i; print ""}' | sed 's/ *$//')
+        if [[ "$line" == @* ]]; then
+            schedule="${line%%[[:space:]]*}"
+            cmd="${line#*[[:space:]]}"
+            [[ "$cmd" == "$line" ]] && cmd=""
+        else
+            schedule=$(echo "$line" | awk '{print $1,$2,$3,$4,$5}')
+            cmd=$(echo "$line" | awk '{for(i=6;i<=NF;i++) printf "%s ", $i; print ""}' | sed 's/ *$//')
+        fi
 
         [[ -z "$cmd" ]] && continue
 
         # Generate human-readable description
         human_readable=$(_cron_to_human "$schedule")
 
-        $first || entries+=","
+        $first || entries_json+=","
         first=false
-        entries+="{\"schedule\": \"$(_api_json_escape "$schedule")\", \"command\": \"$(_api_json_escape "$cmd")\", \"user\": \"$(whoami)\", \"source\": \"user\", \"human_readable\": \"$(_api_json_escape "$human_readable")\"}"
+        entries_json+="{\"schedule\": \"$(_api_json_escape "$schedule")\", \"command\": \"$(_api_json_escape "$cmd")\", \"user\": \"$(whoami)\", \"source\": \"user\", \"human_readable\": \"$(_api_json_escape "$human_readable")\"}"
     done <<< "$raw_crontab"
-    entries+="]"
+    entries_json+="]"
 
-    _api_success "{\"entries\": $entries, \"raw\": \"$(_api_json_escape "$raw_crontab")\"}"
+    _api_success "{\"entries\": $entries_json, \"raw\": \"$(_api_json_escape "$raw_crontab")\"}"
 }
 
 # GET /system/crontab/system — System-level cron entries
 handle_crontab_system() {
     if ! _api_check_admin; then _api_error 403 "Admin access required"; return; fi
 
-    local entries="["
+    local entries_json="["
     local first=true
 
     # Parse /etc/crontab
@@ -6306,9 +6510,9 @@ handle_crontab_system() {
             [[ -z "$cmd" ]] && continue
             human_readable=$(_cron_to_human "$schedule")
 
-            $first || entries+=","
+            $first || entries_json+=","
             first=false
-            entries+="{\"schedule\": \"$(_api_json_escape "$schedule")\", \"command\": \"$(_api_json_escape "$cmd")\", \"user\": \"$(_api_json_escape "$user")\", \"source\": \"system\", \"human_readable\": \"$(_api_json_escape "$human_readable")\"}"
+            entries_json+="{\"schedule\": \"$(_api_json_escape "$schedule")\", \"command\": \"$(_api_json_escape "$cmd")\", \"user\": \"$(_api_json_escape "$user")\", \"source\": \"system\", \"human_readable\": \"$(_api_json_escape "$human_readable")\"}"
         done < /etc/crontab
     fi
 
@@ -6331,15 +6535,15 @@ handle_crontab_system() {
                 [[ -z "$cmd" ]] && continue
                 human_readable=$(_cron_to_human "$schedule")
 
-                $first || entries+=","
+                $first || entries_json+=","
                 first=false
-                entries+="{\"schedule\": \"$(_api_json_escape "$schedule")\", \"command\": \"$(_api_json_escape "$cmd")\", \"user\": \"$(_api_json_escape "$user")\", \"source\": \"cron.d\", \"human_readable\": \"$(_api_json_escape "$human_readable")\"}"
+                entries_json+="{\"schedule\": \"$(_api_json_escape "$schedule")\", \"command\": \"$(_api_json_escape "$cmd")\", \"user\": \"$(_api_json_escape "$user")\", \"source\": \"cron.d\", \"human_readable\": \"$(_api_json_escape "$human_readable")\"}"
             done < "$cronfile"
         done
     fi
 
-    entries+="]"
-    _api_success "{\"entries\": $entries}"
+    entries_json+="]"
+    _api_success "{\"entries\": $entries_json}"
 }
 
 # POST /system/crontab — Update user crontab
@@ -6356,10 +6560,12 @@ handle_crontab_update() {
 
     [[ -z "$content" ]] && { _api_error 400 "Missing 'content' field"; return; }
 
-    # Backup current crontab
-    local backup_file="$BASE_DIR/.api-auth/crontab-backup-$(date +%s).txt"
+    # Backup current crontab (keep the last 10)
+    local backup_file
+    backup_file="$BASE_DIR/.api-auth/crontab-backup-$(date +%s).txt"
     mkdir -p "$BASE_DIR/.api-auth"
     crontab -l > "$backup_file" 2>/dev/null || true
+    ls -1t "$BASE_DIR"/.api-auth/crontab-backup-*.txt 2>/dev/null | tail -n +11 | xargs -r rm -f
 
     # Install new crontab
     local output
@@ -6379,6 +6585,18 @@ _cron_to_human() {
     local min hour dom mon dow
     read -r min hour dom mon dow <<< "$schedule"
 
+    case "$schedule" in
+        @reboot)  echo "At boot"; return ;;
+        @hourly)  echo "Every hour"; return ;;
+        @daily|@midnight) echo "Daily at midnight"; return ;;
+        @weekly)  echo "Weekly"; return ;;
+        @monthly) echo "Monthly"; return ;;
+        @yearly|@annually) echo "Yearly"; return ;;
+    esac
+    # Fixed-time descriptions need plain numbers (not */5 or 1,15 lists)
+    local _numeric=false
+    [[ "$min" =~ ^[0-9]+$ && "$hour" =~ ^[0-9]+$ ]] && _numeric=true
+
     # Handle common patterns
     if [[ "$min" == "*" && "$hour" == "*" && "$dom" == "*" && "$mon" == "*" && "$dow" == "*" ]]; then
         echo "Every minute"; return
@@ -6386,13 +6604,13 @@ _cron_to_human() {
     if [[ "$min" == "0" && "$hour" == "*" && "$dom" == "*" && "$mon" == "*" && "$dow" == "*" ]]; then
         echo "Every hour"; return
     fi
-    if [[ "$min" != "*" && "$hour" != "*" && "$dom" == "*" && "$mon" == "*" && "$dow" == "*" ]]; then
+    if [[ "$_numeric" == "true" && "$dom" == "*" && "$mon" == "*" && "$dow" == "*" ]]; then
         printf "Daily at %s:%02d" "$hour" "$min"; return
     fi
-    if [[ "$min" != "*" && "$hour" != "*" && "$dom" == "*" && "$mon" == "*" && "$dow" == "0" ]]; then
+    if [[ "$_numeric" == "true" && "$dom" == "*" && "$mon" == "*" && "$dow" == "0" ]]; then
         printf "Weekly (Sun) at %s:%02d" "$hour" "$min"; return
     fi
-    if [[ "$min" != "*" && "$hour" != "*" && "$dom" == "1" && "$mon" == "*" && "$dow" == "*" ]]; then
+    if [[ "$_numeric" == "true" && "$dom" == "1" && "$mon" == "*" && "$dow" == "*" ]]; then
         printf "Monthly (1st) at %s:%02d" "$hour" "$min"; return
     fi
     if [[ "$min" == "*/5" ]]; then
@@ -6506,7 +6724,7 @@ handle_app_logs_live() {
     local log_output
     if [[ -n "$since" ]]; then
         # Get lines after the timestamp
-        log_output=$(awk -v ts="$since" '$0 >= ts' "$log_file" 2>/dev/null | tail -"${lines}")
+        log_output=$(awk -v ts="$since" 'substr($0, 2, 19) >= ts' "$log_file" 2>/dev/null | tail -"${lines}")
     else
         log_output=$(tail -"${lines}" "$log_file" 2>/dev/null)
     fi
@@ -6550,6 +6768,7 @@ handle_app_logs_live() {
 # IMAGE DELETE
 # =============================================================================
 
+# POST /images/{image}/delete — Remove an image
 handle_image_delete() {
     if ! _api_check_admin; then _api_error 403 "Admin access required"; return; fi
 
@@ -6571,6 +6790,7 @@ handle_image_delete() {
 # CONTAINER RENAME
 # =============================================================================
 
+# POST /containers/{container}/rename — Rename a container
 handle_container_rename() {
     if ! _api_check_admin; then _api_error 403 "Admin access required"; return; fi
 
@@ -6604,6 +6824,7 @@ handle_container_rename() {
 # STACK SERVICES DETAIL
 # =============================================================================
 
+# GET /stacks/{stack}/services — Services of a stack with container state, health and image
 handle_stack_services() {
     local stack_name="$1"
     [[ -z "$stack_name" ]] && { _api_error 400 "Missing stack name"; return; }
@@ -6733,7 +6954,7 @@ _check_ui_image_update() {
 
 # POST /system/ui-update/apply — Pull latest DCS-UI image and recreate container
 handle_ui_update_apply() {
-    if ! _api_check_admin; then return; fi
+    if ! _api_check_admin; then _api_error 403 "Admin access required"; return; fi
 
     local ui_image="ghcr.io/scotthowson/docker-compose-skeleton-ui:latest"
 
@@ -6744,9 +6965,8 @@ handle_ui_update_apply() {
 
     # Pull the latest image
     local pull_output
-    pull_output=$(timeout 120 docker pull "$ui_image" 2>&1)
-    if [[ $? -ne 0 ]]; then
-        _api_error 500 "Failed to pull image: $(_api_json_escape "$pull_output")"
+    if ! pull_output=$(timeout 120 docker pull "$ui_image" 2>&1); then
+        _api_error 500 "Failed to pull image: $pull_output"
         return
     fi
 
@@ -6769,9 +6989,29 @@ handle_ui_update_apply() {
     # Recreate in background — the UI will disconnect briefly
     local env_args=()
     [[ -f "$stack_dir/.env" ]] && env_args=(--env-file "$stack_dir/.env")
-    ( $DOCKER_COMPOSE_CMD -f "$compose_file" "${env_args[@]}" up -d --force-recreate --no-deps dcs-ui >/dev/null 2>&1 ) &
+    ( $DOCKER_COMPOSE_CMD -f "$compose_file" "${env_args[@]}" up -d --force-recreate --no-deps dcs-ui ) </dev/null >/dev/null 2>&1 &
 
     _api_success "{\"success\": true, \"message\": \"DCS-UI is being updated. The page will reconnect automatically.\"}"
+}
+
+# Paths git tracks but users legitimately edit (deployed stacks, template
+# .env files, alert/automation state, plugin manifests). They must survive
+# `git pull` and `git reset --hard`.
+_API_GIT_USER_PATHS=(Stacks .templates .api-auth .plugins)
+
+# Run a git command with user-edited tracked files stashed around it.
+# Prints the command output; returns its exit status.
+_api_git_preserving_user_data() {
+    local stashed=false out rc=0
+    if [[ -n "$(git status --porcelain -- "${_API_GIT_USER_PATHS[@]}" 2>/dev/null | grep -v '^??')" ]]; then
+        git stash push --quiet -- "${_API_GIT_USER_PATHS[@]}" >/dev/null 2>&1 && stashed=true
+    fi
+    out=$("$@" 2>&1) || rc=$?
+    if [[ "$stashed" == "true" ]] && ! git stash pop --quiet >/dev/null 2>&1; then
+        out+=$'\n'"WARNING: local changes to stack/template/plugin files conflict with this version and were left in 'git stash'. Run 'git stash pop' in $BASE_DIR to merge them."
+    fi
+    printf '%s' "$out"
+    return "$rc"
 }
 
 # GET /system/update/check — Check for available DCS updates via git
@@ -6855,14 +7095,12 @@ handle_system_update_apply() {
         return
     fi
 
-    # Optional: require explicit confirmation in the payload
-    if command -v jq >/dev/null 2>&1 && [[ -n "$body" ]]; then
-        local confirm
-        confirm=$(printf '%s' "$body" | jq -r '.confirm // empty' 2>/dev/null)
-        if [[ "$confirm" != "true" ]]; then
-            _api_error 400 "Missing confirmation. Send {\"confirm\": true} to apply the update."
-            return
-        fi
+    # Explicit confirmation is always required
+    local confirm
+    confirm=$(printf '%s' "$body" | jq -r '.confirm // empty' 2>/dev/null)
+    if [[ "$confirm" != "true" ]]; then
+        _api_error 400 "Missing confirmation. Send {\"confirm\": true} to apply the update."
+        return
     fi
 
     # Check for local changes to TRACKED files — refuse if working tree is dirty
@@ -6900,20 +7138,14 @@ handle_system_update_apply() {
     backup_tag="dcs-backup-$(date +%Y%m%d-%H%M%S)-${current}"
     git tag "$backup_tag" HEAD 2>/dev/null || true
 
-    # Attempt fast-forward-only pull — use explicit refs/heads/ to avoid tag ambiguity
-    local pull_output pull_exit
-    pull_output=$(git pull --ff-only origin "refs/heads/$branch" 2>&1)
-    pull_exit=$?
+    # Fast-forward-only pull (explicit refs/heads/ avoids tag ambiguity). A
+    # refused fast-forward leaves the tree untouched, so nothing needs undoing —
+    # never `reset --hard` here, that would wipe user-edited stack files.
+    local pull_output pull_exit=0
+    pull_output=$(_api_git_preserving_user_data git pull --ff-only origin "refs/heads/$branch") || pull_exit=$?
 
     if [[ $pull_exit -ne 0 ]]; then
-        # Rollback to backup tag
-        git checkout "$backup_tag" 2>/dev/null || true
-        git checkout "$branch" 2>/dev/null || true
-        git reset --hard "$backup_tag" 2>/dev/null || true
-
-        local escaped_output
-        escaped_output=$(_api_json_escape "$pull_output")
-        _api_error 500 "Update failed (rolled back to $backup_tag): $escaped_output"
+        _api_error 500 "Update failed (nothing was changed; backup tag $backup_tag kept): $pull_output"
         return
     fi
 
@@ -6973,12 +7205,8 @@ handle_system_update_rollback() {
 
     if [[ -z "$backup_tag" ]]; then
         # List available backup tags if none specified
-        local tags_json="[]"
         local tag_list
         tag_list=$(git tag -l 'dcs-backup-*' --sort=-creatordate 2>/dev/null | head -20)
-        if [[ -n "$tag_list" ]] && command -v jq >/dev/null 2>&1; then
-            tags_json=$(printf '%s\n' "$tag_list" | jq -R '.' | jq -s '.' 2>/dev/null || echo "[]")
-        fi
         _api_error 400 "Missing backup_tag in request body. Available tags: $(printf '%s' "$tag_list" | tr '\n' ', ' | sed 's/,$//')"
         return
     fi
@@ -6999,15 +7227,12 @@ handle_system_update_rollback() {
     current=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
     branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
 
-    # Perform rollback: reset the branch to the backup tag
-    local reset_output reset_exit
-    reset_output=$(git reset --hard "$backup_tag" 2>&1)
-    reset_exit=$?
+    # Perform rollback: reset the branch to the backup tag, keeping user data
+    local reset_output reset_exit=0
+    reset_output=$(_api_git_preserving_user_data git reset --hard "$backup_tag") || reset_exit=$?
 
     if [[ $reset_exit -ne 0 ]]; then
-        local escaped_output
-        escaped_output=$(_api_json_escape "$reset_output")
-        _api_error 500 "Rollback failed: $escaped_output"
+        _api_error 500 "Rollback failed: $reset_output"
         return
     fi
 
@@ -7066,23 +7291,25 @@ _run_privileged() {
     if [[ -n "$_pw" ]]; then
         # Try original sudo (sudo.ws) which handles -S stdin correctly
         if [[ -x /usr/bin/sudo.ws ]]; then
-            printf '%s\n' "$_pw" | /usr/bin/sudo.ws -S "$@" 2>&1
+            printf '%s\n' "$_pw" | /usr/bin/sudo.ws -S -p '' "$@" 2>&1
             return $?
         fi
 
         # Try regular sudo -S (works on traditional sudo, not sudo-rs)
         local _sudo_out
-        _sudo_out=$(printf '%s\n' "$_pw" | sudo -S "$@" 2>&1)
+        _sudo_out=$(printf '%s\n' "$_pw" | sudo -S -p '' "$@" 2>&1)
         local _rc=$?
         if [[ $_rc -eq 0 ]] || ! echo "$_sudo_out" | grep -qi "authentication failed\|try again"; then
             echo "$_sudo_out"
             return $_rc
         fi
 
-        # Fallback: use python3 pty to run su -c (same as terminal auth strategy)
+        # Fallback: use python3 pty to run su -c (same as terminal auth strategy).
+        # `su` only escalates when the target account is root — for any other
+        # user it would just run the command unprivileged and report failures.
         # SECURITY: Pass password and command via environment variables, NOT string interpolation.
         # This prevents code injection via passwords containing quotes or Python metacharacters.
-        if command -v python3 >/dev/null 2>&1; then
+        if [[ "$_user" == "root" ]] && command -v python3 >/dev/null 2>&1; then
             local _cmd_str
             _cmd_str=$(printf '%q ' "$@")
             _DCS_PW="$_pw" _DCS_USER="$_user" _DCS_CMD="$_cmd_str" python3 -c "
@@ -7131,6 +7358,7 @@ else:
 
 # POST /system/os-update/check — Check for available OS package updates
 # Requires terminal auth token (Linux credentials)
+# POST /system/os-update/check — List available OS package updates (terminal session required)
 handle_os_update_check() {
     local body="$1"
 
@@ -7226,6 +7454,7 @@ handle_os_update_check() {
 
 # POST /system/os-update/apply — Apply all available OS package updates
 # Requires terminal auth token (Linux credentials)
+# POST /system/os-update/apply — Apply OS package updates in the background (terminal session required)
 handle_os_update_apply() {
     local body="$1"
 
@@ -7284,7 +7513,7 @@ handle_os_update_apply() {
     printf '{"status":"running","package_manager":"%s","started_at":"%s","message":"Applying updates..."}' \
         "$pkg_manager" "$(date -Iseconds)" > "$status_file"
 
-    local client_ip="${SOCAT_PEERADDR:-unknown}"
+    local client_ip="${CLIENT_IP:-unknown}"
 
     (
         local output=""
@@ -7323,7 +7552,7 @@ handle_os_update_apply() {
             printf '{"status":"complete","success":false,"package_manager":"%s","exit_code":%d,"summary":"%s","output":"%s","applied_as":"%s","message":"Update completed with errors (exit code %d).","completed_at":"%s"}' \
                 "$pkg_manager" "$exit_code" "$(_api_json_escape "$summary")" "$(_api_json_escape "$truncated_output")" "$(_api_json_escape "$term_user")" "$exit_code" "$(date -Iseconds)" > "$status_file"
         fi
-    ) &
+    ) </dev/null >/dev/null 2>&1 &
     disown
 
     _api_success "{
@@ -7337,9 +7566,9 @@ handle_os_update_apply() {
 # GET /system/os-update/status — Poll background OS update progress
 handle_os_update_status() {
     local status_file="$API_AUTH_DIR/os-update-status.json"
-    if [[ -f "$status_file" ]]; then
-        local content
-        content=$(cat "$status_file" 2>/dev/null)
+    local content=""
+    [[ -f "$status_file" ]] && content=$(cat "$status_file" 2>/dev/null)
+    if [[ -n "$content" ]] && jq -e . <<< "$content" >/dev/null 2>&1; then
         _api_success "$content"
     else
         _api_success "{\"status\":\"idle\"}"
@@ -7355,6 +7584,7 @@ handle_os_update_status() {
 DDNS_ENABLED="${DDNS_ENABLED:-false}"
 DDNS_INTERVAL="${DDNS_INTERVAL:-300}"
 DDNS_PID_FILE="${BASE_DIR}/.data/ddns.pid"
+DDNS_IP_FILE="${BASE_DIR}/.data/ddns-current-ip"
 
 _ddns_get_public_ip() {
     # Try multiple providers — use plain IPv4 services to avoid Cloudflare proxy IPs
@@ -7386,22 +7616,32 @@ _ddns_update_loop() {
         cz=$(sed -n '2p' "$zone_cache" 2>/dev/null)
         [[ "$cd" == "$domain" && -n "$cz" ]] && zone_id="$cz"
     fi
-    if [[ -z "$zone_id" ]]; then
+    # Zone lookup with retries — a transient API failure at boot must not
+    # silently disable DDNS until the next restart
+    while [[ -z "$zone_id" ]]; do
         local zr
         zr=$(curl -s --max-time 10 -H "Authorization: Bearer $cf_token" "$cf_api/zones?name=$domain&status=active" 2>/dev/null)
         zone_id=$(printf '%s' "$zr" | jq -r '.result[0].id // empty' 2>/dev/null)
-        [[ -z "$zone_id" ]] && return
+        if [[ -z "$zone_id" ]]; then
+            printf '[%s] DDNS: could not resolve Cloudflare zone for %s (%s) — retrying in %ss\n' "$(date -Iseconds)" "$domain" \
+                "$(printf '%s' "$zr" | jq -r '.errors[0].message // "no response"' 2>/dev/null)" "$interval" >> "$log_file"
+            sleep "$interval"
+            continue
+        fi
         printf '%s\n%s\n' "$domain" "$zone_id" > "$zone_cache" 2>/dev/null
-    fi
+    done
 
     printf '[%s] DDNS started — domain=%s interval=%ss\n' "$(date -Iseconds)" "$domain" "$interval" >> "$log_file"
 
     while true; do
         local current_ip
         current_ip=$(_ddns_get_public_ip)
+        [[ -n "$current_ip" ]] && printf '%s\n' "$current_ip" > "$DDNS_IP_FILE" 2>/dev/null
 
         if [[ -n "$current_ip" && "$current_ip" != "$last_ip" ]]; then
-            # IP changed — update records
+            # IP changed — update records; last_ip only advances when every
+            # record update succeeded, so failures are retried next cycle
+            local all_ok=true
             IFS=',' read -ra subs <<< "$subdomains"
             for sub in "${subs[@]}"; do
                 sub=$(echo "$sub" | tr -d ' ')
@@ -7430,27 +7670,37 @@ _ddns_update_loop() {
                 local record_ip
                 record_ip=$(printf '%s' "$all_records" | jq -r '[.result[] | select(.type=="A")][0].content // empty' 2>/dev/null)
 
+                local cf_resp
                 if [[ -n "$record_id" ]]; then
                     # Only update if IP actually differs
                     if [[ "$record_ip" != "$current_ip" ]]; then
-                        curl -s --max-time 10 -X PATCH \
+                        cf_resp=$(curl -s --max-time 10 -X PATCH \
                             -H "Authorization: Bearer $cf_token" \
                             -H "Content-Type: application/json" \
                             -d "{\"content\":\"$current_ip\"}" \
-                            "$cf_api/zones/$zone_id/dns_records/$record_id" >/dev/null 2>&1
+                            "$cf_api/zones/$zone_id/dns_records/$record_id" 2>/dev/null)
+                    else
+                        cf_resp='{"success":true}'
                     fi
                 else
                     # Create new A record (no existing A or CNAME)
-                    curl -s --max-time 10 -X POST \
+                    cf_resp=$(curl -s --max-time 10 -X POST \
                         -H "Authorization: Bearer $cf_token" \
                         -H "Content-Type: application/json" \
                         -d "{\"type\":\"A\",\"name\":\"$fqdn\",\"content\":\"$current_ip\",\"proxied\":true,\"ttl\":1,\"comment\":\"DCS DDNS\"}" \
-                        "$cf_api/zones/$zone_id/dns_records" >/dev/null 2>&1
+                        "$cf_api/zones/$zone_id/dns_records" 2>/dev/null)
+                fi
+                if [[ "$(printf '%s' "$cf_resp" | jq -r '.success // false' 2>/dev/null)" != "true" ]]; then
+                    all_ok=false
+                    printf '[%s] DDNS: failed to update %s → %s (%s)\n' "$(date -Iseconds)" "$fqdn" "$current_ip" \
+                        "$(printf '%s' "$cf_resp" | jq -r '.errors[0].message // "no response"' 2>/dev/null)" >> "$log_file"
                 fi
             done
 
-            printf '[%s] IP updated: %s → %s (%s)\n' "$(date -Iseconds)" "${last_ip:-none}" "$current_ip" "$subdomains" >> "$log_file"
-            last_ip="$current_ip"
+            if [[ "$all_ok" == "true" ]]; then
+                printf '[%s] IP updated: %s → %s (%s)\n' "$(date -Iseconds)" "${last_ip:-none}" "$current_ip" "$subdomains" >> "$log_file"
+                last_ip="$current_ip"
+            fi
         fi
 
         # On IP change, also scan custom_routes for subdomains that need DNS records.
@@ -7502,8 +7752,10 @@ _ddns_update_loop() {
 # GET /ddns/status — Check DDNS status and current IP
 handle_ddns_status() {
     local enabled="$DDNS_ENABLED"
+    # The loop caches the last public IP it saw; a status poll must not make
+    # four outbound HTTP requests of its own
     local current_ip=""
-    current_ip=$(_ddns_get_public_ip 2>/dev/null)
+    [[ -f "$DDNS_IP_FILE" ]] && current_ip=$(head -c 64 "$DDNS_IP_FILE" 2>/dev/null | tr -d '[:space:]')
     local last_log=""
     last_log=$(tail -1 "$BASE_DIR/.api-auth/ddns.log" 2>/dev/null || echo "")
     local running="false"
@@ -7526,6 +7778,7 @@ handle_ddns_status() {
 # SYSTEM METRICS SNAPSHOT
 # =============================================================================
 
+# GET /system/metrics — CPU load, memory and per-mount disk usage
 handle_system_metrics() {
     local cpu_count load1 load5 load15
     cpu_count=$(nproc 2>/dev/null || echo 0)
@@ -7582,6 +7835,7 @@ handle_system_metrics() {
 METRICS_HISTORY_FILE="$BASE_DIR/.api-auth/metrics-history.jsonl"
 METRICS_MAX_ENTRIES=10080
 
+# POST /metrics/snapshot — Record a metrics sample now
 handle_metrics_snapshot() {
     # Capture current CPU/memory/disk and append to JSONL history
     local ts
@@ -7610,11 +7864,11 @@ handle_metrics_snapshot() {
     local mem_pct=0
     [[ $mem_total -gt 0 ]] && mem_pct=$(awk "BEGIN { printf \"%.1f\", ($mem_used / $mem_total) * 100 }")
 
-    # Disk: /home with fallback to /
+    # Disk: the filesystem that holds this installation
     local disk_pct="0"
     local disk_line
-    disk_line=$(df -h /home 2>/dev/null | tail -1)
-    [[ -z "$disk_line" ]] && disk_line=$(df -h / 2>/dev/null | tail -1)
+    disk_line=$(df -hP "$BASE_DIR" 2>/dev/null | tail -1)
+    [[ -z "$disk_line" ]] && disk_line=$(df -hP / 2>/dev/null | tail -1)
     if [[ -n "$disk_line" ]]; then
         disk_pct=$(echo "$disk_line" | awk '{print $5}' | tr -d '%')
     fi
@@ -7635,6 +7889,7 @@ handle_metrics_snapshot() {
     _api_success "{\"success\": true, \"timestamp\": \"$ts\", \"cpu_pct\": $cpu_pct, \"mem_pct\": $mem_pct, \"disk_pct\": $disk_pct}"
 }
 
+# GET /metrics/trends — Metrics samples for a range (range=1h|6h|24h|7d)
 handle_metrics_trends() {
     local range="${QUERY_PARAMS[range]:-1h}"
     local now
@@ -7646,7 +7901,7 @@ handle_metrics_trends() {
         6h)  cutoff=$((now - 21600)) ;;
         24h) cutoff=$((now - 86400)) ;;
         7d)  cutoff=$((now - 604800)) ;;
-        *)   cutoff=$((now - 3600)) ;;
+        *)   range="1h"; cutoff=$((now - 3600)) ;;
     esac
 
     if [[ ! -f "$METRICS_HISTORY_FILE" ]]; then
@@ -7656,9 +7911,9 @@ handle_metrics_trends() {
 
     # Single jq --slurp pass on JSONL — 100x faster than bash loop + sed per line
     local result
-    result=$(jq -sc --argjson cutoff "$cutoff" '
+    result=$(jq -sc --argjson cutoff "$cutoff" --arg range "$range" '
         [.[] | select(.epoch >= $cutoff)]
-        | {range: "'"$range"'", points: ., count: length}
+        | {range: $range, points: ., count: length}
     ' "$METRICS_HISTORY_FILE" 2>/dev/null)
 
     if [[ -n "$result" ]]; then
@@ -7680,7 +7935,7 @@ UPDATE_HISTORY_FILE="$BASE_DIR/.api-auth/update-history.json"
 _get_remote_digest() {
     local image="$1"
     local registry="registry-1.docker.io"
-    local repo="" tag="" token_url="" token=""
+    local repo="" tag="" token=""
 
     # Parse image reference into registry/repo:tag
     if [[ "$image" == *"/"*"/"* ]]; then
@@ -7740,6 +7995,7 @@ _get_remote_digest() {
     printf '%s' "$digest"
 }
 
+# GET /images/check-updates — Image staleness from age plus the cached registry check
 handle_images_check_updates_get() {
     # Quick local-only check: image age + cached registry results
     local -a entries=()
@@ -7753,20 +8009,26 @@ handle_images_check_updates_get() {
         done < <(jq -r 'to_entries[] | "\(.key)=\(.value)"' "$cache_file" 2>/dev/null)
     fi
 
-    while IFS=$'\t' read -r repo tag id size; do
+    # One pass over all containers: image -> "name1,name2" and image -> stack
+    local -A image_containers=() image_stack=()
+    while IFS=$'\t' read -r _img _cname _proj; do
+        [[ -z "$_img" || -z "$_cname" ]] && continue
+        image_containers["$_img"]+="${image_containers[$_img]:+,}$_cname"
+        [[ -z "${image_stack[$_img]:-}" && -n "$_proj" ]] && image_stack["$_img"]="$_proj"
+    done < <(timeout 10 docker ps -a --format '{{.Image}}\t{{.Names}}\t{{.Label "com.docker.compose.project"}}' 2>/dev/null)
+
+    local now_epoch
+    now_epoch=$(date +%s)
+    while IFS=$'\t' read -r repo tag id size created_ts; do
         [[ -z "$repo" || "$repo" == "<none>" ]] && continue
         [[ "$tag" == "<none>" ]] && continue
 
         local full_image="${repo}:${tag}"
         local age_days=0
-        local created_ts
-        created_ts=$(docker inspect --format '{{.Created}}' "$full_image" 2>/dev/null | head -1)
         if [[ -n "$created_ts" ]]; then
             local created_epoch
             created_epoch=$(date -d "$created_ts" +%s 2>/dev/null || echo 0)
-            local now_epoch
-            now_epoch=$(date +%s)
-            age_days=$(( (now_epoch - created_epoch) / 86400 ))
+            (( created_epoch > 0 )) && age_days=$(( (now_epoch - created_epoch) / 86400 ))
         fi
 
         # Staleness: start with age-based, then override with registry results
@@ -7785,21 +8047,13 @@ handle_images_check_updates_get() {
             fi
         fi
 
-        # Find containers using this image
-        local containers
-        containers=$(docker ps -a --filter "ancestor=$full_image" --format '{{.Names}}' 2>/dev/null | tr '\n' ',' | sed 's/,$//')
-
-        # Determine stack
-        local stack=""
-        if [[ -n "$containers" ]]; then
-            local first_container="${containers%%,*}"
-            local labels
-            labels=$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}' "$first_container" 2>/dev/null)
-            [[ -n "$labels" && "$labels" != "<no value>" ]] && stack="$labels"
-        fi
+        # Containers using this image and the stack they belong to (from the map above)
+        local containers="${image_containers[$full_image]:-}"
+        local stack="${image_stack[$full_image]:-}"
+        [[ "$stack" == "<no value>" ]] && stack=""
 
         entries+=("{\"image\": \"$(_api_json_escape "$full_image")\", \"repository\": \"$(_api_json_escape "$repo")\", \"tag\": \"$(_api_json_escape "$tag")\", \"age_days\": $age_days, \"staleness\": \"$staleness\", \"update_available\": $update_available, \"containers\": \"$(_api_json_escape "$containers")\", \"stack\": \"$(_api_json_escape "$stack")\", \"size\": \"$(_api_json_escape "$size")\"}")
-    done < <(docker images --format "{{.Repository}}\t{{.Tag}}\t{{.ID}}\t{{.Size}}" 2>/dev/null)
+    done < <(docker images --format "{{.Repository}}\t{{.Tag}}\t{{.ID}}\t{{.Size}}\t{{.CreatedAt}}" 2>/dev/null)
 
     local json
     json=$(printf '%s,' "${entries[@]}")
@@ -7819,6 +8073,7 @@ handle_images_check_updates_get() {
     _api_success "{\"images\": $json, \"total\": ${#entries[@]}, \"stale\": $stale_count, \"aging\": $aging_count, \"current\": $current_count, \"updates_available\": $updates_count}"
 }
 
+# POST /images/check-updates — Compare local image digests with their registries (slow)
 handle_images_check_updates_post() {
     # Registry digest check: compares local RepoDigests vs remote manifest digest.
     # No image pulling — uses HEAD requests to registry APIs. Fast and bandwidth-free.
@@ -7860,8 +8115,8 @@ handle_images_check_updates_post() {
 
         entries+=("{\"image\": \"$(_api_json_escape "$full_image")\", \"local_digest\": \"$(_api_json_escape "${local_digest:0:19}")\", \"remote_digest\": \"$(_api_json_escape "${remote_digest:0:19}")\", \"update_available\": $update_available, \"status\": \"$status\"}")
 
-        # Brief delay to avoid rate limiting
-        sleep 0.3
+        # Brief delay to avoid registry rate limiting
+        sleep 0.1
     done < <(docker images --format "{{.Repository}}\t{{.Tag}}\t{{.ID}}\t{{.Size}}" 2>/dev/null)
 
     # Cache results for the GET endpoint
@@ -7883,6 +8138,7 @@ handle_images_check_updates_post() {
     _api_success "{\"images\": $json, \"total\": ${#entries[@]}, \"updates_available\": $updates_available, \"checked_at\": \"$(date -u '+%Y-%m-%dT%H:%M:%SZ')\"}"
 }
 
+# POST /images/{image}/update — Pull an image and recreate the Compose services that use it
 handle_image_update() {
     local image_name="$1"
 
@@ -7899,17 +8155,20 @@ handle_image_update() {
         _api_error 400 "Image name is required"
         return
     fi
+    _api_validate_image_ref "$image_name" || return
 
     # Pull the new image
     local pull_output
-    pull_output=$(docker pull "$image_name" 2>&1) || {
-        _api_error 500 "Failed to pull image: $(_api_json_escape "$pull_output")"
+    pull_output=$(timeout 600 docker pull "$image_name" 2>&1) || {
+        _api_error 500 "Failed to pull image: $pull_output"
         return
     }
 
     # Find containers using this image and recreate them with the new image
-    # docker restart alone does NOT use the newly pulled image — must recreate
-    local -a restarted=()
+    # docker restart alone does NOT use the newly pulled image — must recreate.
+    # Containers that are not Compose-managed are left alone and reported:
+    # without a compose file they cannot be recreated with their settings.
+    local -a restarted=() skipped=()
     local containers
     containers=$(docker ps -q --filter "ancestor=$image_name" 2>/dev/null)
     for cid in $containers; do
@@ -7927,32 +8186,34 @@ handle_image_update() {
 
         if [[ -n "$svc_name" && -n "$compose_project" && -f "$compose_project/docker-compose.yml" ]]; then
             # Recreate via docker compose — picks up the new image properly
-            local -a _env_args=()
-            [[ -f "$compose_project/.env" ]] && _env_args=(--env-file "$compose_project/.env")
-            $DOCKER_COMPOSE_CMD -f "$compose_project/docker-compose.yml" "${_env_args[@]}" up -d --force-recreate --no-deps "$svc_name" >/dev/null 2>&1
+            local _env_file=""
+            [[ -f "$compose_project/.env" ]] && _env_file="$compose_project/.env"
+            _compose_with_secrets "$compose_project/docker-compose.yml" "$_env_file" up -d --force-recreate --no-deps "$svc_name" >/dev/null 2>&1
+            restarted+=("\"$(_api_json_escape "$cname")\"")
         else
-            # Non-compose container: stop + rm (can't recreate without compose config)
-            docker stop "$cid" >/dev/null 2>&1
-            docker rm "$cid" >/dev/null 2>&1
+            skipped+=("\"$(_api_json_escape "$cname")\"")
         fi
-        restarted+=("\"$(_api_json_escape "$cname")\"")
     done
 
-    local restarted_json
+    local restarted_json skipped_json
     restarted_json=$(printf '%s,' "${restarted[@]}")
     restarted_json="[${restarted_json%,}]"
     [[ ${#restarted[@]} -eq 0 ]] && restarted_json="[]"
+    skipped_json=$(printf '%s,' "${skipped[@]}")
+    skipped_json="[${skipped_json%,}]"
+    [[ ${#skipped[@]} -eq 0 ]] && skipped_json="[]"
 
     # Log update
     local ts
     ts=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
     [[ ! -f "$UPDATE_HISTORY_FILE" ]] && echo "[]" > "$UPDATE_HISTORY_FILE"
-    local history_entry="{\"image\": \"$(_api_json_escape "$image_name")\", \"timestamp\": \"$ts\", \"containers_restarted\": $restarted_json}"
+    local history_entry
+    history_entry="{\"image\": \"$(_api_json_escape "$image_name")\", \"timestamp\": \"$ts\", \"containers_restarted\": $restarted_json}"
     if command -v jq >/dev/null 2>&1; then
         jq --argjson entry "$history_entry" '. + [$entry] | .[-100:]' "$UPDATE_HISTORY_FILE" > "${UPDATE_HISTORY_FILE}.tmp" 2>/dev/null && mv "${UPDATE_HISTORY_FILE}.tmp" "$UPDATE_HISTORY_FILE"
     fi
 
-    _api_success "{\"success\": true, \"image\": \"$(_api_json_escape "$image_name")\", \"containers_restarted\": $restarted_json, \"timestamp\": \"$ts\"}"
+    _api_success "{\"success\": true, \"image\": \"$(_api_json_escape "$image_name")\", \"containers_restarted\": $restarted_json, \"containers_skipped\": $skipped_json, \"timestamp\": \"$ts\"}"
 }
 
 # =============================================================================
@@ -7967,6 +8228,7 @@ _init_notifications_file() {
     fi
 }
 
+# GET /notifications/rules — NTFY notification rules
 handle_notification_rules_get() {
     _init_notifications_file
     if command -v jq >/dev/null 2>&1; then
@@ -7978,6 +8240,7 @@ handle_notification_rules_get() {
     fi
 }
 
+# POST /notifications/rules — Create or update a notification rule
 handle_notification_rules_create() {
     local body="$1"
     _init_notifications_file
@@ -7992,8 +8255,9 @@ handle_notification_rules_create() {
     trigger=$(printf '%s' "$body" | jq -r '.trigger // empty' 2>/dev/null)
     target=$(printf '%s' "$body" | jq -r '.target // "*"' 2>/dev/null)
     priority=$(printf '%s' "$body" | jq -r '.priority // "default"' 2>/dev/null)
-    tags=$(printf '%s' "$body" | jq -c '.tags // []' 2>/dev/null)
-    enabled=$(printf '%s' "$body" | jq -r '.enabled // true' 2>/dev/null)
+    tags=$(printf '%s' "$body" | jq -c '.tags // [] | if type == "array" then . else [] end' 2>/dev/null)
+    # `// true` would turn false into true — test for null explicitly
+    enabled=$(printf '%s' "$body" | jq -r 'if .enabled == null then true else .enabled end' 2>/dev/null)
     title_template=$(printf '%s' "$body" | jq -r '.title_template // empty' 2>/dev/null)
     message_template=$(printf '%s' "$body" | jq -r '.message_template // empty' 2>/dev/null)
 
@@ -8001,12 +8265,16 @@ handle_notification_rules_create() {
         _api_error 400 "Missing required fields: name, trigger"
         return
     fi
+    if [[ "$enabled" != "true" && "$enabled" != "false" ]]; then
+        _api_error 400 "enabled must be true or false"
+        return
+    fi
 
     # If updating an existing rule (same id passed), remove old one first
     local existing_id
     existing_id=$(printf '%s' "$body" | jq -r '.id // empty' 2>/dev/null)
     if [[ -n "$existing_id" ]]; then
-        jq --arg id "$existing_id" '.rules = [.rules[] | select(.id != $id)]' "$NOTIFICATIONS_FILE" > "${NOTIFICATIONS_FILE}.tmp" 2>/dev/null && mv "${NOTIFICATIONS_FILE}.tmp" "$NOTIFICATIONS_FILE"
+        _api_jq_update_file "$NOTIFICATIONS_FILE" --arg id "$existing_id" '.rules = [.rules[] | select(.id != $id)]'
     fi
 
     local rule_id="${existing_id:-rule_$(date +%s)_$RANDOM}"
@@ -8027,11 +8295,15 @@ handle_notification_rules_create() {
         --arg created_at "$ts" \
         '{id: $id, name: $name, enabled: $enabled, trigger: $trigger, target: $target, priority: $priority, tags: $tags, title_template: $title_template, message_template: $message_template, created_at: $created_at}')
 
-    jq --argjson rule "$rule" '.rules += [$rule]' "$NOTIFICATIONS_FILE" > "${NOTIFICATIONS_FILE}.tmp" 2>/dev/null && mv "${NOTIFICATIONS_FILE}.tmp" "$NOTIFICATIONS_FILE"
+    if ! _api_jq_update_file "$NOTIFICATIONS_FILE" --argjson rule "$rule" '.rules += [$rule]'; then
+        _api_error 500 "Failed to save notification rule"
+        return
+    fi
 
     _api_success "$rule"
 }
 
+# DELETE /notifications/rules/{id} — Delete a notification rule
 handle_notification_rules_delete() {
     local rule_id="$1"
     _init_notifications_file
@@ -8041,11 +8313,12 @@ handle_notification_rules_delete() {
         return
     fi
 
-    jq --arg id "$rule_id" '.rules = [.rules[] | select(.id != $id)]' "$NOTIFICATIONS_FILE" > "${NOTIFICATIONS_FILE}.tmp" 2>/dev/null && mv "${NOTIFICATIONS_FILE}.tmp" "$NOTIFICATIONS_FILE"
+    _api_jq_update_file "$NOTIFICATIONS_FILE" --arg id "$rule_id" '.rules = [.rules[] | select(.id != $id)]'
 
     _api_success "{\"success\": true, \"deleted\": \"$(_api_json_escape "$rule_id")\"}"
 }
 
+# GET /notifications/history — Recently sent notifications
 handle_notification_history() {
     _init_notifications_file
     if command -v jq >/dev/null 2>&1; then
@@ -8123,22 +8396,23 @@ _fire_notifications() {
                 -d "$message" \
                 "$ntfy_url" 2>&1)
 
-            # Log to history
+            # Log to history (locked: several rules may fire at once)
+            [[ "$_result" =~ ^[0-9]+$ ]] || _result=0
             local _ts
             _ts=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
             local _entry
             _entry=$(jq -n \
                 --arg ts "$_ts" --arg type "$event" --arg title "$title" \
                 --arg message "$message" --arg priority "$priority" \
-                --argjson code "${_result:-0}" \
+                --argjson code "$((10#$_result))" \
                 '{timestamp: $ts, type: $type, title: $title, message: $message, priority: $priority, status_code: $code}')
-            jq --argjson entry "$_entry" '.history = (.history + [$entry]) | .history = .history[-100:]' \
-                "$NOTIFICATIONS_FILE" > "${NOTIFICATIONS_FILE}.tmp" 2>/dev/null && \
-                mv "${NOTIFICATIONS_FILE}.tmp" "$NOTIFICATIONS_FILE"
-        ) &
+            _api_jq_update_file "$NOTIFICATIONS_FILE" --argjson entry "$_entry" \
+                '.history = (.history + [$entry]) | .history = .history[-100:]'
+        ) </dev/null >/dev/null 2>&1 &
     done < <(printf '%s' "$rules_json" | jq -c '.[]')
 }
 
+# POST /notifications/test — Send a test NTFY notification
 handle_notification_test() {
     local body="$1"
     local ntfy_url="${NTFY_URL:-}"
@@ -8167,10 +8441,11 @@ handle_notification_test() {
 
     # Log to history
     _init_notifications_file
-    if command -v jq >/dev/null 2>&1; then
-        local entry="{\"timestamp\": \"$ts\", \"type\": \"test\", \"title\": \"$(_api_json_escape "$title")\", \"priority\": \"$priority\", \"status_code\": $result}"
-        jq --argjson entry "$entry" '.history = (.history + [$entry]) | .history = .history[-100:]' "$NOTIFICATIONS_FILE" > "${NOTIFICATIONS_FILE}.tmp" 2>/dev/null && mv "${NOTIFICATIONS_FILE}.tmp" "$NOTIFICATIONS_FILE"
-    fi
+    [[ "$result" =~ ^[0-9]+$ ]] || result=0
+    local entry
+    entry=$(jq -n --arg ts "$ts" --arg title "$title" --arg priority "$priority" --argjson code "$((10#$result))" \
+        '{timestamp: $ts, type: "test", title: $title, priority: $priority, status_code: $code}')
+    _api_jq_update_file "$NOTIFICATIONS_FILE" --argjson entry "$entry" '.history = (.history + [$entry]) | .history = .history[-100:]'
 
     if [[ "$result" == "200" ]]; then
         _api_success "{\"success\": true, \"message\": \"Test notification sent\", \"status_code\": $result, \"timestamp\": \"$ts\"}"
@@ -8185,6 +8460,17 @@ handle_notification_test() {
 
 SNAPSHOTS_DIR="$BASE_DIR/.snapshots"
 
+# Snapshot file names are generated by handle_snapshot_create; only those may
+# be downloaded, restored or deleted.
+_api_validate_snapshot_name() {
+    if [[ ! "$1" =~ ^dcs-snapshot-[0-9]{8}-[0-9]{6}\.tar\.gz$ ]]; then
+        _api_error 400 "Invalid snapshot name"
+        return 1
+    fi
+    return 0
+}
+
+# GET /snapshots — Configuration snapshots
 handle_snapshots_list() {
     [[ ! -d "$SNAPSHOTS_DIR" ]] && mkdir -p "$SNAPSHOTS_DIR"
 
@@ -8200,10 +8486,11 @@ handle_snapshots_list() {
         local fiso
         fiso=$(date -u -d "@$fdate" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || echo "")
 
-        # Read label from manifest if exists
+        # Read label from manifest if exists (archives are created with -C dir .,
+        # so the member is ./manifest.json)
         local label=""
         local manifest
-        manifest=$(tar -xzf "$f" manifest.json -O 2>/dev/null)
+        manifest=$(tar -xzOf "$f" ./manifest.json 2>/dev/null || tar -xzOf "$f" manifest.json 2>/dev/null)
         if [[ -n "$manifest" ]] && command -v jq >/dev/null 2>&1; then
             label=$(printf '%s' "$manifest" | jq -r '.label // ""' 2>/dev/null)
         fi
@@ -8219,6 +8506,7 @@ handle_snapshots_list() {
     _api_success "{\"snapshots\": $json, \"total\": ${#entries[@]}}"
 }
 
+# POST /snapshots/create — Create a configuration snapshot (compose files, .env files, templates)
 handle_snapshot_create() {
     local body="$1"
     [[ ! -d "$SNAPSHOTS_DIR" ]] && mkdir -p "$SNAPSHOTS_DIR"
@@ -8232,13 +8520,18 @@ handle_snapshot_create() {
     ts=$(date '+%Y%m%d-%H%M%S')
     local filename="dcs-snapshot-${ts}.tar.gz"
     local tmpdir
-    tmpdir=$(mktemp -d /tmp/dcs-snapshot-XXXXXX)
+    # Snapshots contain .env files: keep the staging area and archive private
+    umask 077
+    if ! tmpdir=$(mktemp -d /tmp/dcs-snapshot-XXXXXX 2>/dev/null) || [[ -z "$tmpdir" ]]; then
+        _api_error 500 "Could not create a temporary directory"
+        return
+    fi
 
     # Create manifest
     local hostname_val
     hostname_val=$(hostname 2>/dev/null || echo "unknown")
     cat > "$tmpdir/manifest.json" <<MANIFESTEOF
-{"version": "1.0", "label": "$(_api_json_escape "$label")", "created_at": "$(date -u '+%Y-%m-%dT%H:%M:%SZ')", "hostname": "$hostname_val", "dcs_version": "${SCRIPT_VERSION:-2.0.0}"}
+{"version": "1.0", "label": "$(_api_json_escape "$label")", "created_at": "$(date -u '+%Y-%m-%dT%H:%M:%SZ')", "hostname": "$hostname_val", "dcs_version": "${DCS_VERSION}"}
 MANIFESTEOF
 
     # Copy config files
@@ -8256,13 +8549,13 @@ MANIFESTEOF
         [[ -f "$stack_dir/.env" ]] && cp "$stack_dir/.env" "$tmpdir/stacks/$sname/" 2>/dev/null
     done
 
-    # Copy api-auth (excluding tokens)
-    for f in "$BASE_DIR/.api-auth/"*.json; do
-        [[ ! -f "$f" ]] && continue
-        local fname
-        fname=$(basename "$f")
-        [[ "$fname" == "tokens.json" ]] && continue
-        cp "$f" "$tmpdir/api-auth/" 2>/dev/null
+    # Copy api-auth: operational state only. Session tokens, invite codes,
+    # terminal sessions and rate-limit state never belong in a snapshot (an
+    # unused admin invite inside an archive is an admin account).
+    local -a _snap_auth_files=(alerts.json automations.json notifications.json deploy-history.json update-history.json users.json)
+    local _saf
+    for _saf in "${_snap_auth_files[@]}"; do
+        [[ -f "$BASE_DIR/.api-auth/$_saf" ]] && cp "$BASE_DIR/.api-auth/$_saf" "$tmpdir/api-auth/" 2>/dev/null
     done
 
     # Copy templates if they exist
@@ -8278,10 +8571,12 @@ MANIFESTEOF
     _api_success "{\"success\": true, \"filename\": \"$(_api_json_escape "$filename")\", \"label\": \"$(_api_json_escape "$label")\", \"size\": \"$fsize\", \"timestamp\": \"$(date -u '+%Y-%m-%dT%H:%M:%SZ')\"}"
 }
 
+# GET /snapshots/{snapshot}/download — Download a snapshot archive
 handle_snapshot_download() {
     local snap_id="$1"
     local filepath="$SNAPSHOTS_DIR/$snap_id"
 
+    _api_validate_snapshot_name "$snap_id" || return
     if [[ ! -f "$filepath" ]]; then
         _api_error 404 "Snapshot not found: $snap_id"
         return
@@ -8300,6 +8595,7 @@ handle_snapshot_download() {
     cat "$filepath"
 }
 
+# POST /snapshots/{snapshot}/restore — Restore a snapshot (confirmation required, policy-scanned)
 handle_snapshot_restore() {
     local snap_id="$1"
     local body="$2"
@@ -8307,6 +8603,7 @@ handle_snapshot_restore() {
 
     if ! _api_check_admin; then _api_error 403 "Admin access required"; return; fi
 
+    _api_validate_snapshot_name "$snap_id" || return
     if [[ ! -f "$filepath" ]]; then
         _api_error 404 "Snapshot not found: $snap_id"
         return
@@ -8322,20 +8619,32 @@ handle_snapshot_restore() {
         return
     fi
 
+    # List once (a `tar | grep -q` pipeline can be cut short by SIGPIPE under
+    # pipefail, which would make a match look like a pass)
+    local _listing
+    if ! _listing=$(tar -tvzf "$filepath" 2>/dev/null); then
+        _api_error 400 "Snapshot archive is corrupt or invalid"
+        return
+    fi
+
     # SECURITY: Check for path traversal in archive before extracting
-    if tar -tzf "$filepath" 2>/dev/null | grep -qE '^\.\./|/\.\./|^/'; then
+    if awk '{print $NF}' <<< "$_listing" | grep -qE '^\.\./|/\.\./|^/'; then
         _api_error 403 "Snapshot contains path traversal entries — refusing to extract"
         return
     fi
 
     # SECURITY: Check for symlinks (symlink-following traversal attack)
-    if tar -tvf "$filepath" 2>/dev/null | grep -q '^l'; then
+    if grep -q '^l' <<< "$_listing"; then
         _api_error 403 "Snapshot contains symbolic links — refusing to extract for security"
         return
     fi
 
     local tmpdir
-    tmpdir=$(mktemp -d /tmp/dcs-restore-XXXXXX)
+    umask 077
+    if ! tmpdir=$(mktemp -d /tmp/dcs-restore-XXXXXX 2>/dev/null) || [[ -z "$tmpdir" ]]; then
+        _api_error 500 "Could not create a temporary directory"
+        return
+    fi
     tar -xzf "$filepath" --no-absolute-names -C "$tmpdir" 2>/dev/null || {
         rm -rf "$tmpdir"
         _api_error 500 "Failed to extract snapshot"
@@ -8359,21 +8668,26 @@ handle_snapshot_restore() {
         cp "$tmpdir/root.env" "$BASE_DIR/.env.restored" 2>/dev/null
     fi
 
-    # Restore stacks (with compose security scanning)
+    # Restore stacks (with compose security scanning); rejected stacks are
+    # skipped entirely and reported, never half-restored
+    local -a _skipped=()
     if [[ -d "$tmpdir/stacks" ]]; then
         for stack_dir in "$tmpdir/stacks"/*/; do
             [[ ! -d "$stack_dir" ]] && continue
             local sname
             sname=$(basename "$stack_dir")
-            mkdir -p "$COMPOSE_DIR/$sname"
-            # SECURITY: Scan restored compose files through security scanner
+            [[ "$sname" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]] || { _skipped+=("\"$(_api_json_escape "$sname")\""); continue; }
             if [[ -f "$stack_dir/docker-compose.yml" ]]; then
-                local compose_content
+                local compose_content _scan_msg
                 compose_content=$(cat "$stack_dir/docker-compose.yml" 2>/dev/null)
-                if _api_scan_compose_security "$compose_content" "snapshot restore ($sname)" "deploy" 2>/dev/null; then
-                    cp "$stack_dir/docker-compose.yml" "$COMPOSE_DIR/$sname/" 2>/dev/null
+                if ! _scan_msg=$(_API_SCAN_QUIET=true _api_scan_compose_security "$compose_content" "snapshot restore ($sname)" "deploy"); then
+                    _skipped+=("\"$(_api_json_escape "$sname: $_scan_msg")\"")
+                    continue
                 fi
+                mkdir -p "$COMPOSE_DIR/$sname"
+                cp "$stack_dir/docker-compose.yml" "$COMPOSE_DIR/$sname/" 2>/dev/null
             fi
+            mkdir -p "$COMPOSE_DIR/$sname"
             [[ -f "$stack_dir/.env" ]] && cp "$stack_dir/.env" "$COMPOSE_DIR/$sname/" 2>/dev/null
         done
     fi
@@ -8400,15 +8714,22 @@ handle_snapshot_restore() {
 
     rm -rf "$tmpdir"
 
-    _api_success "{\"success\": true, \"message\": \"Snapshot restored successfully\", \"filename\": \"$(_api_json_escape "$snap_id")\"}"
+    local _skipped_json="[]"
+    if [[ ${#_skipped[@]} -gt 0 ]]; then
+        _skipped_json=$(printf '%s,' "${_skipped[@]}")
+        _skipped_json="[${_skipped_json%,}]"
+    fi
+    _api_success "{\"success\": true, \"message\": \"Snapshot restored successfully\", \"filename\": \"$(_api_json_escape "$snap_id")\", \"skipped_stacks\": $_skipped_json}"
 }
 
+# DELETE /snapshots/{snapshot} — Delete a snapshot
 handle_snapshot_delete() {
     local snap_id="$1"
     local filepath="$SNAPSHOTS_DIR/$snap_id"
 
     if ! _api_check_admin; then _api_error 403 "Admin access required"; return; fi
 
+    _api_validate_snapshot_name "$snap_id" || return
     if [[ ! -f "$filepath" ]]; then
         _api_error 404 "Snapshot not found: $snap_id"
         return
@@ -8424,6 +8745,7 @@ handle_snapshot_delete() {
 
 COMPOSE_HISTORY_DIR="$BASE_DIR/.compose-history"
 
+# GET /stacks/{stack}/compose/history — Saved versions of a stack's compose file
 handle_compose_history() {
     local stack="$1"
 
@@ -8451,6 +8773,7 @@ handle_compose_history() {
     fi
 }
 
+# POST /stacks/{stack}/compose/rollback — Restore a saved compose version
 handle_compose_rollback() {
     local stack="$1"
     local body="$2"
@@ -8471,6 +8794,10 @@ handle_compose_rollback() {
         _api_error 400 "Missing required field: version_id"
         return
     fi
+    if [[ ! "$version_id" =~ ^v_[0-9]{8}-[0-9]{6}(-[0-9]+)?$ ]]; then
+        _api_error 400 "Invalid version ID"
+        return
+    fi
 
     local history_dir="$COMPOSE_HISTORY_DIR/$stack"
     local version_file="$history_dir/${version_id}.yml"
@@ -8479,6 +8806,11 @@ handle_compose_rollback() {
         _api_error 404 "Version not found: $version_id"
         return
     fi
+
+    # The archived version goes through the same policy as a fresh edit
+    local _scan_mode="strict"
+    [[ -f "$COMPOSE_DIR/$stack/.dcs-trusted-templates" ]] && _scan_mode="deploy"
+    _api_scan_compose_security "$(cat "$version_file")" "rollback of $stack" "$_scan_mode" || return
 
     local compose_file="$COMPOSE_DIR/$stack/docker-compose.yml"
 
@@ -8504,8 +8836,8 @@ handle_compose_history_view() {
         return
     fi
 
-    # Validate version_id (prevent path traversal)
-    if [[ "$version_id" == *".."* ]] || [[ "$version_id" == *"/"* ]]; then
+    # Validate version_id (only ids _save_compose_version generates)
+    if [[ ! "$version_id" =~ ^v_[0-9]{8}-[0-9]{6}(-[0-9]+)?$ ]]; then
         _api_error 400 "Invalid version ID"
         return
     fi
@@ -8536,7 +8868,7 @@ _save_compose_version() {
 
     local ts
     ts=$(date '+%Y%m%d-%H%M%S')
-    local version_id="v_${ts}"
+    local version_id="v_${ts}-$$"
 
     # Copy compose file
     cp "$compose_file" "$history_dir/${version_id}.yml" 2>/dev/null
@@ -8554,6 +8886,8 @@ _save_compose_version() {
         local entry="{\"version_id\": \"$version_id\", \"timestamp\": \"$iso_ts\", \"size\": $size}"
         jq --argjson entry "$entry" '. + [$entry] | .[-50:]' "$history_file" > "${history_file}.tmp" 2>/dev/null && mv "${history_file}.tmp" "$history_file"
     fi
+    # Keep the on-disk copies in step with the 50-entry history
+    ls -1t "$history_dir"/v_*.yml 2>/dev/null | tail -n +51 | xargs -r rm -f
 }
 
 # =============================================================================
@@ -8602,6 +8936,7 @@ _record_deploy_event() {
     fi
 }
 
+# GET /templates/deploy-history — Template deploy and undeploy events
 handle_deploy_history() {
     _init_deploy_history
     if command -v jq >/dev/null 2>&1; then
@@ -8615,6 +8950,7 @@ handle_deploy_history() {
     fi
 }
 
+# GET /templates — Available templates
 handle_templates_list() {
     [[ ! -d "$TEMPLATES_DIR" ]] && mkdir -p "$TEMPLATES_DIR"
 
@@ -8642,6 +8978,7 @@ handle_templates_list() {
     _api_success "{\"templates\": $json, \"total\": ${#entries[@]}}"
 }
 
+# GET /templates/{template} — Template metadata, compose file and .env
 handle_template_detail() {
     local name="$1"
     local tdir="$TEMPLATES_DIR/$name"
@@ -8671,51 +9008,32 @@ handle_template_detail() {
 
 # GET /traefik/status — Check if Traefik is deployed and return domain
 handle_traefik_status() {
-    local traefik_active="false"
-    local traefik_domain=""
-    local traefik_routes_dir=""
+    local traefik_active="false" traefik_domain=""
 
-    # Find the Traefik custom_routes directory — only in the stack that runs Traefik
-    local _check_stack
-    for _check_stack in $(_api_get_stacks); do
-        local _check_appdata="${APP_DATA_DIR:-$COMPOSE_DIR/$_check_stack/App-Data}"
-        [[ "$_check_appdata" == ./* ]] && _check_appdata="$COMPOSE_DIR/$_check_stack/${_check_appdata#./}"
-        if [[ -d "$_check_appdata/Traefik/custom_routes" ]]; then
-            if grep -q 'container_name: Traefik\|image: traefik' "$COMPOSE_DIR/$_check_stack/docker-compose.yml" 2>/dev/null; then
+    # Traefik is active when a stack runs it and its custom_routes directory exists
+    if [[ -n "$(_find_traefik_routes_dir)" ]]; then
+        local _s
+        for _s in $(_api_get_stacks); do
+            if grep -q 'container_name: Traefik\|image: traefik' "$COMPOSE_DIR/$_s/docker-compose.yml" 2>/dev/null; then
                 traefik_active="true"
-                traefik_routes_dir="$_check_appdata/Traefik/custom_routes"
-                break
-            fi
-        fi
-    done
-
-    if [[ "$traefik_active" == "true" ]]; then
-        # Read TRAEFIK_DOMAIN from .env files
-        local _env_file
-        for _env_file in "$COMPOSE_DIR"/*/".env" "$BASE_DIR/.env"; do
-            [[ -f "$_env_file" ]] || continue
-            local _domain
-            _domain=$(grep -m1 '^TRAEFIK_DOMAIN=' "$_env_file" 2>/dev/null | cut -d'=' -f2- | tr -d '"' | tr -d "'")
-            if [[ -n "$_domain" ]]; then
-                traefik_domain="$_domain"
                 break
             fi
         done
-        # Fallback to PROXY_DOMAIN
-        if [[ -z "$traefik_domain" ]]; then
-            for _env_file in "$COMPOSE_DIR"/*/".env" "$BASE_DIR/.env"; do
-                [[ -f "$_env_file" ]] || continue
-                local _pdomain
-                _pdomain=$(grep -m1 '^PROXY_DOMAIN=' "$_env_file" 2>/dev/null | cut -d'=' -f2- | tr -d '"' | tr -d "'")
-                if [[ -n "$_pdomain" ]]; then
-                    traefik_domain="$_pdomain"
-                    break
-                fi
-            done
-        fi
     fi
+    [[ "$traefik_active" == "true" ]] && traefik_domain=$(_find_traefik_domain)
 
     _api_success "{\"active\": $traefik_active, \"domain\": \"$(_api_json_escape "$traefik_domain")\"}"
+}
+
+# A subdomain label chain such as "app" or "grafana.internal" — nothing that
+# could act as a sed/regex/JSON metacharacter
+_api_validate_subdomain() {
+    local s="$1"
+    if [[ -z "$s" || ${#s} -gt 200 || ! "$s" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$ ]]; then
+        _api_error 400 "Invalid subdomain (use lowercase letters, digits and hyphens)"
+        return 1
+    fi
+    return 0
 }
 
 # Helper: find Traefik custom_routes directory (shared by all route handlers)
@@ -8771,6 +9089,7 @@ _find_cf_token() {
 
 # GET /routes — List all Traefik routes with subdomains
 # Strategy: scan route YAML files first, then fall back to Traefik's runtime API
+# GET /routes — Traefik routes: subdomain, service, stack and target
 handle_routes() {
     local traefik_routes_dir
     traefik_routes_dir=$(_find_traefik_routes_dir)
@@ -8863,6 +9182,8 @@ handle_routes() {
 handle_routes_check() {
     local subdomain="${1:-}"
     [[ -z "$subdomain" ]] && { _api_error 400 "subdomain parameter required"; return; }
+    subdomain="${subdomain,,}"
+    _api_validate_subdomain "$subdomain" || return
 
     local traefik_routes_dir traefik_domain
     traefik_routes_dir=$(_find_traefik_routes_dir)
@@ -8876,7 +9197,7 @@ handle_routes_check() {
         # Search all route files for this subdomain
         while IFS= read -r route_file; do
             [[ -f "$route_file" ]] || continue
-            if grep -q "Host(\`${fqdn}\`)\|Host(\`${subdomain}\.${traefik_domain}\`)" "$route_file" 2>/dev/null; then
+            if grep -qF "Host(\`${fqdn}\`)" "$route_file" 2>/dev/null; then
                 available="false"
                 existing_service=$(basename "$route_file" .yml)
                 existing_stack=$(basename "$(dirname "$route_file")")
@@ -8930,13 +9251,17 @@ _cloudflare_delete_dns() {
 handle_route_update() {
     local stack="$1" service="$2" body="$3"
 
-    _api_check_admin || return
-    _api_validate_resource_name "$stack" "stack" || return
+    if ! _api_check_admin; then _api_error 403 "Admin access required"; return; fi
+    _api_validate_stack_name "$stack" || return
     _api_validate_resource_name "$service" "service" || return
 
     local new_subdomain
     new_subdomain=$(printf '%s' "$body" | jq -r '.subdomain // empty' 2>/dev/null)
     [[ -z "$new_subdomain" ]] && { _api_error 400 "subdomain is required"; return; }
+    new_subdomain="${new_subdomain,,}"
+    # The value is spliced into a sed script, a grep pattern and a Cloudflare
+    # request below — only a plain label chain is acceptable
+    _api_validate_subdomain "$new_subdomain" || return
 
     local traefik_routes_dir traefik_domain
     traefik_routes_dir=$(_find_traefik_routes_dir)
@@ -8949,7 +9274,7 @@ handle_route_update() {
     # Check if new subdomain conflicts with existing routes
     local new_fqdn="${new_subdomain}.${traefik_domain}"
     local conflict_file
-    conflict_file=$(grep -rl "Host(\`${new_fqdn}\`)" "$traefik_routes_dir" 2>/dev/null | grep -v "$route_file" | head -1)
+    conflict_file=$(grep -rlF "Host(\`${new_fqdn}\`)" "$traefik_routes_dir" 2>/dev/null | grep -vF "$route_file" | head -1)
     if [[ -n "$conflict_file" ]]; then
         local conflict_svc conflict_stack
         conflict_svc=$(basename "$conflict_file" .yml)
@@ -8973,8 +9298,9 @@ handle_route_update() {
     _cf_token=$(_find_cf_token)
 
     if [[ -n "$_cf_token" && -n "$old_fqdn" && "$old_fqdn" != "$new_fqdn" ]]; then
-        # Delete old DNS record in background
-        _cloudflare_delete_dns "${old_fqdn%%.*}" "$traefik_domain" "$_cf_token" &
+        # Delete old DNS record in background (keep the whole label chain so a
+        # nested subdomain never deletes a sibling record)
+        _cloudflare_delete_dns "${old_fqdn%."$traefik_domain"}" "$traefik_domain" "$_cf_token" </dev/null >/dev/null 2>&1 &
         # Create new DNS record in background
         (
             local cf_api="https://api.cloudflare.com/client/v4"
@@ -8990,13 +9316,13 @@ handle_route_update() {
             curl -s --max-time 15 -X POST \
                 -H "Authorization: Bearer $_cf_token" \
                 -H "Content-Type: application/json" \
-                -d "{\"type\":\"CNAME\",\"name\":\"${new_fqdn}\",\"content\":\"${traefik_domain}\",\"proxied\":true,\"ttl\":1,\"comment\":\"Auto-created by DCS\"}" \
+                -d "$(jq -n --arg name "$new_fqdn" --arg content "$traefik_domain" '{type:"CNAME",name:$name,content:$content,proxied:true,ttl:1,comment:"Auto-created by DCS"}')" \
                 "$cf_api/zones/$zone_id/dns_records" >/dev/null 2>&1
             printf '[%s] RENAMED %s → %s (route update)\n' "$(date -Iseconds)" "$old_fqdn" "$new_fqdn" >> "$BASE_DIR/.api-auth/cf-dns-audit.log" 2>/dev/null
-        ) &
+        ) </dev/null >/dev/null 2>&1 &
     fi
 
-    _api_audit_log "$REMOTE_ADDR" "ROUTE_UPDATE" "${_current_user:-system}" "Renamed ${old_fqdn} → ${new_fqdn}"
+    _api_audit_log "${CLIENT_IP:-unknown}" "ROUTE_UPDATE" "${AUTH_USERNAME:-unknown}" "Renamed ${old_fqdn} → ${new_fqdn}"
     _api_success "{\"success\": true, \"old_subdomain\": \"$(_api_json_escape "$old_fqdn")\", \"new_subdomain\": \"$(_api_json_escape "$new_fqdn")\", \"service\": \"$(_api_json_escape "$service")\", \"stack\": \"$(_api_json_escape "$stack")\"}"
 }
 
@@ -9004,8 +9330,8 @@ handle_route_update() {
 handle_route_delete() {
     local stack="$1" service="$2"
 
-    _api_check_admin || return
-    _api_validate_resource_name "$stack" "stack" || return
+    if ! _api_check_admin; then _api_error 403 "Admin access required"; return; fi
+    _api_validate_stack_name "$stack" || return
     _api_validate_resource_name "$service" "service" || return
 
     local traefik_routes_dir traefik_domain
@@ -9028,10 +9354,10 @@ handle_route_delete() {
     local _cf_token
     _cf_token=$(_find_cf_token)
     if [[ -n "$_cf_token" && -n "$fqdn" ]]; then
-        _cloudflare_delete_dns "${fqdn%%.*}" "$traefik_domain" "$_cf_token" &
+        _cloudflare_delete_dns "${fqdn%."$traefik_domain"}" "$traefik_domain" "$_cf_token" </dev/null >/dev/null 2>&1 &
     fi
 
-    _api_audit_log "$REMOTE_ADDR" "ROUTE_DELETE" "${_current_user:-system}" "Deleted route ${fqdn} (${stack}/${service})"
+    _api_audit_log "${CLIENT_IP:-unknown}" "ROUTE_DELETE" "${AUTH_USERNAME:-unknown}" "Deleted route ${fqdn} (${stack}/${service})"
     _api_success "{\"success\": true, \"deleted\": \"$(_api_json_escape "$fqdn")\", \"service\": \"$(_api_json_escape "$service")\", \"stack\": \"$(_api_json_escape "$stack")\"}"
 }
 
@@ -9123,6 +9449,7 @@ handle_homarr_status() {
     _api_success "{\"active\": $active, \"has_api_key\": $has_key, \"url\": \"$(_api_json_escape "$url")\"}"
 }
 
+# POST /templates/{template}/deploy — Deploy a template into a stack (merge, routes, DNS, optional start)
 handle_template_deploy() {
     local name="$1"
     local body="$2"
@@ -9149,6 +9476,14 @@ handle_template_deploy() {
     local meta="{}"
     if [[ -f "$tdir/template.json" ]]; then
         meta=$(jq -c '.' "$tdir/template.json" 2>/dev/null || echo "{}")
+    fi
+    # config_path is joined to App-Data and handed to rm -rf/rsync/chmod later:
+    # it must be a plain directory name
+    local _meta_config_path
+    _meta_config_path=$(printf '%s' "$meta" | jq -r '.config_path // empty' 2>/dev/null)
+    if [[ -n "$_meta_config_path" && ! "$_meta_config_path" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+        _api_error 400 "Template metadata has an invalid config_path: $_meta_config_path"
+        return
     fi
 
     # Accept target_stack from request body (required)
@@ -9271,9 +9606,11 @@ handle_template_deploy() {
         local safe_val
         safe_val=$(_sed_escape_val "$val")
         template_compose=$(printf '%s' "$template_compose" | sed "s/\${${key}:-[^}]*}/${safe_val}/g")
-        # Then replace simple ${VAR} and $VAR patterns
-        template_compose="${template_compose//\$\{$key\}/$val}"
-        template_compose="${template_compose//\$$key/$val}"
+        # Then replace simple ${VAR} and whole-word $VAR patterns. The
+        # replacement is quoted so `&` in a value stays literal (bash 5.2+
+        # patsub_replacement), and bare $KEY never rewrites $KEY_SUFFIX.
+        template_compose="${template_compose//\$\{$key\}/"$val"}"
+        template_compose=$(printf '%s' "$template_compose" | sed -E "s/\\\$${key}([^A-Za-z0-9_]|\$)/${safe_val}\\1/g")
     done <<< "$vars"
 
     # Resolve remaining ${VAR:-default} patterns to their default values
@@ -9330,13 +9667,12 @@ handle_template_deploy() {
     local _scan_compose="$template_compose"
     local _allow_privileged
     _allow_privileged=$(printf '%s' "$body" | jq -r '.allow_privileged // false' 2>/dev/null)
-    # Auto-allow privileged for built-in templates (they live in our .templates/ dir)
-    if [[ -d "$TEMPLATES_DIR/$name" ]]; then
-        _allow_privileged="true"
-    fi
-    if [[ "$_allow_privileged" == "true" ]]; then
+    # Privileged mode is waved through only when the admin caller explicitly
+    # asked for it AND the resolved compose actually uses it (the UI sends the
+    # flag for the templates that need it, e.g. Pelican Wings).
+    if [[ "$_allow_privileged" == "true" ]] && printf '%s' "${template_compose,,}" | grep -qE '^\s+privileged:\s'; then
         _scan_compose=$(printf '%s' "$template_compose" | sed '/^\s*privileged:\s*/d')
-        _api_audit_log "${SOCAT_PEERADDR:-unknown}" "DEPLOY_PRIVILEGED" "${AUTH_USERNAME:-anonymous}" "Privileged mode approved for template: $name"
+        _api_audit_log "${CLIENT_IP:-unknown}" "DEPLOY_PRIVILEGED" "${AUTH_USERNAME:-anonymous}" "Privileged mode approved for template: $name"
     fi
     if ! _api_scan_compose_security "$_scan_compose" "template deploy ($name)" "deploy"; then
         return
@@ -9412,6 +9748,23 @@ handle_template_deploy() {
     local _add_homarr
     _add_homarr=$(printf '%s' "$body" | jq -r '.add_to_homarr // false' 2>/dev/null)
 
+    _run_plugin_hooks "pre-deploy" "{\"stack\":\"$target_stack\",\"template\":\"$name\"}"
+
+    # Back up the existing compose file before anything modifies it — the
+    # replace path and the conflict checks below can both bail out afterwards
+    local timestamp
+    timestamp=$(date +%Y%m%d%H%M%S)
+    cp "$target_dir/docker-compose.yml" "$target_dir/docker-compose.yml.bak.${timestamp}"
+
+    # B3: Rotate backups — keep only the 5 most recent
+    local -a old_backups=()
+    while IFS= read -r f; do
+        old_backups+=("$f")
+    done < <(ls -1t "$target_dir"/docker-compose.yml.bak.* 2>/dev/null | tail -n +6)
+    for f in "${old_backups[@]}"; do
+        rm -f "$f"
+    done
+
     if [[ -n "$conflicts" ]]; then
         if [[ "$replace_services" != "true" ]]; then
             _api_error 409 "Service name conflict in target stack: $conflicts"
@@ -9476,6 +9829,7 @@ handle_template_deploy() {
                 fi
             done <<< "$tpl_ports"
             if [[ -n "$port_conflicts" ]]; then
+                cp "$target_dir/docker-compose.yml.bak.${timestamp}" "$target_dir/docker-compose.yml"
                 _api_error 409 "Host port conflict with existing services in ${target_stack}: ${port_conflicts}"
                 return
             fi
@@ -9495,26 +9849,13 @@ handle_template_deploy() {
                     fi
                 done <<< "$tpl_ports"
                 if [[ -n "$system_conflicts" ]]; then
+                    cp "$target_dir/docker-compose.yml.bak.${timestamp}" "$target_dir/docker-compose.yml"
                     _api_error 409 "Host port(s) already in use by running containers: ${system_conflicts}"
                     return
                 fi
             fi
         fi
     fi
-
-    # Back up existing compose file
-    local timestamp
-    timestamp=$(date +%Y%m%d%H%M%S)
-    cp "$target_dir/docker-compose.yml" "$target_dir/docker-compose.yml.bak.${timestamp}"
-
-    # B3: Rotate backups — keep only the 5 most recent
-    local -a old_backups=()
-    while IFS= read -r f; do
-        old_backups+=("$f")
-    done < <(ls -1t "$target_dir"/docker-compose.yml.bak.* 2>/dev/null | tail -n +6)
-    for f in "${old_backups[@]}"; do
-        rm -f "$f"
-    done
 
     # -----------------------------------------------------------------------
     # Section-aware merge: insert services, volumes, networks into correct
@@ -9783,26 +10124,6 @@ handle_template_deploy() {
                     'cp -rn /src/* /dst/ 2>/dev/null; cp -r /src/* /dst/ 2>/dev/null' || true
             fi
 
-            # Variable substitution on deployed config files (.env, .yml, .yaml, .conf)
-            # Config templates can use ${VAR:-default} patterns just like compose files
-            local _user_vars
-            _user_vars=$(printf '%s' "$body" | jq -r '.variables // {} | to_entries[] | "\(.key)=\(.value)"' 2>/dev/null)
-            if [[ -n "$_user_vars" ]]; then
-                while IFS= read -r _cfg_file; do
-                    [[ -z "$_cfg_file" ]] && continue
-                    while IFS='=' read -r _vk _vv; do
-                        [[ -z "$_vk" ]] && continue
-                        [[ ! "$_vk" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && continue
-                        local _safe_vv
-                        _safe_vv=$(printf '%s' "$_vv" | sed 's/[&/\]/\\&/g')
-                        sed -i "s|\${${_vk}:-[^}]*}|${_safe_vv}|g" "$_cfg_file" 2>/dev/null
-                        sed -i "s|\${${_vk}}|${_safe_vv}|g" "$_cfg_file" 2>/dev/null
-                    done <<< "$_user_vars"
-                    # Resolve remaining ${VAR:-default} to their defaults
-                    sed -i 's/${[A-Za-z_][A-Za-z0-9_]*:-\([^}]*\)}/\1/g' "$_cfg_file" 2>/dev/null
-                done < <(find "$config_target" -maxdepth 3 -type f \( -name '.env' -o -name '*.yml' -o -name '*.yaml' -o -name '*.conf' \) 2>/dev/null)
-            fi
-
             # Create custom_routes subdirectories for ALL existing stacks
             if [[ -d "$config_target/custom_routes" ]]; then
                 local all_stacks
@@ -9834,7 +10155,8 @@ handle_template_deploy() {
                 fi
             fi
 
-            # Apply variable substitution to all .yml/.yaml config files
+            # Apply variable substitution to deployed config files (.env, .yml,
+            # .yaml, .conf). Uses $vars, which includes generated secrets.
             if [[ -n "$vars" ]]; then
                 local cfg_file
                 while IFS= read -r cfg_file; do
@@ -9847,7 +10169,7 @@ handle_template_deploy() {
                         local safe_cval
                         safe_cval=$(_sed_escape_val "$cval")
                         cfg_content=$(printf '%s' "$cfg_content" | sed "s/\${${ckey}:-[^}]*}/${safe_cval}/g")
-                        cfg_content="${cfg_content//\$\{$ckey\}/$cval}"
+                        cfg_content="${cfg_content//\$\{$ckey\}/"$cval"}"
                     done <<< "$vars"
                     # Resolve remaining ${VAR:-default} patterns to their defaults
                     cfg_content=$(printf '%s' "$cfg_content" | sed 's/${[A-Za-z_][A-Za-z0-9_]*:-\([^}]*\)}/\1/g')
@@ -9855,7 +10177,7 @@ handle_template_deploy() {
                     if [[ "$cfg_content" != "$orig_content" ]]; then
                         printf '%s\n' "$cfg_content" > "$cfg_file"
                     fi
-                done < <(find "$config_target" -type f \( -name '*.yml' -o -name '*.yaml' \) 2>/dev/null)
+                done < <(find "$config_target" -maxdepth 3 -type f \( -name '.env' -o -name '*.yml' -o -name '*.yaml' -o -name '*.conf' \) 2>/dev/null)
             fi
 
             # Ensure traefik.yml and acme.json are FILES not directories.
@@ -9908,13 +10230,19 @@ handle_template_deploy() {
         local _auth_base="${APP_DATA_DIR:-$target_dir/App-Data}"
         [[ "$_auth_base" == ./* ]] && _auth_base="$target_dir/${_auth_base#./}"
         local _auth_dir="$_auth_base/Authelia/config"
-        # Write to a temp dir first, then copy with docker (handles root-owned target dirs)
-        local _auth_tmp="/tmp/dcs-authelia-$$"
-        mkdir -p "$_auth_tmp"
+        # Write to a private temp dir first, then copy with docker (handles root-owned target dirs)
+        local _auth_tmp
+        if ! _auth_tmp=$(mktemp -d /tmp/dcs-authelia-XXXXXX 2>/dev/null) || [[ -z "$_auth_tmp" ]]; then
+            cp "$target_dir/docker-compose.yml.bak.${timestamp}" "$target_dir/docker-compose.yml"
+            _api_error 500 "Could not create a temporary directory. Deployment rolled back."
+            return
+        fi
         # Also ensure target dirs exist
         mkdir -p "$_auth_dir" 2>/dev/null || docker run --rm -v "$_auth_base:/d" alpine mkdir -p /d/Authelia/config 2>/dev/null || true
 
-        local _domain="${TRAEFIK_DOMAIN:-example.com}"
+        # The domain resolved for routing above (which includes the deploy
+        # request's own TRAEFIK_DOMAIN) — not just the process environment
+        local _domain="${traefik_domain:-${TRAEFIK_DOMAIN:-example.com}}"
         local _admin_user _admin_display _admin_email _admin_pass
         _admin_user=$(printf '%s' "$body" | jq -r '.variables.AUTHELIA_ADMIN_USER // "admin"' 2>/dev/null)
         _admin_display=$(printf '%s' "$body" | jq -r '.variables.AUTHELIA_ADMIN_DISPLAY // ""' 2>/dev/null)
@@ -9937,15 +10265,12 @@ handle_template_deploy() {
             _hashed_pass=$(docker run --rm authelia/authelia:latest authelia crypto hash generate argon2 --password "$_admin_pass" 2>/dev/null | grep 'Digest:' | sed 's/Digest: //')
         fi
         if [[ -z "$_hashed_pass" ]]; then
-            # Fallback: use python3 argon2 if available
-            _hashed_pass=$(python3 -c "
-import hashlib, os, base64
-salt = os.urandom(16)
-h = hashlib.scrypt(b'$_admin_pass', salt=salt, n=65536, r=8, p=1, dklen=32)
-s64 = base64.b64encode(salt).decode().rstrip('=')
-h64 = base64.b64encode(h).decode().rstrip('=')
-print(f'\$argon2id\$v=19\$m=65536,t=3,p=4\${s64}\${h64}')
-" 2>/dev/null) || _hashed_pass='$argon2id$v=19$m=65536,t=3,p=4$CHANGE_ME_HASH'
+            # No real Argon2id digest means no working admin login — refuse
+            # rather than ship a users database Authelia can never verify
+            rm -rf "$_auth_tmp"
+            cp "$target_dir/docker-compose.yml.bak.${timestamp}" "$target_dir/docker-compose.yml"
+            _api_error 500 "Could not hash the Authelia admin password: neither the authelia CLI nor the authelia/authelia image was usable. Deployment rolled back."
+            return
         fi
 
         # Write configuration.yml (only if it doesn't exist — don't overwrite user edits)
@@ -10146,16 +10471,6 @@ AUTH_ROUTE_EOF
     # Homarr Integration — auto-register services on the Homarr dashboard
     # -----------------------------------------------------------------------
 
-    # Detect running Homarr instance — returns localhost URL with mapped port
-    _detect_homarr() {
-        if docker inspect Homarr >/dev/null 2>&1; then
-            local _hp
-            _hp=$(docker inspect --format='{{range $p, $conf := .NetworkSettings.Ports}}{{if eq $p "7575/tcp"}}{{(index $conf 0).HostPort}}{{end}}{{end}}' Homarr 2>/dev/null)
-            [[ -n "$_hp" ]] && echo "http://localhost:${_hp}" && return
-        fi
-        echo "${HOMARR_URL:-}"
-    }
-
     # Map template names to dashboard icon URLs (walkxcode/dashboard-icons)
     _get_template_icon() {
         local name="$1"
@@ -10277,56 +10592,57 @@ AUTH_ROUTE_EOF
         local app_id
         app_id="dcs_$(head -c 16 /dev/urandom | base64 | tr -dc 'a-z0-9' | head -c 20)"
 
-        # Escape single quotes for SQL
-        local _sq_name="${app_name//\'/\'\'}"
-        local _sq_url="${app_url//\'/\'\'}"
-        local _sq_icon="${icon_url//\'/\'\'}"
-        local _sq_desc="${description//\'/\'\'}"
-
-        # Write via detached script (socat kills background subshells)
+        # The registration runs in a detached script (socat reaps background
+        # subshells). The script body is a QUOTED heredoc — nothing from the
+        # template or route file is ever interpolated into shell code; values
+        # travel in the environment and are SQL-quoted inside the script.
         local _reg_script
-        _reg_script=$(mktemp /tmp/dcs-homarr-reg-XXXXXX.sh)
+        _reg_script=$(mktemp /tmp/dcs-homarr-reg-XXXXXX.sh) || return 0
+        local _hm_log="$BASE_DIR/logs/homarr-register.log"
 
         if [[ -n "$db_path" ]] && command -v sqlite3 >/dev/null 2>&1; then
             # Primary: SQLite — instant, no API call, no SSR crash
-            cat > "$_reg_script" << HOMARR_SQLITE_EOF
+            cat > "$_reg_script" << 'HOMARR_SQLITE_EOF'
 #!/bin/bash
-DB="$db_path"
-EXISTS=\$(sqlite3 "\$DB" "SELECT COUNT(*) FROM app WHERE href='$_sq_url';" 2>/dev/null)
-if [[ "\$EXISTS" == "0" ]]; then
-    sqlite3 "\$DB" "INSERT INTO app (id, name, description, icon_url, href, ping_url) VALUES ('$app_id', '$_sq_name', '$_sq_desc', '$_sq_icon', '$_sq_url', '$_sq_url');" 2>/dev/null
-    echo "\$(date): ✓ Registered '$app_name' on Homarr (SQLite)" >> "$BASE_DIR/logs/homarr-register.log"
+sq() { printf '%s' "$1" | sed "s/'/''/g"; }
+EXISTS=$(sqlite3 "$HM_DB" "SELECT COUNT(*) FROM app WHERE href='$(sq "$HM_URL")';" 2>/dev/null)
+if [[ "$EXISTS" == "0" ]]; then
+    sqlite3 "$HM_DB" "INSERT INTO app (id, name, description, icon_url, href, ping_url) VALUES ('$(sq "$HM_ID")', '$(sq "$HM_NAME")', '$(sq "$HM_DESC")', '$(sq "$HM_ICON")', '$(sq "$HM_URL")', '$(sq "$HM_URL")');" 2>/dev/null
+    echo "$(date): Registered '$HM_NAME' on Homarr (SQLite)" >> "$HM_LOG"
 else
-    echo "\$(date): ⊘ Skipped '$app_name' — already exists on Homarr" >> "$BASE_DIR/logs/homarr-register.log"
+    echo "$(date): Skipped '$HM_NAME' - already exists on Homarr" >> "$HM_LOG"
 fi
-rm -f "$_reg_script"
+rm -f -- "$0"
 HOMARR_SQLITE_EOF
+            chmod +x "$_reg_script"
+            HM_DB="$db_path" HM_ID="$app_id" HM_NAME="$app_name" HM_DESC="$description" HM_ICON="$icon_url" HM_URL="$app_url" HM_LOG="$_hm_log" \
+                nohup bash "$_reg_script" </dev/null >/dev/null 2>&1 &
         else
             # Fallback: tRPC API (when sqlite3 is not installed)
             local homarr_port=""
             homarr_port=$(docker inspect --format='{{range $p, $conf := .NetworkSettings.Ports}}{{if eq $p "7575/tcp"}}{{(index $conf 0).HostPort}}{{end}}{{end}}' Homarr 2>/dev/null)
-            [[ -z "$homarr_port" ]] && rm -f "$_reg_script" && return 0
+            [[ -z "$homarr_port" || ! "$homarr_port" =~ ^[0-9]+$ ]] && rm -f "$_reg_script" && return 0
             local api_key
             api_key=$(_decrypt_secret "HOMARR_API_KEY") || { rm -f "$_reg_script"; return 0; }
             [[ -z "$api_key" ]] && rm -f "$_reg_script" && return 0
             local payload
             payload=$(jq -nc --arg name "$app_name" --arg href "$app_url" --arg icon "$icon_url" --arg desc "$description" --arg ping "$app_url" \
                 '{json: {name: $name, href: $href, description: $desc, iconUrl: $icon, pingUrl: $ping}}')
-            cat > "$_reg_script" << HOMARR_API_EOF
+            cat > "$_reg_script" << 'HOMARR_API_EOF'
 #!/bin/bash
 sleep 10
 for _i in 1 2 3; do
-    _code=\$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 -X POST "http://localhost:${homarr_port}/api/trpc/app.create" -H "ApiKey: $api_key" -H "Content-Type: application/json" -d '$payload' 2>/dev/null)
-    echo "\$(date): Homarr register '$app_name' attempt \$_i — HTTP \$_code (tRPC fallback)" >> "$BASE_DIR/logs/homarr-register.log"
-    [[ "\$_code" == "200" ]] && break
+    _code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 -X POST "http://localhost:${HM_PORT}/api/trpc/app.create" -H "ApiKey: $HM_KEY" -H "Content-Type: application/json" -d "$HM_PAYLOAD" 2>/dev/null)
+    echo "$(date): Homarr register '$HM_NAME' attempt $_i - HTTP $_code (tRPC fallback)" >> "$HM_LOG"
+    [[ "$_code" == "200" ]] && break
     sleep 5
 done
-rm -f "$_reg_script"
+rm -f -- "$0"
 HOMARR_API_EOF
+            chmod +x "$_reg_script"
+            HM_PORT="$homarr_port" HM_KEY="$api_key" HM_PAYLOAD="$payload" HM_NAME="$app_name" HM_LOG="$_hm_log" \
+                nohup bash "$_reg_script" </dev/null >/dev/null 2>&1 &
         fi
-
-        chmod +x "$_reg_script"
-        nohup bash "$_reg_script" >/dev/null 2>&1 &
     }
 
     # -----------------------------------------------------------------------
@@ -10736,7 +11052,7 @@ print('\n'.join(result))
         [[ -z "$_infra_cf_token" ]] && _infra_cf_token=$(grep -m1 '^CF_DNS_API_TOKEN=' "$COMPOSE_DIR"/*/".env" "$BASE_DIR/.env" 2>/dev/null | head -1 | cut -d'=' -f2- | tr -d '"' | tr -d "'")
 
         printf '[%s] INFRA-DNS: name=%s domain=%s token=%s\n' \
-            "$(date -Iseconds)" "$name" "$traefik_domain" "${_infra_cf_token:0:8}" \
+            "$(date -Iseconds)" "$name" "$traefik_domain" "$([[ -n "$_infra_cf_token" ]] && echo present || echo absent)" \
             >> "$BASE_DIR/.api-auth/cf-dns-audit.log" 2>/dev/null
 
         if [[ -n "$_infra_cf_token" ]]; then
@@ -10837,17 +11153,19 @@ print('\n'.join(result))
             if [[ "$_needs_restart" == "true" ]]; then
                 $DOCKER_COMPOSE_CMD -f "$target_dir/docker-compose.yml" "${env_up[@]}" restart >/dev/null 2>&1 || true
             fi
-        ) &
+        ) </dev/null >/dev/null 2>&1 &
         disown
         started=true
     fi
 
-    # Record deploy event in audit log
+    # Record deploy event in audit log (and fire "deploy" webhooks)
     _record_deploy_event "deploy" "$name" "$target_stack" "$services_json" "docker-compose.yml.bak.${timestamp}"
+    _audit_log "deploy" "Deployed template '$name' to $target_stack" 2>/dev/null
 
     _api_success "{\"success\": true, \"target_stack\": \"$(_api_json_escape "$target_stack")\", \"services_added\": $services_json, \"started\": $started, \"backup_file\": \"docker-compose.yml.bak.${timestamp}\", \"message\": \"Template services merged into $target_stack successfully\"}"
 }
 
+# POST /templates/{template}/dry-run — Preview a deployment: conflicts, ports, variables and policy findings
 handle_template_dry_run() {
     local name="$1"
     local body="$2"
@@ -11117,8 +11435,7 @@ handle_template_dry_run() {
     if command -v _api_scan_compose_security >/dev/null 2>&1; then
         # Capture violations without rejecting
         local _scan_out
-        _scan_out=$(_api_scan_compose_security "$template_compose" "dry-run ($name)" "deploy" 2>&1) || true
-        if [[ -n "$_scan_out" && "$_scan_out" != *"passed"* ]]; then
+        if ! _scan_out=$(_API_SCAN_QUIET=true _api_scan_compose_security "$template_compose" "dry-run ($name)" "deploy"); then
             security_warnings="[\"$(_api_json_escape "$_scan_out")\"]"
         fi
     fi
@@ -11172,15 +11489,17 @@ handle_template_dry_run() {
             local -a _plugin_outputs=()
             for _pd in "$_plugin_dir"/*/; do
                 [[ ! -f "$_pd/plugin.json" ]] && continue
-                [[ -f "$_pd/.disabled" ]] && continue
+                _plugin_enabled "$_pd" || continue
                 local _pname
                 _pname=$(basename "$_pd")
                 local _hook="$_pd/hooks/pre-deploy"
                 [[ ! -x "$_hook" ]] && _hook="${_hook}.sh"
                 [[ ! -x "$_hook" ]] && continue
-                local _ctx="{\"stack\":\"$target_stack\",\"template\":\"$name\",\"compose\":\"$(_api_json_escape "$template_compose")\"}"
+                _plugin_path_ok "$_pd" "$_hook" || continue
+                local _ctx
+                _ctx="{\"stack\":\"$target_stack\",\"template\":\"$name\",\"compose\":\"$(_api_json_escape "$template_compose")\"}"
                 local _pout
-                _pout=$(echo "$_ctx" | timeout 10 "$_hook" 2>/dev/null | head -c 2048) || _pout=""
+                _pout=$(_plugin_exec_hook "$_hook" "$_ctx" "pre-deploy" 10 2>/dev/null | head -c 2048) || _pout=""
                 if [[ -n "$_pout" ]]; then
                     _plugin_outputs+=("{\"plugin\": \"$(_api_json_escape "$_pname")\", \"output\": \"$(_api_json_escape "$_pout")\"}")
                 fi
@@ -11196,6 +11515,7 @@ handle_template_dry_run() {
     _api_success "{\"success\": true, \"template\": \"$(_api_json_escape "$name")\", \"target_stack\": \"$(_api_json_escape "$target_stack")\", \"services\": $services_json, \"service_conflicts\": \"$(_api_json_escape "$service_conflicts")\", \"has_service_conflicts\": $has_svc_conflict, \"port_conflicts\": \"$(_api_json_escape "$port_conflicts")\", \"has_port_conflicts\": $has_port_conflict, \"port_conflicts_detail\": $port_conflicts_detail, \"env_additions\": $env_additions, \"env_existing\": $env_existing, \"lines_added\": ${lines_added:-0}, \"compose_preview\": \"$(_api_json_escape "$tpl_svc_block")\", \"is_singleton\": $is_singleton, \"singleton_conflict\": \"$(_api_json_escape "$singleton_conflict")\", \"has_singleton_conflict\": $has_singleton_conflict, \"missing_required_vars\": \"$(_api_json_escape "$missing_vars")\", \"has_missing_vars\": $has_missing_vars, \"security_warnings\": $security_warnings, \"plugin_results\": $plugin_results}"
 }
 
+# POST /templates/{template}/undeploy — Remove a template's services from a stack (optionally data, images, routes)
 handle_template_undeploy() {
     local name="$1"
     local body="$2"
@@ -11244,8 +11564,14 @@ handle_template_undeploy() {
         return
     fi
     while IFS= read -r svc; do
-        [[ -n "$svc" ]] && services_to_remove+=("$svc")
-    done < <(printf '%s' "$svc_json" | jq -r '.[]' 2>/dev/null)
+        [[ -z "$svc" ]] && continue
+        # Names reach awk patterns, route file paths and rm -rf below
+        if [[ ! "$svc" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]]; then
+            _api_error 400 "Invalid service name: $svc"
+            return
+        fi
+        services_to_remove+=("$svc")
+    done < <(printf '%s' "$svc_json" | jq -r '.[]?' 2>/dev/null)
 
     if [[ ${#services_to_remove[@]} -eq 0 ]]; then
         _api_error 400 "No valid services specified"
@@ -11331,6 +11657,13 @@ handle_template_undeploy() {
             END { if (in_dep && has_other) { for (i=1;i<=buf_n;i++) print buf[i] } }
         ')
     done
+
+    # An awk failure would leave an empty document — never write that out
+    if [[ -z "${compose_content//[[:space:]]/}" ]]; then
+        cp "$target_dir/docker-compose.yml.bak.${timestamp}" "$target_dir/docker-compose.yml"
+        _api_error 500 "Service removal produced an empty compose file. Rolled back."
+        return
+    fi
 
     # Check if any services remain after removal (count only keys under services:, not networks:/volumes:/etc.)
     local remaining_services
@@ -11462,7 +11795,7 @@ handle_template_undeploy() {
                 done
             fi
         fi
-    ) &
+    ) </dev/null >/dev/null 2>&1 &
     disown
 
     if [[ "$remove_data" == "true" ]]; then
@@ -11471,19 +11804,21 @@ handle_template_undeploy() {
         [[ "$_app_data" == ./* ]] && _app_data="$target_dir/${_app_data#./}"
         local _config_path
         _config_path=$(printf '%s' "$meta" | jq -r '.config_path // empty' 2>/dev/null)
+        # Only a plain directory name may be removed under App-Data
+        [[ "$_config_path" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || _config_path=""
         local _backup_file="$target_dir/docker-compose.yml.bak.${timestamp}"
         (
             # 1. Remove per-service App-Data
             for svc in "${services_to_remove[@]}"; do
                 for dir_name in "$svc" "${svc^}" "${svc^^}"; do
                     if [[ -d "$_app_data/$dir_name" ]]; then
-                        rm -rf "$_app_data/$dir_name" 2>/dev/null || docker run --rm -v "$_app_data/$dir_name:/d" alpine rm -rf /d 2>/dev/null
+                        rm -rf "${_app_data:?}/$dir_name" 2>/dev/null || docker run --rm -v "$_app_data/$dir_name:/d" alpine rm -rf /d 2>/dev/null
                     fi
                 done
             done
             # 2. Remove config_path data (e.g. Pelican/ directory for pelican template)
             if [[ -n "$_config_path" && -d "$_app_data/$_config_path" ]]; then
-                rm -rf "$_app_data/$_config_path" 2>/dev/null || docker run --rm -v "$_app_data/$_config_path:/d" alpine rm -rf /d 2>/dev/null
+                rm -rf "${_app_data:?}/${_config_path:?}" 2>/dev/null || docker run --rm -v "$_app_data/$_config_path:/d" alpine rm -rf /d 2>/dev/null
                 # Also remove any stray files at the config_path level (acme.json, traefik.yml etc)
                 rmdir "$_app_data/$_config_path" 2>/dev/null || true
             fi
@@ -11493,7 +11828,7 @@ handle_template_undeploy() {
                 img=$(awk -v s="  ${svc}:" 'BEGIN{f=0} $0==s||index($0,s)==1{f=1;next} f&&/image:/{gsub(/.*image:[[:space:]]*/,"");gsub(/[[:space:]]*$/,"");print;exit} f&&/^  [a-zA-Z]/{exit}' "$_backup_file" 2>/dev/null)
                 [[ -n "$img" ]] && docker rmi "$img" 2>/dev/null || true
             done
-        ) &
+        ) </dev/null >/dev/null 2>&1 &
         disown
         data_removed="true"
         images_removed="true"
@@ -11524,8 +11859,9 @@ handle_template_undeploy() {
     done
     ctr_removed_json+="]"
 
-    # Record undeploy event
+    # Record undeploy event (and fire "undeploy" webhooks)
     _record_deploy_event "undeploy" "$name" "$target_stack" "$svc_removed_json" "docker-compose.yml.bak.${timestamp}"
+    _audit_log "undeploy" "Removed ${#services_to_remove[@]} service(s) of template '$name' from $target_stack" 2>/dev/null
 
     local msg="Services removed from $target_stack successfully"
     [[ "$stack_deleted" == "true" ]] && msg="Stack $target_stack fully removed (no services remaining)"
@@ -11536,6 +11872,7 @@ handle_template_undeploy() {
     _api_success "{\"success\": true, \"template\": \"$(_api_json_escape "$name")\", \"target_stack\": \"$(_api_json_escape "$target_stack")\", \"services_removed\": $svc_removed_json, \"containers_removed\": $ctr_removed_json, \"backup_file\": \"docker-compose.yml.bak.${timestamp}\", \"stack_deleted\": $stack_deleted, \"data_removed\": $data_removed, \"images_removed\": $images_removed, \"routes_removed\": $routes_removed, \"message\": \"$msg\"}"
 }
 
+# POST /templates/import — Import a template from compose content
 handle_template_import() {
     local body="$1"
 
@@ -11569,7 +11906,21 @@ handle_template_import() {
         return
     fi
 
+    # Metadata is trusted by the deploy path (config_path ends up in rm -rf)
+    local _cp
+    _cp=$(printf '%s' "$metadata" | jq -r '.config_path // empty' 2>/dev/null)
+    if [[ -n "$_cp" && ! "$_cp" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+        _api_error 400 "Invalid config_path in metadata"
+        return
+    fi
+
     local tdir="$TEMPLATES_DIR/$name"
+    local overwrite
+    overwrite=$(printf '%s' "$body" | jq -r '.overwrite // false' 2>/dev/null)
+    if [[ -d "$tdir" && "$overwrite" != "true" ]]; then
+        _api_error 409 "Template already exists: $name (pass overwrite: true to replace it)"
+        return
+    fi
     mkdir -p "$tdir"
 
     printf '%s' "$compose" > "$tdir/docker-compose.yml"
@@ -11620,11 +11971,12 @@ handle_template_fetch_url() {
         url=$(echo "$url" | sed 's|github\.com/\([^/]*/[^/]*\)/blob/|raw.githubusercontent.com/\1/|')
     fi
 
-    # Fetch the compose content
+    # Fetch the compose content. Redirects are not followed: the SSRF check
+    # above only vetted this hostname, and a redirect could point anywhere.
     local compose_content
-    compose_content=$(curl -fsSL --max-time 30 --max-filesize 10485760 "$url" 2>/dev/null)
+    compose_content=$(curl -fsS --max-redirs 0 --max-time 30 --max-filesize 10485760 "$url" 2>/dev/null)
     if [[ -z "$compose_content" ]]; then
-        _api_error 400 "Failed to fetch content from URL"
+        _api_error 400 "Failed to fetch content from URL (redirects are not followed — use the final URL)"
         return
     fi
 
@@ -11670,11 +12022,11 @@ handle_template_import_url() {
         url=$(echo "$url" | sed 's|github\.com/\([^/]*/[^/]*\)/blob/|raw.githubusercontent.com/\1/|')
     fi
 
-    # Fetch the compose content
+    # Fetch the compose content (no redirects — see handle_template_fetch_url)
     local compose_content
-    compose_content=$(curl -fsSL --max-time 30 --max-filesize 10485760 "$url" 2>/dev/null)
+    compose_content=$(curl -fsS --max-redirs 0 --max-time 30 --max-filesize 10485760 "$url" 2>/dev/null)
     if [[ -z "$compose_content" ]]; then
-        _api_error 400 "Failed to fetch content from URL"
+        _api_error 400 "Failed to fetch content from URL (redirects are not followed — use the final URL)"
         return
     fi
 
@@ -11696,9 +12048,15 @@ handle_template_import_url() {
         return
     fi
 
+    # SECURITY: Scan fetched compose for dangerous Docker features BEFORE
+    # handing it to `docker compose config` (which resolves extends:/include:)
+    if ! _api_scan_compose_security "$compose_content" "URL import from $url"; then
+        return
+    fi
+
     # Validate it looks like a compose file
     local tmpfile
-    tmpfile=$(mktemp /tmp/dcs-validate-XXXXXX.yml)
+    tmpfile=$(mktemp /tmp/dcs-validate-XXXXXX.yml) || { _api_error 500 "Could not create a temporary file"; return; }
     printf '%s' "$compose_content" > "$tmpfile"
     local validate_output
     validate_output=$($DOCKER_COMPOSE_CMD -f "$tmpfile" config 2>&1)
@@ -11706,14 +12064,7 @@ handle_template_import_url() {
     rm -f "$tmpfile"
 
     if [[ $validate_rc -ne 0 ]]; then
-        local escaped_err
-        escaped_err=$(_api_json_escape "$validate_output")
-        _api_error 422 "Invalid compose file: $escaped_err"
-        return
-    fi
-
-    # SECURITY: Scan fetched compose for dangerous Docker features
-    if ! _api_scan_compose_security "$compose_content" "URL import from $url"; then
+        _api_error 422 "Invalid compose file: $validate_output"
         return
     fi
 
@@ -11721,8 +12072,14 @@ handle_template_import_url() {
     local services
     services=$(printf '%s' "$compose_content" | grep -E '^  [a-zA-Z_-][a-zA-Z0-9_-]*:' | sed 's/:.*//' | tr -d ' ' | paste -sd ',' -)
 
-    # Create template directory
+    # Create template directory (never replace an existing template silently)
     local tdir="$TEMPLATES_DIR/$name"
+    local overwrite
+    overwrite=$(printf '%s' "$body" | jq -r '.overwrite // false' 2>/dev/null)
+    if [[ -d "$tdir" && "$overwrite" != "true" ]]; then
+        _api_error 409 "Template already exists: $name (pass overwrite: true to replace it)"
+        return
+    fi
     mkdir -p "$tdir"
 
     printf '%s' "$compose_content" > "$tdir/docker-compose.yml"
@@ -11751,7 +12108,7 @@ handle_template_gallery() {
 
     local content
     content=$(cat "$gallery_file" 2>/dev/null)
-    if [[ -z "$content" ]]; then
+    if [[ -z "$content" ]] || ! jq -e 'type == "array"' <<< "$content" >/dev/null 2>&1; then
         _api_success "{\"templates\": [], \"total\": 0}"
         return
     fi
@@ -11762,6 +12119,7 @@ handle_template_gallery() {
     if [[ -n "$category" ]] && command -v jq >/dev/null 2>&1; then
         local filtered
         filtered=$(printf '%s' "$content" | jq --arg cat "$category" '[.[] | select(.category == $cat)]' 2>/dev/null)
+        [[ -z "$filtered" ]] && filtered="[]"
         local count
         count=$(printf '%s' "$filtered" | jq 'length' 2>/dev/null || echo "0")
         _api_success "{\"templates\": $filtered, \"total\": $count}"
@@ -11814,14 +12172,23 @@ handle_stack_clone() {
         return
     fi
 
-    # Copy the stack directory
-    cp -r "$src_dir" "$dst_dir"
-
-    # Update container_name references in compose file
-    local compose_file="$dst_dir/docker-compose.yml"
-    if [[ -f "$compose_file" ]]; then
-        sed -i "s/container_name:.*${stack_name}/container_name: ${new_name}/g" "$compose_file" 2>/dev/null
+    # Copy the definition only (compose + .env). App-Data, backups and trust
+    # markers belong to the source stack.
+    if ! mkdir -p "$dst_dir/App-Data" 2>/dev/null; then
+        _api_error 500 "Failed to create stack directory"
+        return
     fi
+    if [[ ! -f "$src_dir/docker-compose.yml" ]] || ! cp "$src_dir/docker-compose.yml" "$dst_dir/docker-compose.yml" 2>/dev/null; then
+        rm -rf "$dst_dir"
+        _api_error 500 "Failed to copy the compose file"
+        return
+    fi
+    [[ -f "$src_dir/.env" ]] && cp "$src_dir/.env" "$dst_dir/.env" 2>/dev/null
+
+    # Every container_name gets the new stack's prefix so the clone can run
+    # alongside the original without name conflicts
+    local compose_file="$dst_dir/docker-compose.yml"
+    sed -i -E "s/^([[:space:]]*container_name:[[:space:]]*)[\"']?([A-Za-z0-9._-]+)[\"']?[[:space:]]*$/\1${new_name}-\2/" "$compose_file" 2>/dev/null
 
     _audit_log "stack_clone" "Cloned stack '$stack_name' to '$new_name'" 2>/dev/null
 
@@ -11883,12 +12250,20 @@ handle_compose_validate() {
     local tmpfile validate_output validate_rc
 
     if [[ -n "$content" ]]; then
-        tmpfile=$(mktemp /tmp/dcs-validate-XXXXXX.yml)
+        # Policy scan first: `docker compose config` would otherwise resolve
+        # extends:/include: references to arbitrary files on the host
+        local _scan_msg
+        if ! _scan_msg=$(_API_SCAN_QUIET=true _api_scan_compose_security "$content" "validation"); then
+            _api_success "{\"valid\": false, \"errors\": [\"$(_api_json_escape "Security policy: $_scan_msg")\"], \"warnings\": [], \"services\": [], \"output\": \"\"}"
+            return
+        fi
+        tmpfile=$(mktemp /tmp/dcs-validate-XXXXXX.yml) || { _api_error 500 "Could not create a temporary file"; return; }
         printf '%s' "$content" > "$tmpfile"
         validate_output=$($DOCKER_COMPOSE_CMD -f "$tmpfile" config 2>&1)
         validate_rc=$?
         rm -f "$tmpfile"
     elif [[ -n "$stack" ]]; then
+        _api_validate_stack_name "$stack" || return
         local compose_file="$COMPOSE_DIR/$stack/docker-compose.yml"
         if [[ ! -f "$compose_file" ]]; then
             _api_error 404 "Stack compose file not found: $stack"
@@ -11966,6 +12341,8 @@ handle_export() {
 # GET /audit — Get audit log entries
 handle_audit_log() {
     local limit="${QUERY_PARAMS[limit]:-100}"
+    [[ "$limit" =~ ^[0-9]+$ ]] || limit=100
+    (( limit > 5000 )) && limit=5000
     local action_filter="${QUERY_PARAMS[action]:-}"
     local audit_file="$BASE_DIR/.data/audit.jsonl"
 
@@ -12010,8 +12387,8 @@ _audit_log() {
 
     printf '{"timestamp":"%s","action":"%s","detail":"%s"}\n' "$timestamp" "$escaped_action" "$escaped_detail" >> "$audit_file"
 
-    # Fire webhooks if configured
-    _webhook_fire "$action" "$detail" >/dev/null 2>&1 &
+    # Fire webhooks if configured (detached from the request's socket)
+    _webhook_fire "$action" "$detail" </dev/null >/dev/null 2>&1 &
 }
 
 # Webhook fire helper
@@ -12073,11 +12450,19 @@ handle_webhook_create() {
 
     local url events enabled
     url=$(printf '%s' "$body" | jq -r '.url // empty' 2>/dev/null)
-    events=$(printf '%s' "$body" | jq -c '.events // ["deploy","health_change"]' 2>/dev/null)
-    enabled=$(printf '%s' "$body" | jq -r '.enabled // true' 2>/dev/null)
+    events=$(printf '%s' "$body" | jq -c '(.events // ["deploy","health_change"]) | if type == "array" then map(tostring) else empty end' 2>/dev/null)
+    enabled=$(printf '%s' "$body" | jq -r 'if .enabled == null then true else .enabled end' 2>/dev/null)
 
     if [[ -z "$url" ]]; then
         _api_error 400 "Missing required field: url"
+        return
+    fi
+    if [[ -z "$events" ]]; then
+        _api_error 400 "events must be an array of event names"
+        return
+    fi
+    if [[ "$enabled" != "true" && "$enabled" != "false" ]]; then
+        _api_error 400 "enabled must be true or false"
         return
     fi
 
@@ -12092,12 +12477,19 @@ handle_webhook_create() {
     # Load or create webhooks array
     local existing="[]"
     [[ -f "$webhooks_file" ]] && existing=$(cat "$webhooks_file" 2>/dev/null || echo "[]")
+    jq -e 'type == "array"' <<< "$existing" >/dev/null 2>&1 || existing="[]"
 
     local new_webhook
     new_webhook=$(jq -n --arg id "$id" --arg url "$url" --argjson events "$events" --argjson enabled "$enabled" --arg ts "$timestamp" \
         '{id: $id, url: $url, events: $events, enabled: $enabled, created_at: $ts}')
 
-    printf '%s' "$existing" | jq --argjson wh "$new_webhook" '. + [$wh]' > "$webhooks_file"
+    # Write to a temp file first: a redirect truncates before jq runs
+    if ! printf '%s' "$existing" | jq --argjson wh "$new_webhook" '. + [$wh]' > "${webhooks_file}.tmp" 2>/dev/null; then
+        rm -f "${webhooks_file}.tmp"
+        _api_error 500 "Failed to save webhook"
+        return
+    fi
+    mv -f "${webhooks_file}.tmp" "$webhooks_file"
 
     _api_success "{\"success\": true, \"webhook\": $new_webhook}"
 }
@@ -12117,9 +12509,19 @@ handle_webhook_delete() {
         return
     fi
 
-    local new_list
+    local before after new_list
+    before=$(jq 'length' "$webhooks_file" 2>/dev/null || echo 0)
     new_list=$(jq --arg id "$webhook_id" '[.[] | select(.id != $id)]' "$webhooks_file" 2>/dev/null)
-    printf '%s' "$new_list" > "$webhooks_file"
+    if [[ -z "$new_list" ]]; then
+        _api_error 500 "Webhook store is not valid JSON"
+        return
+    fi
+    after=$(jq 'length' <<< "$new_list" 2>/dev/null || echo 0)
+    if [[ "$before" == "$after" ]]; then
+        _api_error 404 "Webhook not found"
+        return
+    fi
+    printf '%s' "$new_list" > "${webhooks_file}.tmp" && mv -f "${webhooks_file}.tmp" "$webhooks_file"
 
     _api_success "{\"success\": true, \"deleted\": \"$(_api_json_escape "$webhook_id")\"}"
 }
@@ -12193,6 +12595,12 @@ handle_template_update() {
     local metadata
     metadata=$(printf '%s' "$body" | jq -c '.metadata // empty' 2>/dev/null)
     if [[ -n "$metadata" && "$metadata" != "null" && "$metadata" != "" ]]; then
+        local _cp
+        _cp=$(printf '%s' "$metadata" | jq -r '.config_path // empty' 2>/dev/null)
+        if [[ -n "$_cp" && ! "$_cp" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+            _api_error 400 "Invalid config_path in metadata"
+            return
+        fi
         local template_meta
         template_meta=$(printf '%s' "$metadata" | jq --arg n "$name" '. + {"name": $n}' 2>/dev/null || echo "{\"name\": \"$name\"}")
         printf '%s' "$template_meta" > "$tdir/template.json"
@@ -12241,6 +12649,7 @@ _init_automations_file() {
     fi
 }
 
+# GET /automations — Automation rules
 handle_automations_list() {
     _init_automations_file
     if command -v jq >/dev/null 2>&1; then
@@ -12254,6 +12663,7 @@ handle_automations_list() {
     fi
 }
 
+# POST /automations — Create an automation rule
 handle_automation_create() {
     local body="$1"
     _init_automations_file
@@ -12269,33 +12679,44 @@ handle_automation_create() {
     trigger_value=$(printf '%s' "$body" | jq -r '.trigger_value // ""' 2>/dev/null)
     action_type=$(printf '%s' "$body" | jq -r '.action_type // empty' 2>/dev/null)
     action_target=$(printf '%s' "$body" | jq -r '.action_target // "*"' 2>/dev/null)
-    enabled=$(printf '%s' "$body" | jq -r '.enabled // true' 2>/dev/null)
+    enabled=$(printf '%s' "$body" | jq -r 'if .enabled == null then true else .enabled end' 2>/dev/null)
 
     if [[ -z "$name" || -z "$trigger_type" || -z "$action_type" ]]; then
         _api_error 400 "Missing required fields: name, trigger_type, action_type"
         return
     fi
+    if [[ "$enabled" != "true" && "$enabled" != "false" ]]; then
+        _api_error 400 "enabled must be true or false"
+        return
+    fi
+    # Validate the schedule BEFORE persisting so a bad expression leaves no orphan
+    if [[ "$trigger_type" == "schedule" && -n "$trigger_value" ]] && ! _validate_cron_expression "$trigger_value"; then
+        _api_error 400 "Invalid cron expression: $trigger_value"
+        return
+    fi
 
-    local auto_id="auto_$(date +%s)_$RANDOM"
+    local auto_id
+    auto_id="auto_$(date +%s)_$RANDOM"
     local ts
     ts=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
 
-    local automation="{\"id\": \"$auto_id\", \"name\": \"$(_api_json_escape "$name")\", \"enabled\": $enabled, \"trigger_type\": \"$(_api_json_escape "$trigger_type")\", \"trigger_value\": \"$(_api_json_escape "$trigger_value")\", \"action_type\": \"$(_api_json_escape "$action_type")\", \"action_target\": \"$(_api_json_escape "$action_target")\", \"created_at\": \"$ts\", \"run_count\": 0, \"last_run\": null, \"history\": []}"
+    local automation
+    automation="{\"id\": \"$auto_id\", \"name\": \"$(_api_json_escape "$name")\", \"enabled\": $enabled, \"trigger_type\": \"$(_api_json_escape "$trigger_type")\", \"trigger_value\": \"$(_api_json_escape "$trigger_value")\", \"action_type\": \"$(_api_json_escape "$action_type")\", \"action_target\": \"$(_api_json_escape "$action_target")\", \"created_at\": \"$ts\", \"run_count\": 0, \"last_run\": null, \"history\": []}"
 
-    jq --argjson auto "$automation" '. + [$auto]' "$AUTOMATIONS_FILE" > "${AUTOMATIONS_FILE}.tmp" 2>/dev/null && mv "${AUTOMATIONS_FILE}.tmp" "$AUTOMATIONS_FILE"
+    if ! _api_jq_update_file "$AUTOMATIONS_FILE" --argjson auto "$automation" '. + [$auto]'; then
+        _api_error 500 "Failed to save automation"
+        return
+    fi
 
-    # If schedule trigger, validate and add crontab entry
+    # If schedule trigger, add crontab entry
     if [[ "$trigger_type" == "schedule" && "$enabled" == "true" && -n "$trigger_value" ]]; then
-        if ! _validate_cron_expression "$trigger_value"; then
-            _api_error 400 "Invalid cron expression: $(_api_json_escape "$trigger_value")"
-            return
-        fi
         _add_automation_cron "$auto_id" "$trigger_value" "$action_type" "$action_target"
     fi
 
     _api_success "$automation"
 }
 
+# POST /automations/{id}/update — Update an automation rule
 handle_automation_update() {
     local auto_id="$1"
     local body="$2"
@@ -12314,13 +12735,25 @@ handle_automation_update() {
         return
     fi
 
-    # Merge updates
+    # Merge updates (the body must be an object; ids and counters are immutable)
     local updates
-    updates=$(printf '%s' "$body" | jq -c 'del(.id, .created_at, .run_count, .last_run, .history)' 2>/dev/null)
+    updates=$(printf '%s' "$body" | jq -c 'select(type == "object") | del(.id, .created_at, .run_count, .last_run, .history)' 2>/dev/null)
+    if [[ -z "$updates" ]]; then
+        _api_error 400 "Request body must be a JSON object"
+        return
+    fi
+    local _new_tv
+    _new_tv=$(printf '%s' "$updates" | jq -r '.trigger_value // empty' 2>/dev/null)
+    if [[ -n "$_new_tv" ]] && ! _validate_cron_expression "$_new_tv"; then
+        _api_error 400 "Invalid cron expression: $_new_tv"
+        return
+    fi
 
-    jq --arg id "$auto_id" --argjson upd "$updates" '
-        map(if .id == $id then . + $upd else . end)
-    ' "$AUTOMATIONS_FILE" > "${AUTOMATIONS_FILE}.tmp" 2>/dev/null && mv "${AUTOMATIONS_FILE}.tmp" "$AUTOMATIONS_FILE"
+    if ! _api_jq_update_file "$AUTOMATIONS_FILE" --arg id "$auto_id" --argjson upd "$updates" \
+        'map(if .id == $id then . + $upd else . end)'; then
+        _api_error 500 "Failed to update automation"
+        return
+    fi
 
     # Update cron
     _remove_automation_cron "$auto_id"
@@ -12341,6 +12774,7 @@ handle_automation_update() {
     _api_success "$updated"
 }
 
+# DELETE /automations/{id} — Delete an automation rule
 handle_automation_delete() {
     local auto_id="$1"
     _init_automations_file
@@ -12353,11 +12787,12 @@ handle_automation_delete() {
     fi
 
     _remove_automation_cron "$auto_id"
-    jq --arg id "$auto_id" '[.[] | select(.id != $id)]' "$AUTOMATIONS_FILE" > "${AUTOMATIONS_FILE}.tmp" 2>/dev/null && mv "${AUTOMATIONS_FILE}.tmp" "$AUTOMATIONS_FILE"
+    _api_jq_update_file "$AUTOMATIONS_FILE" --arg id "$auto_id" '[.[] | select(.id != $id)]'
 
     _api_success "{\"success\": true, \"deleted\": \"$(_api_json_escape "$auto_id")\"}"
 }
 
+# GET /automations/{id}/history — Run history of an automation
 handle_automation_history() {
     local auto_id="$1"
     _init_automations_file
@@ -12407,13 +12842,15 @@ _add_automation_cron() {
 
 _remove_automation_cron() {
     local auto_id="$1"
-    crontab -l 2>/dev/null | grep -v "# DCS-AUTO:${auto_id}" | crontab - 2>/dev/null
+    # Fixed-string, end-anchored: auto_1_5 must never remove auto_1_55
+    crontab -l 2>/dev/null | grep -vF -- "# DCS-AUTO:${auto_id}"$'\n' | grep -vxF -- "$(crontab -l 2>/dev/null | grep -F -- "# DCS-AUTO:${auto_id}" | grep -E "# DCS-AUTO:${auto_id}\$")" | crontab - 2>/dev/null
 }
 
 # =============================================================================
 # FEATURE: NETWORK TOPOLOGY MAP
 # =============================================================================
 
+# GET /topology — Container and network topology graph
 handle_topology() {
     local -a nodes=()
     local -a edges=()
@@ -12522,8 +12959,20 @@ handle_setup_status() {
 
 # GET /setup/defaults — No auth, only when not initialized.
 # Returns .env.example parsed as defaults + auto-detected system values + stack list.
+# GET /setup/defaults — Defaults and detected system values for the setup wizard (anonymous until setup is complete, admin afterwards)
 handle_setup_defaults() {
-    _api_require_setup_mode || return
+    # Anonymous while the first-run wizard needs it; admins only once setup is
+    # complete (the UI's server-config page reads the same defaults).
+    if _api_is_initialized; then
+        if ! _api_check_auth; then
+            _api_error 401 "${AUTH_ERROR:-Authentication required. Provide Authorization: Bearer <token> header.}"
+            return
+        fi
+        if [[ "${AUTH_ROLE:-}" != "admin" ]]; then
+            _api_error 403 "Admin access required"
+            return
+        fi
+    fi
 
     # Parse defaults from .env.example
     local defaults_json="{"
@@ -12559,6 +13008,11 @@ handle_setup_defaults() {
                 local oval="${BASH_REMATCH[2]}"
                 oval="${oval#\"}" ; oval="${oval%\"}"
                 oval="${oval#\'}" ; oval="${oval%\'}"
+                # This endpoint is unauthenticated while setup is incomplete:
+                # never echo stored credentials back
+                case "${okey^^}" in
+                    *TOKEN*|*PASSWORD*|*SECRET*|*_KEY|*CREDENTIAL*) [[ -n "$oval" ]] && oval="********" ;;
+                esac
                 [[ "$ofirst" == "true" ]] && ofirst=false || overlay_json+=","
                 overlay_json+="\"$okey\": \"$(_api_json_escape "$oval")\""
             fi
@@ -12608,6 +13062,7 @@ handle_setup_defaults() {
 
 # POST /setup/configure — Requires auth token, only when not initialized.
 # Accepts env_vars + stacks array. Writes .env, syncs stack directories.
+# POST /setup/configure — Apply the setup wizard's settings and stack list
 handle_setup_configure() {
     local body="$1"
     _api_require_setup_mode || return
@@ -12675,8 +13130,14 @@ handle_setup_configure() {
         if [[ "$key" == "CF_DNS_API_TOKEN" && "$val" == *"curl "* ]]; then
             val=$(printf '%s' "$val" | sed -n 's/.*Bearer \([A-Za-z0-9_-]*\).*/\1/p' | head -1)
         fi
-        # Strip any value containing shell-dangerous characters (newlines, backticks, $())
-        val=$(printf '%s' "$val" | tr -d '\n\r' | sed 's/`//g')
+        # .env is read as data by the API and sourced by the shell scripts:
+        # reject anything that would not survive both
+        val=$(printf '%s' "$val" | tr -d '\n\r')
+        local _problem
+        if ! _problem=$(_api_validate_env_kv "$key" "$val") || [[ "$val" == *'"'* ]]; then
+            _api_error 400 "Rejected value for $key: ${_problem:-double quotes are not allowed}"
+            return
+        fi
         # SECURITY: Escape sed delimiter and special chars in value
         local safe_val="${val//\\/\\\\}"
         safe_val="${safe_val//|/\\|}"
@@ -12700,11 +13161,10 @@ handle_setup_configure() {
         env_content+=$'\n'"DOCKER_STACKS=\"${docker_stacks_str}\""
     fi
 
-    # Write .env
-    echo "$env_content" > "$env_file"
+    # Write .env (private: it holds tokens)
+    (umask 077; printf '%s\n' "$env_content" > "${env_file}.tmp") && mv -f "${env_file}.tmp" "$env_file"
 
     # Sync stack directories
-    local stacks_created="[]" stacks_removed="[]" stacks_warned="[]"
     local created_list="" removed_list="" warned_list=""
 
     # Create directories for stacks that don't exist
@@ -12752,10 +13212,13 @@ ENV_EOF
                 [[ "$sname" == "$dname" ]] && { found=true; break; }
             done
             if [[ "$found" == "false" ]]; then
-                # Check if it's a placeholder (only has template compose)
-                local service_count
-                service_count=$(grep -c "container_name:" "$existing_dir/docker-compose.yml" 2>/dev/null) || service_count=0
-                if [[ "$service_count" -eq 0 ]]; then
+                # Only an untouched placeholder is removed: no real service
+                # definitions (image: lines) and nothing stored under App-Data.
+                # Anything else is kept and reported.
+                local service_count data_entries
+                service_count=$(grep -cE '^\s+image:' "$existing_dir/docker-compose.yml" 2>/dev/null) || service_count=0
+                data_entries=$(find "$existing_dir/App-Data" -mindepth 1 -maxdepth 1 2>/dev/null | wc -l)
+                if [[ "$service_count" -eq 0 && "$data_entries" -eq 0 ]]; then
                     rm -rf "$existing_dir"
                     [[ -n "$removed_list" ]] && removed_list+=","
                     removed_list+="\"$(_api_json_escape "$dname")\""
@@ -12772,6 +13235,7 @@ ENV_EOF
 
 # POST /setup/complete — Requires auth, only when not initialized.
 # Creates the setup-complete marker file.
+# POST /setup/complete — Mark first-run setup as finished
 handle_setup_complete() {
     _api_require_setup_mode || return
     _api_init_auth_dir
@@ -12831,10 +13295,16 @@ handle_stack_rename() {
 
     mv "$old_dir" "$new_dir"
 
-    # Update DOCKER_STACKS in .env (word-boundary matching to prevent partial replacements)
-    # Only replace within the DOCKER_STACKS line, not across the entire file
-    if [[ -f "$BASE_DIR/.env" ]]; then
-        sed -i "/^DOCKER_STACKS=/s|\b${old_name}\b|${new_name}|g" "$BASE_DIR/.env"
+    # Update DOCKER_STACKS in .env by exact token (a regex word boundary would
+    # also match inside hyphenated names such as media-services)
+    if [[ -f "$BASE_DIR/.env" ]] && grep -q '^DOCKER_STACKS=' "$BASE_DIR/.env"; then
+        local _ds _new_ds="" _tok
+        _ds=$(grep -m1 '^DOCKER_STACKS=' "$BASE_DIR/.env" | cut -d= -f2- | tr -d '"' | tr -d "'")
+        for _tok in $_ds; do
+            [[ "$_tok" == "$old_name" ]] && _tok="$new_name"
+            _new_ds+="${_new_ds:+ }$_tok"
+        done
+        sed -i "s|^DOCKER_STACKS=.*|DOCKER_STACKS=\"${_new_ds}\"|" "$BASE_DIR/.env"
     fi
 
     _api_success "{\"success\": true, \"old_name\": \"$(_api_json_escape "$old_name")\", \"new_name\": \"$(_api_json_escape "$new_name")\"}"
@@ -12918,125 +13388,52 @@ _api_range_to_cutoff() {
 }
 
 # GET /metrics/history?range=1h|6h|24h|7d
-# Read JSONL metrics files, filter by time range, return as JSON array
+# The collector loop in start_server and POST /metrics/snapshot append to
+# METRICS_HISTORY_FILE; one jq pass filters it by time range.
+# GET /metrics/history — Metrics samples for a range (range=1h|6h|24h|7d)
 handle_metrics_history() {
     local range="${QUERY_PARAMS[range]:-1h}"
+    case "$range" in 1h|6h|24h|7d) ;; *) range="1h" ;; esac
     local cutoff
     cutoff=$(_api_range_to_cutoff "$range")
 
-    local metrics_dir="$BASE_DIR/.data/metrics"
-    if [[ ! -d "$metrics_dir" ]]; then
-        _api_success "{\"range\": \"$(_api_json_escape "$range")\", \"data\": [], \"count\": 0}"
-        return
+    local result=""
+    if [[ -f "$METRICS_HISTORY_FILE" ]]; then
+        result=$(jq -sc --argjson c "$cutoff" --arg range "$range" \
+            '[.[] | select((.epoch // 0) >= $c)] | {range: $range, data: ., count: length}' \
+            "$METRICS_HISTORY_FILE" 2>/dev/null)
     fi
-
-    local -a points=()
-    local now
-    now=$(date +%s)
-
-    # Determine which date-stamped files to read based on range
-    local days_back=1
-    case "$range" in
-        6h)  days_back=1 ;;
-        24h) days_back=2 ;;
-        7d)  days_back=8 ;;
-    esac
-
-    local i
-    for (( i=0; i<days_back; i++ )); do
-        local date_str
-        date_str=$(date -d "-${i} days" '+%Y-%m-%d' 2>/dev/null || date '+%Y-%m-%d')
-        local mfile="$metrics_dir/metrics-${date_str}.jsonl"
-        [[ -f "$mfile" ]] || continue
-
-        while IFS= read -r line; do
-            [[ -z "$line" ]] && continue
-            local ts_val
-            ts_val=$(printf '%s' "$line" | sed -n 's/.*"ts":\([0-9]*\).*/\1/p' 2>/dev/null || echo 0)
-            [[ $ts_val -ge $cutoff ]] && points+=("$line")
-        done < "$mfile"
-    done
-
-    local json
-    if [[ ${#points[@]} -eq 0 ]]; then
-        json="[]"
+    if [[ -n "$result" ]]; then
+        _api_success "$result"
     else
-        json=$(printf '%s,' "${points[@]}")
-        json="[${json%,}]"
+        _api_success "{\"range\": \"$range\", \"data\": [], \"count\": 0}"
     fi
-
-    _api_success "{\"range\": \"$(_api_json_escape "$range")\", \"data\": $json, \"count\": ${#points[@]}}"
 }
 
 # GET /metrics/summary?range=1h|6h|24h|7d
-# Compute avg/min/max for cpu, mem from metrics history
+# avg/min/max of cpu_pct and mem_pct over the range (computed in jq, no awk)
+# GET /metrics/summary — Min, max and average CPU and memory over a range
 handle_metrics_summary() {
     local range="${QUERY_PARAMS[range]:-1h}"
+    case "$range" in 1h|6h|24h|7d) ;; *) range="1h" ;; esac
     local cutoff
     cutoff=$(_api_range_to_cutoff "$range")
 
-    local metrics_dir="$BASE_DIR/.data/metrics"
-    if [[ ! -d "$metrics_dir" ]]; then
-        _api_success "{\"range\": \"$(_api_json_escape "$range")\", \"samples\": 0, \"cpu\": {\"avg\": 0, \"min\": 0, \"max\": 0}, \"mem\": {\"avg\": 0, \"min\": 0, \"max\": 0}}"
-        return
+    local result=""
+    if [[ -f "$METRICS_HISTORY_FILE" ]]; then
+        result=$(jq -sc --argjson c "$cutoff" --arg range "$range" '
+            [.[] | select((.epoch // 0) >= $c)] as $p
+            | def stat(f): ($p | map(f // 0)) as $v
+                | if ($v | length) == 0 then {avg: 0, min: 0, max: 0}
+                  else {avg: (($v | add) / ($v | length) * 10 | round / 10), min: ($v | min), max: ($v | max)} end;
+            {range: $range, samples: ($p | length), cpu: stat(.cpu_pct), mem: stat(.mem_pct)}
+        ' "$METRICS_HISTORY_FILE" 2>/dev/null)
     fi
-
-    local days_back=1
-    case "$range" in
-        6h)  days_back=1 ;;
-        24h) days_back=2 ;;
-        7d)  days_back=8 ;;
-    esac
-
-    # Collect all matching lines into a temp file for awk processing
-    local tmpfile
-    tmpfile=$(mktemp)
-
-    local i
-    for (( i=0; i<days_back; i++ )); do
-        local date_str
-        date_str=$(date -d "-${i} days" '+%Y-%m-%d' 2>/dev/null || date '+%Y-%m-%d')
-        local mfile="$metrics_dir/metrics-${date_str}.jsonl"
-        [[ -f "$mfile" ]] || continue
-
-        while IFS= read -r line; do
-            [[ -z "$line" ]] && continue
-            local ts_val
-            ts_val=$(printf '%s' "$line" | sed -n 's/.*"ts":\([0-9]*\).*/\1/p' 2>/dev/null || echo 0)
-            [[ $ts_val -ge $cutoff ]] && echo "$line" >> "$tmpfile"
-        done < "$mfile"
-    done
-
-    if [[ ! -s "$tmpfile" ]]; then
-        rm -f "$tmpfile"
-        _api_success "{\"range\": \"$(_api_json_escape "$range")\", \"samples\": 0, \"cpu\": {\"avg\": 0, \"min\": 0, \"max\": 0}, \"mem\": {\"avg\": 0, \"min\": 0, \"max\": 0}}"
-        return
+    if [[ -n "$result" ]]; then
+        _api_success "$result"
+    else
+        _api_success "{\"range\": \"$range\", \"samples\": 0, \"cpu\": {\"avg\": 0, \"min\": 0, \"max\": 0}, \"mem\": {\"avg\": 0, \"min\": 0, \"max\": 0}}"
     fi
-
-    # Use awk to extract cpu and mem values and compute stats
-    local stats
-    stats=$(awk '
-    BEGIN { cpu_sum=0; cpu_min=999999; cpu_max=0; mem_sum=0; mem_min=999999; mem_max=0; n=0 }
-    {
-        cpu=0; mem=0
-        if (match($0, /"cpu":([0-9.]+)/, a)) cpu=a[1]
-        if (match($0, /"mem":([0-9.]+)/, a)) mem=a[1]
-        cpu_sum+=cpu; mem_sum+=mem; n++
-        if (cpu<cpu_min) cpu_min=cpu; if (cpu>cpu_max) cpu_max=cpu
-        if (mem<mem_min) mem_min=mem; if (mem>mem_max) mem_max=mem
-    }
-    END {
-        if (n==0) { print "0 0 0 0 0 0 0 0"; exit }
-        printf "%.1f %.1f %.1f %.1f %.1f %.1f %d %d\n", cpu_sum/n, cpu_min, cpu_max, mem_sum/n, mem_min, mem_max, n, n
-    }' "$tmpfile" 2>/dev/null)
-
-    rm -f "$tmpfile"
-
-    local cpu_avg cpu_min cpu_max mem_avg mem_min mem_max samples _
-    read -r cpu_avg cpu_min cpu_max mem_avg mem_min mem_max samples _ <<< "$stats"
-    [[ -z "$samples" ]] && samples=0
-
-    _api_success "{\"range\": \"$(_api_json_escape "$range")\", \"samples\": $samples, \"cpu\": {\"avg\": $cpu_avg, \"min\": $cpu_min, \"max\": $cpu_max}, \"mem\": {\"avg\": $mem_avg, \"min\": $mem_min, \"max\": $mem_max}}"
 }
 
 # =============================================================================
@@ -13045,6 +13442,7 @@ handle_metrics_summary() {
 
 # GET /rollback/<stack>/snapshots
 # List all rollback snapshots for a stack
+# GET /rollback/{stack}/snapshots — Rollback snapshots of a stack
 handle_rollback_snapshots() {
     local stack="$1"
     local snap_dir="$BASE_DIR/.data/rollback/$stack"
@@ -13086,11 +13484,23 @@ handle_rollback_snapshots() {
     _api_success "{\"stack\": \"$(_api_json_escape "$stack")\", \"snapshots\": $json, \"count\": ${#entries[@]}}"
 }
 
+# Snapshot ids are directory names under .data/rollback/<stack>/ — plain
+# tokens only, never path components
+_api_validate_snapshot_id() {
+    if [[ -z "$1" || ${#1} -gt 64 || ! "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ || "$1" == *..* ]]; then
+        _api_error 400 "Invalid snapshot id"
+        return 1
+    fi
+    return 0
+}
+
 # GET /rollback/<stack>/snapshots/<timestamp>
 # Return metadata.json content for a specific snapshot
+# GET /rollback/{stack}/snapshots/{snapshot} — Content of a rollback snapshot
 handle_rollback_snapshot_detail() {
     local stack="$1"
     local timestamp="$2"
+    _api_validate_snapshot_id "$timestamp" || return
     local snap_dir="$BASE_DIR/.data/rollback/$stack/$timestamp"
 
     if [[ ! -d "$snap_dir" ]]; then
@@ -13099,7 +13509,7 @@ handle_rollback_snapshot_detail() {
     fi
 
     local meta="{}"
-    [[ -f "$snap_dir/metadata.json" ]] && meta=$(cat "$snap_dir/metadata.json" 2>/dev/null)
+    [[ -f "$snap_dir/metadata.json" ]] && meta=$(jq -c '.' "$snap_dir/metadata.json" 2>/dev/null || echo "{}")
 
     local compose_content=""
     if [[ -f "$snap_dir/docker-compose.yml" ]]; then
@@ -13112,13 +13522,14 @@ handle_rollback_snapshot_detail() {
     fi
 
     local images="[]"
-    [[ -f "$snap_dir/images.json" ]] && images=$(cat "$snap_dir/images.json" 2>/dev/null)
+    [[ -f "$snap_dir/images.json" ]] && images=$(jq -c '.' "$snap_dir/images.json" 2>/dev/null || echo "[]")
 
     _api_success "{\"stack\": \"$(_api_json_escape "$stack")\", \"timestamp\": \"$(_api_json_escape "$timestamp")\", \"metadata\": $meta, \"compose\": \"$compose_content\", \"env\": \"$env_content\", \"images\": $images}"
 }
 
 # POST /rollback/<stack>/restore — body: {"timestamp": "..."}
 # Restore a snapshot: copy files back, pull images, restart stack
+# POST /rollback/{stack}/restore — Restore a stack from a rollback snapshot (policy-scanned)
 handle_rollback_restore() {
     local stack="$1"
     local body="$2"
@@ -13135,11 +13546,7 @@ handle_rollback_restore() {
         return
     fi
 
-    # Validate timestamp format (prevent path traversal)
-    if [[ "$timestamp" == *"/"* ]] || [[ "$timestamp" == *".."* ]]; then
-        _api_error 400 "Invalid timestamp format"
-        return
-    fi
+    _api_validate_snapshot_id "$timestamp" || return
 
     local snap_dir="$BASE_DIR/.data/rollback/$stack/$timestamp"
     local stack_dir="$COMPOSE_DIR/$stack"
@@ -13154,6 +13561,13 @@ handle_rollback_restore() {
         return
     fi
 
+    # The archived compose goes through the same policy as a fresh edit
+    if [[ -f "$snap_dir/docker-compose.yml" ]]; then
+        local _scan_mode="strict"
+        [[ -f "$stack_dir/.dcs-trusted-templates" ]] && _scan_mode="deploy"
+        _api_scan_compose_security "$(cat "$snap_dir/docker-compose.yml")" "rollback of $stack" "$_scan_mode" || return
+    fi
+
     # Stop the stack first
     local compose_file="$stack_dir/docker-compose.yml"
     local env_file="$stack_dir/.env"
@@ -13165,30 +13579,32 @@ handle_rollback_restore() {
     [[ -f "$snap_dir/docker-compose.yml" ]] && cp "$snap_dir/docker-compose.yml" "$stack_dir/docker-compose.yml"
     [[ -f "$snap_dir/.env" ]] && cp "$snap_dir/.env" "$stack_dir/.env"
 
-    # Pull images listed in snapshot
-    local pull_output=""
-    if [[ -f "$snap_dir/images.json" ]] && command -v jq >/dev/null 2>&1; then
+    # Pull the images recorded in the snapshot (entries are either plain
+    # references or {name, digest} objects written by .lib/rollback.sh)
+    if [[ -f "$snap_dir/images.json" ]]; then
         local img
         while IFS= read -r img; do
-            [[ -z "$img" ]] && continue
-            docker pull "$img" 2>&1 || true
-        done < <(jq -r '.[]' "$snap_dir/images.json" 2>/dev/null)
+            [[ -z "$img" || "$img" == "unknown" ]] && continue
+            [[ "$img" =~ ^[a-zA-Z0-9][a-zA-Z0-9._:/@-]*$ ]] || continue
+            timeout 600 docker pull "$img" >/dev/null 2>&1 || true
+        done < <(jq -r '.[] | if type == "object" then (.digest // .name // empty) else . end' "$snap_dir/images.json" 2>/dev/null)
     fi
 
     # Restart the stack with restored files
-    compose_args=(-f "$stack_dir/docker-compose.yml")
-    [[ -f "$stack_dir/.env" ]] && compose_args+=(--env-file "$stack_dir/.env")
-    local start_output
-    start_output=$($DOCKER_COMPOSE_CMD "${compose_args[@]}" up -d 2>&1) || true
+    local _env_file=""
+    [[ -f "$stack_dir/.env" ]] && _env_file="$stack_dir/.env"
+    _compose_with_secrets "$stack_dir/docker-compose.yml" "$_env_file" up -d >/dev/null 2>&1 || true
 
     _api_success "{\"success\": true, \"stack\": \"$(_api_json_escape "$stack")\", \"restored_from\": \"$(_api_json_escape "$timestamp")\", \"message\": \"Stack restored and restarted\"}"
 }
 
 # GET /rollback/<stack>/diff/<timestamp>
 # Diff current compose/env against snapshot
+# GET /rollback/{stack}/diff/{snapshot} — Diff between a snapshot and the current stack files
 handle_rollback_diff() {
     local stack="$1"
     local timestamp="$2"
+    _api_validate_snapshot_id "$timestamp" || return
     local snap_dir="$BASE_DIR/.data/rollback/$stack/$timestamp"
     local stack_dir="$COMPOSE_DIR/$stack"
 
@@ -13234,10 +13650,8 @@ _decrypt_secret() {
     [[ -f "$enc_file" ]] || return 1
     [[ -f "$master_key_file" ]] || return 1
 
-    local master_key
-    master_key=$(cat "$master_key_file" 2>/dev/null) || return 1
-
-    openssl enc -d -aes-256-cbc -pbkdf2 -pass "pass:${master_key}" -in "$enc_file" 2>/dev/null
+    # -pass file: keeps the key out of /proc/*/cmdline (it reads the first line)
+    openssl enc -d -aes-256-cbc -pbkdf2 -pass "file:${master_key_file}" -in "$enc_file" 2>/dev/null
 }
 
 # Normalize ${SECRETS.KEY} → ${SECRETS_KEY} in a string.
@@ -13333,6 +13747,7 @@ handle_secrets_list() {
 
 # POST /secrets — body: {"key": "...", "value": "..."}
 # Encrypt and store a secret value
+# POST /secrets — Store an encrypted secret (also POST /secrets/{key})
 handle_secret_set() {
     local body="$1"
 
@@ -13357,23 +13772,28 @@ handle_secret_set() {
     fi
 
     local secrets_dir="$BASE_DIR/.secrets"
+    umask 077
     mkdir -p "$secrets_dir"
+    chmod 700 "$secrets_dir" 2>/dev/null
 
     local master_key_file="$secrets_dir/.master-key"
-    if [[ ! -f "$master_key_file" ]]; then
-        # Generate master key on first use
-        openssl rand -hex 32 > "$master_key_file"
+    if [[ ! -s "$master_key_file" ]]; then
+        # Generate master key on first use (private from the first byte)
+        if ! openssl rand -hex 32 > "$master_key_file" 2>/dev/null || [[ ! -s "$master_key_file" ]]; then
+            rm -f "$master_key_file"
+            _api_error 500 "Failed to generate the secrets master key"
+            return
+        fi
         chmod 600 "$master_key_file"
     fi
 
-    local master_key
-    master_key=$(cat "$master_key_file" 2>/dev/null)
-
     local enc_file="$secrets_dir/${key}.enc"
-    if printf '%s' "$value" | openssl enc -aes-256-cbc -salt -pbkdf2 -pass "pass:${master_key}" -out "$enc_file" 2>/dev/null; then
+    if printf '%s' "$value" | openssl enc -aes-256-cbc -salt -pbkdf2 -pass "file:${master_key_file}" -out "${enc_file}.tmp" 2>/dev/null && [[ -s "${enc_file}.tmp" ]]; then
+        mv -f "${enc_file}.tmp" "$enc_file"
         chmod 600 "$enc_file"
         _api_success "{\"success\": true, \"key\": \"$(_api_json_escape "$key")\", \"message\": \"Secret stored successfully\"}"
     else
+        rm -f "${enc_file}.tmp"
         _api_error 500 "Failed to encrypt secret"
     fi
 }
@@ -13399,7 +13819,7 @@ handle_secret_delete() {
     if command -v shred >/dev/null 2>&1; then
         shred -u "$enc_file" 2>/dev/null
     else
-        dd if=/dev/urandom of="$enc_file" bs=$(stat -c '%s' "$enc_file" 2>/dev/null || echo 64) count=1 2>/dev/null
+        dd if=/dev/urandom of="$enc_file" bs="$(stat -c '%s' "$enc_file" 2>/dev/null || echo 64)" count=1 2>/dev/null
         rm -f "$enc_file"
     fi
 
@@ -13455,6 +13875,7 @@ handle_schedules_list() {
 
 # POST /schedules — body: schedule entry JSON
 # Add a new schedule entry
+# POST /schedules — Create a scheduled task
 handle_schedule_create() {
     local body="$1"
     local sched_dir="$BASE_DIR/.data/schedules"
@@ -13476,9 +13897,20 @@ handle_schedule_create() {
         _api_error 400 "Missing required fields: name, action, and schedule"
         return
     fi
+    if ! _validate_cron_expression "$cron"; then
+        _api_error 400 "Invalid cron expression: $cron"
+        return
+    fi
+    local _target
+    _target=$(echo "$body" | jq -r '.target // empty' 2>/dev/null)
+    _api_validate_schedule_target "$action" "$_target" || return
 
     # Normalize: ensure both "cron" and "schedule" fields are present in the stored entry
-    body=$(echo "$body" | jq --arg c "$cron" '. + {cron: $c, schedule: $c}' 2>/dev/null)
+    body=$(echo "$body" | jq --arg c "$cron" 'select(type == "object") | . + {cron: $c, schedule: $c}' 2>/dev/null)
+    if [[ -z "$body" ]]; then
+        _api_error 400 "Request body must be a JSON object"
+        return
+    fi
 
     # Generate unique ID
     local id
@@ -13489,16 +13921,24 @@ handle_schedule_create() {
     new_entry=$(echo "$body" | jq --arg id "$id" --arg ts "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
         '. + {id: $id, enabled: true, created: $ts}' 2>/dev/null)
 
-    # Append to schedules array
+    # Append to schedules array (write to a temp file: a redirect would
+    # truncate the store before jq ran)
     local current="[]"
     [[ -f "$sched_file" ]] && current=$(cat "$sched_file" 2>/dev/null)
-    echo "$current" | jq --argjson entry "$new_entry" '. + [$entry]' > "$sched_file" 2>/dev/null
+    jq -e 'type == "array"' <<< "$current" >/dev/null 2>&1 || current="[]"
+    if ! echo "$current" | jq --argjson entry "$new_entry" '. + [$entry]' > "${sched_file}.tmp" 2>/dev/null; then
+        rm -f "${sched_file}.tmp"
+        _api_error 500 "Failed to save schedule"
+        return
+    fi
+    mv -f "${sched_file}.tmp" "$sched_file"
 
     _api_success "{\"success\": true, \"schedule\": $new_entry}"
 }
 
 # POST /schedules/<id>/update — body: updated fields
 # Update an existing schedule
+# POST /schedules/{id}/update — Update a scheduled task
 handle_schedule_update() {
     local sched_id="$1"
     local body="$2"
@@ -13522,13 +13962,35 @@ handle_schedule_update() {
         return
     fi
 
+    # The body must be an object; validate any new cron/target before merging
+    if ! jq -e 'type == "object"' <<< "$body" >/dev/null 2>&1; then
+        _api_error 400 "Request body must be a JSON object"
+        return
+    fi
+    local _ncron _naction _ntarget
+    _ncron=$(jq -r '.cron // .schedule // empty' <<< "$body" 2>/dev/null)
+    if [[ -n "$_ncron" ]] && ! _validate_cron_expression "$_ncron"; then
+        _api_error 400 "Invalid cron expression: $_ncron"
+        return
+    fi
+    [[ -n "$_ncron" ]] && body=$(jq --arg c "$_ncron" '. + {cron: $c, schedule: $c}' <<< "$body")
+    _naction=$(jq -r '.action // empty' <<< "$body" 2>/dev/null)
+    [[ -z "$_naction" ]] && _naction=$(jq -r --arg id "$sched_id" '.[] | select(.id == $id) | .action // empty' "$sched_file" 2>/dev/null)
+    _ntarget=$(jq -r '.target // empty' <<< "$body" 2>/dev/null)
+    [[ -z "$_ntarget" ]] && _ntarget=$(jq -r --arg id "$sched_id" '.[] | select(.id == $id) | .target // empty' "$sched_file" 2>/dev/null)
+    _api_validate_schedule_target "$_naction" "$_ntarget" || return
+
     # Merge updates into existing entry (preserve id)
     local updated
     updated=$(jq --arg id "$sched_id" --argjson updates "$body" \
         '[.[] | if .id == $id then . * $updates | .id = $id else . end]' \
         "$sched_file" 2>/dev/null)
+    if [[ -z "$updated" ]]; then
+        _api_error 500 "Failed to update schedule"
+        return
+    fi
 
-    echo "$updated" > "$sched_file"
+    printf '%s\n' "$updated" > "${sched_file}.tmp" && mv -f "${sched_file}.tmp" "$sched_file"
 
     local entry
     entry=$(echo "$updated" | jq --arg id "$sched_id" '.[] | select(.id == $id)' 2>/dev/null)
@@ -13597,6 +14059,37 @@ handle_schedule_toggle() {
     _api_success "{\"success\": true, \"id\": \"$(_api_json_escape "$sched_id")\", \"enabled\": $new_state}"
 }
 
+# A schedule's target is either a stack name (backup/update/restart) or, for
+# custom, an executable inside this installation. Nothing else is ever run.
+_api_validate_schedule_target() {
+    local action="$1" target="$2"
+    case "$action" in
+        backup)
+            [[ -z "$target" ]] && return 0
+            _api_validate_stack_name "$target" || return 1
+            ;;
+        update|restart|start|stop)
+            [[ -z "$target" ]] && return 0
+            _api_validate_stack_name "$target" || return 1
+            ;;
+        maintenance) ;;
+        custom)
+            local real
+            real=$(realpath -e -- "$target" 2>/dev/null)
+            if [[ -z "$target" || "$target" != /* || -z "$real" || "$real" != "$BASE_DIR/"* || ! -f "$real" || ! -x "$real" ]]; then
+                _api_error 400 "Custom schedule targets must be executable files inside $BASE_DIR"
+                return 1
+            fi
+            ;;
+        prune|health-check|metrics-snapshot) ;;
+        *)
+            _api_error 400 "Unknown schedule action: $action"
+            return 1
+            ;;
+    esac
+    return 0
+}
+
 # POST /schedules/<id>/run — Execute a schedule immediately
 handle_schedule_run() {
     local sched_id="$1"
@@ -13622,6 +14115,8 @@ handle_schedule_run() {
     name=$(printf '%s' "$entry" | jq -r '.name // empty' 2>/dev/null)
 
     [[ -z "$action" ]] && { _api_error 400 "Schedule has no action defined"; return; }
+    # The stored entry is re-validated at run time (it may predate validation)
+    _api_validate_schedule_target "$action" "$target" || return
 
     # Execute the action (same dispatch as the scheduler library)
     local output="" success="true"
@@ -13638,16 +14133,22 @@ handle_schedule_run() {
                 _bsrc="${BACKUP_SOURCE_DIR:-$BASE_DIR}"
                 _bstatus="$API_AUTH_DIR/backup-status.json"
                 _bpid_file="$API_AUTH_DIR/backup.pid"
-                local _bst="$(date -Iseconds)"
+                local _bst
+                _bst="$(date -Iseconds)"
                 mkdir -p "$_bdir" 2>/dev/null
 
                 printf '{"status":"running","started_at":"%s","filename":"%s","progress":"Scheduled backup starting...","percent":0,"stage":"prepare"}' \
                     "$_bst" "$_bfile" > "$_bstatus"
 
                 (
+                    umask 077
                     echo $BASHPID > "$_bpid_file"
                     local _btmp
-                    _btmp=$(mktemp -d /tmp/dcs-backup-XXXXXX)
+                    if ! _btmp=$(mktemp -d /tmp/dcs-backup-XXXXXX 2>/dev/null) || [[ -z "$_btmp" ]]; then
+                        printf '{"status":"error","error":"Could not create a temporary directory","progress":null,"percent":0,"stage":"error"}' > "$_bstatus"
+                        rm -f "$_bpid_file"
+                        exit 1
+                    fi
 
                     printf '{"status":"running","started_at":"%s","filename":"%s","progress":"Copying files...","percent":15,"stage":"copy"}' \
                         "$_bst" "$_bfile" > "$_bstatus"
@@ -13655,7 +14156,10 @@ handle_schedule_run() {
                     if [[ -n "$target" ]]; then
                         [[ -d "$COMPOSE_DIR/$target" ]] && rsync -a "$COMPOSE_DIR/$target/" "$_btmp/$target/" 2>/dev/null || true
                     else
-                        rsync -a --exclude='.git' --exclude='node_modules' "$_bsrc/" "$_btmp/" 2>/dev/null || true
+                        rsync -a --exclude='.git' --exclude='node_modules' --exclude='.data' --exclude='logs' \
+                            --exclude='.api-auth/tokens.json' --exclude='.api-auth/terminal-sessions.json' \
+                            --exclude='.api-auth/rate_limits.json' --exclude='.api-auth/*.log' --exclude='.api-auth/rates' \
+                            "$_bsrc/" "$_btmp/" 2>/dev/null || true
                     fi
 
                     printf '{"status":"running","started_at":"%s","filename":"%s","progress":"Creating archive...","percent":55,"stage":"archive"}' \
@@ -13678,20 +14182,35 @@ handle_schedule_run() {
                         printf '{"status":"error","error":"Archive creation failed","progress":null,"percent":0,"stage":"error"}' > "$_bstatus"
                     fi
                     rm -f "$_bpid_file"
-                ) &
+                ) </dev/null >/dev/null 2>&1 &
 
                 output="Backup started: $_bfile"
             fi
             ;;
         update)
-            if [[ -n "$target" ]]; then
-                output=$(cd "$BASE_DIR/Stacks/$target" 2>/dev/null && ${DOCKER_COMPOSE_CMD:-docker compose} pull 2>&1 && ${DOCKER_COMPOSE_CMD:-docker compose} up -d 2>&1) || success="false"
+            if [[ -n "$target" && -f "$COMPOSE_DIR/$target/docker-compose.yml" ]]; then
+                local _sched_env=""
+                [[ -f "$COMPOSE_DIR/$target/.env" ]] && _sched_env="$COMPOSE_DIR/$target/.env"
+                output=$(_compose_with_secrets "$COMPOSE_DIR/$target/docker-compose.yml" "$_sched_env" pull 2>&1 && _compose_with_secrets "$COMPOSE_DIR/$target/docker-compose.yml" "$_sched_env" up -d 2>&1) || success="false"
             else
-                output="No target specified" && success="false"
+                output="No target stack specified" && success="false"
             fi
             ;;
-        prune)
+        prune|maintenance)
             output=$(docker system prune -f 2>&1) || success="false"
+            ;;
+        start|stop)
+            if [[ -n "$target" && -f "$COMPOSE_DIR/$target/docker-compose.yml" ]]; then
+                local _sched_env=""
+                [[ -f "$COMPOSE_DIR/$target/.env" ]] && _sched_env="$COMPOSE_DIR/$target/.env"
+                if [[ "$action" == "start" ]]; then
+                    output=$(_compose_with_secrets "$COMPOSE_DIR/$target/docker-compose.yml" "$_sched_env" up -d 2>&1) || success="false"
+                else
+                    output=$(_compose_with_secrets "$COMPOSE_DIR/$target/docker-compose.yml" "$_sched_env" down --timeout 10 2>&1) || success="false"
+                fi
+            else
+                output="No target stack specified" && success="false"
+            fi
             ;;
         health-check)
             # Inline health check — scan running containers for unhealthy status
@@ -13716,10 +14235,12 @@ handle_schedule_run() {
             fi
             ;;
         restart)
-            if [[ -n "$target" ]]; then
-                output=$(cd "$BASE_DIR/Stacks/$target" 2>/dev/null && ${DOCKER_COMPOSE_CMD:-docker compose} restart 2>&1) || success="false"
+            if [[ -n "$target" && -f "$COMPOSE_DIR/$target/docker-compose.yml" ]]; then
+                local _sched_env=""
+                [[ -f "$COMPOSE_DIR/$target/.env" ]] && _sched_env="$COMPOSE_DIR/$target/.env"
+                output=$(_compose_with_secrets "$COMPOSE_DIR/$target/docker-compose.yml" "$_sched_env" restart 2>&1) || success="false"
             else
-                output="No target specified" && success="false"
+                output="No target stack specified" && success="false"
             fi
             ;;
         metrics-snapshot)
@@ -13734,16 +14255,13 @@ handle_schedule_run() {
             _ma=$(awk '/MemAvailable/ {printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || echo 0)
             _mu=$((_mt - _ma))
             [[ "$_mt" -gt 0 ]] && _mp=$(awk "BEGIN {printf \"%.1f\", $_mu/$_mt*100}") || _mp=0
-            _dp=$(df /home 2>/dev/null | tail -1 | awk '{print $5}' | tr -d '%'); [[ -z "$_dp" ]] && _dp=0
+            _dp=$(df -P "$BASE_DIR" 2>/dev/null | tail -1 | awk '{print $5}' | tr -d '%'); [[ -z "$_dp" ]] && _dp=0
             echo "{\"ts\":\"$_ts\",\"epoch\":$_ep,\"cpu_pct\":$_cp,\"load1\":$_l1,\"load5\":$_l5,\"load15\":$_l15,\"mem_used_mb\":$_mu,\"mem_total_mb\":$_mt,\"mem_pct\":$_mp,\"disk_pct\":$_dp}" >> "$_mf"
             output="Metrics snapshot captured"
             ;;
         custom)
-            if [[ -n "$target" && -x "$target" ]]; then
-                output=$("$target" 2>&1) || success="false"
-            else
-                output="Script not found or not executable: $target" && success="false"
-            fi
+            # Validated above: an executable inside this installation
+            output=$(timeout 600 "$target" 2>&1 | head -c 65536) || success="false"
             ;;
         *)
             output="Unknown action: $action" && success="false"
@@ -13757,12 +14275,15 @@ handle_schedule_run() {
         '[.[] | if .id == $id then .run_count = ((.run_count // 0) + 1) | .last_run = $ts else . end]' \
         "$sched_file" > "${sched_file}.tmp" && mv "${sched_file}.tmp" "$sched_file"
 
-    # Log to history
+    # Log to history (valid JSON per line, capped at 1000 entries)
     local history_file="$BASE_DIR/.data/schedules/history.jsonl"
-    local esc_out
-    esc_out=$(printf '%s' "$output" | head -c 500 | sed 's/"/\\"/g; s/$/\\n/' | tr -d '\n')
-    printf '{"timestamp":"%s","schedule_id":"%s","name":"%s","action":"%s","target":"%s","success":%s,"output":"%s","trigger":"manual"}\n' \
-        "$ts" "$sched_id" "$name" "$action" "$target" "$success" "$esc_out" >> "$history_file" 2>/dev/null
+    jq -nc --arg ts "$ts" --arg id "$sched_id" --arg name "$name" --arg action "$action" --arg target "$target" \
+        --argjson success "$success" --arg output "$(printf '%s' "$output" | head -c 500)" \
+        '{timestamp: $ts, schedule_id: $id, name: $name, action: $action, target: $target, success: $success, output: $output, trigger: "manual"}' \
+        >> "$history_file" 2>/dev/null
+    if [[ $(wc -l < "$history_file" 2>/dev/null || echo 0) -gt 1000 ]]; then
+        tail -n 1000 "$history_file" > "${history_file}.tmp" 2>/dev/null && mv -f "${history_file}.tmp" "$history_file"
+    fi
 
     _api_success "{\"success\": $success, \"action\": \"$(_api_json_escape "$action")\", \"output\": \"$(_api_json_escape "$(printf '%s' "$output" | head -c 200)")\"}"
 }
@@ -13777,57 +14298,42 @@ handle_schedule_history() {
         return
     fi
 
-    local -a entries=()
-    while IFS= read -r line; do
-        [[ -z "$line" ]] && continue
-        local line_id
-        if command -v jq >/dev/null 2>&1; then
-            line_id=$(printf '%s' "$line" | jq -r '.schedule_id // .id // empty' 2>/dev/null)
-        else
-            line_id=$(printf '%s' "$line" | sed -n 's/.*"schedule_id" *: *"\([^"]*\).*/\1/p' 2>/dev/null)
-            [[ -z "$line_id" ]] && line_id=$(printf '%s' "$line" | sed -n 's/.*"id" *: *"\([^"]*\).*/\1/p' 2>/dev/null)
-        fi
-        [[ "$line_id" == "$sched_id" ]] && entries+=("$line")
-    done < "$history_file"
-
+    # One jq pass; malformed lines are skipped rather than breaking the response
     local json
-    if [[ ${#entries[@]} -eq 0 ]]; then
-        json="[]"
-    else
-        json=$(printf '%s,' "${entries[@]}")
-        json="[${json%,}]"
-    fi
+    json=$(jq -c --arg id "$sched_id" 'select(type == "object" and ((.schedule_id // .id) == $id))' "$history_file" 2>/dev/null | jq -sc '.' 2>/dev/null)
+    [[ -z "$json" ]] && json="[]"
+    local count
+    count=$(jq 'length' <<< "$json" 2>/dev/null || echo 0)
 
-    _api_success "{\"schedule_id\": \"$(_api_json_escape "$sched_id")\", \"history\": $json, \"count\": ${#entries[@]}}"
+    _api_success "{\"schedule_id\": \"$(_api_json_escape "$sched_id")\", \"history\": $json, \"count\": ${count:-0}}"
 }
 
 # =============================================================================
 # FEATURE: HEALTH SCORING
 # =============================================================================
 
+HEALTH_SCORE_HISTORY_FILE="$BASE_DIR/.data/health-score-history.jsonl"
+
 # GET /health/score — Compute system-wide health score (0-100)
 # Factors: stacks (container health), resources (CPU/mem), images (freshness), uptime
+# GET /health/score — System health score (0-100) with its factors
 handle_health_score() {
     local now
     now=$(date +%s)
 
-    # ── Factor 1: Stack/container health (40% weight) ──
+    # ── Factor 1: Stack/container health (40% weight) — one docker call ──
     local total_containers=0 healthy_count=0 unhealthy_count=0
-    while IFS= read -r cid; do
-        [[ -z "$cid" ]] && continue
+    while IFS=$'\t' read -r state status; do
+        [[ -z "$state" ]] && continue
         total_containers=$((total_containers + 1))
-        local state health
-        state=$(docker inspect --format='{{.State.Status}}' "$cid" 2>/dev/null)
-        health=$(docker inspect --format='{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$cid" 2>/dev/null)
-
         if [[ "$state" == "running" ]]; then
-            if [[ "$health" == "unhealthy" ]]; then
+            if [[ "$status" == *"(unhealthy)"* ]]; then
                 unhealthy_count=$((unhealthy_count + 1))
             else
                 healthy_count=$((healthy_count + 1))
             fi
         fi
-    done < <(docker ps -a -q 2>/dev/null)
+    done < <(timeout 10 docker ps -a --format '{{.State}}\t{{.Status}}' 2>/dev/null)
 
     local stack_score=100
     if [[ $total_containers -gt 0 ]]; then
@@ -13869,11 +14375,8 @@ handle_health_score() {
         done < <(jq -r 'to_entries[] | "\(.key)=\(.value)"' "$_img_cache" 2>/dev/null)
     fi
 
-    while IFS= read -r line; do
-        [[ -z "$line" || "$line" == "REPOSITORY"* ]] && continue
-        local repo tag _rest
-        read -r repo tag _rest <<< "$line"
-        [[ "$repo" == "<none>" ]] && continue
+    while IFS=$'\t' read -r repo tag created_ts; do
+        [[ -z "$repo" || "$repo" == "<none>" ]] && continue
         total_images=$((total_images + 1))
 
         local full_image="${repo}:${tag}"
@@ -13889,16 +14392,13 @@ handle_health_score() {
             continue
         fi
 
-        # No cache — fall back to age-based check
-        local created_ts
-        created_ts=$(docker inspect --format '{{.Created}}' "$full_image" 2>/dev/null | head -1)
+        # No cache — fall back to age-based check (creation time comes with the listing)
         if [[ -n "$created_ts" ]]; then
             local created_epoch
             created_epoch=$(date -d "$created_ts" +%s 2>/dev/null || echo 0)
-            local age_days=$(( (now - created_epoch) / 86400 ))
-            [[ $age_days -gt 30 ]] && stale_images=$((stale_images + 1))
+            (( created_epoch > 0 )) && (( (now - created_epoch) / 86400 > 30 )) && stale_images=$((stale_images + 1))
         fi
-    done < <(docker images --format "{{.Repository}}\t{{.Tag}}\t{{.Size}}" 2>/dev/null)
+    done < <(docker images --format "{{.Repository}}\t{{.Tag}}\t{{.CreatedAt}}" 2>/dev/null)
 
     local image_score=100
     if [[ $total_images -gt 0 ]]; then
@@ -13923,6 +14423,13 @@ handle_health_score() {
     elif [[ $total_score -ge 70 ]]; then grade="C"
     elif [[ $total_score -ge 60 ]]; then grade="D"
     else grade="F"
+    fi
+
+    # Keep a bounded history so /health/score/history has data (max 2016 points, i.e. a week at 5-minute polls)
+    mkdir -p "$BASE_DIR/.data" 2>/dev/null
+    printf '{"ts":%d,"score":%d,"grade":"%s"}\n' "$now" "$total_score" "$grade" >> "$HEALTH_SCORE_HISTORY_FILE" 2>/dev/null
+    if [[ $(wc -l < "$HEALTH_SCORE_HISTORY_FILE" 2>/dev/null || echo 0) -gt 2016 ]]; then
+        tail -n 2016 "$HEALTH_SCORE_HISTORY_FILE" > "${HEALTH_SCORE_HISTORY_FILE}.tmp" 2>/dev/null && mv -f "${HEALTH_SCORE_HISTORY_FILE}.tmp" "$HEALTH_SCORE_HISTORY_FILE"
     fi
 
     _api_success "{\"score\": $total_score, \"grade\": \"$grade\", \"factors\": {\"stacks\": {\"score\": $stack_score, \"weight\": 0.4, \"healthy\": $healthy_count, \"unhealthy\": $unhealthy_count, \"total\": $total_containers}, \"resources\": {\"score\": $resource_score, \"weight\": 0.3, \"cpu_pct\": $cpu_pct, \"mem_pct\": $mem_pct}, \"images\": {\"score\": $image_score, \"weight\": 0.15, \"total\": $total_images, \"stale\": $stale_images}, \"uptime\": {\"score\": $uptime_score, \"weight\": 0.15, \"seconds\": $uptime_seconds}}, \"timestamp\": \"$(date -u '+%Y-%m-%dT%H:%M:%SZ')\"}"
@@ -13951,23 +14458,22 @@ handle_health_score_stack() {
     local total=${#container_ids[@]}
     local running=0 healthy=0 unhealthy=0 stopped=0
 
-    local cid
-    for cid in "${container_ids[@]}"; do
-        local state health
-        state=$(docker inspect --format='{{.State.Status}}' "$cid" 2>/dev/null)
-        health=$(docker inspect --format='{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$cid" 2>/dev/null)
-
-        if [[ "$state" == "running" ]]; then
-            running=$((running + 1))
-            if [[ "$health" == "unhealthy" ]]; then
-                unhealthy=$((unhealthy + 1))
+    # One inspect call for the whole stack
+    if [[ $total -gt 0 ]]; then
+        while IFS=$'\t' read -r state health; do
+            [[ -z "$state" ]] && continue
+            if [[ "$state" == "running" ]]; then
+                running=$((running + 1))
+                if [[ "$health" == "unhealthy" ]]; then
+                    unhealthy=$((unhealthy + 1))
+                else
+                    healthy=$((healthy + 1))
+                fi
             else
-                healthy=$((healthy + 1))
+                stopped=$((stopped + 1))
             fi
-        else
-            stopped=$((stopped + 1))
-        fi
-    done
+        done < <(timeout 10 docker inspect --format $'{{.State.Status}}\t{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "${container_ids[@]}" 2>/dev/null)
+    fi
 
     # Count expected services from compose file
     local expected_services
@@ -14007,15 +14513,13 @@ PROFILES_DIR="$BASE_DIR/.api-auth/profiles"
 
 # GET /settings/dashboard — Fetch user's dashboard layout
 handle_dashboard_layout_get() {
-    if ! _api_check_auth; then return; fi
-
     local username="${AUTH_USERNAME:-default}"
     mkdir -p "$DASHBOARD_LAYOUTS_DIR"
     local layout_file="$DASHBOARD_LAYOUTS_DIR/${username}.json"
 
-    if [[ -f "$layout_file" ]]; then
-        local content
-        content=$(cat "$layout_file" 2>/dev/null)
+    local content=""
+    [[ -f "$layout_file" ]] && content=$(jq -c '.' "$layout_file" 2>/dev/null)
+    if [[ -n "$content" ]]; then
         _api_success "{\"layout\": $content}"
     else
         _api_success "{\"layout\": null}"
@@ -14025,8 +14529,6 @@ handle_dashboard_layout_get() {
 # POST /settings/dashboard — Save user's dashboard layout
 handle_dashboard_layout_save() {
     local body="$1"
-    if ! _api_check_auth; then return; fi
-
     local username="${AUTH_USERNAME:-default}"
     mkdir -p "$DASHBOARD_LAYOUTS_DIR"
     local layout_file="$DASHBOARD_LAYOUTS_DIR/${username}.json"
@@ -14050,21 +14552,19 @@ handle_dashboard_layout_save() {
         return
     fi
 
-    printf '%s' "$layout" > "$layout_file"
+    printf '%s\n' "$layout" > "${layout_file}.tmp" && mv -f "${layout_file}.tmp" "$layout_file"
     _api_success "{\"success\": true, \"cards\": $card_count}"
 }
 
 # GET /settings/profile — Fetch user's profile settings
 handle_profile_get() {
-    if ! _api_check_auth; then return; fi
-
     local username="${AUTH_USERNAME:-default}"
     mkdir -p "$PROFILES_DIR"
     local profile_file="$PROFILES_DIR/${username}.json"
 
-    if [[ -f "$profile_file" ]]; then
-        local content
-        content=$(cat "$profile_file" 2>/dev/null)
+    local content=""
+    [[ -f "$profile_file" ]] && content=$(jq -c '.' "$profile_file" 2>/dev/null)
+    if [[ -n "$content" ]]; then
         _api_success "{\"profile\": $content}"
     else
         _api_success "{\"profile\": null}"
@@ -14074,8 +14574,6 @@ handle_profile_get() {
 # POST /settings/profile — Save user's profile settings
 handle_profile_save() {
     local body="$1"
-    if ! _api_check_auth; then return; fi
-
     local username="${AUTH_USERNAME:-default}"
     mkdir -p "$PROFILES_DIR"
     local profile_file="$PROFILES_DIR/${username}.json"
@@ -14092,62 +14590,30 @@ handle_profile_save() {
         return
     fi
 
-    printf '%s' "$profile" > "$profile_file"
+    printf '%s\n' "$profile" > "${profile_file}.tmp" && mv -f "${profile_file}.tmp" "$profile_file"
     _api_success "{\"success\": true}"
 }
 
 # GET /health/score/history?range=1h|24h|7d
 # Read health score history from metrics data
+# GET /health/score/history — Recorded health scores over a range
 handle_health_score_history() {
     local range="${QUERY_PARAMS[range]:-24h}"
+    case "$range" in 1h|6h|24h|7d) ;; *) range="24h" ;; esac
     local cutoff
     cutoff=$(_api_range_to_cutoff "$range")
 
-    local metrics_dir="$BASE_DIR/.data/metrics"
-    if [[ ! -d "$metrics_dir" ]]; then
-        _api_success "{\"range\": \"$(_api_json_escape "$range")\", \"history\": [], \"count\": 0}"
-        return
+    local result=""
+    if [[ -f "$HEALTH_SCORE_HISTORY_FILE" ]]; then
+        result=$(jq -sc --argjson c "$cutoff" --arg range "$range" \
+            '[.[] | select(type == "object" and (.ts // 0) >= $c)] | {range: $range, history: ., count: length}' \
+            "$HEALTH_SCORE_HISTORY_FILE" 2>/dev/null)
     fi
-
-    local days_back=1
-    case "$range" in
-        1h)  days_back=1 ;;
-        24h) days_back=2 ;;
-        7d)  days_back=8 ;;
-    esac
-
-    local -a points=()
-    local i
-    for (( i=0; i<days_back; i++ )); do
-        local date_str
-        date_str=$(date -d "-${i} days" '+%Y-%m-%d' 2>/dev/null || date '+%Y-%m-%d')
-        local mfile="$metrics_dir/metrics-${date_str}.jsonl"
-        [[ -f "$mfile" ]] || continue
-
-        while IFS= read -r line; do
-            [[ -z "$line" ]] && continue
-            local ts_val
-            ts_val=$(printf '%s' "$line" | sed -n 's/.*"ts":\([0-9]*\).*/\1/p' 2>/dev/null || echo 0)
-            if [[ $ts_val -ge $cutoff ]]; then
-                # Extract health_score field if present
-                local hs
-                hs=$(printf '%s' "$line" | sed -n 's/.*"health_score":\([0-9]*\).*/\1/p' 2>/dev/null || echo "")
-                if [[ -n "$hs" ]]; then
-                    points+=("{\"ts\": $ts_val, \"score\": $hs}")
-                fi
-            fi
-        done < "$mfile"
-    done
-
-    local json
-    if [[ ${#points[@]} -eq 0 ]]; then
-        json="[]"
+    if [[ -n "$result" ]]; then
+        _api_success "$result"
     else
-        json=$(printf '%s,' "${points[@]}")
-        json="[${json%,}]"
+        _api_success "{\"range\": \"$range\", \"history\": [], \"count\": 0}"
     fi
-
-    _api_success "{\"range\": \"$(_api_json_escape "$range")\", \"history\": $json, \"count\": ${#points[@]}}"
 }
 
 # =============================================================================
@@ -14158,6 +14624,35 @@ handle_health_score_history() {
 # Events: pre-start, post-start, pre-stop, post-stop, pre-update, post-update, pre-deploy, post-deploy
 # Context JSON is passed on stdin to each hook script.
 # Runs in background to avoid blocking API responses.
+# Is the plugin in DIR enabled? The manifest's "enabled" flag is the single
+# source of truth (install writes false, toggle flips it). A plugin without a
+# manifest counts as enabled for backwards compatibility.
+_plugin_enabled() {
+    local manifest="$1/plugin.json"
+    [[ -f "$manifest" ]] || return 0
+    [[ "$(jq -r 'if .enabled == null then true else .enabled end' "$manifest" 2>/dev/null)" == "true" ]]
+}
+
+# A file inside a plugin directory that is safe to read or write: a regular
+# file (never a symlink) whose real path stays inside that plugin.
+_plugin_path_ok() {
+    local plugin_dir="$1" file="$2" real
+    [[ -L "$file" ]] && return 1
+    [[ -e "$file" ]] || return 0
+    real=$(realpath -e -- "$file" 2>/dev/null) || return 1
+    [[ "$real" == "$(realpath -e -- "$plugin_dir" 2>/dev/null)/"* ]]
+}
+
+# Run one hook script with a clean environment: the context on stdin, a
+# minimal PATH/HOME and BASE_DIR — never the API server's environment, which
+# holds every value from .env (API tokens, Cloudflare credentials, ...).
+_plugin_exec_hook() {
+    local hook_script="$1" context="$2"
+    printf '%s' "$context" | env -i PATH="$PATH" HOME="$HOME" BASE_DIR="$BASE_DIR" DCS_EVENT="${3:-}" \
+        timeout "${4:-30}" "$hook_script" 2>&1 | head -c 65536
+    return "${PIPESTATUS[1]}"
+}
+
 _run_plugin_hooks() {
     local event="$1"
     local context="${2:-{\}}"
@@ -14168,27 +14663,30 @@ _run_plugin_hooks() {
     (
         for plugin_dir in "$PLUGINS_DIR"/*/; do
             [[ ! -d "$plugin_dir" ]] && continue
-            [[ -f "$plugin_dir/.disabled" ]] && continue
+            _plugin_enabled "$plugin_dir" || continue
 
             local hook_script="$plugin_dir/hooks/$event"
             [[ -f "$hook_script" && -x "$hook_script" ]] || {
                 hook_script="$plugin_dir/hooks/${event}.sh"
                 [[ -f "$hook_script" && -x "$hook_script" ]] || continue
             }
+            _plugin_path_ok "$plugin_dir" "$hook_script" || continue
 
             local plugin_name
             plugin_name=$(basename "$plugin_dir")
             local output
-            output=$(echo "$context" | timeout 30 "$hook_script" 2>&1) || true
+            output=$(_plugin_exec_hook "$hook_script" "$context" "$event") || true
 
-            # Log execution
+            # Log execution as one valid JSON line; keep the file bounded
             local log_file="$plugin_dir/execution.log"
-            printf '{"ts":"%s","event":"%s","plugin":"%s","output":"%s"}\n' \
-                "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$event" "$plugin_name" \
-                "$(printf '%s' "$output" | head -c 500 | sed 's/"/\\"/g' | tr '\n' ' ')" \
-                >> "$log_file" 2>/dev/null
+            jq -nc --arg ts "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" --arg ev "$event" --arg p "$plugin_name" \
+                --arg out "$(printf '%s' "$output" | head -c 500)" \
+                '{ts: $ts, event: $ev, plugin: $p, output: $out}' >> "$log_file" 2>/dev/null
+            if [[ $(wc -l < "$log_file" 2>/dev/null || echo 0) -gt 2000 ]]; then
+                tail -n 1000 "$log_file" > "${log_file}.tmp" 2>/dev/null && mv -f "${log_file}.tmp" "$log_file"
+            fi
         done
-    ) &
+    ) </dev/null >/dev/null 2>&1 &
 }
 
 # GET /plugins — Scan .plugins/ directory, return plugin manifest data
@@ -14216,7 +14714,7 @@ handle_plugins_list() {
             for tmpl_dir in "$dir/templates"/*/; do
                 [[ -d "$tmpl_dir" ]] || continue
                 [[ "$tfirst" == "true" ]] && tfirst=false || templates_json+=","
-                templates_json+="\"$(basename "$tmpl_dir")\""
+                templates_json+="\"$(_api_json_escape "$(basename "$tmpl_dir")")\""
             done
         fi
         templates_json+="]"
@@ -14229,26 +14727,24 @@ handle_plugins_list() {
             for hook_file in "$dir/hooks"/*; do
                 [[ -f "$hook_file" ]] || continue
                 [[ "$hfirst" == "true" ]] && hfirst=false || hooks_json+=","
-                hooks_json+="\"$(basename "$hook_file")\""
+                hooks_json+="\"$(_api_json_escape "$(basename "$hook_file")")\""
             done
         fi
         hooks_json+="]"
 
-        # Check enabled state
+        # Check enabled state (manifest flag)
         local enabled="true"
-        [[ -f "$dir/.disabled" ]] && enabled="false"
+        _plugin_enabled "$dir" || enabled="false"
 
-        if [[ -f "$manifest" ]]; then
+        if [[ -f "$manifest" ]] && jq -e 'type == "object"' "$manifest" >/dev/null 2>&1; then
             local content
-            content=$(cat "$manifest" 2>/dev/null)
-            if command -v jq >/dev/null 2>&1; then
-                content=$(echo "$content" | jq \
-                    --arg name "$name" \
-                    --argjson templates "$templates_json" \
-                    --argjson hooks "$hooks_json" \
-                    --argjson enabled "$enabled" \
-                    '. + {dir_name: $name, templates: $templates, hooks: $hooks, enabled: $enabled}' 2>/dev/null || echo "$content")
-            fi
+            content=$(jq -c \
+                --arg name "$name" \
+                --argjson templates "$templates_json" \
+                --argjson hooks "$hooks_json" \
+                --argjson enabled "$enabled" \
+                '. + {dir_name: $name, templates: $templates, hooks: $hooks, enabled: $enabled}' "$manifest" 2>/dev/null)
+            [[ -z "$content" ]] && content="{\"dir_name\": \"$(_api_json_escape "$name")\", \"name\": \"$(_api_json_escape "$name")\", \"error\": \"invalid manifest\", \"enabled\": $enabled, \"templates\": $templates_json, \"hooks\": $hooks_json}"
             entries+=("$content")
         else
             entries+=("{\"dir_name\": \"$(_api_json_escape "$name")\", \"name\": \"$(_api_json_escape "$name")\", \"version\": \"unknown\", \"enabled\": $enabled, \"has_manifest\": false, \"templates\": $templates_json, \"hooks\": $hooks_json}")
@@ -14268,6 +14764,7 @@ handle_plugins_list() {
 
 # POST /plugins/install — body: {"url": "..."}
 # Git clone a plugin to .plugins/
+# POST /plugins/install — Install a plugin from a git URL (installed disabled)
 handle_plugin_install() {
     local body="$1"
 
@@ -14310,30 +14807,36 @@ handle_plugin_install() {
         return
     fi
 
-    # SECURITY: Validate URL (SSRF protection) and prevent git option injection
-    _api_validate_url "$url" "Plugin clone URL" || return
-    if [[ "$url" == --* ]]; then
-        _api_error 400 "Invalid plugin URL"
-        return
-    fi
-
+    # Clone without following redirects (the SSRF check vetted this host only),
+    # without prompts, without symlinks and with a hard time limit
     local clone_output
-    clone_output=$(git clone --depth 1 -- "$url" "$target_dir" 2>&1)
+    clone_output=$(GIT_TERMINAL_PROMPT=0 timeout 120 git -c http.followRedirects=false -c core.symlinks=false \
+        clone --depth 1 -- "$url" "$target_dir" 2>&1)
     local exit_code=$?
 
     if [[ $exit_code -ne 0 ]]; then
         rm -rf "$target_dir" 2>/dev/null
-        _api_error 500 "Failed to clone plugin: $(_api_json_escape "$clone_output")"
+        _api_error 500 "Failed to clone plugin: $clone_output"
         return
     fi
+    if find "$target_dir" -type l -print -quit 2>/dev/null | grep -q .; then
+        rm -rf "$target_dir" 2>/dev/null
+        _api_error 400 "Plugin repository contains symbolic links — refusing to install"
+        return
+    fi
+    rm -rf "$target_dir/.git" 2>/dev/null
 
     # Read manifest if available and ensure disabled by default
     local manifest="{}"
     if [[ -f "$target_dir/plugin.json" ]]; then
-        if command -v jq >/dev/null 2>&1; then
+        if jq -e 'type == "object"' "$target_dir/plugin.json" >/dev/null 2>&1; then
             jq '.enabled = false' "$target_dir/plugin.json" > "$target_dir/plugin.json.tmp" && mv "$target_dir/plugin.json.tmp" "$target_dir/plugin.json"
+            manifest=$(jq -c '.' "$target_dir/plugin.json" 2>/dev/null || echo "{}")
+        else
+            rm -rf "$target_dir" 2>/dev/null
+            _api_error 400 "Plugin manifest (plugin.json) is not valid JSON"
+            return
         fi
-        manifest=$(cat "$target_dir/plugin.json" 2>/dev/null)
     fi
 
     _api_success "{\"success\": true, \"name\": \"$(_api_json_escape "$plugin_name")\", \"path\": \"$(_api_json_escape "$target_dir")\", \"manifest\": $manifest}"
@@ -14341,6 +14844,7 @@ handle_plugin_install() {
 
 # POST /plugins/scaffold — Create a plugin from inline definition (for bundled/featured plugins)
 # Body: {"name": "...", "manifest": {...}, "hooks": {"pre-deploy": "#!/bin/bash\n..."}}
+# POST /plugins/scaffold — Create a plugin from an inline manifest, hooks and cards
 handle_plugin_scaffold() {
     local body="$1"
 
@@ -14376,9 +14880,9 @@ handle_plugin_scaffold() {
     # Write manifest (plugin.json)
     if command -v jq >/dev/null 2>&1; then
         local manifest
-        manifest=$(echo "$body" | jq -r '.manifest // empty' 2>/dev/null)
-        if [[ -n "$manifest" && "$manifest" != "null" ]]; then
-            echo "$body" | jq '.manifest + {enabled: false}' > "$target_dir/plugin.json"
+        manifest=$(echo "$body" | jq -c '.manifest | select(type == "object")' 2>/dev/null)
+        if [[ -n "$manifest" ]]; then
+            printf '%s' "$manifest" | jq --arg n "$name" '. + {name: (.name // $n), enabled: false}' > "$target_dir/plugin.json"
         else
             # Build minimal manifest
             local desc
@@ -14443,7 +14947,7 @@ MANIFEST_EOF
     # Read back manifest
     local final_manifest="{}"
     if [[ -f "$target_dir/plugin.json" ]]; then
-        final_manifest=$(cat "$target_dir/plugin.json" 2>/dev/null)
+        final_manifest=$(jq -c '.' "$target_dir/plugin.json" 2>/dev/null || echo "{}")
     fi
 
     _api_success "{\"success\": true, \"name\": \"$(_api_json_escape "$name")\", \"path\": \"$(_api_json_escape "$target_dir")\", \"manifest\": $final_manifest}"
@@ -14597,30 +15101,27 @@ handle_plugin_hook_read() {
         _api_error 400 "Invalid plugin name"
         return
     fi
-    if [[ "$hook_name" == *"/"* ]] || [[ "$hook_name" == *".."* ]]; then
+    if [[ ! "$hook_name" =~ ^[a-zA-Z0-9_-]+(\.sh)?$ ]]; then
         _api_error 400 "Invalid hook name"
         return
     fi
 
-    local hook_file="$BASE_DIR/.plugins/$plugin_name/hooks/$hook_name"
+    local plugin_dir="$BASE_DIR/.plugins/$plugin_name"
+    local hook_file="$plugin_dir/hooks/$hook_name"
 
-    if [[ ! -f "$hook_file" ]]; then
+    if [[ ! -f "$hook_file" ]] || ! _plugin_path_ok "$plugin_dir" "$hook_file"; then
         _api_error 404 "Hook not found: $hook_name"
         return
     fi
 
     local content
-    content=$(cat "$hook_file" 2>/dev/null)
+    content=$(head -c 1048576 "$hook_file" 2>/dev/null)
     local executable="false"
     [[ -x "$hook_file" ]] && executable="true"
     local size
     size=$(stat -c%s "$hook_file" 2>/dev/null || echo "0")
 
-    # JSON-escape the content
-    local escaped_content
-    escaped_content=$(printf '%s' "$content" | python3 -c 'import sys,json; print(json.dumps(sys.stdin.read()))' 2>/dev/null || printf '%s' "$content" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\t/\\t/g' | awk '{printf "%s\\n", $0}' | sed '$ s/\\n$//')
-
-    _api_success "{\"plugin\": \"$(_api_json_escape "$plugin_name")\", \"hook\": \"$(_api_json_escape "$hook_name")\", \"content\": $escaped_content, \"executable\": $executable, \"size\": $size}"
+    _api_success "{\"plugin\": \"$(_api_json_escape "$plugin_name")\", \"hook\": \"$(_api_json_escape "$hook_name")\", \"content\": \"$(_api_json_escape "$content")\", \"executable\": $executable, \"size\": ${size:-0}}"
 }
 
 # PUT /plugins/:name/hooks/:hook — Update hook script
@@ -14634,7 +15135,7 @@ handle_plugin_hook_update() {
         _api_error 400 "Invalid plugin name"
         return
     fi
-    if [[ "$hook_name" == *"/"* ]] || [[ "$hook_name" == *".."* ]]; then
+    if [[ ! "$hook_name" =~ ^[a-zA-Z0-9_-]+(\.sh)?$ ]]; then
         _api_error 400 "Invalid hook name"
         return
     fi
@@ -14648,6 +15149,10 @@ handle_plugin_hook_update() {
         _api_error 404 "Plugin not found: $plugin_name"
         return
     fi
+    if [[ -L "$hooks_dir" ]] || ! _plugin_path_ok "$plugin_dir" "$hook_file"; then
+        _api_error 400 "Hook path is not writable (symbolic link)"
+        return
+    fi
 
     local content
     content=$(echo "$request_body" | jq -r '.content // empty' 2>/dev/null)
@@ -14658,8 +15163,8 @@ handle_plugin_hook_update() {
     fi
 
     mkdir -p "$hooks_dir"
-    printf '%s' "$content" > "$hook_file"
-    chmod +x "$hook_file"
+    printf '%s' "$content" > "${hook_file}.tmp" && chmod +x "${hook_file}.tmp" && mv -f "${hook_file}.tmp" "$hook_file"
+    _api_audit_log "${CLIENT_IP:-unknown}" "PLUGIN_HOOK_WRITE" "${AUTH_USERNAME:-unknown}" "$plugin_name/$hook_name"
 
     _api_success "{\"plugin\": \"$(_api_json_escape "$plugin_name")\", \"hook\": \"$(_api_json_escape "$hook_name")\", \"message\": \"Hook updated successfully\"}"
 }
@@ -14675,14 +15180,15 @@ handle_plugin_hook_test() {
         _api_error 400 "Invalid plugin name"
         return
     fi
-    if [[ "$hook_name" == *"/"* ]] || [[ "$hook_name" == *".."* ]]; then
+    if [[ ! "$hook_name" =~ ^[a-zA-Z0-9_-]+(\.sh)?$ ]]; then
         _api_error 400 "Invalid hook name"
         return
     fi
 
-    local hook_file="$BASE_DIR/.plugins/$plugin_name/hooks/$hook_name"
+    local plugin_dir="$BASE_DIR/.plugins/$plugin_name"
+    local hook_file="$plugin_dir/hooks/$hook_name"
 
-    if [[ ! -f "$hook_file" ]]; then
+    if [[ ! -f "$hook_file" ]] || ! _plugin_path_ok "$plugin_dir" "$hook_file"; then
         _api_error 404 "Hook not found: $hook_name"
         return
     fi
@@ -14694,19 +15200,14 @@ handle_plugin_hook_test() {
 
     # Build test context
     local test_context
-    test_context=$(echo "$request_body" | jq -r '.context // empty' 2>/dev/null)
+    test_context=$(echo "$request_body" | jq -c '.context | select(type == "object")' 2>/dev/null)
     [[ -z "$test_context" ]] && test_context="{\"stack\":\"test\",\"event\":\"$hook_name\",\"dry_run\":true,\"timestamp\":\"$(date -Iseconds)\"}"
 
-    # Execute with timeout, capture output
-    local output
-    local exit_code
-    output=$(echo "$test_context" | timeout 30 bash "$hook_file" 2>&1) || true
-    exit_code=$?
+    # Execute exactly as the hook runner does (same isolation, same timeout)
+    local output exit_code=0
+    output=$(_plugin_exec_hook "$hook_file" "$test_context" "$hook_name") || exit_code=$?
 
-    local escaped_output
-    escaped_output=$(printf '%s' "$output" | python3 -c 'import sys,json; print(json.dumps(sys.stdin.read()))' 2>/dev/null || printf '"%s"' "$output")
-
-    _api_success "{\"plugin\": \"$(_api_json_escape "$plugin_name")\", \"hook\": \"$(_api_json_escape "$hook_name")\", \"exit_code\": $exit_code, \"output\": $escaped_output}"
+    _api_success "{\"plugin\": \"$(_api_json_escape "$plugin_name")\", \"hook\": \"$(_api_json_escape "$hook_name")\", \"exit_code\": $exit_code, \"output\": \"$(_api_json_escape "$output")\"}"
 }
 
 # GET /plugins/:name/logs — Execution history
@@ -14733,20 +15234,14 @@ handle_plugin_logs() {
         return
     fi
 
-    # Read last 50 log entries (JSONL format)
-    local entries="["
-    local first=true
-    local count=0
-    while IFS= read -r line; do
-        [[ -z "$line" ]] && continue
-        $first || entries+=","
-        first=false
-        entries+="$line"
-        count=$((count+1))
-    done < <(tail -50 "$log_file" 2>/dev/null)
-    entries+="]"
+    # Read last 50 log entries (JSONL format); malformed lines are skipped
+    local entries
+    entries=$(tail -50 "$log_file" 2>/dev/null | jq -c 'select(type == "object")' 2>/dev/null | jq -sc '.' 2>/dev/null)
+    [[ -z "$entries" ]] && entries="[]"
+    local count
+    count=$(jq 'length' <<< "$entries" 2>/dev/null || echo 0)
 
-    _api_success "{\"plugin\": \"$(_api_json_escape "$plugin_name")\", \"entries\": $entries, \"total\": $count}"
+    _api_success "{\"plugin\": \"$(_api_json_escape "$plugin_name")\", \"entries\": $entries, \"total\": ${count:-0}}"
 }
 
 # POST /plugins/:name/config — Update plugin configuration
@@ -14774,26 +15269,25 @@ handle_plugin_config_update() {
     fi
 
     local config
-    config=$(echo "$request_body" | jq -r '.config // empty' 2>/dev/null)
+    config=$(echo "$request_body" | jq -c '.config | select(type == "object")' 2>/dev/null)
 
-    if [[ -z "$config" ]] || [[ "$config" == "null" ]]; then
+    if [[ -z "$config" ]]; then
         _api_error 400 "Config object is required"
         return
     fi
 
     # Merge config into manifest
-    if [[ -f "$manifest" ]]; then
-        local updated
+    local updated
+    if [[ -f "$manifest" ]] && jq -e 'type == "object"' "$manifest" >/dev/null 2>&1; then
         updated=$(jq --argjson cfg "$config" '.config = $cfg' "$manifest" 2>/dev/null)
-        if [[ -n "$updated" ]]; then
-            echo "$updated" > "$manifest"
-        else
-            _api_error 500 "Failed to update manifest"
-            return
-        fi
     else
-        echo "{\"name\":\"$plugin_name\",\"config\":$config}" > "$manifest"
+        updated=$(jq -n --arg n "$plugin_name" --argjson cfg "$config" '{name: $n, enabled: true, config: $cfg}' 2>/dev/null)
     fi
+    if [[ -z "$updated" ]]; then
+        _api_error 500 "Failed to update manifest"
+        return
+    fi
+    printf '%s\n' "$updated" > "${manifest}.tmp" && mv -f "${manifest}.tmp" "$manifest"
 
     _api_success "{\"plugin\": \"$(_api_json_escape "$plugin_name")\", \"message\": \"Configuration updated\"}"
 }
@@ -14862,15 +15356,16 @@ handle_plugin_card_content() {
         return
     fi
 
-    local html_file="$BASE_DIR/.plugins/$plugin_name/cards/$card_name/index.html"
+    local plugin_dir="$BASE_DIR/.plugins/$plugin_name"
+    local html_file="$plugin_dir/cards/$card_name/index.html"
 
-    if [[ ! -f "$html_file" ]]; then
+    if [[ ! -f "$html_file" ]] || ! _plugin_path_ok "$plugin_dir" "$html_file" || ! _plugin_enabled "$plugin_dir"; then
         _api_error 404 "Card not found: $plugin_name/$card_name"
         return
     fi
 
     local content
-    content=$(cat "$html_file" 2>/dev/null)
+    content=$(head -c 1048576 "$html_file" 2>/dev/null)
 
     _api_success "{\"plugin\": \"$(_api_json_escape "$plugin_name")\", \"card\": \"$(_api_json_escape "$card_name")\", \"html\": \"$(_api_json_escape "$content")\"}"
 }
@@ -14925,14 +15420,16 @@ handle_sse_stream() {
         printf "\r\n"
     } 2>/dev/null
 
-    # Start docker events listener in background
+    # docker events feeds the stream through a process substitution so that $!
+    # is the docker process itself; the EXIT trap kills it when the client goes
+    # away (the next printf fails, or SIGPIPE ends the handler).
     local events_pid=""
-    docker events --format '{{json .}}' 2>/dev/null | while IFS= read -r event_line; do
-        printf "event: docker-event\ndata: %s\n\n" "$event_line" 2>/dev/null || break
-    done &
+    trap 'kill "${events_pid:-}" 2>/dev/null; exit 0' EXIT PIPE TERM INT
+    docker events --format '{{json .}}' 2>/dev/null > >(while IFS= read -r event_line; do
+        printf "event: docker-event\ndata: %s\n\n" "$event_line" 2>/dev/null || exit 0
+    done) &
     events_pid=$!
 
-    # Ensure docker events process is killed when this function exits
     # Periodic metrics loop (every 5 seconds)
     local iteration=0
     while true; do
@@ -14955,10 +15452,12 @@ handle_sse_stream() {
         local mem_pct=0
         [[ $mem_total -gt 0 ]] && mem_pct=$(awk "BEGIN { printf \"%.1f\", (($mem_total - $mem_available) / $mem_total) * 100 }")
 
-        local running
-        running=$(timeout 3 docker ps -q 2>/dev/null | wc -l)
-        local total
-        total=$(timeout 3 docker ps -a -q 2>/dev/null | wc -l)
+        local running=0 total=0 _st
+        while IFS= read -r _st; do
+            [[ -z "$_st" ]] && continue
+            total=$((total + 1))
+            [[ "$_st" == "running" ]] && running=$((running + 1))
+        done < <(timeout 3 docker ps -a --format '{{.State}}' 2>/dev/null)
 
         local ts
         ts=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
@@ -14972,9 +15471,6 @@ handle_sse_stream() {
         iteration=$((iteration + 1))
         sleep 5
     done
-
-    # Cleanup background docker events listener
-    [[ -n "$events_pid" ]] && kill "$events_pid" 2>/dev/null
 }
 
 # =============================================================================
@@ -14982,20 +15478,30 @@ handle_sse_stream() {
 # =============================================================================
 
 handle_request() {
-    local method path
+    local method="" path=""
 
-    # Read the HTTP request line
+    # Read the HTTP request line (bounded wait: an idle connection must not pin
+    # a handler process forever)
     local request_line=""
-    read -r request_line
+    if ! read -r -t 10 request_line; then
+        printf 'HTTP/1.1 408 Request Timeout\r\nContent-Length: 0\r\nConnection: close\r\n\r\n'
+        return
+    fi
+    request_line="${request_line%%$'\r'}"
 
-    # Parse method and path
-    method=$(echo "$request_line" | awk '{print $1}')
-    path=$(echo "$request_line" | awk '{print $2}')
+    # Parse method and path without spawning subprocesses
+    read -r method path _ <<< "$request_line"
+    if [[ -z "$method" || -z "$path" || "$path" != /* ]]; then
+        printf 'HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n'
+        return
+    fi
 
     # Consume remaining headers and capture Content-Length, Authorization, Origin
     local header="" content_length=0
     REQUEST_AUTH_HEADER=""
     REQUEST_ORIGIN_HEADER=""
+    REQUEST_XFF_HEADER=""
+    AUTH_ERROR=""
     local _hdr_count=0
     while IFS= read -r -t 10 header; do
         (( ++_hdr_count ))
@@ -15041,6 +15547,10 @@ handle_request() {
             REQUEST_ORIGIN_HEADER="${REQUEST_ORIGIN_HEADER//$'\r'/}"
             REQUEST_ORIGIN_HEADER="${REQUEST_ORIGIN_HEADER//$'\n'/}"
         fi
+        # Capture X-Forwarded-For — only honoured when the peer is a trusted proxy
+        if [[ "${header,,}" == x-forwarded-for:* ]]; then
+            REQUEST_XFF_HEADER="${header#*: }"
+        fi
     done
 
     # Read request body if present (enforce size limit)
@@ -15080,8 +15590,13 @@ handle_request() {
         return
     fi
 
+    # Resolve the client IP once — used for whitelisting, rate limiting and audit
+    _api_resolve_client_ip
+    local client_ip="$CLIENT_IP"
+    REQUEST_METHOD="$method"
+    REQUEST_PATH="$path"
+
     # Log the request and increment stats counter
-    local client_ip="${SOCAT_PEERADDR:-127.0.0.1}"
     echo "$(date '+%Y-%m-%d %H:%M:%S') $method $path [${client_ip}]" >> "$API_LOG_FILE" 2>/dev/null
     # Atomic request counter increment (file-based, safe across forked handlers)
     if [[ -f "$API_STATS_FILE" ]]; then
@@ -15116,7 +15631,11 @@ handle_request() {
 
         # All other GET endpoints require authentication
         if ! _api_check_auth; then
-            _api_error 401 "Authentication required. Provide Authorization: Bearer <token> header."
+            _api_error 401 "${AUTH_ERROR:-Authentication required. Provide Authorization: Bearer <token> header.}"
+            return
+        fi
+        if ! _api_route_allowed "$method" "$path"; then
+            _api_error 403 "Admin access required"
             return
         fi
 
@@ -15171,7 +15690,7 @@ handle_request() {
             /topology)                  handle_topology ;;
             /traefik/status)            handle_traefik_status ;;
             /routes)                    handle_routes ;;
-            /routes/check)              handle_routes_check "${_QUERY_PARAMS[subdomain]:-}" ;;
+            /routes/check)              handle_routes_check "${QUERY_PARAMS[subdomain]:-}" ;;
             /dns/records)               handle_dns_records ;;
             /homarr/status)             handle_homarr_status ;;
             /metrics/history)           handle_metrics_history ;;
@@ -15190,6 +15709,7 @@ handle_request() {
                 pname="${pname%%/*}"
                 cname="${cname%%/*}"
                 _api_validate_resource_name "$pname" "plugin" || return
+                _api_validate_resource_name "$cname" "card" || return
                 handle_plugin_card_content "$pname" "$cname"
                 ;;
             /plugins/*/hooks/*)
@@ -15197,6 +15717,7 @@ handle_request() {
                 local hook_name="${pname#*/hooks/}"
                 pname="${pname%%/*}"
                 _api_validate_resource_name "$pname" "plugin" || return
+                _api_validate_resource_name "$hook_name" "hook" || return
                 handle_plugin_hook_read "$pname" "$hook_name"
                 ;;
             /plugins/*/hooks)
@@ -15402,7 +15923,11 @@ handle_request() {
 
         # All other POST endpoints require authentication
         if ! _api_check_auth; then
-            _api_error 401 "Authentication required. Provide Authorization: Bearer <token> header."
+            _api_error 401 "${AUTH_ERROR:-Authentication required. Provide Authorization: Bearer <token> header.}"
+            return
+        fi
+        if ! _api_route_allowed "$method" "$path"; then
+            _api_error 403 "Admin access required"
             return
         fi
 
@@ -15636,6 +16161,7 @@ handle_request() {
             /images/*/update)
                 local img="${path#/images/}"
                 img="${img%/update}"
+                _api_validate_image_ref "$img" || return
                 handle_image_update "$img" "$request_body"
                 ;;
             /notifications/rules)
@@ -15683,7 +16209,7 @@ handle_request() {
             /stacks/*/clone)
                 local sname="${path#/stacks/}"
                 sname="${sname%/clone}"
-                _api_validate_resource_name "$sname" "stack" || return
+                _api_validate_stack_name "$sname" || return
                 handle_stack_clone "$sname" "$request_body"
                 ;;
             /compose/validate)
@@ -15794,6 +16320,7 @@ handle_request() {
                 local hook_name="${rest%/test}"
                 pname="${pname%%/*}"
                 _api_validate_resource_name "$pname" "plugin" || return
+                _api_validate_resource_name "$hook_name" "hook" || return
                 handle_plugin_hook_test "$pname" "$hook_name" "$request_body"
                 ;;
             /plugins/*/hooks/*/update)
@@ -15802,6 +16329,7 @@ handle_request() {
                 local hook_name="${rest%/update}"
                 pname="${pname%%/*}"
                 _api_validate_resource_name "$pname" "plugin" || return
+                _api_validate_resource_name "$hook_name" "hook" || return
                 handle_plugin_hook_update "$pname" "$hook_name" "$request_body"
                 ;;
             /plugins/*/config)
@@ -15822,7 +16350,11 @@ handle_request() {
 
         # All PUT/PATCH endpoints require authentication
         if ! _api_check_auth; then
-            _api_error 401 "Authentication required. Provide Authorization: Bearer <token> header."
+            _api_error 401 "${AUTH_ERROR:-Authentication required. Provide Authorization: Bearer <token> header.}"
+            return
+        fi
+        if ! _api_route_allowed "$method" "$path"; then
+            _api_error 403 "Admin access required"
             return
         fi
 
@@ -15848,7 +16380,11 @@ handle_request() {
 
         # All DELETE endpoints require authentication
         if ! _api_check_auth; then
-            _api_error 401 "Authentication required. Provide Authorization: Bearer <token> header."
+            _api_error 401 "${AUTH_ERROR:-Authentication required. Provide Authorization: Bearer <token> header.}"
+            return
+        fi
+        if ! _api_route_allowed "$method" "$path"; then
+            _api_error 403 "Admin access required"
             return
         fi
 
@@ -15964,7 +16500,7 @@ start_server() {
     echo "  ${_A_BOLD}${_A_WHITE}PID${_A_RST}        ${_A_GRAY}$$${_A_RST}"
     echo "  ${_A_BOLD}${_A_WHITE}Base Dir${_A_RST}   ${_A_DIM}${BASE_DIR}${_A_RST}"
     echo ""
-    echo "  ${_A_DIM}${_A_GRAY}──────────────────────────────────────────────────────────${_A_RST}"
+    echo "  ${_A_DIM}${_A_GRAY}$(printf '%0.s─' $(seq 1 60))${_A_RST}"
     echo ""
     echo "  ${_A_GREEN}Endpoints${_A_RST}  ${_A_DIM}curl http://${API_BIND}:${API_PORT}/${_A_RST}"
     echo "  ${_A_GREEN}Stop${_A_RST}       ${_A_DIM}$0 --stop${_A_RST}"
@@ -15975,8 +16511,19 @@ start_server() {
     # Write PID file (use $BASHPID for the actual process PID, not $$ which is always the parent)
     echo "${BASHPID:-$$}" > "$API_PID_FILE"
 
-    # SECURITY: Graceful shutdown handler — clean up child processes and temp files
-    trap 'echo ""; echo "  Shutting down API server..."; kill $(jobs -p) 2>/dev/null; rm -f "$API_PID_FILE"; exit 0' SIGTERM SIGINT SIGHUP
+    if [[ "$API_AUTH_FORCED" == "true" ]]; then
+        echo "  WARNING: API_AUTH_ENABLED=false was ignored because the listener is not"
+        echo "           bound to loopback. Set API_INSECURE_NO_AUTH=true to override."
+        echo ""
+    elif [[ "$API_AUTH_ENABLED" != "true" ]] && ! _api_bind_is_loopback "$API_BIND"; then
+        echo "  WARNING: authentication is DISABLED on a non-loopback address"
+        echo "           (API_INSECURE_NO_AUTH=true). Anyone who can reach"
+        echo "           ${API_BIND}:${API_PORT} controls this Docker host."
+        echo ""
+    fi
+
+    # Graceful shutdown: stop the listener and every helper loop we started
+    trap '_api_shutdown_children; rm -f "$API_PID_FILE"; exit 0' SIGTERM SIGINT SIGHUP
 
     local self_path
     self_path="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
@@ -15993,6 +16540,8 @@ start_server() {
         local _m_interval="${METRICS_COLLECT_INTERVAL:-60}"
         local _m_file="$BASE_DIR/.api-auth/metrics-history.jsonl"
         _dcs_metrics_loop() {
+            # sleep runs as a job so SIGTERM ends the loop immediately
+            trap 'kill "${_sleep_pid:-}" 2>/dev/null; exit 0' TERM INT
             while true; do
                 local ts ep l1 l5 l15 nc cp mt ma mu mp dp
                 ts=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
@@ -16008,32 +16557,40 @@ start_server() {
                 else
                     mp=0
                 fi
-                dp=$(df /home 2>/dev/null | tail -1 | awk '{print $5}' | tr -d '%')
-                [[ -z "$dp" ]] && dp=$(df / 2>/dev/null | tail -1 | awk '{print $5}' | tr -d '%')
+                dp=$(df -P "$BASE_DIR" 2>/dev/null | tail -1 | awk '{print $5}' | tr -d '%')
+                [[ -z "$dp" ]] && dp=$(df -P / 2>/dev/null | tail -1 | awk '{print $5}' | tr -d '%')
                 [[ -z "$dp" ]] && dp=0
                 echo "{\"ts\":\"$ts\",\"epoch\":$ep,\"cpu_pct\":$cp,\"load1\":$l1,\"load5\":$l5,\"load15\":$l15,\"mem_used_mb\":$mu,\"mem_total_mb\":$mt,\"mem_pct\":$mp,\"disk_pct\":$dp}" >> "$_m_file"
                 # Trim to 10080 entries
                 local lc
                 lc=$(wc -l < "$_m_file" 2>/dev/null) || lc=0
                 [[ "$lc" -gt 10080 ]] && { tail -n 10080 "$_m_file" > "$_m_file.tmp" && mv "$_m_file.tmp" "$_m_file"; }
-                sleep "$_m_interval"
+                sleep "$_m_interval" & _sleep_pid=$!
+                wait "$_sleep_pid" || true
             done
         }
         _dcs_metrics_loop &
         echo "  Metrics collector started (interval: ${_m_interval}s)"
     fi
 
-    # Periodic cleanup: stale rate-limit files and TOTP tracking
+    # Periodic cleanup: stale rate-limit files and TOTP tracking.
+    # sleep runs as a job so SIGTERM ends the loop at once instead of leaving
+    # an hour-long sleep behind when the server stops.
     (
+        trap 'kill "${_sleep_pid:-}" 2>/dev/null; exit 0' TERM INT
         while true; do
-            sleep 3600
+            sleep 3600 & _sleep_pid=$!
+            wait "$_sleep_pid" || true
             find "${API_RATE_DIR:-$API_AUTH_DIR/rates}" -type f -mmin +1440 -delete 2>/dev/null
             : > "$API_AUTH_DIR/.totp-attempts" 2>/dev/null
         done
     ) &
 
-    # Start the listener — socat/ncat invoke this script with --handle-request
-    # which triggers the internal request handler (see ENTRY POINT below)
+    # Start the listener in the background and wait on it. A trap cannot run
+    # while bash is blocked on a foreground child, so this is what makes
+    # SIGTERM (systemd stop, --stop) actually stop the server. socat/ncat
+    # invoke this script with --handle-request for every connection.
+    local listener_pid
     if [[ "$LISTENER_CMD" == "socat" ]]; then
         if [[ "$API_TLS_ENABLED" == "true" ]]; then
             if [[ ! -f "$API_TLS_CERT" ]] || [[ ! -f "$API_TLS_KEY" ]]; then
@@ -16045,16 +16602,41 @@ start_server() {
             fi
             echo "Starting API server on https://${API_BIND}:${API_PORT} (TLS enabled)"
             socat "OPENSSL-LISTEN:${API_PORT},bind=${API_BIND},reuseaddr,fork,cert=${API_TLS_CERT},key=${API_TLS_KEY},verify=0" \
-                EXEC:"$self_path --handle-request",nofork
+                EXEC:"$self_path --handle-request",nofork &
         else
             echo "Starting API server on http://${API_BIND}:${API_PORT}"
             socat "TCP-LISTEN:${API_PORT},bind=${API_BIND},reuseaddr,fork" \
-                EXEC:"$self_path --handle-request",nofork
+                EXEC:"$self_path --handle-request",nofork &
         fi
     else
         # ncat mode
-        ncat -l -k "${API_BIND}" "${API_PORT}" -e "$self_path --handle-request"
+        ncat -l -k "${API_BIND}" "${API_PORT}" -e "$self_path --handle-request" &
     fi
+    listener_pid=$!
+
+    local rc=0
+    wait "$listener_pid" || rc=$?
+    # The listener exited on its own (port in use, crash): tidy up and report
+    _api_shutdown_children
+    rm -f "$API_PID_FILE"
+    return "$rc"
+}
+
+# Stop the listener and the background loops started by start_server
+_api_shutdown_children() {
+    echo ""
+    echo "  Shutting down API server..."
+    local pids
+    pids=$(jobs -p 2>/dev/null)
+    [[ -n "$pids" ]] && kill $pids 2>/dev/null
+    pkill -TERM -P "${BASHPID:-$$}" 2>/dev/null || true
+    # Request handlers are socat's children, not ours: end the long-lived ones
+    if [[ -n "${self_path:-}" ]]; then
+        local self_re
+        self_re=$(printf '%s' "$self_path" | sed 's/[][\.*^$+?(){}|]/\\&/g')
+        pkill -TERM -f -- "${self_re} --handle-request$" 2>/dev/null || true
+    fi
+    rm -f "$DDNS_PID_FILE" 2>/dev/null
 }
 
 # =============================================================================
