@@ -128,7 +128,7 @@ show_network_overview() {
     printf "  ${_DN_GRAY}%-25s %-12s %-10s %-14s %-8s${_DN_RESET}\n" \
         "$(_dn_repeat "-" 23)" "$(_dn_repeat "-" 10)" "$(_dn_repeat "-" 8)" "$(_dn_repeat "-" 12)" "$(_dn_repeat "-" 6)"
 
-    while IFS='|' read -r name driver scope net_id; do
+    while IFS='|' read -r name driver scope _; do
         [[ -z "$name" ]] && continue
 
         # Get subnet
@@ -197,7 +197,7 @@ show_network_detail() {
         echo "  ${_DN_BOLD}${_DN_BLUE}$network${_DN_RESET} ${_DN_DIM}($container_count containers)${_DN_RESET}"
 
         if [[ "$COMPACT_MODE" == "true" ]]; then
-            while IFS='|' read -r cname cip cmac; do
+            while IFS='|' read -r cname cip _; do
                 [[ -z "$cname" ]] && continue
                 echo "    ${_DN_GREEN}$cname${_DN_RESET} ${_DN_DIM}$cip${_DN_RESET}"
             done <<< "$containers"
@@ -208,7 +208,7 @@ show_network_detail() {
             local total_lines
             total_lines="$(echo "$containers" | wc -l)"
 
-            while IFS='|' read -r cname cip cmac; do
+            while IFS='|' read -r cname cip _; do
                 [[ -z "$cname" ]] && continue
                 (( line_count++ ))
 

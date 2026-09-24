@@ -14,6 +14,23 @@
 # Logger functions (log_info, log_error, etc.) must be available.
 # =============================================================================
 
+# confirm_deletion lives in .lib/helpers.sh, which the entry points do not
+# source; load it here so the safety prompt below is real
+if ! command -v confirm_deletion >/dev/null 2>&1 && [[ -f "${BASE_DIR:-.}/.lib/helpers.sh" ]]; then
+    # shellcheck source=/dev/null
+    source "${BASE_DIR:-.}/.lib/helpers.sh"
+fi
+if ! command -v confirm_deletion >/dev/null 2>&1; then
+    # Minimal fallback: default to "no", never block a headless run
+    confirm_deletion() {
+        local prompt="${1:-Are you sure?}" answer=""
+        [[ -t 0 ]] || return 1
+        read -r -t 8 -p "$prompt [y/N] " answer || true
+        echo
+        [[ "$answer" =~ ^[Yy]$ ]]
+    }
+fi
+
 # =============================================================================
 # MAIN CLEANUP FUNCTION
 # =============================================================================
@@ -32,6 +49,11 @@ cleanup_docker_services() {
 
     if [[ ! -d "$stacks_dir" ]]; then
         log_bold_nodate_warning "Stacks directory not found: $stacks_dir -- skipping cleanup"
+        return 0
+    fi
+
+    if ! command -v envsubst >/dev/null 2>&1; then
+        log_bold_nodate_warning "envsubst not found -- cannot resolve volume references, skipping cleanup"
         return 0
     fi
 

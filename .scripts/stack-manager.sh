@@ -100,8 +100,6 @@ _sm_print() {
 _sm_header() {
     local title="$1"
     local width=60
-    local border
-    border="$(printf '%0.s─' $(seq 1 "$width"))"
     local heavy_border
     heavy_border="$(printf '%0.s═' $(seq 1 "$width"))"
 
@@ -444,7 +442,7 @@ cmd_list() {
     _sm_header "Available Stacks"
 
     local stacks
-    stacks=($(_sm_get_stacks))
+    read -ra stacks <<< "$(_sm_get_stacks)"
 
     if [[ ${#stacks[@]} -eq 0 ]]; then
         _sm_warning "No stacks found in $COMPOSE_DIR"
@@ -488,7 +486,7 @@ cmd_running() {
     _sm_header "Running Stacks"
 
     local stacks
-    stacks=($(_sm_get_stacks))
+    read -ra stacks <<< "$(_sm_get_stacks)"
     local running_stacks=0
 
     printf "  ${_SM_BOLD}${_SM_CYAN}%-35s %-10s %-8s${_SM_RESET}\n" "STACK" "STATUS" "CONTAINERS"

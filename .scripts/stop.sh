@@ -196,7 +196,7 @@ stop_docker_compose_services() {
                 result_durations+=("$duration_str")
 
                 # Brief pause between stacks for system stability
-                sleep "${SERVICE_STOP_DELAY:-1}"
+                sleep "${SERVICE_STOP_DELAY:-10}"
             else
                 local timer_end
                 timer_end="$(date '+%s')"

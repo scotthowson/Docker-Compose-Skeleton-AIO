@@ -38,6 +38,14 @@ fi
 COMPOSE_DIR="${COMPOSE_DIR:-$BASE_DIR/Stacks}"
 APP_DATA_DIR="${APP_DATA_DIR:-$BASE_DIR/App-Data}"
 
+# Compose command detection is shared with the entry points
+if [[ -f "$BASE_DIR/.lib/docker-utils.sh" ]]; then
+    # shellcheck source=/dev/null
+    source "$BASE_DIR/.lib/docker-utils.sh"
+    _detect_docker_compose >/dev/null 2>&1 || true
+fi
+DOCKER_COMPOSE_CMD="${DOCKER_COMPOSE_CMD:-docker compose}"
+
 # =============================================================================
 # COLOR SETUP
 # =============================================================================
@@ -191,15 +199,19 @@ check_system() {
         _cv_fail "No Docker Compose installation found"
     fi
 
-    # Required tools
-    for tool in curl grep sed tput mktemp; do
+    # Required tools (jq, python3 and a listener are needed by the API server)
+    for tool in curl grep sed tput mktemp jq python3 openssl git; do
         if command -v "$tool" >/dev/null 2>&1; then
             _cv_pass "Required tool: $tool"
         else
-            _cv_warn "Optional tool missing: $tool"
+            _cv_fail "Required tool missing: $tool"
         fi
     done
-
+    if command -v socat >/dev/null 2>&1 || command -v ncat >/dev/null 2>&1; then
+        _cv_pass "API listener: $(command -v socat >/dev/null 2>&1 && echo socat || echo ncat)"
+    else
+        _cv_fail "API listener missing: install socat (or ncat)"
+    fi
     # Disk space
     local available_gb
     available_gb="$(df -BG "$BASE_DIR" 2>/dev/null | awk 'NR==2 {print $4}' | tr -d 'G')"
@@ -400,7 +412,8 @@ check_stacks() {
 
     for stack_dir in "$COMPOSE_DIR"/*/; do
         [[ ! -d "$stack_dir" ]] && continue
-        local stack_name="$(basename "$stack_dir")"
+        local stack_name
+        stack_name="$(basename "$stack_dir")"
         (( stack_count++ ))
 
         local compose_file="$stack_dir/docker-compose.yml"
@@ -448,7 +461,8 @@ check_ports() {
 
     for stack_dir in "$COMPOSE_DIR"/*/; do
         [[ ! -d "$stack_dir" ]] && continue
-        local stack_name="$(basename "$stack_dir")"
+        local stack_name
+        stack_name="$(basename "$stack_dir")"
         local compose_file="$stack_dir/docker-compose.yml"
 
         [[ ! -f "$compose_file" ]] && continue
@@ -465,7 +479,7 @@ check_ports() {
                     port_map["$host_port"]="$stack_name"
                 fi
             fi
-        done < <(grep -E '^\s*-?\s*"?\d+:\d+' "$compose_file" 2>/dev/null)
+        done < <(grep -E '^[[:space:]]*-?[[:space:]]*"?[0-9]+:[0-9]+' "$compose_file" 2>/dev/null)
     done
 
     if [[ "$conflicts" -eq 0 ]]; then
@@ -502,7 +516,6 @@ print_summary() {
     fi
 
     echo ""
-    local total=$(( PASS_COUNT + WARN_COUNT + FAIL_COUNT ))
     local border
     border="$(printf '%0.s-' {1..50})"
 

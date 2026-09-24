@@ -287,7 +287,8 @@ check_resource_usage() {
     done
 
     if [[ ${#high_cpu_containers[@]} -gt 0 ]] && [[ -n "${NTFY_URL:-}" ]]; then
-        local message="RESOURCE USAGE ALERT
+        local message
+        message="RESOURCE USAGE ALERT
 
 High CPU usage detected:
 $(printf " - %s\n" "${high_cpu_containers[@]}")

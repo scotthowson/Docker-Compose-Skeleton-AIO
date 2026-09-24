@@ -268,7 +268,7 @@ scan_images() {
             fi
 
             # Determine freshness based on image creation date
-            local status_icon status_color staleness="unknown" age_info="--"
+            local status_icon staleness="unknown" age_info="--"
             if [[ -n "$image_created" ]] && [[ "$image_created" != "--" ]]; then
                 local image_epoch
                 image_epoch="$(date -d "$image_created" '+%s' 2>/dev/null || echo 0)"
@@ -280,27 +280,22 @@ scan_images() {
 
                 if [[ "$update_status" == "updated" ]]; then
                     status_icon="${_IT_MAGENTA}UPDATED${_IT_RESET}"
-                    status_color="$_IT_MAGENTA"
                     staleness="updated"
                 elif [[ "$age_days" -lt 7 ]]; then
                     status_icon="${_IT_GREEN}CURRENT${_IT_RESET}"
-                    status_color="$_IT_GREEN"
                     staleness="current"
                     (( current_images++ ))
                 elif [[ "$age_days" -lt 30 ]]; then
                     status_icon="${_IT_YELLOW}AGING  ${_IT_RESET}"
-                    status_color="$_IT_YELLOW"
                     staleness="aging"
                     (( current_images++ ))
                 else
                     status_icon="${_IT_RED}STALE  ${_IT_RESET}"
-                    status_color="$_IT_RED"
                     staleness="stale"
                     (( outdated_images++ ))
                 fi
             else
                 status_icon="${_IT_GRAY}UNKNOWN${_IT_RESET}"
-                status_color="$_IT_GRAY"
                 (( unknown_images++ ))
             fi
 

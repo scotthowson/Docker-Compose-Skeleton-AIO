@@ -560,13 +560,11 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
                 # Combine today + errors filter
                 _lv_check_log_file || exit 1
                 _lv_header "Log Viewer — Today's Errors"
-                local today_date
                 today_date="$(date '+%b/%d/%Y')"
                 grep "$today_date" "$LOG_FILE" 2>/dev/null | grep -E '\[(ERROR|CRITICAL|ALERT)\]' | _lv_colorize_stream
             elif [[ "$_LV_FILTER_WARNINGS" == "true" ]]; then
                 _lv_check_log_file || exit 1
                 _lv_header "Log Viewer — Today's Warnings"
-                local today_date
                 today_date="$(date '+%b/%d/%Y')"
                 grep "$today_date" "$LOG_FILE" 2>/dev/null | grep -E '\[(WARNING|CAUTION)\]' | _lv_colorize_stream
             else

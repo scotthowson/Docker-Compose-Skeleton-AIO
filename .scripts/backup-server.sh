@@ -112,8 +112,17 @@ perform_docker_backup() {
     local rsync_err
     rsync_err=$(mktemp)
 
+    # Session tokens, rate-limit state, caches and logs are transient and must
+    # not travel in a backup; accounts and encrypted secrets do
+    local -a rsync_excludes=(
+        --exclude='App-Data/NextCloud/' --exclude='.git/' --exclude='.data/' --exclude='logs/'
+        --exclude='.api-auth/tokens.json' --exclude='.api-auth/terminal-sessions.json'
+        --exclude='.api-auth/rate_limits.json' --exclude='.api-auth/rates/' --exclude='.api-auth/*.log'
+    )
+    umask 077
+
     if rsync -av --delete --partial --stats \
-        --exclude='App-Data/NextCloud/' \
+        "${rsync_excludes[@]}" \
         "$BACKUP_SOURCE/" "$BACKUP_DIR_TEMP" 2>"$rsync_err"; then
 
         log_success "Rsync backup completed successfully"
@@ -129,7 +138,7 @@ perform_docker_backup() {
             rsync_err_sudo=$(mktemp)
 
             if sudo rsync -av --delete --partial --stats \
-                --exclude='App-Data/NextCloud/' \
+                "${rsync_excludes[@]}" \
                 "$BACKUP_SOURCE/" "$BACKUP_DIR_TEMP" 2>"$rsync_err_sudo"; then
 
                 log_success "Rsync backup completed with elevated permissions"
@@ -180,11 +189,12 @@ perform_docker_backup() {
     backup_count=$(find "$BACKUP_ROOT" -maxdepth 1 -name "Docker-Compose-Backup-*.tar.gz" -type f 2>/dev/null | wc -l)
 
     if [[ $backup_count -gt $RETENTION_COUNT ]]; then
-        find "$BACKUP_ROOT" -maxdepth 1 -name "Docker-Compose-Backup-*.tar.gz" -type f -printf '%T@ %p\n' \
-            | sort -n \
-            | head -n "$(( backup_count - RETENTION_COUNT ))" \
-            | awk '{print $2}' \
-            | xargs -r rm -f
+        # Null-delimited so paths with spaces survive
+        find "$BACKUP_ROOT" -maxdepth 1 -name "Docker-Compose-Backup-*.tar.gz" -type f -printf '%T@\t%p\0' \
+            | sort -z -n \
+            | head -z -n "$(( backup_count - RETENTION_COUNT ))" \
+            | cut -z -f2- \
+            | xargs -0 -r rm -f
 
         log_info "Removed old backups, keeping $RETENTION_COUNT most recent"
     else

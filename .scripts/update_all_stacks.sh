@@ -186,8 +186,6 @@ update_all_stacks() {
 
                 # Image ID baked into running containers (what they were started with)
                 local container_image_id=""
-                local container_name
-                container_name=$($DOCKER_COMPOSE_CMD ps --format "{{.Name}}" 2>/dev/null | head -1)
 
                 # Get image ID from containers using this image
                 while IFS= read -r cname; do

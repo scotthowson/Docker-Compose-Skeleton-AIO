@@ -151,7 +151,6 @@ _hc_load_stats_cache() {
         return
     fi
 
-    local line
     while IFS='|' read -r name mem; do
         [[ -z "$name" ]] && continue
         # Strip leading slash and whitespace

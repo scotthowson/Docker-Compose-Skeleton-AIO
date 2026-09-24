@@ -230,7 +230,7 @@ start_docker_compose_services() {
                 result_durations+=("$duration_str")
 
                 # Brief pause between stacks for system stability
-                sleep "${SERVICE_START_DELAY:-2}"
+                sleep "${SERVICE_START_DELAY:-5}"
             else
                 local timer_end
                 timer_end="$(date '+%s')"
