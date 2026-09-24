@@ -220,6 +220,18 @@ the repository; the format, the sandbox rules and the API are described in
 
 ---
 
+## Troubleshooting
+
+- **The dashboard says "Connection Unstable" / "Connection Restored" in a loop, or the wizard never
+  appeared.** The browser tab holds a session from an earlier install. Reload the page
+  (Ctrl+Shift+R) or sign out; with web UI 2.23.1 or newer this happens automatically.
+- **`API server failed to start`** after `./setup.sh`: `logs/api-server.log` names the process
+  that already holds the port. Stop it or change `API_PORT` in `.env`.
+- **A viewer account gets 403** on an action: by design. Only admins change the system; see
+  [docs/API.md](docs/API.md) for the access level of every endpoint.
+- **Everything else**: `.scripts/config-validator.sh` checks the installation, `tests/lint.sh` the
+  code, and `logs/` holds the API and framework logs.
+
 ## Development
 
 ```bash

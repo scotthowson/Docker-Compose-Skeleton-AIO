@@ -50,6 +50,14 @@ repository, a test suite and generated documentation. The API version is now 1.3
   complete; admins can read it again (it stays anonymous only during first-run setup).
 - Authentication events (logins, failures, lockouts, invites, TOTP changes...) were written to a
   text file nothing read; they now also appear in `GET /audit` and can trigger webhooks.
+- The server refuses to start when its port is held by another process and names it, instead of
+  failing silently inside socat; `--stop` no longer kills whatever listens on the port (another
+  DCS installation, an unrelated service), only orphaned DCS listeners.
+- A browser tab that was already showing the dashboard kept a session from an older UI (local
+  accounts, no API token), so after `./setup.sh` it polled with no credentials, never showed the
+  wizard and flapped between "Connection Unstable" and "Connection Restored". The bundled web UI
+  now ends such a session on the first 401 and lands on the login/setup flow (UI 2.23.1);
+  `setup.sh` reminds you to reload an already-open dashboard.
 - The systemd unit used `Type=forking` for a foreground process and flapped every 30 seconds.
 - `setup.sh` crashed on hosts without Docker (undefined `_warn`), refused nothing when run with
   `sudo`, corrupted quoted `.env` values with an unanchored `sed`, and kept a loopback-bound API

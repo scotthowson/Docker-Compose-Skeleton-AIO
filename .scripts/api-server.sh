@@ -307,16 +307,23 @@ if [[ "$STOP_SERVER" == "true" ]]; then
         rm -f "$API_PID_FILE"
     fi
 
-    # Fallback: anything still bound to the port (an orphaned listener from an
-    # older version, or a server started without a PID file)
+    # Fallback: an orphaned DCS listener still bound to the port (older
+    # version, or a server started without a PID file). Anything else that
+    # owns the port — another program, or another DCS installation — is
+    # reported, never killed.
     _leftover=$(_api_port_listeners "$API_PORT")
-    if [[ -n "$_leftover" ]]; then
-        kill -TERM $_leftover 2>/dev/null || true
-        sleep 0.5
-        kill -KILL $_leftover 2>/dev/null || true
-        echo "Stopped listener on port ${API_PORT} (PID ${_leftover})"
-        stopped=true
-    fi
+    for _p in $_leftover; do
+        _cmd=$(tr '\0' ' ' < "/proc/${_p}/cmdline" 2>/dev/null || true)
+        if [[ "$_cmd" == *api-server.sh* ]]; then
+            kill -TERM "$_p" 2>/dev/null || true
+            sleep 0.5
+            kill -KILL "$_p" 2>/dev/null || true
+            echo "Stopped orphaned listener on port ${API_PORT} (PID ${_p})"
+            stopped=true
+        else
+            echo "Port ${API_PORT} is held by PID ${_p} (${_cmd:0:70}) — not a DCS API server, left running"
+        fi
+    done
     # Long-lived request handlers (SSE and log streams) outlive the listener.
     # They belong to this installation (matched by this script's absolute
     # path), so end them as well.
@@ -16507,6 +16514,24 @@ start_server() {
     echo ""
     echo "  ${_A_BOLD}${_A_BLUE}${border}${_A_RST}"
     echo ""
+
+    # Refuse to start on a port something else already owns (another DCS
+    # installation, an unrelated service): a bind failure inside socat would
+    # only show up as a dead API from the UI's side.
+    local _holders _h
+    _holders=$(_api_port_listeners "$API_PORT")
+    if [[ -n "$_holders" ]]; then
+        for _h in $_holders; do
+            echo "  ERROR: port ${API_PORT} is already in use by PID ${_h}: $(tr '\0' ' ' < "/proc/${_h}/cmdline" 2>/dev/null | cut -c1-80)" >&2
+        done
+        echo "         Stop that process ('$0 --stop' removes an orphaned DCS listener)," >&2
+        echo "         or set API_PORT in .env to a free port, then start again." >&2
+        exit 1
+    elif command -v ss >/dev/null 2>&1 && [[ -n "$(ss -Hltn "sport = :${API_PORT}" 2>/dev/null)" ]]; then
+        echo "  ERROR: port ${API_PORT} is already in use by another user's process." >&2
+        echo "         Set API_PORT in .env to a free port, then start again." >&2
+        exit 1
+    fi
 
     # Write PID file (use $BASHPID for the actual process PID, not $$ which is always the parent)
     echo "${BASHPID:-$$}" > "$API_PID_FILE"

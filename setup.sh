@@ -639,6 +639,8 @@ _print_url_banner() {
     _row "${C_BOLD}${C_CYAN}" ""
     echo -e "${C_BOLD}${C_CYAN}  ╚═════════════════════════════════════════════════════════╝${C_RESET}"
     echo ""
+    _info "Dashboard already open in a browser? Reload it (Ctrl+Shift+R) so it talks to this server."
+    echo ""
 }
 
 # =============================================================================
