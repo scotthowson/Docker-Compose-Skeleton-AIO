@@ -33,18 +33,25 @@ secrets_init() {
 
     # Generate master key if needed and encryption is enabled
     if [[ "$SECRETS_ENCRYPTION" == "true" ]]; then
-        secrets_generate_master_key
+        secrets_generate_master_key || return 1
     fi
 }
 
-# Generate a random master key if it doesn't exist
+# Generate a random master key if it doesn't exist. The key is written to a
+# private temp file first: a failing openssl must never leave an empty key
+# behind that would then silently "encrypt" every secret.
 secrets_generate_master_key() {
-    if [[ -f "$SECRETS_MASTER_KEY_FILE" ]]; then
+    if [[ -s "$SECRETS_MASTER_KEY_FILE" ]]; then
         return 0
     fi
 
-    openssl rand -hex 32 > "$SECRETS_MASTER_KEY_FILE" 2>/dev/null
-    chmod 600 "$SECRETS_MASTER_KEY_FILE"
+    local tmp="${SECRETS_MASTER_KEY_FILE}.tmp"
+    if ! (umask 077; openssl rand -hex 32 > "$tmp") 2>/dev/null || [[ ! -s "$tmp" ]]; then
+        rm -f "$tmp"
+        echo "Failed to generate the secrets master key (is openssl installed?)" >&2
+        return 1
+    fi
+    chmod 600 "$tmp" && mv -f "$tmp" "$SECRETS_MASTER_KEY_FILE"
 }
 
 # =============================================================================
@@ -99,20 +106,28 @@ secrets_set() {
     local value="$2"
 
     _secrets_validate_key "$key" || return 1
-    secrets_init
+    secrets_init || return 1
 
-    local encrypted
-    encrypted=$(_secrets_encrypt "$value")
-
+    local target
+    local payload
     if [[ "$SECRETS_ENCRYPTION" == "true" ]]; then
-        printf '%s' "$encrypted" > "$SECRETS_DIR/${key}.enc"
-        chmod 600 "$SECRETS_DIR/${key}.enc"
+        target="$SECRETS_DIR/${key}.enc"
+        payload=$(_secrets_encrypt "$value")
+        if [[ -z "$payload" ]]; then
+            echo "Failed to encrypt secret: $key" >&2
+            return 1
+        fi
     else
-        printf '%s' "$value" > "$SECRETS_DIR/${key}"
-        chmod 600 "$SECRETS_DIR/${key}"
+        target="$SECRETS_DIR/${key}"
+        payload="$value"
     fi
 
-    return 0
+    if ! (umask 077; printf '%s' "$payload" > "${target}.tmp") 2>/dev/null; then
+        rm -f "${target}.tmp"
+        echo "Failed to write secret: $key" >&2
+        return 1
+    fi
+    chmod 600 "${target}.tmp" && mv -f "${target}.tmp" "$target"
 }
 
 # Get a secret value
@@ -191,43 +206,65 @@ secrets_exists() {
 # IMPORT / EXPORT
 # =============================================================================
 
-# Export all secrets as an encrypted tar bundle
+# Export all secrets as an encrypted tar bundle.
+# The bundle is encrypted with the master key and does NOT contain it — move
+# .secrets/.master-key to the destination separately (and securely).
 secrets_export_bundle() {
     local output_path="${1:-${BASE_DIR}/secrets-export-$(date '+%Y%m%d').tar.enc}"
-    secrets_init
+    secrets_init || return 1
 
-    local tmp_tar="/tmp/dcs-secrets-export-$$.tar"
-    tar -cf "$tmp_tar" -C "$SECRETS_DIR" . 2>/dev/null
-
-    if [[ -f "$SECRETS_MASTER_KEY_FILE" ]]; then
-        openssl enc -aes-256-cbc -pbkdf2 -iter 100000 -salt \
-            -pass "file:$SECRETS_MASTER_KEY_FILE" \
-            -in "$tmp_tar" -out "$output_path" 2>/dev/null
-    else
-        cp "$tmp_tar" "$output_path"
+    local tmp_dir
+    tmp_dir=$(mktemp -d) || return 1
+    chmod 700 "$tmp_dir"
+    local tmp_tar="$tmp_dir/bundle.tar"
+    if ! tar -cf "$tmp_tar" -C "$SECRETS_DIR" --exclude='.master-key' --exclude='.gitignore' . 2>/dev/null; then
+        rm -rf "$tmp_dir"
+        return 1
     fi
 
-    rm -f "$tmp_tar"
-    echo "$output_path"
+    local rc=0
+    if [[ -s "$SECRETS_MASTER_KEY_FILE" ]]; then
+        (umask 077; openssl enc -aes-256-cbc -pbkdf2 -iter 100000 -salt \
+            -pass "file:$SECRETS_MASTER_KEY_FILE" \
+            -in "$tmp_tar" -out "$output_path") 2>/dev/null || rc=1
+    else
+        (umask 077; cp "$tmp_tar" "$output_path") || rc=1
+    fi
+
+    rm -rf "$tmp_dir"
+    [[ $rc -eq 0 ]] && echo "$output_path"
+    return $rc
 }
 
-# Import secrets from an encrypted tar bundle
+# Import secrets from an encrypted tar bundle (created by secrets_export_bundle)
 secrets_import_bundle() {
     local input_path="$1"
     [[ ! -f "$input_path" ]] && { echo "File not found: $input_path" >&2; return 1; }
 
-    secrets_init
-    local tmp_tar="/tmp/dcs-secrets-import-$$.tar"
+    secrets_init || return 1
+    local tmp_dir
+    tmp_dir=$(mktemp -d) || return 1
+    chmod 700 "$tmp_dir"
+    local tmp_tar="$tmp_dir/bundle.tar"
 
-    if [[ -f "$SECRETS_MASTER_KEY_FILE" ]]; then
+    local rc=0
+    if [[ -s "$SECRETS_MASTER_KEY_FILE" ]]; then
         openssl enc -aes-256-cbc -pbkdf2 -iter 100000 -d -salt \
             -pass "file:$SECRETS_MASTER_KEY_FILE" \
-            -in "$input_path" -out "$tmp_tar" 2>/dev/null
+            -in "$input_path" -out "$tmp_tar" 2>/dev/null || rc=1
     else
-        cp "$input_path" "$tmp_tar"
+        cp "$input_path" "$tmp_tar" || rc=1
     fi
 
-    tar -xf "$tmp_tar" -C "$SECRETS_DIR" 2>/dev/null
-    rm -f "$tmp_tar"
-    return 0
+    # Only plain files at the top level of the archive are restored
+    if [[ $rc -eq 0 ]]; then
+        if tar -tf "$tmp_tar" 2>/dev/null | grep -qE '^\.\./|/\.\./|^/'; then
+            echo "Refusing bundle with path traversal entries" >&2
+            rc=1
+        else
+            tar -xf "$tmp_tar" -C "$SECRETS_DIR" --no-absolute-names --exclude='.master-key' 2>/dev/null || rc=1
+        fi
+    fi
+    rm -rf "$tmp_dir"
+    return $rc
 }

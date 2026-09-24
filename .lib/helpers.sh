@@ -2,9 +2,9 @@
 # This script contains helper functions that provide various utilities to the application.
 
 # Sets the terminal title to the provided argument.
-# Inputs: 
+# Inputs:
 #   $1 - The title string to be set for the terminal.
-# Usage: 
+# Usage:
 #   set_terminal_title "My Application"
 set_terminal_title() {
     local title=$1

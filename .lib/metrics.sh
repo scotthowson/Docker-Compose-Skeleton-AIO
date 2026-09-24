@@ -4,7 +4,7 @@
 # Stores time-series data in JSONL format for historical trending
 # Provides collection, querying, rotation, and background daemon
 #
-# Dependencies: docker, /proc filesystem, awk, date
+# Dependencies: docker, /proc filesystem, jq, date
 # Requires: Bash 4+
 # =============================================================================
 
@@ -143,19 +143,10 @@ metrics_query() {
         return 0
     fi
 
-    # Read file and filter by timestamp, output as JSON array
-    awk -v cutoff="$cutoff" '
-    BEGIN { printf "["; sep="" }
-    {
-        # Extract ts field
-        match($0, /"ts":"([^"]+)"/, arr)
-        if (arr[1] >= cutoff) {
-            printf "%s%s", sep, $0
-            sep=","
-        }
-    }
-    END { print "]" }
-    ' "$METRICS_FILE"
+    # ISO-8601 UTC timestamps compare lexically. Lines that fail to parse
+    # (a partial write) are skipped rather than aborting the query.
+    jq -Rc --arg cutoff "$cutoff" 'fromjson? | select(type == "object" and (.ts // "") >= $cutoff)' "$METRICS_FILE" 2>/dev/null \
+        | jq -sc '.' 2>/dev/null || echo '[]'
 }
 
 # Return summary statistics for a time range
@@ -165,49 +156,19 @@ metrics_summary() {
     local data
     data=$(metrics_query "$range")
 
-    if [[ "$data" == "[]" ]]; then
-        printf '{"range":"%s","cpu":{"min":0,"max":0,"avg":0},"memory":{"min":0,"max":0,"avg":0},"disk":{"min":0,"max":0,"avg":0}}' "$range"
+    local empty
+    empty=$(printf '{"range":"%s","cpu":{"min":0,"max":0,"avg":0},"memory":{"min":0,"max":0,"avg":0},"disk":{"min":0,"max":0,"avg":0}}' "$range")
+    if [[ -z "$data" || "$data" == "[]" ]]; then
+        echo "$empty"
         return 0
     fi
 
-    echo "$data" | awk '
-    BEGIN {
-        cpu_min=999; cpu_max=0; cpu_sum=0
-        mem_min=999; mem_max=0; mem_sum=0
-        disk_min=999; disk_max=0; disk_sum=0
-        count=0
-    }
-    {
-        # Parse cpu_percent
-        if (match($0, /"cpu_percent":([0-9.]+)/, a)) {
-            v = a[1]+0
-            if (v < cpu_min) cpu_min = v
-            if (v > cpu_max) cpu_max = v
-            cpu_sum += v
-        }
-        if (match($0, /"memory_percent":([0-9.]+)/, a)) {
-            v = a[1]+0
-            if (v < mem_min) mem_min = v
-            if (v > mem_max) mem_max = v
-            mem_sum += v
-        }
-        if (match($0, /"disk_percent":([0-9.]+)/, a)) {
-            v = a[1]+0
-            if (v < disk_min) disk_min = v
-            if (v > disk_max) disk_max = v
-            disk_sum += v
-        }
-        count++
-    }
-    END {
-        if (count == 0) count = 1
-        if (cpu_min == 999) cpu_min = 0
-        if (mem_min == 999) mem_min = 0
-        if (disk_min == 999) disk_min = 0
-        printf "{\"range\":\"%s\",\"cpu\":{\"min\":%.1f,\"max\":%.1f,\"avg\":%.1f},\"memory\":{\"min\":%.1f,\"max\":%.1f,\"avg\":%.1f},\"disk\":{\"min\":%.1f,\"max\":%.1f,\"avg\":%.1f}}", \
-            "'"$range"'", cpu_min, cpu_max, cpu_sum/count, mem_min, mem_max, mem_sum/count, disk_min, disk_max, disk_sum/count
-    }
-    ' RS='},{' ORS='},{'
+    printf '%s' "$data" | jq -c --arg range "$range" '
+        def stat(f): (map((f // 0) | tonumber? // 0)) as $v
+            | if ($v | length) == 0 then {min: 0, max: 0, avg: 0}
+              else {min: ($v | min), max: ($v | max), avg: (($v | add) / ($v | length) * 10 | round / 10)} end;
+        {range: $range, cpu: stat(.cpu_percent), memory: stat(.memory_percent), disk: stat(.disk_percent)}
+    ' 2>/dev/null || echo "$empty"
 }
 
 # =============================================================================
@@ -226,14 +187,14 @@ metrics_rotate() {
         return 0
     fi
 
+    # Never replace the history with the output of a failed transform
     local tmp_file="${METRICS_FILE}.tmp"
-    awk -v cutoff="$cutoff" '
-    {
-        match($0, /"ts":"([^"]+)"/, arr)
-        if (arr[1] >= cutoff) print
-    }
-    ' "$METRICS_FILE" > "$tmp_file"
-    mv "$tmp_file" "$METRICS_FILE"
+    if jq -Rc --arg cutoff "$cutoff" 'fromjson? | select(type == "object" and (.ts // "") >= $cutoff)' "$METRICS_FILE" > "$tmp_file" 2>/dev/null; then
+        mv -f "$tmp_file" "$METRICS_FILE"
+    else
+        rm -f "$tmp_file"
+        return 1
+    fi
 }
 
 # =============================================================================

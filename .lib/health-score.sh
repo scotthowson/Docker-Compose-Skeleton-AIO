@@ -250,7 +250,8 @@ health_score_system() {
     local images_score=80
     local total_images stale_images
     total_images=$(docker images -q 2>/dev/null | wc -l)
-    stale_images=$(docker images --format '{{.CreatedSince}}' 2>/dev/null | grep -c 'months\|years' || echo 0)
+    stale_images=$(docker images --format '{{.CreatedSince}}' 2>/dev/null | grep -c 'months\|years')
+    [[ "$stale_images" =~ ^[0-9]+$ ]] || stale_images=0
     if (( total_images > 0 )); then
         local fresh_pct=$(( (total_images - stale_images) * 100 / total_images ))
         if (( fresh_pct >= 90 )); then images_score=100

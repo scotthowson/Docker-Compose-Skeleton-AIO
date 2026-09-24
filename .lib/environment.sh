@@ -41,6 +41,12 @@ _ensure_tool_installed() {
 
     log_error "Required tool '$tool' is not installed."
 
+    # Headless runs (systemd, cron) cannot answer a prompt: report and carry on
+    if [[ ! -t 0 ]]; then
+        log_warning "No terminal attached — install '$tool' manually and re-run"
+        return 1
+    fi
+
     read -rp "Do you want to install '$tool' now? [y/N] " answer
     if [[ ! "$answer" =~ ^[Yy]$ ]]; then
         log_error "Installation of '$tool' declined. Exiting script."
@@ -78,15 +84,20 @@ verify_environment() {
 
     # Core dependencies
     local -a required_tools=("curl" "docker" "jq" "openssl" "git" "python3")
+    local -a missing_tools=()
 
     for tool in "${required_tools[@]}"; do
-        _ensure_tool_installed "$tool"
+        _ensure_tool_installed "$tool" || missing_tools+=("$tool")
     done
 
     # API server listener — need at least one of socat or ncat
     if ! command -v socat &>/dev/null && ! command -v ncat &>/dev/null; then
         log_warning "Neither 'socat' nor 'ncat' found — API server requires one of these"
-        _ensure_tool_installed "socat"
+        _ensure_tool_installed "socat" || missing_tools+=("socat")
+    fi
+
+    if [[ ${#missing_tools[@]} -gt 0 ]]; then
+        log_warning "Missing tools: ${missing_tools[*]} — some features will not work until they are installed"
     fi
 
     # Verify optional but recommended tools

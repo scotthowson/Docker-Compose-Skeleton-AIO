@@ -159,17 +159,17 @@ _sse_stream_combined() {
     metrics_json=$(_sse_collect_metrics)
     _sse_send_event "metrics" "$metrics_json"
 
-    # Start docker events in background, piping to our stdout
+    # Start docker events in the background. The reader is a process
+    # substitution so that $! is the docker process itself (a pipeline would
+    # give us the subshell and leak docker events on every disconnect).
     local docker_pid=""
-    {
-        docker events --format '{{json .}}' 2>/dev/null | while IFS= read -r line; do
-            [[ -n "$line" ]] && _sse_send_event "docker-event" "$line"
-        done
-    } &
+    docker events --format '{{json .}}' 2>/dev/null > >(while IFS= read -r line; do
+        [[ -n "$line" ]] && _sse_send_event "docker-event" "$line"
+    done) &
     docker_pid=$!
 
-    # Trap to clean up background process
-    trap "kill $docker_pid 2>/dev/null; exit 0" EXIT INT TERM
+    # Trap to clean up background process (single quotes: expand when signalled)
+    trap 'kill "${docker_pid:-}" 2>/dev/null; exit 0' EXIT INT TERM
 
     # Main loop: send metrics and keepalives at intervals
     while true; do

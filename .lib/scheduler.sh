@@ -4,7 +4,7 @@
 # Cron-like scheduled operations with JSON-based configuration
 # Supports: backup, update, prune, health-check, restart, custom actions
 #
-# Dependencies: date, awk
+# Dependencies: date, jq
 # Requires: Bash 4+
 # =============================================================================
 
@@ -38,6 +38,17 @@ _scheduler_gen_id() {
 # CRUD OPERATIONS
 # =============================================================================
 
+# Replace schedules.json atomically; refuses anything that is not a JSON array
+_scheduler_write_config() {
+    local content="$1"
+    local tmp_file="${SCHEDULER_CONFIG}.tmp"
+    if ! printf '%s\n' "$content" | jq -c 'if type == "array" then . else empty end' > "$tmp_file" 2>/dev/null || [[ ! -s "$tmp_file" ]]; then
+        rm -f "$tmp_file"
+        return 1
+    fi
+    mv -f "$tmp_file" "$SCHEDULER_CONFIG"
+}
+
 # Add a new schedule
 # Usage: scheduler_add name schedule_expr action [target]
 scheduler_add() {
@@ -48,25 +59,21 @@ scheduler_add() {
 
     scheduler_init
 
-    local id
+    local id created_at next_run
     id=$(_scheduler_gen_id)
-    local created_at
     created_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
-    local next_run
     next_run=$(_scheduler_calculate_next_run "$schedule_expr")
 
-    # Read existing, append new entry, write back
-    local tmp_file="${SCHEDULER_CONFIG}.tmp"
-    local new_entry="{\"id\":\"$id\",\"name\":\"$name\",\"schedule\":\"$schedule_expr\",\"action\":\"$action\",\"target\":\"$target\",\"enabled\":true,\"created_at\":\"$created_at\",\"last_run\":null,\"next_run\":\"$next_run\",\"run_count\":0}"
+    # Built with jq so names and targets are always valid JSON
+    local new_entry
+    new_entry=$(jq -nc --arg id "$id" --arg name "$name" --arg schedule "$schedule_expr" \
+        --arg action "$action" --arg target "$target" --arg created "$created_at" --arg next "$next_run" \
+        '{id: $id, name: $name, schedule: $schedule, action: $action, target: $target, enabled: true,
+          created_at: $created, last_run: null, next_run: $next, run_count: 0}') || return 1
 
-    if [[ "$(cat "$SCHEDULER_CONFIG")" == "[]" ]]; then
-        echo "[$new_entry]" > "$tmp_file"
-    else
-        # Insert before the closing bracket
-        sed '$ s/]$/,'"$(echo "$new_entry" | sed 's/[&/\]/\\&/g')"']/' "$SCHEDULER_CONFIG" > "$tmp_file"
-    fi
-
-    mv "$tmp_file" "$SCHEDULER_CONFIG"
+    local updated
+    updated=$(jq -c --argjson e "$new_entry" '. + [$e]' "$SCHEDULER_CONFIG" 2>/dev/null) || updated="[$new_entry]"
+    _scheduler_write_config "$updated" || return 1
     echo "$new_entry"
 }
 
@@ -74,86 +81,40 @@ scheduler_add() {
 scheduler_remove() {
     local id="$1"
     scheduler_init
-
-    local tmp_file="${SCHEDULER_CONFIG}.tmp"
-    awk -v id="$id" '
-    BEGIN { RS="},"; ORS="" }
-    {
-        if (index($0, "\"id\":\"" id "\"") == 0) {
-            if (NR > 1 && printed) printf "},";
-            print $0;
-            printed = 1
-        }
-    }
-    ' "$SCHEDULER_CONFIG" > "$tmp_file"
-
-    # Fix JSON array formatting
-    local content
-    content=$(cat "$tmp_file")
-    # Simple approach: re-read and filter using grep
-    python3 -c "
-import json, sys
-try:
-    with open('$SCHEDULER_CONFIG') as f:
-        data = json.load(f)
-    data = [s for s in data if s.get('id') != '$id']
-    print(json.dumps(data))
-except:
-    print('[]')
-" > "$tmp_file" 2>/dev/null || echo '[]' > "$tmp_file"
-
-    mv "$tmp_file" "$SCHEDULER_CONFIG"
+    local updated
+    updated=$(jq -c --arg id "$id" '[.[] | select(.id != $id)]' "$SCHEDULER_CONFIG" 2>/dev/null) || return 1
+    _scheduler_write_config "$updated"
 }
 
 # List all schedules as JSON array
 scheduler_list() {
     scheduler_init
-    cat "$SCHEDULER_CONFIG"
+    jq -c 'if type == "array" then . else [] end' "$SCHEDULER_CONFIG" 2>/dev/null || echo '[]'
 }
 
 # Get a single schedule by ID
 scheduler_get() {
     local id="$1"
     scheduler_init
-
-    python3 -c "
-import json
-try:
-    with open('$SCHEDULER_CONFIG') as f:
-        data = json.load(f)
-    match = [s for s in data if s.get('id') == '$id']
-    print(json.dumps(match[0]) if match else '{}')
-except:
-    print('{}')
-" 2>/dev/null || echo '{}'
+    jq -c --arg id "$id" '[.[] | select(.id == $id)] | .[0] // {}' "$SCHEDULER_CONFIG" 2>/dev/null || echo '{}'
 }
 
-# Update a schedule field
+# Update a schedule field. Values that parse as JSON (true, 3, {...}) are
+# stored typed; anything else is stored as a string. Prints the updated entry.
 scheduler_update() {
     local id="$1"
     local field="$2"
     local value="$3"
 
     scheduler_init
+    [[ "$field" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || return 1
 
-    python3 -c "
-import json
-try:
-    with open('$SCHEDULER_CONFIG') as f:
-        data = json.load(f)
-    for s in data:
-        if s.get('id') == '$id':
-            try:
-                s['$field'] = json.loads('$value')
-            except:
-                s['$field'] = '$value'
-            print(json.dumps(s))
-            break
-    with open('$SCHEDULER_CONFIG', 'w') as f:
-        json.dump(data, f)
-except Exception as e:
-    print(json.dumps({'error': str(e)}))
-" 2>/dev/null
+    local updated
+    updated=$(jq -c --arg id "$id" --arg field "$field" --arg value "$value" \
+        '(try ($value | fromjson) catch $value) as $v
+         | map(if .id == $id then .[$field] = $v else . end)' "$SCHEDULER_CONFIG" 2>/dev/null) || return 1
+    _scheduler_write_config "$updated" || return 1
+    scheduler_get "$id"
 }
 
 # Toggle enabled state
@@ -233,13 +194,18 @@ _scheduler_calculate_next_run() {
 # =============================================================================
 
 # Execute a scheduled action
+# A stack target must be a plain stack directory name with a compose file
+_scheduler_stack_target_ok() {
+    [[ "$1" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ && -f "$BASE_DIR/Stacks/$1/docker-compose.yml" ]]
+}
+
 _scheduler_execute() {
     local schedule_json="$1"
     local action target schedule_id name
-    action=$(echo "$schedule_json" | grep -o '"action":"[^"]*"' | cut -d'"' -f4)
-    target=$(echo "$schedule_json" | grep -o '"target":"[^"]*"' | cut -d'"' -f4)
-    schedule_id=$(echo "$schedule_json" | grep -o '"id":"[^"]*"' | cut -d'"' -f4)
-    name=$(echo "$schedule_json" | grep -o '"name":"[^"]*"' | cut -d'"' -f4)
+    action=$(jq -r '.action // empty' <<< "$schedule_json" 2>/dev/null)
+    target=$(jq -r '.target // empty' <<< "$schedule_json" 2>/dev/null)
+    schedule_id=$(jq -r '.id // empty' <<< "$schedule_json" 2>/dev/null)
+    name=$(jq -r '.name // empty' <<< "$schedule_json" 2>/dev/null)
 
     local start_time output success=true duration_ms
     start_time=$(date +%s%N 2>/dev/null || echo "$(date +%s)000000000")
@@ -249,10 +215,10 @@ _scheduler_execute() {
             output=$("$BASE_DIR/.scripts/backup-server.sh" 2>&1) || success=false
             ;;
         update)
-            if [[ -n "$target" ]]; then
+            if _scheduler_stack_target_ok "$target"; then
                 output=$(cd "$BASE_DIR/Stacks/$target" 2>/dev/null && ${DOCKER_COMPOSE_CMD:-docker compose} pull 2>&1 && ${DOCKER_COMPOSE_CMD:-docker compose} up -d 2>&1) || success=false
             else
-                output="No target specified for update" && success=false
+                output="No valid target stack specified for update" && success=false
             fi
             ;;
         prune)
@@ -262,10 +228,10 @@ _scheduler_execute() {
             output=$("$BASE_DIR/.scripts/health-check.sh" 2>&1) || success=false
             ;;
         restart)
-            if [[ -n "$target" ]]; then
+            if _scheduler_stack_target_ok "$target"; then
                 output=$(cd "$BASE_DIR/Stacks/$target" 2>/dev/null && ${DOCKER_COMPOSE_CMD:-docker compose} restart 2>&1) || success=false
             else
-                output="No target specified for restart" && success=false
+                output="No valid target stack specified for restart" && success=false
             fi
             ;;
         metrics-snapshot)
@@ -281,8 +247,8 @@ _scheduler_execute() {
             _ma=$(awk '/MemAvailable/ {printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || echo 0)
             _mu=$((_mt - _ma))
             [[ "$_mt" -gt 0 ]] && _mpct=$(awk "BEGIN {printf \"%.1f\", $_mu/$_mt*100}") || _mpct=0
-            _dpct=$(df -h /home 2>/dev/null | tail -1 | awk '{print $5}' | tr -d '%')
-            [[ -z "$_dpct" ]] && _dpct=$(df -h / 2>/dev/null | tail -1 | awk '{print $5}' | tr -d '%')
+            _dpct=$(df -P "$BASE_DIR" 2>/dev/null | tail -1 | awk '{print $5}' | tr -d '%')
+            [[ -z "$_dpct" ]] && _dpct=$(df -P / 2>/dev/null | tail -1 | awk '{print $5}' | tr -d '%')
             [[ -z "$_dpct" ]] && _dpct=0
             echo "{\"ts\":\"$_ts\",\"epoch\":$_ep,\"cpu_pct\":$_cpct,\"load1\":$_l1,\"load5\":$_l5,\"load15\":$_l15,\"mem_used_mb\":$_mu,\"mem_total_mb\":$_mt,\"mem_pct\":$_mpct,\"disk_pct\":$_dpct}" >> "$_mf"
             local _lc; _lc=$(wc -l < "$_mf" 2>/dev/null) || _lc=0
@@ -290,10 +256,13 @@ _scheduler_execute() {
             output="Metrics snapshot captured (cpu: ${_cpct}%, mem: ${_mpct}%, disk: ${_dpct}%)"
             ;;
         custom)
-            if [[ -n "$target" && -x "$target" ]]; then
-                output=$("$target" 2>&1) || success=false
+            # Only executables that live inside this installation may be scheduled
+            local _real
+            _real=$(realpath -e -- "$target" 2>/dev/null)
+            if [[ -n "$target" && "$target" == /* && -n "$_real" && "$_real" == "$BASE_DIR/"* && -f "$_real" && -x "$_real" ]]; then
+                output=$(timeout 600 "$_real" 2>&1 | head -c 65536) || success=false
             else
-                output="Custom script not found or not executable: $target" && success=false
+                output="Custom script must be an executable file inside $BASE_DIR: $target" && success=false
             fi
             ;;
         *)
@@ -306,36 +275,21 @@ _scheduler_execute() {
     duration_ms=$(( (${end_time%??????} - ${start_time%??????}) ))
     [[ "$duration_ms" -lt 0 ]] && duration_ms=0
 
-    # Log execution
+    # Log execution (one valid JSON object per line)
     local ts
     ts=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
-    local esc_output
-    esc_output=$(printf '%s' "$output" | head -c 500 | sed 's/"/\\"/g; s/\n/\\n/g')
-    printf '{"timestamp":"%s","schedule_id":"%s","name":"%s","action":"%s","target":"%s","success":%s,"duration_ms":%s,"output":"%s"}\n' \
-        "$ts" "$schedule_id" "$name" "$action" "$target" "$success" "$duration_ms" "$esc_output" \
+    jq -nc --arg ts "$ts" --arg id "$schedule_id" --arg name "$name" --arg action "$action" --arg target "$target" \
+        --argjson success "$success" --argjson duration "$duration_ms" --arg output "$(printf '%s' "$output" | head -c 500)" \
+        '{timestamp: $ts, schedule_id: $id, name: $name, action: $action, target: $target, success: $success, duration_ms: $duration, output: $output}' \
         >> "$SCHEDULER_LOG" 2>/dev/null
 
     # Update schedule: last_run, next_run, run_count
-    local next_run schedule_expr
-    schedule_expr=$(echo "$schedule_json" | grep -o '"schedule":"[^"]*"' | cut -d'"' -f4)
+    local next_run schedule_expr updated
+    schedule_expr=$(jq -r '.schedule // empty' <<< "$schedule_json" 2>/dev/null)
     next_run=$(_scheduler_calculate_next_run "$schedule_expr")
-
-    python3 -c "
-import json
-try:
-    with open('$SCHEDULER_CONFIG') as f:
-        data = json.load(f)
-    for s in data:
-        if s.get('id') == '$schedule_id':
-            s['last_run'] = '$ts'
-            s['next_run'] = '$next_run'
-            s['run_count'] = s.get('run_count', 0) + 1
-            break
-    with open('$SCHEDULER_CONFIG', 'w') as f:
-        json.dump(data, f)
-except:
-    pass
-" 2>/dev/null
+    updated=$(jq -c --arg id "$schedule_id" --arg ts "$ts" --arg next "$next_run" \
+        'map(if .id == $id then .last_run = $ts | .next_run = $next | .run_count = ((.run_count // 0) + 1) else . end)' \
+        "$SCHEDULER_CONFIG" 2>/dev/null) && _scheduler_write_config "$updated"
 }
 
 # Check all schedules and execute due ones
@@ -344,20 +298,11 @@ scheduler_check_and_run() {
     local now
     now=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
 
-    python3 -c "
-import json
-try:
-    with open('$SCHEDULER_CONFIG') as f:
-        data = json.load(f)
-    due = [s for s in data if s.get('enabled', False) and s.get('next_run', '') <= '$now']
-    for s in due:
-        print(json.dumps(s))
-except:
-    pass
-" 2>/dev/null | while IFS= read -r schedule_json; do
-        [[ -z "$schedule_json" ]] && continue
-        _scheduler_execute "$schedule_json"
-    done
+    jq -c --arg now "$now" '.[] | select(.enabled == true and ((.next_run // "") <= $now))' "$SCHEDULER_CONFIG" 2>/dev/null \
+        | while IFS= read -r schedule_json; do
+            [[ -z "$schedule_json" ]] && continue
+            _scheduler_execute "$schedule_json"
+        done
 }
 
 # =============================================================================
@@ -412,22 +357,13 @@ scheduler_daemon_stop() {
 # Usage: scheduler_history schedule_id
 scheduler_history() {
     local schedule_id="${1:-}"
-    local result="["
-    local first=true
 
     if [[ ! -f "$SCHEDULER_LOG" ]]; then
         echo '[]'
         return 0
     fi
 
-    while IFS= read -r line; do
-        [[ -z "$line" ]] && continue
-        if [[ -z "$schedule_id" ]] || echo "$line" | grep -q "\"schedule_id\":\"$schedule_id\""; then
-            [[ "$first" == "true" ]] && first=false || result+=","
-            result+="$line"
-        fi
-    done < <(tail -50 "$SCHEDULER_LOG")
-
-    result+="]"
-    echo "$result"
+    tail -50 "$SCHEDULER_LOG" \
+        | jq -Rc --arg id "$schedule_id" 'fromjson? | select(type == "object" and ($id == "" or .schedule_id == $id))' 2>/dev/null \
+        | jq -sc '.' 2>/dev/null || echo '[]'
 }

@@ -111,7 +111,6 @@ _banner_repeat() {
 
 show_startup_banner() {
     local version="${SCRIPT_VERSION:-2.0.0}"
-    local app_name="${APPLICATION_TITLE:-Docker Compose Skeleton}"
     local environment="${ENVIRONMENT:-production}"
     local current_date
     current_date="$(date '+%B %d, %Y at %-l:%M %p')"
@@ -192,9 +191,12 @@ show_shutdown_banner() {
     local version="${SCRIPT_VERSION:-2.0.0}"
     local inner_width=58
 
-    local bar_top="${_BNR_RED}+$(_banner_repeat "-" "$inner_width")+${_BNR_RESET}"
-    local bar_bot="${_BNR_RED}+$(_banner_repeat "-" "$inner_width")+${_BNR_RESET}"
-    local bar_mid="${_BNR_RED}|$(_banner_repeat " " "$inner_width")|${_BNR_RESET}"
+    local bar_top
+    bar_top="${_BNR_RED}+$(_banner_repeat "-" "$inner_width")+${_BNR_RESET}"
+    local bar_bot
+    bar_bot="${_BNR_RED}+$(_banner_repeat "-" "$inner_width")+${_BNR_RESET}"
+    local bar_mid
+    bar_mid="${_BNR_RED}|$(_banner_repeat " " "$inner_width")|${_BNR_RESET}"
 
     local title="S H U T D O W N   S E Q U E N C E"
     local title_pad=$(( (inner_width - ${#title}) / 2 ))
@@ -265,7 +267,7 @@ show_completion_banner() {
 
     local inner_width=58
 
-    local status_color status_icon status_text
+    local status_color status_text
     case "$status" in
         success)
             status_color="${_BNR_GREEN}"
@@ -281,8 +283,10 @@ show_completion_banner() {
             ;;
     esac
 
-    local bar="${status_color}+$(_banner_repeat "-" "$inner_width")+${_BNR_RESET}"
-    local empty="${status_color}|$(_banner_repeat " " "$inner_width")|${_BNR_RESET}"
+    local bar
+    bar="${status_color}+$(_banner_repeat "-" "$inner_width")+${_BNR_RESET}"
+    local empty
+    empty="${status_color}|$(_banner_repeat " " "$inner_width")|${_BNR_RESET}"
 
     # Status line
     local status_pad=$(( (inner_width - ${#status_text}) / 2 ))

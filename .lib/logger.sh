@@ -206,7 +206,8 @@ initiate_logger() {
 
     # Set global variables
     export LOGGER_INITIALIZED=true
-    export LOGGER_START_TIME="$(date '+%s')"
+    LOGGER_START_TIME="$(date '+%s')"
+    export LOGGER_START_TIME
 
     # Initialize structured JSONL logging if enabled
     if [[ "${ENABLE_STRUCTURED_LOGGING:-true}" == "true" ]]; then
@@ -323,7 +324,8 @@ _log_jsonl() {
     local ts
     ts="$(date -u '+%Y-%m-%dT%H:%M:%S.%3NZ' 2>/dev/null || date -u '+%Y-%m-%dT%H:%M:%SZ')"
 
-    local json="{\"ts\":\"${ts}\",\"level\":\"${level}\",\"msg\":\"$(_jsonl_escape "$message")\""
+    local json
+    json="{\"ts\":\"${ts}\",\"level\":\"${level}\",\"msg\":\"$(_jsonl_escape "$message")\""
     json+=",\"entry\":${LOG_ENTRY_COUNT:-0}"
     json+=",\"pid\":$$"
 
@@ -649,7 +651,7 @@ log_bold_nodate_critical()      { _log_event "CRITICAL"      "$1" "BOLD NODATE";
 # Output example:
 #   [INFO] Starting stacks [███████░░░░░░░░░░░░░░░░░░░░░░░] 30%
 #
-# Uses $PROGRESS_BAR_WIDTH from settings.cfg (default 30).
+# Uses $PROGRESS_BAR_WIDTH from settings.cfg (default 50).
 log_progress() {
     local description="$1"
     local current="${2:-0}"
@@ -658,7 +660,7 @@ log_progress() {
     # Prevent division by zero
     (( total <= 0 )) && total=1
 
-    local bar_width="${PROGRESS_BAR_WIDTH:-30}"
+    local bar_width="${PROGRESS_BAR_WIDTH:-50}"
     local percent=$(( (current * 100) / total ))
     local filled=$(( (current * bar_width) / total ))
     local empty=$(( bar_width - filled ))
@@ -694,7 +696,8 @@ log_progress() {
         timestamp_prefix="[$(date '+%b/%d/%Y — %-l:%M %p')] "
     fi
 
-    local console_line="${timestamp_prefix}${color_code}[INFO]${reset_code} - ${color_code}${description} [$(echo -e "${bar}")] ${percent}%${reset_code}"
+    local console_line
+    console_line="${timestamp_prefix}${color_code}[INFO]${reset_code} - ${color_code}${description} [$(echo -e "${bar}")] ${percent}%${reset_code}"
     echo -e "$console_line"
 
     # File output (plain text -- use ASCII approximation)
