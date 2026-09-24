@@ -18,7 +18,6 @@ set -euo pipefail
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
 BOLD='\033[1m'
 RST='\033[0m'
@@ -37,6 +36,14 @@ fi
 # Detect the user who owns the DCS directory (don't run services as root)
 DCS_USER=$(stat -c '%U' "$BASE_DIR" 2>/dev/null || ls -ld "$BASE_DIR" | awk '{print $3}')
 DCS_GROUP=$(stat -c '%G' "$BASE_DIR" 2>/dev/null || ls -ld "$BASE_DIR" | awk '{print $4}')
+if [[ "$DCS_USER" == "root" ]]; then
+    echo -e "${RED}Error:${RST} $BASE_DIR is owned by root, so the service would run as root."
+    echo "  Give the installation to the account that should run it first, e.g.:"
+    echo "    sudo chown -R youruser:youruser $BASE_DIR"
+    exit 1
+fi
+DCS_HOME=$(getent passwd "$DCS_USER" 2>/dev/null | cut -d: -f6)
+[[ -z "$DCS_HOME" ]] && DCS_HOME="/home/$DCS_USER"
 
 # Read API bind address from .env if available
 API_BIND="0.0.0.0"
@@ -66,29 +73,38 @@ echo -e "  API bind:       ${BOLD}$API_BIND${RST}"
 echo ""
 
 # ── API Server Service ──
+# The API server runs in the foreground and stops cleanly on SIGTERM, so a
+# simple service is all that is needed (no PID file, no ExecStop).
 cat > /etc/systemd/system/dcs-api.service << EOF
 [Unit]
 Description=DCS API Server
-Documentation=https://github.com/scotthowson/Docker-Compose-Skeleton
+Documentation=https://github.com/scotthowson/Docker-Compose-Skeleton-AIO
 After=network-online.target docker.service
 Requires=docker.service
 Wants=network-online.target
 
 [Service]
-Type=forking
+Type=simple
 User=$DCS_USER
 Group=$DCS_GROUP
+SupplementaryGroups=docker
 WorkingDirectory=$BASE_DIR
-PIDFile=$BASE_DIR/.data/api-server.pid
 ExecStart=$BASE_DIR/.scripts/api-server.sh --bind $API_BIND
-ExecStop=$BASE_DIR/.scripts/api-server.sh --stop
+KillMode=mixed
 Restart=on-failure
 RestartSec=10
-TimeoutStartSec=30
-TimeoutStopSec=15
+TimeoutStopSec=20
+
+# Hardening. NoNewPrivileges is deliberately NOT set: the web terminal and the
+# OS-update feature escalate with sudo when the admin asks them to.
+PrivateTmp=true
+ProtectSystem=full
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
 
 # Environment
-Environment="HOME=/home/$DCS_USER"
+Environment="HOME=$DCS_HOME"
 Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 [Install]
@@ -101,7 +117,7 @@ echo -e "${GREEN}✓${RST} Created dcs-api.service"
 cat > /etc/systemd/system/dcs-stacks.service << EOF
 [Unit]
 Description=DCS Stack Startup (ordered start + health check)
-Documentation=https://github.com/scotthowson/Docker-Compose-Skeleton
+Documentation=https://github.com/scotthowson/Docker-Compose-Skeleton-AIO
 After=docker.service dcs-api.service
 Requires=docker.service
 
@@ -109,13 +125,14 @@ Requires=docker.service
 Type=oneshot
 User=$DCS_USER
 Group=$DCS_GROUP
+SupplementaryGroups=docker
 WorkingDirectory=$BASE_DIR
 ExecStart=$BASE_DIR/start.sh
 RemainAfterExit=yes
 TimeoutStartSec=300
 
 # Environment
-Environment="HOME=/home/$DCS_USER"
+Environment="HOME=$DCS_HOME"
 Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 [Install]

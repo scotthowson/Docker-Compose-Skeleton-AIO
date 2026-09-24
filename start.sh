@@ -26,7 +26,10 @@ if [[ -f "$BASE_DIR/.env" ]]; then
 fi
 
 COMPOSE_DIR="$BASE_DIR/Stacks"
-APP_DATA_DIR="${APP_DATA_DIR:-$BASE_DIR/App-Data}"
+# Data lives per stack (Stacks/<name>/App-Data, the ./App-Data default in
+# .env); a relative value must never be resolved against the caller's $PWD
+APP_DATA_DIR="${APP_DATA_DIR:-./App-Data}"
+[[ "$APP_DATA_DIR" == /* ]] || APP_DATA_DIR="$BASE_DIR/${APP_DATA_DIR#./}"
 export COMPOSE_DIR APP_DATA_DIR
 
 # Set TERM if unset (for systemd / cron execution)
@@ -75,8 +78,9 @@ STARTUP SEQUENCE:
 CONFIGURATION (.env):
   SKIP_HEALTHCHECK_WAIT=true    Skip waiting for healthchecks (faster startup)
   CONTINUE_ON_FAILURE=true      Don't abort if a stack fails
-  SHOW_STARTUP_BANNER=true      Show the startup banner
+  SHOW_BANNERS=true             Show the startup banner (false for cron/headless)
   SHOW_SYSTEM_INFO=false        Show system info on startup
+  API_ENABLED=true              Start the REST API / web UI backend (AIO default)
 
 ENVIRONMENT OVERRIDES:
   LOG_LEVEL=DEBUG ./start.sh    Override log level
@@ -172,8 +176,9 @@ _verify_environment() {
         return 1
     fi
 
-    # Ensure App-Data exists
-    if [[ ! -d "$APP_DATA_DIR" ]]; then
+    # Only a shared, absolute App-Data location is created here; the per-stack
+    # directories are created by setup.sh and the deploy flow
+    if [[ "${APP_DATA_DIR}" != "$BASE_DIR/App-Data" && ! -d "$APP_DATA_DIR" ]]; then
         mkdir -p "$APP_DATA_DIR"
         log_info "Created App-Data directory: $APP_DATA_DIR"
     fi
@@ -205,9 +210,10 @@ trap '_graceful_exit 130' INT TERM
 
 main() {
     local total_steps=6
+    local exit_status=0
 
     # ── Startup Banner ────────────────────────────────────────────────
-    if [[ "${SHOW_STARTUP_BANNER:-true}" == "true" ]] && command -v show_startup_banner >/dev/null 2>&1; then
+    if [[ "${SHOW_BANNERS:-${SHOW_STARTUP_BANNER:-true}}" == "true" ]] && command -v show_startup_banner >/dev/null 2>&1; then
         show_startup_banner
     else
         log_banner "DOCKER SERVICES MANAGER" "Startup Sequence — v${SCRIPT_VERSION:-2.0.0}"
@@ -261,6 +267,31 @@ main() {
     fi
 
     # ══════════════════════════════════════════════════════════════════
+    # REST API server — the backend of the web UI, so it comes up first.
+    # A running instance is left alone; a stale PID file is cleaned up.
+    # ══════════════════════════════════════════════════════════════════
+    if [[ "${API_ENABLED:-true}" == "true" ]]; then
+        local api_script="$BASE_DIR/.scripts/api-server.sh"
+        local api_pid_file="$BASE_DIR/.data/api-server.pid"
+        if [[ -x "$api_script" ]]; then
+            if [[ -f "$api_pid_file" ]] && kill -0 "$(cat "$api_pid_file" 2>/dev/null)" 2>/dev/null; then
+                log_info "REST API server already running (PID $(cat "$api_pid_file"))"
+            else
+                "$api_script" --stop >/dev/null 2>&1 || true
+                log_info "Starting REST API server on ${API_BIND:-127.0.0.1}:${API_PORT:-9876}..."
+                if "$api_script" --daemon --port "${API_PORT:-9876}" --bind "${API_BIND:-127.0.0.1}" >/dev/null; then
+                    log_success "REST API server started (daemon mode)"
+                else
+                    log_warning "REST API server failed to start — see logs/api-server.log"
+                    exit_status=1
+                fi
+            fi
+        else
+            log_warning "API_ENABLED=true but api-server.sh not found or not executable at: $api_script"
+        fi
+    fi
+
+    # ══════════════════════════════════════════════════════════════════
     # Step 2: Update Docker Compose Binary
     # ══════════════════════════════════════════════════════════════════
     log_step 2 "$total_steps" "Updating Docker Compose"
@@ -291,6 +322,7 @@ main() {
 
     if ! start_docker_services; then
         log_warning "Service startup completed with some failures (see summary above)"
+        exit_status=1
     fi
 
     # ══════════════════════════════════════════════════════════════════
@@ -300,6 +332,7 @@ main() {
     if command -v update_all_stacks >/dev/null 2>&1; then
         if ! update_all_stacks; then
             log_warning "Some stacks failed to update, but continuing"
+            [[ "${CONTINUE_ON_FAILURE:-true}" == "true" ]] || exit_status=1
         fi
     else
         log_info "Stack update function not available, skipping"
@@ -356,22 +389,6 @@ main() {
         log_success "Scheduler daemon started (interval: ${SCHEDULER_CHECK_INTERVAL:-60}s)"
     fi
 
-    # ══════════════════════════════════════════════════════════════════
-    # Optional: Start REST API Server
-    # ══════════════════════════════════════════════════════════════════
-    if [[ "${API_ENABLED:-false}" == "true" ]]; then
-        local api_script="$BASE_DIR/.scripts/api-server.sh"
-        if [[ -x "$api_script" ]]; then
-            # Stop any existing instance first
-            "$api_script" --stop 2>/dev/null || true
-            log_info "Starting REST API server on ${API_BIND:-127.0.0.1}:${API_PORT:-9876}..."
-            "$api_script" --daemon --port "${API_PORT:-9876}" --bind "${API_BIND:-127.0.0.1}"
-            log_success "REST API server started (daemon mode)"
-        else
-            log_warning "API_ENABLED=true but api-server.sh not found or not executable at: $api_script"
-        fi
-    fi
-
     # ── Disable debug trace ───────────────────────────────────────────
     { set +x; } 2>/dev/null
 
@@ -379,15 +396,20 @@ main() {
     log_timer_stop "full_startup"
 
     # ── Completion ────────────────────────────────────────────────────
-    if [[ "${SHOW_STARTUP_BANNER:-true}" == "true" ]] && command -v show_completion_banner >/dev/null 2>&1; then
-        show_completion_banner "success" "All operations completed successfully"
+    if [[ "${SHOW_BANNERS:-${SHOW_STARTUP_BANNER:-true}}" == "true" ]] && command -v show_completion_banner >/dev/null 2>&1; then
+        if [[ $exit_status -eq 0 ]]; then
+            show_completion_banner "success" "All operations completed successfully"
+        else
+            show_completion_banner "warning" "Startup finished with failures (see above)"
+        fi
     else
-        log_separator "=" 60 "STARTUP COMPLETE" "SUCCESS"
+        log_separator "=" 60 "STARTUP COMPLETE" "$([[ $exit_status -eq 0 ]] && echo SUCCESS || echo WITH FAILURES)"
         log_success "All operations completed at: $(date '+%Y-%m-%d %H:%M:%S')"
     fi
 
-    # Close the logger (writes session summary)
+    # Close the logger (writes session summary) and report the real outcome
     close_logger
+    return "$exit_status"
 }
 
 # =============================================================================
@@ -395,3 +417,4 @@ main() {
 # =============================================================================
 
 main "$@"
+exit $?

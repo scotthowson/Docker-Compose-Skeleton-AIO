@@ -88,7 +88,6 @@ _setup_colors() {
             C_GREEN="$(tput setaf 82 2>/dev/null || tput setaf 2)"
             C_RED="$(tput setaf 124 2>/dev/null || tput setaf 1)"
             C_YELLOW="$(tput setaf 208 2>/dev/null || tput setaf 3)"
-            C_BLUE="$(tput setaf 33 2>/dev/null || tput setaf 4)"
             C_CYAN="$(tput setaf 51 2>/dev/null || tput setaf 6)"
             C_DIM="$(tput dim 2>/dev/null || true)"
             C_BOLD="$(tput bold 2>/dev/null || true)"
@@ -96,27 +95,16 @@ _setup_colors() {
             return
         fi
     fi
-    C_GREEN="" C_RED="" C_YELLOW="" C_BLUE="" C_CYAN="" C_DIM="" C_BOLD="" C_RESET=""
+    C_GREEN="" C_RED="" C_YELLOW="" C_CYAN="" C_DIM="" C_BOLD="" C_RESET=""
 }
 
 _setup_colors
 
 # =============================================================================
-# STACK ORDER (matches the startup dependency order)
+# STACK ORDER — DOCKER_STACKS from .env (the startup dependency order)
 # =============================================================================
 
-STACK_ORDER=(
-    "core-infrastructure"
-    "networking-security"
-    "monitoring-management"
-    "development-tools"
-    "media-services"
-    "web-applications"
-    "storage-backup"
-    "communication-collaboration"
-    "entertainment-personal"
-    "miscellaneous-services"
-)
+read -ra STACK_ORDER <<< "${DOCKER_STACKS:-core-infrastructure networking-security monitoring-management development-tools media-services web-applications storage-backup communication-collaboration entertainment-personal miscellaneous-services}"
 
 # =============================================================================
 # HELPER FUNCTIONS

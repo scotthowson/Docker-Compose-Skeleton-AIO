@@ -25,7 +25,8 @@ if [[ -f "$BASE_DIR/.env" ]]; then
 fi
 
 COMPOSE_DIR="$BASE_DIR/Stacks"
-APP_DATA_DIR="${APP_DATA_DIR:-$BASE_DIR/App-Data}"
+APP_DATA_DIR="${APP_DATA_DIR:-./App-Data}"
+[[ "$APP_DATA_DIR" == /* ]] || APP_DATA_DIR="$BASE_DIR/${APP_DATA_DIR#./}"
 export COMPOSE_DIR APP_DATA_DIR
 
 # Set TERM if unset (for systemd / cron execution)
@@ -73,9 +74,10 @@ SHUTDOWN ORDER (reverse of startup):
 CONFIGURATION (.env):
   DOCKER_STACKS="..."            Customize stack categories and order
   REMOVE_VOLUMES_ON_STOP=true    Also remove named volumes (DESTRUCTIVE!)
-  SERVICE_STOP_DELAY=2           Delay between stopping stacks (seconds)
-  SHOW_STARTUP_BANNER=true       Show the shutdown banner
-  API_ENABLED=true               Also stops the REST API server on shutdown
+  SERVICE_STOP_DELAY=10          Delay between stopping stacks (seconds)
+  SHOW_BANNERS=true              Show the shutdown banner (false for cron/headless)
+
+The REST API server and the metrics/scheduler daemons are always stopped.
 
 ENVIRONMENT OVERRIDES:
   LOG_LEVEL=DEBUG ./stop.sh      Override log level
@@ -184,7 +186,7 @@ main() {
     log_keyvalue "Volumes on Stop" "$([[ "${REMOVE_VOLUMES_ON_STOP:-false}" == "true" ]] && echo "REMOVE (destructive)" || echo "Preserve")"
     log_keyvalue "Force Mode"      "$([[ "${FORCE_STOP_MODE:-false}" == "true" ]] && echo "Enabled (5s timeout)" || echo "Disabled (30s timeout)")"
     log_keyvalue "Notifications"   "$([[ -n "${NTFY_URL:-}" ]] && echo "Enabled" || echo "Disabled")"
-    log_keyvalue "API Server"      "$([[ "${API_ENABLED:-false}" == "true" ]] && echo "Will be stopped" || echo "Not enabled")"
+    log_keyvalue "API Server"      "$([[ -f "$BASE_DIR/.data/api-server.pid" ]] && echo "Will be stopped" || echo "Not running")"
     log_keyvalue "Initiated at"    "$(date '+%Y-%m-%d %H:%M:%S')"
     log_separator "-" 60
 
@@ -211,36 +213,27 @@ main() {
     log_keyvalue "Compose" "$(_docker_compose_version_string)"
     log_success "Docker environment verified"
 
-    # ── Stop v2.0 background daemons ────────────────────────────────
-    # Metrics collector
-    if [[ -f "/tmp/dcs-metrics-collector.pid" ]]; then
-        local metrics_pid
-        metrics_pid=$(cat /tmp/dcs-metrics-collector.pid 2>/dev/null)
-        if [[ -n "$metrics_pid" ]] && kill -0 "$metrics_pid" 2>/dev/null; then
-            kill "$metrics_pid" 2>/dev/null
-            log_success "Metrics collector stopped (PID: $metrics_pid)"
+    # ── Stop background daemons (PID files live in .data/) ──────────
+    local daemon_name pid_file daemon_pid
+    for daemon_name in "Metrics collector:metrics-collector.pid" "Scheduler daemon:scheduler.pid"; do
+        pid_file="$BASE_DIR/.data/${daemon_name#*:}"
+        [[ -f "$pid_file" ]] || continue
+        daemon_pid=$(cat "$pid_file" 2>/dev/null)
+        if [[ -n "$daemon_pid" ]] && kill -0 "$daemon_pid" 2>/dev/null; then
+            kill "$daemon_pid" 2>/dev/null
+            log_success "${daemon_name%%:*} stopped (PID: $daemon_pid)"
         fi
-        rm -f /tmp/dcs-metrics-collector.pid
-    fi
+        rm -f "$pid_file"
+    done
 
-    # Scheduler daemon
-    if [[ -f "/tmp/dcs-scheduler.pid" ]]; then
-        local sched_pid
-        sched_pid=$(cat /tmp/dcs-scheduler.pid 2>/dev/null)
-        if [[ -n "$sched_pid" ]] && kill -0 "$sched_pid" 2>/dev/null; then
-            kill "$sched_pid" 2>/dev/null
-            log_success "Scheduler daemon stopped (PID: $sched_pid)"
-        fi
-        rm -f /tmp/dcs-scheduler.pid
-    fi
-
-    # ── Stop REST API server if running ──────────────────────────────
-    # Stop if: PID file exists OR API_ENABLED=true (covers orphaned processes)
+    # ── Stop the REST API server (always: it may be an orphan from an old run) ──
     local api_script="$BASE_DIR/.scripts/api-server.sh"
     if [[ -x "$api_script" ]]; then
-        if [[ -f "/tmp/dcs-api-server.pid" ]] || [[ "${API_ENABLED:-false}" == "true" ]]; then
-            log_info "Stopping REST API server..."
-            "$api_script" --stop 2>/dev/null && log_success "REST API server stopped" || log_debug "REST API server was not running"
+        log_info "Stopping REST API server..."
+        if "$api_script" --stop 2>/dev/null | grep -q 'stopped'; then
+            log_success "REST API server stopped"
+        else
+            log_debug "REST API server was not running"
         fi
     fi
 
@@ -265,16 +258,25 @@ main() {
     # ══════════════════════════════════════════════════════════════════
     log_step 3 "$total_steps" "Verifying shutdown status"
 
-    local remaining_containers
-    remaining_containers="$(docker ps --filter "name=skeleton-" --format '{{.Names}}' 2>/dev/null | wc -l)"
+    # Count running containers that belong to the configured stacks (compose
+    # project label), whatever their container names are
+    local remaining_containers=0 _stack _remaining_list=""
+    for _stack in ${DOCKER_STACKS:-}; do
+        [[ -d "$COMPOSE_DIR/$_stack" ]] || continue
+        local _names
+        _names=$(docker ps --filter "label=com.docker.compose.project=${_stack,,}" --format '  {{.Names}} ({{.Status}})' 2>/dev/null)
+        [[ -z "$_names" ]] && continue
+        _remaining_list+="${_names}"$'\n'
+        remaining_containers=$(( remaining_containers + $(printf '%s\n' "$_names" | grep -c .) ))
+    done
 
     if [[ "$remaining_containers" -gt 0 ]]; then
-        log_warning "$remaining_containers skeleton containers still running:"
-        docker ps --filter "name=skeleton-" --format '  {{.Names}} ({{.Status}})' 2>/dev/null | while read -r line; do
-            log_warning "$line"
+        log_warning "$remaining_containers stack containers still running:"
+        printf '%s' "$_remaining_list" | while read -r line; do
+            [[ -n "$line" ]] && log_warning "$line"
         done
     else
-        log_success "All skeleton containers confirmed stopped"
+        log_success "All stack containers confirmed stopped"
     fi
 
     # ══════════════════════════════════════════════════════════════════

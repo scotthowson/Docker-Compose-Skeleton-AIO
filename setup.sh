@@ -62,6 +62,7 @@ _setup_colors
 # Print helpers
 _ok()      { echo -e "  ${C_GREEN}[OK]${C_RESET}    $1"; }
 _skip()    { echo -e "  ${C_YELLOW}[SKIP]${C_RESET}  $1"; }
+_warn()    { echo -e "  ${C_YELLOW}[WARN]${C_RESET}  $1"; }
 _fail()    { echo -e "  ${C_RED}[FAIL]${C_RESET}  $1"; }
 _info()    { echo -e "  ${C_BLUE}[INFO]${C_RESET}  $1"; }
 _header()  { echo -e "\n${C_BOLD}${C_CYAN}$1${C_RESET}"; }
@@ -147,6 +148,17 @@ _info "Stacks directory: $COMPOSE_DIR"
 _info "App-Data target : $APP_DATA_DIR"
 _info "Running as user : ${CURRENT_USER}:${CURRENT_GROUP}"
 
+# Running setup through sudo would leave .env, logs/ and every App-Data
+# directory owned by root and start the API server as root.
+if [[ $EUID -eq 0 && -n "${SUDO_USER:-}" ]]; then
+    echo ""
+    _fail "Run ./setup.sh as your normal user, not with sudo."
+    _info "Docker access comes from membership in the docker group:"
+    _info "  sudo usermod -aG docker ${SUDO_USER}   (then log out and back in)"
+    echo ""
+    exit 1
+fi
+
 # =============================================================================
 # PRE-CHECK: Docker must be installed before proceeding
 # =============================================================================
@@ -170,26 +182,33 @@ _divider
 
 if [[ -f "$BASE_DIR/.env" ]]; then
     _skip ".env already exists -- not overwriting"
-    # AIO requires API accessible from Docker containers — auto-fix critical settings
-    if grep -q 'API_BIND.*127\.0\.0\.1' "$BASE_DIR/.env" 2>/dev/null; then
-        if [[ "$DRY_RUN" != "true" ]]; then
-            sed -i 's/API_BIND.*=.*127\.0\.0\.1/API_BIND=0.0.0.0/' "$BASE_DIR/.env"
-        fi
-        _ok "Updated API_BIND to 0.0.0.0 (required for DCS-UI container)"
-    fi
-    if grep -q '^API_ENABLED.*=.*false' "$BASE_DIR/.env" 2>/dev/null; then
-        if [[ "$DRY_RUN" != "true" ]]; then
-            sed -i 's/^API_ENABLED.*=.*false/API_ENABLED=true/' "$BASE_DIR/.env"
-        fi
-        _ok "Enabled API server (required for DCS-UI)"
-    fi
 elif [[ -f "$BASE_DIR/.env.example" ]]; then
     _run cp "$BASE_DIR/.env.example" "$BASE_DIR/.env"
+    _run chmod 600 "$BASE_DIR/.env"
     _ok "Copied .env.example -> .env"
     _info "Edit .env to customize for your server"
 else
     _fail ".env.example not found -- cannot create .env"
     _info "Create .env manually based on the project documentation"
+fi
+
+# The DCS-UI container reaches the API through host.docker.internal, so the
+# listener must be enabled and bound to all interfaces. .env.example already
+# ships those defaults; this only repairs a .env inherited from an older
+# version (anchored matches, quote-safe, never touches comments).
+if [[ -f "$BASE_DIR/.env" ]]; then
+    if grep -qE '^API_BIND=["'"'"']?127\.0\.0\.1' "$BASE_DIR/.env"; then
+        [[ "$DRY_RUN" != "true" ]] && sed -i -E 's/^API_BIND=.*$/API_BIND=0.0.0.0/' "$BASE_DIR/.env"
+        _ok "Updated API_BIND to 0.0.0.0 (required for the DCS-UI container)"
+    fi
+    if grep -qE '^API_ENABLED=["'"'"']?false' "$BASE_DIR/.env"; then
+        [[ "$DRY_RUN" != "true" ]] && sed -i -E 's/^API_ENABLED=.*$/API_ENABLED=true/' "$BASE_DIR/.env"
+        _ok "Enabled the API server (required for DCS-UI)"
+    fi
+    if grep -qE '^API_AUTH_ENABLED=["'"'"']?false' "$BASE_DIR/.env"; then
+        _warn "API_AUTH_ENABLED=false is ignored on a non-loopback bind — authentication stays on"
+        _info "(set API_INSECURE_NO_AUTH=true as well if you really want an open API)"
+    fi
 fi
 
 # =============================================================================
@@ -471,35 +490,58 @@ API_PORT="${API_PORT:-9876}"
 API_BIND="${API_BIND:-0.0.0.0}"
 DCS_UI_PORT="${DCS_UI_PORT:-3000}"
 API_PID_FILE="$BASE_DIR/.data/api-server.pid"
+API_BIND_FILE="$BASE_DIR/.data/api-server.bind"
 HOST_IP=$(_detect_ip)
 SETUP_COMPLETE_MARKER="$BASE_DIR/.api-auth/.setup-complete"
 
 # ---------------------------------------------------------------------------
-# Helper: ensure the API server is running in the background
+# Helper: ensure the API server is running in the background with the bind
+# address .env asks for (a server left over from an older .env is replaced)
 # ---------------------------------------------------------------------------
 _ensure_api_running() {
-    if [[ -f "$API_PID_FILE" ]] && kill -0 "$(cat "$API_PID_FILE" 2>/dev/null)" 2>/dev/null; then
-        _ok "API server already running (PID $(cat "$API_PID_FILE"))"
-        return 0
+    local running_pid=""
+    [[ -f "$API_PID_FILE" ]] && running_pid=$(cat "$API_PID_FILE" 2>/dev/null)
+    if [[ -n "$running_pid" ]] && kill -0 "$running_pid" 2>/dev/null; then
+        local running_bind=""
+        [[ -f "$API_BIND_FILE" ]] && running_bind=$(cat "$API_BIND_FILE" 2>/dev/null)
+        if [[ "$running_bind" == "${API_BIND}:${API_PORT}" ]]; then
+            _ok "API server already running (PID $running_pid, ${API_BIND}:${API_PORT})"
+            return 0
+        fi
+        _info "API server is running with a different bind (${running_bind:-unknown}) — restarting"
     fi
 
-    # Stop any orphaned API server instances before starting a new one
-    "$BASE_DIR/.scripts/api-server.sh" --stop 2>/dev/null || true
+    # Stop any previous or orphaned instance before starting a new one
+    "$BASE_DIR/.scripts/api-server.sh" --stop >/dev/null 2>&1 || true
 
-    _info "Starting API server..."
-    mkdir -p "$BASE_DIR/.data"
+    _info "Starting API server on ${API_BIND}:${API_PORT}..."
+    mkdir -p "$BASE_DIR/.data" "$BASE_DIR/logs"
     nohup "$BASE_DIR/.scripts/api-server.sh" --bind "$API_BIND" --port "$API_PORT" \
-        > "$BASE_DIR/logs/api-server.log" 2>&1 &
-    echo "$!" > "$API_PID_FILE"
-    sleep 2
+        </dev/null > "$BASE_DIR/logs/api-server.log" 2>&1 &
+    local pid=$!
+    echo "$pid" > "$API_PID_FILE"
+    echo "${API_BIND}:${API_PORT}" > "$API_BIND_FILE"
 
-    if kill -0 "$(cat "$API_PID_FILE" 2>/dev/null)" 2>/dev/null; then
-        _ok "API server started (PID $(cat "$API_PID_FILE"))"
+    # Wait (up to 5 s) for the process to settle and the port to open
+    local i
+    for i in 1 2 3 4 5 6 7 8 9 10; do
+        sleep 0.5
+        if ! kill -0 "$pid" 2>/dev/null; then
+            break
+        fi
+        if ss -ltn 2>/dev/null | grep -qE "[:.]${API_PORT}[[:space:]]"; then
+            _ok "API server started (PID $pid, listening on ${API_BIND}:${API_PORT})"
+            return 0
+        fi
+    done
+
+    if kill -0 "$pid" 2>/dev/null; then
+        _ok "API server started (PID $pid)"
         return 0
-    else
-        _fail "API server failed to start — check logs/api-server.log"
-        return 1
     fi
+    _fail "API server failed to start — check logs/api-server.log"
+    tail -n 5 "$BASE_DIR/logs/api-server.log" 2>/dev/null | sed 's/^/        /'
+    return 1
 }
 
 # ---------------------------------------------------------------------------
@@ -522,11 +564,17 @@ _ensure_core_infra_running() {
     fi
 
     _info "Starting core infrastructure..."
+    local compose_rc=0
     $_COMPOSE_CMD -f "$COMPOSE_DIR/core-infrastructure/docker-compose.yml" \
         --env-file "$BASE_DIR/.env" \
         up -d 2>&1 | while IFS= read -r line; do
         [[ -n "$line" ]] && _info "  $line"
     done
+    compose_rc=${PIPESTATUS[0]}
+    if [[ $compose_rc -ne 0 ]]; then
+        _fail "docker compose up failed (exit $compose_rc) — see the messages above"
+        return 1
+    fi
 
     # Wait for DCS-UI to become healthy
     _info "Waiting for DCS-UI to be ready..."
@@ -543,6 +591,13 @@ _ensure_core_infra_running() {
                 _fail "DCS-UI container is unhealthy"
                 _info "Check logs: docker logs DCS-UI"
                 return 1
+                ;;
+            not_found)
+                if (( i >= 5 )); then
+                    _fail "DCS-UI container was not created"
+                    _info "Check: $_COMPOSE_CMD -f Stacks/core-infrastructure/docker-compose.yml ps"
+                    return 1
+                fi
                 ;;
         esac
         # Progress update every 10 seconds
@@ -569,16 +624,19 @@ _ensure_core_infra_running() {
 _print_url_banner() {
     local local_url="http://localhost:${DCS_UI_PORT}"
     local net_url="http://${HOST_IP}:${DCS_UI_PORT}"
+    local width=57
+    # Every row is padded to the frame width so the right border lines up
+    _row() { printf '%b  ║%-*s║%b\n' "$1" "$width" "$2" "$C_RESET"; }
     echo ""
     echo -e "${C_BOLD}${C_CYAN}  ╔═════════════════════════════════════════════════════════╗${C_RESET}"
-    echo -e "${C_BOLD}${C_CYAN}  ║                                                         ║${C_RESET}"
-    echo -e "${C_BOLD}${C_CYAN}  ║   Open your browser to complete setup:                   ║${C_RESET}"
-    echo -e "${C_BOLD}${C_CYAN}  ║                                                         ║${C_RESET}"
-    echo -e "${C_BOLD}${C_GREEN}  ║   Local:   ${local_url}$(printf '%*s' $((44 - ${#local_url})) '')║${C_RESET}"
-    echo -e "${C_BOLD}${C_GREEN}  ║   Network: ${net_url}$(printf '%*s' $((44 - ${#net_url})) '')║${C_RESET}"
-    echo -e "${C_BOLD}${C_CYAN}  ║                                                         ║${C_RESET}"
-    echo -e "${C_BOLD}${C_CYAN}  ║   The web UI will guide you through the rest.            ║${C_RESET}"
-    echo -e "${C_BOLD}${C_CYAN}  ║                                                         ║${C_RESET}"
+    _row "${C_BOLD}${C_CYAN}" ""
+    _row "${C_BOLD}${C_CYAN}" "   Open your browser to complete setup:"
+    _row "${C_BOLD}${C_CYAN}" ""
+    _row "${C_BOLD}${C_GREEN}" "   Local:   ${local_url}"
+    _row "${C_BOLD}${C_GREEN}" "   Network: ${net_url}"
+    _row "${C_BOLD}${C_CYAN}" ""
+    _row "${C_BOLD}${C_CYAN}" "   The web UI will guide you through the rest."
+    _row "${C_BOLD}${C_CYAN}" ""
     echo -e "${C_BOLD}${C_CYAN}  ╚═════════════════════════════════════════════════════════╝${C_RESET}"
     echo ""
 }
@@ -602,13 +660,6 @@ fi
 # =============================================================================
 _header "Step 7/7: Launch DCS-UI"
 _divider
-
-if [[ "$DRY_RUN" == "true" ]]; then
-    _info "DRY RUN: Would start API server and core-infrastructure stack"
-    _info "DRY RUN: DCS-UI would be available at http://localhost:${DCS_UI_PORT}"
-    echo ""
-    exit 0
-fi
 
 _ensure_api_running || {
     _fail "Cannot continue without API server"
