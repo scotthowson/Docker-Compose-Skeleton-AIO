@@ -51,14 +51,14 @@ while IFS= read -r route_file; do
 done < <(find "$ROUTES_DIR" -name '*.yml' -type f 2>/dev/null)
 
 if [[ $CONFLICTS -gt 0 ]]; then
-    echo "WARNING: ${CONFLICTS} subdomain conflict(s) detected for ${FQDN}"
+    echo "WARNING: ${CONFLICTS} subdomain conflict(s) detected for ${FQDN}${STACK:+ (deploying to $STACK)}"
     # Log to plugin state
     mkdir -p "$PLUGIN_DIR/state"
     printf '{"timestamp":"%s","template":"%s","subdomain":"%s","conflicts":%d}\n' \
         "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$TEMPLATE" "$FQDN" "$CONFLICTS" \
         >> "$PLUGIN_DIR/state/checks.jsonl"
 else
-    echo "OK: ${FQDN} is available"
+    echo "OK: ${FQDN} is available${STACK:+ for $STACK}"
 fi
 
 exit 0

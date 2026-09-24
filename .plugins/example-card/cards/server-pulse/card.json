@@ -1,0 +1,19 @@
+{
+  "id": "plugin:example-card:server-pulse",
+  "title": "Server Pulse",
+  "icon": "Activity",
+  "description": "Animated heartbeat visualization with live uptime counter and random metrics",
+  "author": "DCS Community",
+  "version": "1.0.0",
+
+  "defaultW": 8,
+  "defaultH": 5,
+  "minW": 6,
+  "minH": 4,
+  "maxW": 16,
+  "maxH": 10,
+
+  "isScrollable": false,
+  "refreshInterval": 0,
+  "dataEndpoint": null
+}

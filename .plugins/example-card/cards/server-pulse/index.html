@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Server Pulse</title>
+
+  <!-- ═══════════════════════════════════════════════════════════
+       DCS Plugin Card — Server Pulse
+       ═══════════════════════════════════════════════════════════
+       Animated heartbeat with simulated CPU/RAM/NET metrics.
+       Demonstrates metric bars, animations, and uptime counter.
+
+       See style.css and script.js for separated reference files.
+       CSS and JS are inlined here because blob URLs can't resolve
+       external file references.
+       ═══════════════════════════════════════════════════════════ -->
+
+  <style>
+    /* ── Reset ── */
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    /* ── Body: transparent for glass ── */
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      background: transparent;
+      color: #e2e8f0;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    .card {
+      padding: 16px;
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    /* ── Header ── */
+    .header { display: flex; align-items: center; justify-content: space-between; }
+    .title { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 2px; color: #94a3b8; }
+    .live-badge { font-size: 8px; padding: 3px 8px; border-radius: 99px; background: rgba(52,211,153,0.12); color: #34d399; border: 1px solid rgba(52,211,153,0.2); font-weight: 700; }
+
+    /* ── Pulse ── */
+    .pulse-row { display: flex; align-items: center; gap: 14px; flex: 1; }
+    .heartbeat-dot {
+      width: 36px; height: 36px; border-radius: 50%; flex-shrink: 0;
+      background: radial-gradient(circle, #34d399 0%, rgba(52,211,153,0.15) 70%);
+      animation: heartbeat 1.5s ease-in-out infinite;
+    }
+    @keyframes heartbeat {
+      0%, 100% { transform: scale(1); }
+      15% { transform: scale(1.15); }
+      30% { transform: scale(1); }
+      45% { transform: scale(1.1); }
+      60% { transform: scale(1); }
+    }
+
+    /* ── Metrics ── */
+    .metrics { display: flex; flex-direction: column; gap: 5px; flex: 1; }
+    .metric { display: flex; align-items: center; gap: 8px; }
+    .metric-label { font-size: 9px; color: #64748b; width: 28px; flex-shrink: 0; }
+    .bar-wrap { height: 4px; background: rgba(255,255,255,0.04); border-radius: 2px; flex: 1; }
+    .bar { height: 100%; border-radius: 2px; transition: width 0.8s ease; }
+    .metric-value { font-size: 10px; font-weight: 700; width: 32px; text-align: right; font-variant-numeric: tabular-nums; flex-shrink: 0; }
+
+    /* ── Footer ── */
+    .footer { font-size: 9px; color: #475569; text-align: center; padding-top: 6px; border-top: 1px solid rgba(255,255,255,0.04); }
+    .footer b { color: #34d399; font-variant-numeric: tabular-nums; }
+  </style>
+</head>
+
+<body>
+  <div class="card">
+    <!-- Header -->
+    <div class="header">
+      <span class="title">Server Pulse</span>
+      <span class="live-badge">Live</span>
+    </div>
+
+    <!-- Heartbeat + Metrics -->
+    <div class="pulse-row">
+      <div class="heartbeat-dot"></div>
+      <div class="metrics">
+        <div class="metric">
+          <span class="metric-label">CPU</span>
+          <div class="bar-wrap"><div class="bar" id="cpu-bar" style="background:#06b6d4"></div></div>
+          <span class="metric-value" id="cpu-val" style="color:#06b6d4">—</span>
+        </div>
+        <div class="metric">
+          <span class="metric-label">RAM</span>
+          <div class="bar-wrap"><div class="bar" id="ram-bar" style="background:#8b5cf6"></div></div>
+          <span class="metric-value" id="ram-val" style="color:#8b5cf6">—</span>
+        </div>
+        <div class="metric">
+          <span class="metric-label">NET</span>
+          <div class="bar-wrap"><div class="bar" id="net-bar" style="background:#f59e0b"></div></div>
+          <span class="metric-value" id="net-val" style="color:#f59e0b">—</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Uptime -->
+    <div class="footer">
+      Uptime: <b id="uptime">0s</b>
+    </div>
+  </div>
+
+  <!-- Script -->
+  <script>
+    var startTime = Date.now();
+    var cpuBar = document.getElementById('cpu-bar');
+    var cpuVal = document.getElementById('cpu-val');
+    var ramBar = document.getElementById('ram-bar');
+    var ramVal = document.getElementById('ram-val');
+    var netBar = document.getElementById('net-bar');
+    var netVal = document.getElementById('net-val');
+    var uptimeEl = document.getElementById('uptime');
+
+    function rand(min, max) {
+      return Math.floor(Math.random() * (max - min + 1)) + min;
+    }
+
+    function update() {
+      var c = rand(12, 68), r = rand(35, 78), n = rand(3, 50);
+      cpuBar.style.width = c + '%'; cpuVal.textContent = c + '%';
+      ramBar.style.width = r + '%'; ramVal.textContent = r + '%';
+      netBar.style.width = n + '%'; netVal.textContent = n + '%';
+
+      var s = Math.floor((Date.now() - startTime) / 1000);
+      var d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60);
+      uptimeEl.textContent = (d ? d + 'd ' : '') + (h ? h + 'h ' : '') + m + 'm ' + s % 60 + 's';
+    }
+
+    update();
+    setInterval(update, 2000);
+  </script>
+</body>
+</html>

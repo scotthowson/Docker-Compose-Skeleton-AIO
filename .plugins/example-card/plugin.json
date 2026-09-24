@@ -1,0 +1,11 @@
+{
+  "name": "example-card",
+  "version": "1.0.0",
+  "description": "Example plugin demonstrating how to create custom dashboard cards",
+  "author": "DCS Community",
+  "enabled": true,
+  "cards": [
+    "system-clock",
+    "server-pulse"
+  ]
+}
