@@ -1,41 +1,50 @@
-# Environment configuration (contains secrets)
+# =============================================================================
+# Docker Compose Skeleton AIO — ignore rules
+# Everything the framework writes at runtime stays out of git. Only the
+# template files that ship with the repository are tracked.
+# =============================================================================
+
+# ── Local configuration (contains secrets) ──────────────────────────────────
 .env
-
-# Keep the example template
 !.env.example
-
-# Keep per-stack .env files (they are templates, not secrets)
+# Per-stack .env files are templates, not secrets
 !Stacks/*/.env
-
-# Runtime auth data (tokens.json and users.json are committed as empty templates)
-.api-auth/.setup-complete
-.api-auth/deploy-history.json
-.api-auth/terminal-auth-rate.json
-.api-auth/terminal-sessions.json
-
-# Runtime data
-.data/
-.compose-history/
-
-# Logs
-logs/
-*.log
-
-# Persistent container data
-App-Data/
-
-# Backup files
 *.bak
 *.bak.*
 
-# IDE files
+# ── Runtime state written by the API server ─────────────────────────────────
+# .api-auth/ holds users, session tokens, invites, audit logs and caches.
+# Only the four empty JSON templates below are tracked.
+.api-auth/*
+!.api-auth/alerts.json
+!.api-auth/automations.json
+!.api-auth/notifications.json
+!.api-auth/update-history.json
+.data/
+.secrets/
+.compose-history/
+
+# ── Plugin runtime state ────────────────────────────────────────────────────
+.plugins/*/state/
+.plugins/*/execution.log
+.plugins/*/.disabled
+
+# ── Logs ────────────────────────────────────────────────────────────────────
+logs/*
+!logs/.gitkeep
+*.log
+*.jsonl
+
+# ── Persistent container data ───────────────────────────────────────────────
+App-Data/
+
+# ── Editors and tooling ─────────────────────────────────────────────────────
+.claude/settings.local.json
 .vs/
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
-
-# OS files
 .DS_Store
 Thumbs.db
