@@ -1,0 +1,21 @@
+{
+  "name": "uptime-ping",
+  "version": "2.0.0",
+  "author": "DCS Community",
+  "category": "monitoring",
+  "description": "Pings Healthchecks.io, Uptime Kuma or any webhook URL after a successful start (and the /fail endpoint after a failed one). Set UPTIME_PING_URL in .env.",
+  "tags": [
+    "uptime",
+    "monitoring",
+    "webhook"
+  ],
+  "env": [
+    "UPTIME_PING_URL",
+    "HEALTHCHECKS_PING_URL"
+  ],
+  "config": {},
+  "hooks": [
+    "post-start"
+  ],
+  "contract": 2
+}

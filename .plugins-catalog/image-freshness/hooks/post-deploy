@@ -1,0 +1,36 @@
+#!/bin/bash
+# DCS plugin hook — contract v2 (see .plugins/README.md)
+# stdin: JSON context {event, stack, project, compose_file, action, success,
+#        containers[], template, compose, dry_run}
+# env:   BASE_DIR COMPOSE_DIR DCS_EVENT PLUGIN_NAME PLUGIN_DIR PLUGIN_STATE_DIR
+#        DCS_PLUGIN_CONFIG (JSON) DCS_DRY_RUN DCS_NTFY_URL NTFY_TOKEN
+#        DOCKER_COMPOSE_CMD TZ + the names listed in the manifest's "env"
+set -u
+CTX=$(cat)
+j() { printf '%s' "$CTX" | jq -r "$1" 2>/dev/null; }
+cfg() { printf '%s' "${DCS_PLUGIN_CONFIG:-{\}}" | jq -r "$1 // empty" 2>/dev/null; }
+STACK=$(j '.stack // empty'); SUCCESS=$(j 'if .success == null then "" else (.success|tostring) end')
+DRY="${DCS_DRY_RUN:-$(j '.dry_run // false')}"
+STATE="${PLUGIN_STATE_DIR:-${PLUGIN_DIR:-/tmp}/state}"; mkdir -p "$STATE" 2>/dev/null
+containers() { printf '%s' "$CTX" | jq -r '.containers[]? // empty' 2>/dev/null; }
+notify() {   # TITLE MESSAGE [priority]
+    [[ -n "${DCS_NTFY_URL:-}" ]] || return 0
+    curl -s -m 8 -H "Title: $1" -H "Priority: ${3:-default}" ${NTFY_TOKEN:+-H "Authorization: Bearer $NTFY_TOKEN"} \
+        --data-binary "$2" "$DCS_NTFY_URL" >/dev/null 2>&1 || true
+}
+now_ts() { date -u '+%Y-%m-%dT%H:%M:%SZ'; }
+[[ -n "$STACK" ]] || exit 0
+max=$(cfg '.max_age_days'); [[ "$max" =~ ^[0-9]+$ ]] || max=30
+now=$(date +%s); warned=0
+while IFS=$'\t' read -r name image; do
+    [[ -z "$name" ]] && continue
+    created=$(docker image inspect --format '{{.Created}}' "$image" 2>/dev/null | head -1)
+    age=""; [[ -n "$created" ]] && age=$(( (now - $(date -d "$created" +%s 2>/dev/null || echo "$now")) / 86400 ))
+    digest=$(docker image inspect --format '{{index .RepoDigests 0}}' "$image" 2>/dev/null)
+    line="$name: $image"
+    [[ -n "$age" ]] && line+=" — image built ${age}d ago"
+    if [[ "$image" == *:latest || "$image" != *:* ]] && [[ -z "$digest" ]]; then line+=" [latest tag, no pinned digest]"; warned=$((warned+1)); fi
+    if [[ -n "$age" && "$age" -gt "$max" ]]; then line+=" [older than ${max}d]"; warned=$((warned+1)); fi
+    echo "$line"
+done < <(docker ps -a --filter "label=com.docker.compose.project=$STACK" --format '{{.Names}}\t{{.Image}}' 2>/dev/null)
+echo "image-freshness: $warned warning(s) for $STACK"

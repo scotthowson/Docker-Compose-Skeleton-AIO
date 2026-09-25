@@ -1,0 +1,21 @@
+{
+  "name": "disk-watchdog",
+  "version": "2.0.0",
+  "author": "DCS Community",
+  "category": "monitoring",
+  "description": "After every deployment and start: checks disk usage of the installation and every mounted filesystem, alerts above the configured percentage, records a usage sample and predicts from the trend when the data disk will be full.",
+  "tags": [
+    "disk",
+    "monitoring",
+    "alerts"
+  ],
+  "env": [],
+  "config": {
+    "warn_percent": 85
+  },
+  "hooks": [
+    "post-deploy",
+    "post-start"
+  ],
+  "contract": 2
+}

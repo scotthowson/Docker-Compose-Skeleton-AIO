@@ -1,11 +1,18 @@
 #!/bin/bash
 # =============================================================================
-# Secrets Management Library v1.0
-# Lightweight encrypted secrets storage using AES-256-CBC via OpenSSL
-# Secrets are stored per-key in .secrets/ with optional encryption at rest
+# Secrets Library v2.0
+# One encrypted key-value store shared by the REST API, start.sh and the CLI
+# utilities, so a secret behaves the same however a stack is started.
 #
-# Dependencies: openssl
-# Requires: Bash 4+
+# Storage:   .secrets/<NAME>.enc   openssl enc -aes-256-cbc -salt -pbkdf2 (binary)
+#            .secrets/.master-key  256-bit random key, mode 600
+# Names:     ^[A-Za-z_][A-Za-z0-9_]*$ (UPPER_SNAKE recommended), 64 chars max
+# Reference: ${SECRETS_<NAME>} in docker-compose.yml, the stack .env or the
+#            root .env. ${SECRETS.<NAME>} is accepted and normalized on write.
+# Injection: compose_with_secrets exports SECRETS_<NAME> only to the compose
+#            child process; values never reach disk in clear text.
+#
+# Dependencies: openssl. Requires Bash 4+.
 # =============================================================================
 
 if [[ -z "${BASE_DIR:-}" ]]; then
@@ -14,7 +21,7 @@ fi
 
 SECRETS_DIR="${BASE_DIR}/.secrets"
 SECRETS_MASTER_KEY_FILE="${SECRETS_DIR}/.master-key"
-SECRETS_ENCRYPTION="${SECRETS_ENCRYPTION:-true}"
+SECRETS_NAME_RE='^[A-Za-z_][A-Za-z0-9_]{0,63}$'
 
 # =============================================================================
 # INITIALIZATION
@@ -22,29 +29,17 @@ SECRETS_ENCRYPTION="${SECRETS_ENCRYPTION:-true}"
 
 secrets_init() {
     if [[ ! -d "$SECRETS_DIR" ]]; then
-        mkdir -p "$SECRETS_DIR"
-        chmod 700 "$SECRETS_DIR"
+        (umask 077; mkdir -p "$SECRETS_DIR") 2>/dev/null || mkdir -p "$SECRETS_DIR" || return 1
     fi
-
-    # Ensure gitignore
-    if [[ ! -f "$SECRETS_DIR/.gitignore" ]]; then
-        echo '*' > "$SECRETS_DIR/.gitignore"
-    fi
-
-    # Generate master key if needed and encryption is enabled
-    if [[ "$SECRETS_ENCRYPTION" == "true" ]]; then
-        secrets_generate_master_key || return 1
-    fi
+    chmod 700 "$SECRETS_DIR" 2>/dev/null
+    [[ -f "$SECRETS_DIR/.gitignore" ]] || echo '*' > "$SECRETS_DIR/.gitignore"
+    secrets_generate_master_key
 }
 
-# Generate a random master key if it doesn't exist. The key is written to a
-# private temp file first: a failing openssl must never leave an empty key
-# behind that would then silently "encrypt" every secret.
+# Generate the master key if it is missing. Written to a private temp file
+# first: a failing openssl must never leave an empty key behind.
 secrets_generate_master_key() {
-    if [[ -s "$SECRETS_MASTER_KEY_FILE" ]]; then
-        return 0
-    fi
-
+    [[ -s "$SECRETS_MASTER_KEY_FILE" ]] && return 0
     local tmp="${SECRETS_MASTER_KEY_FILE}.tmp"
     if ! (umask 077; openssl rand -hex 32 > "$tmp") 2>/dev/null || [[ ! -s "$tmp" ]]; then
         rm -f "$tmp"
@@ -55,216 +50,169 @@ secrets_generate_master_key() {
 }
 
 # =============================================================================
-# ENCRYPTION / DECRYPTION
+# NAMES AND REFERENCES
 # =============================================================================
 
-_secrets_encrypt() {
-    local plaintext="$1"
-    if [[ "$SECRETS_ENCRYPTION" != "true" || ! -f "$SECRETS_MASTER_KEY_FILE" ]]; then
-        printf '%s' "$plaintext"
-        return 0
-    fi
-
-    printf '%s' "$plaintext" | openssl enc -aes-256-cbc -pbkdf2 -iter 100000 \
-        -salt -pass "file:$SECRETS_MASTER_KEY_FILE" -base64 -A 2>/dev/null
-}
-
-_secrets_decrypt() {
-    local ciphertext="$1"
-    if [[ "$SECRETS_ENCRYPTION" != "true" || ! -f "$SECRETS_MASTER_KEY_FILE" ]]; then
-        printf '%s' "$ciphertext"
-        return 0
-    fi
-
-    printf '%s' "$ciphertext" | openssl enc -aes-256-cbc -pbkdf2 -iter 100000 \
-        -d -salt -pass "file:$SECRETS_MASTER_KEY_FILE" -base64 -A 2>/dev/null
-}
-
-# =============================================================================
-# CRUD OPERATIONS
-# =============================================================================
-
-# Validate a secret key name
-_secrets_validate_key() {
-    local key="$1"
-    if [[ ! "$key" =~ ^[a-zA-Z0-9_-]+$ ]]; then
-        echo "Invalid key name: only alphanumeric, dashes, and underscores allowed" >&2
-        return 1
-    fi
-    # Prevent path traversal
-    if [[ "$key" == *".."* || "$key" == *"/"* ]]; then
-        echo "Invalid key name: path traversal not allowed" >&2
-        return 1
-    fi
-    return 0
-}
-
-# Set a secret value
-# Usage: secrets_set key value
-secrets_set() {
-    local key="$1"
-    local value="$2"
-
-    _secrets_validate_key "$key" || return 1
-    secrets_init || return 1
-
-    local target
-    local payload
-    if [[ "$SECRETS_ENCRYPTION" == "true" ]]; then
-        target="$SECRETS_DIR/${key}.enc"
-        payload=$(_secrets_encrypt "$value")
-        if [[ -z "$payload" ]]; then
-            echo "Failed to encrypt secret: $key" >&2
-            return 1
-        fi
-    else
-        target="$SECRETS_DIR/${key}"
-        payload="$value"
-    fi
-
-    if ! (umask 077; printf '%s' "$payload" > "${target}.tmp") 2>/dev/null; then
-        rm -f "${target}.tmp"
-        echo "Failed to write secret: $key" >&2
-        return 1
-    fi
-    chmod 600 "${target}.tmp" && mv -f "${target}.tmp" "$target"
-}
-
-# Get a secret value
-# Usage: secrets_get key
-secrets_get() {
-    local key="$1"
-    _secrets_validate_key "$key" || return 1
-
-    # Try encrypted first, then plaintext
-    if [[ -f "$SECRETS_DIR/${key}.enc" ]]; then
-        local ciphertext
-        ciphertext=$(cat "$SECRETS_DIR/${key}.enc")
-        _secrets_decrypt "$ciphertext"
-    elif [[ -f "$SECRETS_DIR/${key}" ]]; then
-        cat "$SECRETS_DIR/${key}"
-    else
-        echo "Secret not found: $key" >&2
-        return 1
-    fi
-}
-
-# List all secret keys as JSON array (never returns values)
-secrets_list() {
-    secrets_init
-    local result="["
-    local first=true
-
-    for f in "$SECRETS_DIR"/*; do
-        [[ ! -f "$f" ]] && continue
-        local name
-        name=$(basename "$f")
-        # Skip hidden files and gitignore
-        [[ "$name" == .* ]] && continue
-        # Strip .enc extension
-        name="${name%.enc}"
-
-        [[ "$first" == "true" ]] && first=false || result+=","
-        result+="\"$name\""
-    done
-
-    result+="]"
-    echo "$result"
-}
-
-# Delete a secret securely
-secrets_delete() {
-    local key="$1"
-    _secrets_validate_key "$key" || return 1
-
-    local deleted=false
-    for ext in "" ".enc"; do
-        local file="$SECRETS_DIR/${key}${ext}"
-        if [[ -f "$file" ]]; then
-            # Overwrite with random data before deletion
-            local size
-            size=$(stat -c%s "$file" 2>/dev/null || stat -f%z "$file" 2>/dev/null || echo 64)
-            dd if=/dev/urandom bs=1 count="$size" of="$file" 2>/dev/null
-            rm -f "$file"
-            deleted=true
-        fi
-    done
-
-    [[ "$deleted" == "true" ]] && return 0
-    echo "Secret not found: $key" >&2
+secrets_validate_name() {
+    local name="$1"
+    [[ "$name" =~ $SECRETS_NAME_RE ]] && return 0
+    echo "Invalid secret name '$name': use letters, digits and underscores, starting with a letter (e.g. HOMARR_PASSWORD)" >&2
     return 1
 }
 
-# Check if a secret exists
-secrets_exists() {
-    local key="$1"
-    _secrets_validate_key "$key" || return 1
-    [[ -f "$SECRETS_DIR/${key}" || -f "$SECRETS_DIR/${key}.enc" ]]
+# Rewrite ${SECRETS.NAME} / $SECRETS.NAME to the compose-compatible form.
+_normalize_secrets_syntax() {
+    sed 's/\${SECRETS\.\([A-Za-z0-9_]*\)}/${SECRETS_\1}/g; s/\$SECRETS\.\([A-Za-z0-9_]*\)/$SECRETS_\1/g'
+}
+
+# Names referenced as SECRETS_<NAME> in the given files (sorted, unique).
+# Usage: secrets_references FILE...
+secrets_references() {
+    local f
+    for f in "$@"; do
+        [[ -f "$f" ]] && grep -oE 'SECRETS_[A-Za-z_][A-Za-z0-9_]*' "$f" 2>/dev/null
+    done | sed 's/^SECRETS_//' | sort -u
+}
+
+# Referenced names that have no stored value. Usage: secrets_missing FILE...
+secrets_missing() {
+    local name
+    while IFS= read -r name; do
+        [[ -z "$name" ]] && continue
+        secrets_exists "$name" || echo "$name"
+    done < <(secrets_references "$@")
 }
 
 # =============================================================================
-# IMPORT / EXPORT
+# CRUD
 # =============================================================================
 
-# Export all secrets as an encrypted tar bundle.
-# The bundle is encrypted with the master key and does NOT contain it — move
-# .secrets/.master-key to the destination separately (and securely).
-secrets_export_bundle() {
-    local output_path="${1:-${BASE_DIR}/secrets-export-$(date '+%Y%m%d').tar.enc}"
-    secrets_init || return 1
+secrets_exists() {
+    [[ "$1" =~ $SECRETS_NAME_RE && -f "$SECRETS_DIR/$1.enc" ]]
+}
 
-    local tmp_dir
-    tmp_dir=$(mktemp -d) || return 1
-    chmod 700 "$tmp_dir"
-    local tmp_tar="$tmp_dir/bundle.tar"
-    if ! tar -cf "$tmp_tar" -C "$SECRETS_DIR" --exclude='.master-key' --exclude='.gitignore' . 2>/dev/null; then
-        rm -rf "$tmp_dir"
+# Usage: secrets_set NAME VALUE
+secrets_set() {
+    local name="$1" value="$2"
+    secrets_validate_name "$name" || return 1
+    [[ -n "$value" ]] || { echo "Refusing to store an empty value for $name" >&2; return 1; }
+    secrets_init || return 1
+    local target="$SECRETS_DIR/${name}.enc"
+    # -pass file: keeps the key out of /proc/*/cmdline
+    if (umask 077; printf '%s' "$value" | openssl enc -aes-256-cbc -salt -pbkdf2 \
+            -pass "file:${SECRETS_MASTER_KEY_FILE}" -out "${target}.tmp" 2>/dev/null) && [[ -s "${target}.tmp" ]]; then
+        chmod 600 "${target}.tmp" && mv -f "${target}.tmp" "$target"
+    else
+        rm -f "${target}.tmp"
+        echo "Failed to encrypt secret: $name" >&2
         return 1
     fi
-
-    local rc=0
-    if [[ -s "$SECRETS_MASTER_KEY_FILE" ]]; then
-        (umask 077; openssl enc -aes-256-cbc -pbkdf2 -iter 100000 -salt \
-            -pass "file:$SECRETS_MASTER_KEY_FILE" \
-            -in "$tmp_tar" -out "$output_path") 2>/dev/null || rc=1
-    else
-        (umask 077; cp "$tmp_tar" "$output_path") || rc=1
-    fi
-
-    rm -rf "$tmp_dir"
-    [[ $rc -eq 0 ]] && echo "$output_path"
-    return $rc
 }
 
-# Import secrets from an encrypted tar bundle (created by secrets_export_bundle)
-secrets_import_bundle() {
-    local input_path="$1"
-    [[ ! -f "$input_path" ]] && { echo "File not found: $input_path" >&2; return 1; }
+# Usage: secrets_get NAME  (plaintext on stdout; 1 if missing or undecryptable)
+secrets_get() {
+    local name="$1"
+    [[ "$name" =~ $SECRETS_NAME_RE ]] || return 1
+    [[ -f "$SECRETS_DIR/$name.enc" && -f "$SECRETS_MASTER_KEY_FILE" ]] || return 1
+    openssl enc -d -aes-256-cbc -pbkdf2 -pass "file:${SECRETS_MASTER_KEY_FILE}" -in "$SECRETS_DIR/$name.enc" 2>/dev/null
+}
 
-    secrets_init || return 1
-    local tmp_dir
-    tmp_dir=$(mktemp -d) || return 1
-    chmod 700 "$tmp_dir"
-    local tmp_tar="$tmp_dir/bundle.tar"
+# Names only, one per line, never values.
+secrets_list() {
+    local f
+    for f in "$SECRETS_DIR"/*.enc; do
+        [[ -f "$f" ]] || continue
+        f=$(basename "$f" .enc)
+        [[ "$f" =~ $SECRETS_NAME_RE ]] && echo "$f"
+    done | sort
+}
 
-    local rc=0
-    if [[ -s "$SECRETS_MASTER_KEY_FILE" ]]; then
-        openssl enc -aes-256-cbc -pbkdf2 -iter 100000 -d -salt \
-            -pass "file:$SECRETS_MASTER_KEY_FILE" \
-            -in "$input_path" -out "$tmp_tar" 2>/dev/null || rc=1
+# JSON array of {key, modified, size} — the API's list shape.
+secrets_list_json() {
+    local f name mod size first=true out="["
+    for f in "$SECRETS_DIR"/*.enc; do
+        [[ -f "$f" ]] || continue
+        name=$(basename "$f" .enc)
+        mod=$(date -u -d "@$(stat -c '%Y' "$f" 2>/dev/null || echo 0)" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || echo "unknown")
+        size=$(stat -c '%s' "$f" 2>/dev/null || echo 0)
+        [[ "$first" == "true" ]] && first=false || out+=","
+        out+="{\"key\":\"$name\",\"modified\":\"$mod\",\"size\":$size}"
+    done
+    printf '%s]' "$out"
+}
+
+# Overwrite, then remove.
+secrets_delete() {
+    local name="$1"
+    [[ "$name" =~ $SECRETS_NAME_RE ]] || return 1
+    local file="$SECRETS_DIR/$name.enc"
+    [[ -f "$file" ]] || { echo "Secret not found: $name" >&2; return 1; }
+    if command -v shred >/dev/null 2>&1; then
+        shred -u "$file" 2>/dev/null || rm -f "$file"
     else
-        cp "$input_path" "$tmp_tar" || rc=1
+        dd if=/dev/urandom of="$file" bs="$(stat -c '%s' "$file" 2>/dev/null || echo 64)" count=1 conv=notrunc 2>/dev/null
+        rm -f "$file"
     fi
+}
 
-    # Only plain files at the top level of the archive are restored
-    if [[ $rc -eq 0 ]]; then
-        if tar -tf "$tmp_tar" 2>/dev/null | grep -qE '^\.\./|/\.\./|^/'; then
-            echo "Refusing bundle with path traversal entries" >&2
-            rc=1
+# =============================================================================
+# COMPOSE INTEGRATION
+# =============================================================================
+
+# Print `export SECRETS_<NAME>=<value>` for every reference in FILE... that has
+# a stored value. Usage: eval "$(secrets_env_exports FILE...)"
+secrets_env_exports() {
+    local name val
+    while IFS= read -r name; do
+        [[ -z "$name" ]] && continue
+        if val=$(secrets_get "$name"); then
+            printf 'export SECRETS_%s=%q\n' "$name" "$val"
         else
-            tar -xf "$tmp_tar" -C "$SECRETS_DIR" --no-absolute-names --exclude='.master-key' 2>/dev/null || rc=1
+            echo "[DCS] WARN: secret '$name' is referenced but not stored (\${SECRETS_$name})" >&2
         fi
+    done < <(secrets_references "$@")
+}
+
+# Run docker compose with the referenced secrets in its environment only.
+# Usage: compose_with_secrets COMPOSE_FILE ENV_FILE SUBCOMMAND [ARGS...]
+# ENV_FILE may be empty. References are collected from the compose file, the
+# stack .env and the root .env.
+compose_with_secrets() {
+    local compose_file="$1"; shift
+    local env_file="$1"; shift
+    local -a args=(-f "$compose_file")
+    [[ -n "$env_file" && -f "$env_file" ]] && args+=(--env-file "$env_file")
+    (
+        eval "$(secrets_env_exports "$compose_file" "${env_file:-/dev/null}" "$BASE_DIR/.env")"
+        ${DOCKER_COMPOSE_CMD:-docker compose} "${args[@]}" "$@"
+    )
+}
+
+# Backwards-compatible names used across the code base
+_decrypt_secret() { secrets_get "$@"; }
+_secrets_env_exports() { secrets_env_exports "$@"; }
+_compose_with_secrets() { compose_with_secrets "$@"; }
+
+# =============================================================================
+# BUNDLES (encrypted export / import of the whole store, without the key)
+# =============================================================================
+
+# Usage: secrets_export_bundle OUTPUT.tar
+secrets_export_bundle() {
+    local out="$1"
+    [[ -n "$out" ]] || return 1
+    [[ -d "$SECRETS_DIR" ]] || { echo "No secrets to export" >&2; return 1; }
+    (cd "$SECRETS_DIR" && umask 077 && tar -cf "$out" --exclude='.master-key' --exclude='.gitignore' -- *.enc 2>/dev/null)
+}
+
+# Usage: secrets_import_bundle INPUT.tar  (only *.enc entries, no paths)
+secrets_import_bundle() {
+    local in="$1"
+    [[ -f "$in" ]] || { echo "Bundle not found: $in" >&2; return 1; }
+    if tar -tf "$in" 2>/dev/null | grep -vqE '^[A-Za-z_][A-Za-z0-9_]{0,63}\.enc$'; then
+        echo "Bundle contains entries that are not secrets; refusing" >&2
+        return 1
     fi
-    rm -rf "$tmp_dir"
-    return $rc
+    secrets_init || return 1
+    (cd "$SECRETS_DIR" && umask 077 && tar -xf "$in" 2>/dev/null) && chmod 600 "$SECRETS_DIR"/*.enc 2>/dev/null
 }

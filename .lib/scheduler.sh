@@ -11,6 +11,8 @@
 if [[ -z "${BASE_DIR:-}" ]]; then
     BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 fi
+# shellcheck source=/dev/null
+[[ -f "${BASE_DIR}/.lib/secrets.sh" ]] && source "${BASE_DIR}/.lib/secrets.sh"
 
 SCHEDULER_DIR="${BASE_DIR}/.data/schedules"
 SCHEDULER_CONFIG="${SCHEDULER_DIR}/schedules.json"
@@ -216,7 +218,7 @@ _scheduler_execute() {
             ;;
         update)
             if _scheduler_stack_target_ok "$target"; then
-                output=$(cd "$BASE_DIR/Stacks/$target" 2>/dev/null && ${DOCKER_COMPOSE_CMD:-docker compose} pull 2>&1 && ${DOCKER_COMPOSE_CMD:-docker compose} up -d 2>&1) || success=false
+                output=$(compose_with_secrets "$BASE_DIR/Stacks/$target/docker-compose.yml" "$BASE_DIR/Stacks/$target/.env" pull 2>&1 && ${DOCKER_COMPOSE_CMD:-docker compose} up -d 2>&1) || success=false
             else
                 output="No valid target stack specified for update" && success=false
             fi
@@ -229,7 +231,7 @@ _scheduler_execute() {
             ;;
         restart)
             if _scheduler_stack_target_ok "$target"; then
-                output=$(cd "$BASE_DIR/Stacks/$target" 2>/dev/null && ${DOCKER_COMPOSE_CMD:-docker compose} restart 2>&1) || success=false
+                output=$(compose_with_secrets "$BASE_DIR/Stacks/$target/docker-compose.yml" "$BASE_DIR/Stacks/$target/.env" restart 2>&1) || success=false
             else
                 output="No valid target stack specified for restart" && success=false
             fi

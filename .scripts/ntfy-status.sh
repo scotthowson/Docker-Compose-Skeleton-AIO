@@ -22,6 +22,16 @@
 
 # Return a human-readable uptime string for a container.
 # Args: $1 -- container name
+
+# Push endpoint: NTFY_URL plus NTFY_TOPIC (unless the URL already names it).
+_ntfy_target() {
+    local url="${NTFY_URL:-}" topic="${NTFY_TOPIC:-}"
+    [[ -z "$url" ]] && return 1
+    url="${url%/}"
+    [[ -n "$topic" && "$url" != */"$topic" ]] && url="$url/$topic"
+    printf '%s' "$url"
+}
+
 get_container_uptime() {
     local container="$1"
     local started
@@ -189,7 +199,8 @@ Immediate intervention required!"
             -H "X-Tags: critical,server,down,emergency" \
             "${action_headers[@]}" \
             -d "$message" \
-            "$NTFY_URL" >/dev/null 2>&1
+            ${NTFY_TOKEN:+-H "Authorization: Bearer $NTFY_TOKEN"} \
+            "$(_ntfy_target)" >/dev/null 2>&1
 
     elif [[ ${#important_down[@]} -gt 0 ]] || [[ ${#critical_issues[@]} -gt 0 ]]; then
         # WARNING ALERT
@@ -215,7 +226,8 @@ Info: $system_info"
             -H "X-Tags: warning,server,issues" \
             "${action_headers[@]}" \
             -d "$message" \
-            "$NTFY_URL" >/dev/null 2>&1
+            ${NTFY_TOKEN:+-H "Authorization: Bearer $NTFY_TOKEN"} \
+            "$(_ntfy_target)" >/dev/null 2>&1
 
     else
         # ALL SYSTEMS OPERATIONAL
@@ -242,7 +254,8 @@ Infrastructure running optimally."
             -H "X-Tags: success,server,operational,healthy" \
             "${action_headers[@]}" \
             -d "$message" \
-            "$NTFY_URL" >/dev/null 2>&1
+            ${NTFY_TOKEN:+-H "Authorization: Bearer $NTFY_TOKEN"} \
+            "$(_ntfy_target)" >/dev/null 2>&1
     fi
 
     log_success "Notification sent successfully"
@@ -300,7 +313,8 @@ Monitor system performance closely."
             -H "Priority: default" \
             -H "X-Tags: performance,monitoring,resources" \
             -d "$message" \
-            "$NTFY_URL" >/dev/null 2>&1
+            ${NTFY_TOKEN:+-H "Authorization: Bearer $NTFY_TOKEN"} \
+            "$(_ntfy_target)" >/dev/null 2>&1
     fi
 }
 

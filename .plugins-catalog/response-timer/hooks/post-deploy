@@ -1,0 +1,39 @@
+#!/bin/bash
+# DCS plugin hook — contract v2 (see .plugins/README.md)
+# stdin: JSON context {event, stack, project, compose_file, action, success,
+#        containers[], template, compose, dry_run}
+# env:   BASE_DIR COMPOSE_DIR DCS_EVENT PLUGIN_NAME PLUGIN_DIR PLUGIN_STATE_DIR
+#        DCS_PLUGIN_CONFIG (JSON) DCS_DRY_RUN DCS_NTFY_URL NTFY_TOKEN
+#        DOCKER_COMPOSE_CMD TZ + the names listed in the manifest's "env"
+set -u
+CTX=$(cat)
+j() { printf '%s' "$CTX" | jq -r "$1" 2>/dev/null; }
+cfg() { printf '%s' "${DCS_PLUGIN_CONFIG:-{\}}" | jq -r "$1 // empty" 2>/dev/null; }
+STACK=$(j '.stack // empty'); SUCCESS=$(j 'if .success == null then "" else (.success|tostring) end')
+DRY="${DCS_DRY_RUN:-$(j '.dry_run // false')}"
+STATE="${PLUGIN_STATE_DIR:-${PLUGIN_DIR:-/tmp}/state}"; mkdir -p "$STATE" 2>/dev/null
+containers() { printf '%s' "$CTX" | jq -r '.containers[]? // empty' 2>/dev/null; }
+notify() {   # TITLE MESSAGE [priority]
+    [[ -n "${DCS_NTFY_URL:-}" ]] || return 0
+    curl -s -m 8 -H "Title: $1" -H "Priority: ${3:-default}" ${NTFY_TOKEN:+-H "Authorization: Bearer $NTFY_TOKEN"} \
+        --data-binary "$2" "$DCS_NTFY_URL" >/dev/null 2>&1 || true
+}
+now_ts() { date -u '+%Y-%m-%dT%H:%M:%SZ'; }
+[[ -n "$STACK" ]] || exit 0
+slow=$(cfg '.slow_ms'); [[ "$slow" =~ ^[0-9]+$ ]] || slow=5000
+deadline=$(( $(date +%s) + 20 )); results="[]"
+while IFS=$'\t' read -r name ports; do
+    [[ -z "$name" ]] && continue
+    for hp in $(grep -oE '(0\.0\.0\.0|127\.0\.0\.1|\[::\]):[0-9]+' <<< "$ports" | grep -oE '[0-9]+$' | sort -u); do
+        (( $(date +%s) >= deadline )) && break 2
+        t0=$(date +%s%3N)
+        code=$(curl -s -m 4 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$hp/" 2>/dev/null); ms=$(( $(date +%s%3N) - t0 ))
+        [[ "$code" =~ ^[0-9]+$ ]] || code=0
+        flag=""; (( ms > slow )) && flag=" [slower than ${slow} ms]"
+        echo "$name :$hp -> HTTP $code in ${ms} ms$flag"
+        results=$(jq -c --arg n "$name" --argjson p "$hp" --argjson ms "$ms" --argjson c "$code" '. + [{service: $n, port: $p, ms: $ms, http: $c}]' <<< "$results")
+    done
+done < <(docker ps --filter "label=com.docker.compose.project=$STACK" --format '{{.Names}}\t{{.Ports}}' 2>/dev/null)
+jq -c --arg ts "$(now_ts)" --arg stack "$STACK" '{ts: $ts, stack: $stack, results: .}' <<< "$results" >> "$STATE/baseline.jsonl"
+[[ $(wc -l < "$STATE/baseline.jsonl") -gt 400 ]] && tail -n 200 "$STATE/baseline.jsonl" > "$STATE/b.tmp" && mv -f "$STATE/b.tmp" "$STATE/baseline.jsonl"
+echo "response-timer: $(jq 'length' <<< "$results") endpoint(s) measured"

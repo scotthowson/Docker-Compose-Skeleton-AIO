@@ -1,0 +1,19 @@
+{
+  "name": "security-audit",
+  "version": "2.0.0",
+  "author": "DCS Community",
+  "category": "advanced",
+  "description": "Deep security check \u2014 before a deployment on the template (privileged, host namespaces, dangerous capabilities, disabled seccomp/AppArmor, docker.sock) and after it on the running containers (root user, writable root filesystem). Scores each service.",
+  "tags": [
+    "security",
+    "audit",
+    "hardening"
+  ],
+  "env": [],
+  "config": {},
+  "hooks": [
+    "pre-deploy",
+    "post-deploy"
+  ],
+  "contract": 2
+}

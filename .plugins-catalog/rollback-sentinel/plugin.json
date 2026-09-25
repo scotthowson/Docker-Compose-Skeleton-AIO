@@ -1,0 +1,21 @@
+{
+  "name": "rollback-sentinel",
+  "version": "2.0.0",
+  "author": "DCS Community",
+  "category": "safety",
+  "description": "Captures a restore point before every real deployment (compose file, container IDs, image digests, port mappings) and, when a deployment fails, prints the exact command that restores the previous state.",
+  "tags": [
+    "rollback",
+    "safety",
+    "deployment"
+  ],
+  "env": [],
+  "config": {
+    "keep": 10
+  },
+  "hooks": [
+    "pre-deploy",
+    "post-deploy"
+  ],
+  "contract": 2
+}

@@ -1,0 +1,20 @@
+{
+  "name": "cleanup-sweeper",
+  "version": "2.0.0",
+  "author": "DCS Community",
+  "category": "operations",
+  "description": "After a stack stops: prunes dangling images (only untagged layers) and reports networks that no container uses any more, keeping the Docker host lean without manual work.",
+  "tags": [
+    "cleanup",
+    "images",
+    "networks"
+  ],
+  "env": [],
+  "config": {
+    "prune_images": true
+  },
+  "hooks": [
+    "post-stop"
+  ],
+  "contract": 2
+}

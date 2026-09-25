@@ -1,0 +1,18 @@
+{
+  "name": "port-guard",
+  "version": "2.0.0",
+  "author": "DCS Community",
+  "category": "operations",
+  "description": "Before a stack starts: lists the host ports its compose file publishes and reports any that another process (outside this stack) already listens on \u2014 the cause of silent bind failures.",
+  "tags": [
+    "ports",
+    "conflicts",
+    "startup"
+  ],
+  "env": [],
+  "config": {},
+  "hooks": [
+    "pre-start"
+  ],
+  "contract": 2
+}

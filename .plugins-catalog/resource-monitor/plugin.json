@@ -1,0 +1,19 @@
+{
+  "name": "resource-monitor",
+  "version": "2.0.0",
+  "author": "DCS Community",
+  "category": "monitoring",
+  "description": "After a deployment or start: lists the containers of the stack that run without a memory limit or CPU quota, so resource hogs are found before they starve the host.",
+  "tags": [
+    "resources",
+    "limits",
+    "monitoring"
+  ],
+  "env": [],
+  "config": {},
+  "hooks": [
+    "post-deploy",
+    "post-start"
+  ],
+  "contract": 2
+}

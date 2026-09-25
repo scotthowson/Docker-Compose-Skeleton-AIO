@@ -48,3 +48,11 @@ App-Data/
 *~
 .DS_Store
 Thumbs.db
+
+# Plugins installed at runtime (catalogue or git); the bundled four stay tracked
+.plugins/*/
+!.plugins/deploy-notifier/
+!.plugins/example-card/
+!.plugins/health-watchdog/
+!.plugins/traefik-subdomain-guard/
+Stacks/*/.dcs-trusted-templates

@@ -14,6 +14,8 @@ NOTIFY_STARTS=$(jq -r '.config.notify_starts // true' "$PLUGIN_DIR/plugin.json" 
 
 NTFY_URL="${NTFY_URL:-}"
 NTFY_TOPIC="${NTFY_TOPIC:-}"
+# DCS passes its configured push endpoint to hooks (contract v2)
+if [[ -n "${DCS_NTFY_URL:-}" ]]; then NTFY_URL="${DCS_NTFY_URL%/*}"; NTFY_TOPIC="${DCS_NTFY_URL##*/}"; fi
 if [[ -z "$NTFY_URL" || -z "$NTFY_TOPIC" ]]; then
     for env_file in "$BASE_DIR/.env" "$BASE_DIR"/Stacks/*/.env; do
         [[ -f "$env_file" ]] || continue

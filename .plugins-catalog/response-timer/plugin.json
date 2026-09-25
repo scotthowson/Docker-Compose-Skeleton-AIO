@@ -1,0 +1,20 @@
+{
+  "name": "response-timer",
+  "version": "2.0.0",
+  "author": "DCS Community",
+  "category": "monitoring",
+  "description": "After a deployment: measures the HTTP response time of every port the stack publishes on the host (within a 20-second budget), keeps a baseline per service and flags anything slower than the configured limit.",
+  "tags": [
+    "performance",
+    "http",
+    "monitoring"
+  ],
+  "env": [],
+  "config": {
+    "slow_ms": 5000
+  },
+  "hooks": [
+    "post-deploy"
+  ],
+  "contract": 2
+}

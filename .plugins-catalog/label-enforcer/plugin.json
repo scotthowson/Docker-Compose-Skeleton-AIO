@@ -1,0 +1,25 @@
+{
+  "name": "label-enforcer",
+  "version": "2.0.0",
+  "author": "DCS Community",
+  "category": "advanced",
+  "description": "After a deployment: checks the stack's containers for the labels your organisation requires (configurable; defaults to maintainer, version, stack-category, backup-policy) and writes a compliance report.",
+  "tags": [
+    "labels",
+    "compliance",
+    "governance"
+  ],
+  "env": [],
+  "config": {
+    "required_labels": [
+      "maintainer",
+      "version",
+      "stack-category",
+      "backup-policy"
+    ]
+  },
+  "hooks": [
+    "post-deploy"
+  ],
+  "contract": 2
+}

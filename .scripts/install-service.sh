@@ -82,6 +82,7 @@ Documentation=https://github.com/scotthowson/Docker-Compose-Skeleton-AIO
 After=network-online.target docker.service
 Requires=docker.service
 Wants=network-online.target
+RequiresMountsFor=$BASE_DIR
 
 [Service]
 Type=simple
@@ -116,10 +117,12 @@ echo -e "${GREEN}✓${RST} Created dcs-api.service"
 # ── Stacks Startup Service (one-shot) ──
 cat > /etc/systemd/system/dcs-stacks.service << EOF
 [Unit]
-Description=DCS Stack Startup (ordered start + health check)
+Description=DCS Stack Startup (ordered start, health check, proxy reconciliation)
 Documentation=https://github.com/scotthowson/Docker-Compose-Skeleton-AIO
-After=docker.service dcs-api.service
+After=network-online.target docker.service dcs-api.service
+Wants=network-online.target
 Requires=docker.service
+RequiresMountsFor=$BASE_DIR
 
 [Service]
 Type=oneshot
@@ -127,9 +130,11 @@ User=$DCS_USER
 Group=$DCS_GROUP
 SupplementaryGroups=docker
 WorkingDirectory=$BASE_DIR
-ExecStart=$BASE_DIR/start.sh
+# --boot: no banners, continue past a failed stack, then verify Traefik's
+# routes and restart it once if they are dead (the after-power-loss case)
+ExecStart=$BASE_DIR/start.sh --boot
 RemainAfterExit=yes
-TimeoutStartSec=300
+TimeoutStartSec=1200
 
 # Environment
 Environment="HOME=$DCS_HOME"

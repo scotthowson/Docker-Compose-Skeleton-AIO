@@ -256,14 +256,15 @@ emit_json() {
 apply_root() {
     local json
     json=$(emit_json | jq -c '.')
-    local tmp
+    local tmp start end total
     tmp=$(mktemp) || return 1
-    awk -v json="$json" '
-        /^[[:space:]]*read -r -d .. endpoints <<.DCS_ENDPOINTS. \|\| true$/ { print; print json; skipping=1; next }
-        skipping && /^DCS_ENDPOINTS$/ { skipping=0 }
-        skipping { next }
-        { print }
-    ' "$API" > "$tmp" && mv -f "$tmp" "$API"
+    # Splice by line numbers: passing the JSON through awk -v would unescape
+    # the backslashes inside it.
+    start=$(grep -nE '^[[:space:]]*read -r -d .. endpoints <<.DCS_ENDPOINTS. \|\| true$' "$API" | head -1 | cut -d: -f1)
+    end=$(awk -v s="$start" 'NR > s && /^DCS_ENDPOINTS$/ { print NR; exit }' "$API")
+    total=$(wc -l < "$API")
+    [[ -n "$start" && -n "$end" ]] || { echo "GET / catalogue markers not found in $API" >&2; rm -f "$tmp"; return 1; }
+    { head -n "$start" "$API"; printf '%s\n' "$json"; tail -n "$((total - end + 1))" "$API"; } > "$tmp" && mv -f "$tmp" "$API"
     chmod +x "$API"
 }
 

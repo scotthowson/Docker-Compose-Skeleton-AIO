@@ -1,0 +1,21 @@
+{
+  "name": "auto-backup",
+  "version": "2.0.0",
+  "author": "DCS Community",
+  "category": "safety",
+  "description": "Copies the compose file and .env of a stack before every update and deployment (never during dry runs), keeping the last ten so a bad change can always be rolled back by hand.",
+  "tags": [
+    "backup",
+    "safety",
+    "rollback"
+  ],
+  "env": [],
+  "config": {
+    "keep": 10
+  },
+  "hooks": [
+    "pre-update",
+    "pre-deploy"
+  ],
+  "contract": 2
+}

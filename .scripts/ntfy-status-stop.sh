@@ -20,6 +20,16 @@
 # MAIN FUNCTION
 # =============================================================================
 
+
+# Push endpoint: NTFY_URL plus NTFY_TOPIC (unless the URL already names it).
+_ntfy_target() {
+    local url="${NTFY_URL:-}" topic="${NTFY_TOPIC:-}"
+    [[ -z "$url" ]] && return 1
+    url="${url%/}"
+    [[ -n "$topic" && "$url" != */"$topic" ]] && url="$url/$topic"
+    printf '%s' "$url"
+}
+
 check_stop_containers_status() {
     local server_name="${SERVER_NAME:-Docker Server}"
 
@@ -79,7 +89,8 @@ check_stop_containers_status() {
             -H "X-Tags: server,stopped,shutdown" \
             "${action_headers[@]}" \
             -d "All specified containers have been successfully stopped. System is now idle." \
-            "$NTFY_URL" >/dev/null 2>&1
+            ${NTFY_TOKEN:+-H "Authorization: Bearer $NTFY_TOKEN"} \
+            "$(_ntfy_target)" >/dev/null 2>&1
 
         log_alert "Notification sent for all containers stopped."
     else
@@ -89,7 +100,8 @@ check_stop_containers_status() {
             -H "X-Tags: server,running,warning" \
             "${action_headers[@]}" \
             -d "Some containers are still running: $still_running_containers. Immediate action may be necessary." \
-            "$NTFY_URL" >/dev/null 2>&1
+            ${NTFY_TOKEN:+-H "Authorization: Bearer $NTFY_TOKEN"} \
+            "$(_ntfy_target)" >/dev/null 2>&1
 
         log_alert "Notification sent for failure to stop some containers."
     fi

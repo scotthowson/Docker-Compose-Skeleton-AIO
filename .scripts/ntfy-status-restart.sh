@@ -20,6 +20,16 @@
 # MAIN FUNCTION
 # =============================================================================
 
+
+# Push endpoint: NTFY_URL plus NTFY_TOPIC (unless the URL already names it).
+_ntfy_target() {
+    local url="${NTFY_URL:-}" topic="${NTFY_TOPIC:-}"
+    [[ -z "$url" ]] && return 1
+    url="${url%/}"
+    [[ -n "$topic" && "$url" != */"$topic" ]] && url="$url/$topic"
+    printf '%s' "$url"
+}
+
 check_containers_running_status() {
     local server_name="${SERVER_NAME:-Docker Server}"
 
@@ -79,7 +89,8 @@ check_containers_running_status() {
             -H "X-Tags: server,running,restart" \
             "${action_headers[@]}" \
             -d "All specified containers have been successfully restarted and are running." \
-            "$NTFY_URL" >/dev/null 2>&1
+            ${NTFY_TOKEN:+-H "Authorization: Bearer $NTFY_TOKEN"} \
+            "$(_ntfy_target)" >/dev/null 2>&1
 
         log_nodate_alert "Notification sent for all containers running after restart."
     else
@@ -89,7 +100,8 @@ check_containers_running_status() {
             -H "X-Tags: server,stopped,warning" \
             "${action_headers[@]}" \
             -d "Some containers are not running after restart: $stopped_containers. Immediate action may be necessary." \
-            "$NTFY_URL" >/dev/null 2>&1
+            ${NTFY_TOKEN:+-H "Authorization: Bearer $NTFY_TOKEN"} \
+            "$(_ntfy_target)" >/dev/null 2>&1
 
         log_nodate_alert "Notification sent for some containers still stopped after restart."
     fi

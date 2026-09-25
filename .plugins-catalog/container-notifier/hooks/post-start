@@ -1,0 +1,35 @@
+#!/bin/bash
+# DCS plugin hook — contract v2 (see .plugins/README.md)
+# stdin: JSON context {event, stack, project, compose_file, action, success,
+#        containers[], template, compose, dry_run}
+# env:   BASE_DIR COMPOSE_DIR DCS_EVENT PLUGIN_NAME PLUGIN_DIR PLUGIN_STATE_DIR
+#        DCS_PLUGIN_CONFIG (JSON) DCS_DRY_RUN DCS_NTFY_URL NTFY_TOKEN
+#        DOCKER_COMPOSE_CMD TZ + the names listed in the manifest's "env"
+set -u
+CTX=$(cat)
+j() { printf '%s' "$CTX" | jq -r "$1" 2>/dev/null; }
+cfg() { printf '%s' "${DCS_PLUGIN_CONFIG:-{\}}" | jq -r "$1 // empty" 2>/dev/null; }
+STACK=$(j '.stack // empty'); SUCCESS=$(j 'if .success == null then "" else (.success|tostring) end')
+DRY="${DCS_DRY_RUN:-$(j '.dry_run // false')}"
+STATE="${PLUGIN_STATE_DIR:-${PLUGIN_DIR:-/tmp}/state}"; mkdir -p "$STATE" 2>/dev/null
+containers() { printf '%s' "$CTX" | jq -r '.containers[]? // empty' 2>/dev/null; }
+notify() {   # TITLE MESSAGE [priority]
+    [[ -n "${DCS_NTFY_URL:-}" ]] || return 0
+    curl -s -m 8 -H "Title: $1" -H "Priority: ${3:-default}" ${NTFY_TOKEN:+-H "Authorization: Bearer $NTFY_TOKEN"} \
+        --data-binary "$2" "$DCS_NTFY_URL" >/dev/null 2>&1 || true
+}
+now_ts() { date -u '+%Y-%m-%dT%H:%M:%SZ'; }
+if [[ "$SUCCESS" == "false" ]]; then
+    msg="Starting $STACK failed"
+else
+    sleep 5
+    bad=$(docker ps -a --filter "label=com.docker.compose.project=$STACK" --format '{{.Names}}\t{{.State}}\t{{.Health}}' 2>/dev/null | awk -F'\t' '$2!="running" || $3=="unhealthy" {printf "%s(%s%s) ", $1, $2, ($3!=""?"/"$3:"")}')
+    [[ -z "$bad" ]] && { echo "container-notifier: $STACK started cleanly"; exit 0; }
+    msg="Problems after starting $STACK: $bad"
+fi
+notify "DCS alert" "$msg" high
+if [[ -n "${NOTIFY_WEBHOOK_URL:-}" ]]; then
+    curl -s -m 8 -H 'Content-Type: application/json' -d "$(jq -nc --arg t "$msg" '{text: $t, content: $t}')" "$NOTIFY_WEBHOOK_URL" >/dev/null 2>&1 && echo "container-notifier: webhook sent" || echo "container-notifier: webhook failed"
+else
+    echo "container-notifier: $msg"
+fi

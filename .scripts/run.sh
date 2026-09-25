@@ -120,7 +120,19 @@ start_service_stack() {
 
     # ---- Build compose command arguments ----
 
-    local -a compose_args=(-f "$compose_file" up -d --remove-orphans --timeout 60)
+    # Secrets referenced as ${SECRETS_NAME} are injected by compose_with_secrets
+    # (from .lib/secrets.sh); a missing one is reported instead of starting the
+    # service with an empty value.
+    if command -v secrets_missing >/dev/null 2>&1; then
+        local _missing
+        _missing=$(secrets_missing "$compose_file" "$env_file" "$BASE_DIR/.env" | tr '\n' ' ')
+        if [[ -n "${_missing// /}" ]]; then
+            log_error "Stack $service references secrets that do not exist: ${_missing% } (create them on the Secrets page)"
+            return 1
+        fi
+    fi
+
+    local -a compose_args=(up -d --remove-orphans --timeout 60)
 
     if [[ "${SKIP_HEALTHCHECK_WAIT:-false}" != "true" ]]; then
         compose_args+=(--wait)
@@ -135,7 +147,11 @@ start_service_stack() {
     local compose_output
     compose_output="$(mktemp "${TMPDIR:-/tmp}/compose-${service}.XXXXXX")"
 
-    if $DOCKER_COMPOSE_CMD "${compose_args[@]}" > "$compose_output" 2>&1; then
+    if { if command -v compose_with_secrets >/dev/null 2>&1; then
+             compose_with_secrets "$compose_file" "$env_file" "${compose_args[@]}"
+         else
+             $DOCKER_COMPOSE_CMD -f "$compose_file" "${compose_args[@]}"
+         fi; } > "$compose_output" 2>&1; then
         # Filter meaningful lines into the log file (skip noisy pull progress)
         if [[ -s "$compose_output" ]]; then
             grep -Ei '(Creating|Created|Starting|Started|Pulling|Pulled|Running|Healthy|Unhealthy|Error|error|Recreat|Remov|Network|Volume|Container)' \

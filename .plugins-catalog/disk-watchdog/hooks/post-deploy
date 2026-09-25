@@ -1,0 +1,38 @@
+#!/bin/bash
+# DCS plugin hook — contract v2 (see .plugins/README.md)
+# stdin: JSON context {event, stack, project, compose_file, action, success,
+#        containers[], template, compose, dry_run}
+# env:   BASE_DIR COMPOSE_DIR DCS_EVENT PLUGIN_NAME PLUGIN_DIR PLUGIN_STATE_DIR
+#        DCS_PLUGIN_CONFIG (JSON) DCS_DRY_RUN DCS_NTFY_URL NTFY_TOKEN
+#        DOCKER_COMPOSE_CMD TZ + the names listed in the manifest's "env"
+set -u
+CTX=$(cat)
+j() { printf '%s' "$CTX" | jq -r "$1" 2>/dev/null; }
+cfg() { printf '%s' "${DCS_PLUGIN_CONFIG:-{\}}" | jq -r "$1 // empty" 2>/dev/null; }
+STACK=$(j '.stack // empty'); SUCCESS=$(j 'if .success == null then "" else (.success|tostring) end')
+DRY="${DCS_DRY_RUN:-$(j '.dry_run // false')}"
+STATE="${PLUGIN_STATE_DIR:-${PLUGIN_DIR:-/tmp}/state}"; mkdir -p "$STATE" 2>/dev/null
+containers() { printf '%s' "$CTX" | jq -r '.containers[]? // empty' 2>/dev/null; }
+notify() {   # TITLE MESSAGE [priority]
+    [[ -n "${DCS_NTFY_URL:-}" ]] || return 0
+    curl -s -m 8 -H "Title: $1" -H "Priority: ${3:-default}" ${NTFY_TOKEN:+-H "Authorization: Bearer $NTFY_TOKEN"} \
+        --data-binary "$2" "$DCS_NTFY_URL" >/dev/null 2>&1 || true
+}
+now_ts() { date -u '+%Y-%m-%dT%H:%M:%SZ'; }
+warn=$(cfg '.warn_percent'); [[ "$warn" =~ ^[0-9]+$ ]] || warn=85
+alerts=""
+while read -r fs size used avail pct mount; do
+    [[ "$pct" =~ ^[0-9]+%$ ]] || continue
+    p=${pct%\%}
+    (( p >= warn )) && alerts+="$mount ${p}% "
+done < <(df -P -x tmpfs -x devtmpfs -x overlay -x squashfs 2>/dev/null | tail -n +2)
+used_kb=$(df -P "$BASE_DIR" 2>/dev/null | awk 'NR==2 {print $3}'); avail_kb=$(df -P "$BASE_DIR" 2>/dev/null | awk 'NR==2 {print $4}')
+printf '{"epoch":%d,"used_kb":%s,"avail_kb":%s}\n' "$(date +%s)" "${used_kb:-0}" "${avail_kb:-0}" >> "$STATE/usage.jsonl"
+[[ $(wc -l < "$STATE/usage.jsonl") -gt 1000 ]] && tail -n 500 "$STATE/usage.jsonl" > "$STATE/u.tmp" && mv -f "$STATE/u.tmp" "$STATE/usage.jsonl"
+first=$(head -1 "$STATE/usage.jsonl"); last=$(tail -1 "$STATE/usage.jsonl")
+days=$(jq -n --argjson a "$first" --argjson b "$last" '(($b.epoch - $a.epoch) / 86400)'); growth=$(jq -n --argjson a "$first" --argjson b "$last" '($b.used_kb - $a.used_kb)')
+if [[ $(jq -n --argjson d "$days" '$d > 1') == "true" ]] && [[ $(jq -n --argjson g "$growth" '$g > 0') == "true" ]]; then
+    eta=$(jq -n --argjson g "$growth" --argjson d "$days" --argjson av "${avail_kb:-0}" '($av / ($g / $d)) | floor')
+    echo "disk-watchdog: data disk grows $(jq -n --argjson g "$growth" --argjson d "$days" '($g / $d / 1024 | floor)') MB/day — full in about ${eta} day(s) at this rate"
+fi
+if [[ -n "$alerts" ]]; then echo "disk-watchdog: above ${warn}%: $alerts"; notify "DCS: disk space" "Above ${warn}%: $alerts" high; else echo "disk-watchdog: all filesystems below ${warn}%"; fi

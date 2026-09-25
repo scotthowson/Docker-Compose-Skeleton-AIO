@@ -1,0 +1,18 @@
+{
+  "name": "secret-scanner",
+  "version": "2.0.0",
+  "author": "DCS Community",
+  "category": "advanced",
+  "description": "Before a deployment: scans the template and the stack .env for credentials typed in plain text \u2014 AWS and GitHub tokens, JWT secrets, private keys, database passwords and 20+ other formats \u2014 and points at the Secrets page instead.",
+  "tags": [
+    "secrets",
+    "security",
+    "scan"
+  ],
+  "env": [],
+  "config": {},
+  "hooks": [
+    "pre-deploy"
+  ],
+  "contract": 2
+}

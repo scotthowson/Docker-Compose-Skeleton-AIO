@@ -1,0 +1,34 @@
+#!/bin/bash
+# DCS plugin hook — contract v2 (see .plugins/README.md)
+# stdin: JSON context {event, stack, project, compose_file, action, success,
+#        containers[], template, compose, dry_run}
+# env:   BASE_DIR COMPOSE_DIR DCS_EVENT PLUGIN_NAME PLUGIN_DIR PLUGIN_STATE_DIR
+#        DCS_PLUGIN_CONFIG (JSON) DCS_DRY_RUN DCS_NTFY_URL NTFY_TOKEN
+#        DOCKER_COMPOSE_CMD TZ + the names listed in the manifest's "env"
+set -u
+CTX=$(cat)
+j() { printf '%s' "$CTX" | jq -r "$1" 2>/dev/null; }
+cfg() { printf '%s' "${DCS_PLUGIN_CONFIG:-{\}}" | jq -r "$1 // empty" 2>/dev/null; }
+STACK=$(j '.stack // empty'); SUCCESS=$(j 'if .success == null then "" else (.success|tostring) end')
+DRY="${DCS_DRY_RUN:-$(j '.dry_run // false')}"
+STATE="${PLUGIN_STATE_DIR:-${PLUGIN_DIR:-/tmp}/state}"; mkdir -p "$STATE" 2>/dev/null
+containers() { printf '%s' "$CTX" | jq -r '.containers[]? // empty' 2>/dev/null; }
+notify() {   # TITLE MESSAGE [priority]
+    [[ -n "${DCS_NTFY_URL:-}" ]] || return 0
+    curl -s -m 8 -H "Title: $1" -H "Priority: ${3:-default}" ${NTFY_TOKEN:+-H "Authorization: Bearer $NTFY_TOKEN"} \
+        --data-binary "$2" "$DCS_NTFY_URL" >/dev/null 2>&1 || true
+}
+now_ts() { date -u '+%Y-%m-%dT%H:%M:%SZ'; }
+[[ -n "$STACK" ]] || exit 0
+required=$(printf '%s' "${DCS_PLUGIN_CONFIG:-{\}}" | jq -r '.required_labels[]? // empty' 2>/dev/null)
+[[ -n "$required" ]] || required=$'maintainer\nversion\nstack-category\nbackup-policy'
+report="[]"; missing_total=0
+while IFS=$'\t' read -r name labels; do
+    [[ -z "$name" ]] && continue
+    missing=""
+    while IFS= read -r l; do [[ -z "$l" ]] && continue; grep -qE "(^|,)$l=" <<< "$labels" || missing+="$l "; done <<< "$required"
+    [[ -n "$missing" ]] && { echo "$name: missing $missing"; missing_total=$((missing_total+1)); } || echo "$name: compliant"
+    report=$(jq -c --arg n "$name" --arg m "${missing% }" '. + [{container: $n, missing: ($m | split(" ") | map(select(length > 0)))}]' <<< "$report")
+done < <(docker ps -a --filter "label=com.docker.compose.project=$STACK" --format '{{.Names}}\t{{.Labels}}' 2>/dev/null)
+jq -c --arg ts "$(now_ts)" --arg stack "$STACK" '{ts: $ts, stack: $stack, containers: .}' <<< "$report" > "$STATE/$STACK.json"
+echo "label-enforcer: $missing_total container(s) missing required labels (add them under 'labels:' in the compose file)"

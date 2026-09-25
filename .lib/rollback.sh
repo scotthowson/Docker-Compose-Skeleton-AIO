@@ -11,6 +11,8 @@
 if [[ -z "${BASE_DIR:-}" ]]; then
     BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 fi
+# shellcheck source=/dev/null
+[[ -f "${BASE_DIR}/.lib/secrets.sh" ]] && source "${BASE_DIR}/.lib/secrets.sh"
 
 COMPOSE_DIR="${COMPOSE_DIR:-$BASE_DIR/Stacks}"
 ROLLBACK_DIR="${BASE_DIR}/.data/rollback"
@@ -212,7 +214,7 @@ rollback_restore() {
     # Start the stack
     output+="Starting stack $stack_name... "
     if cd "$stack_dir" 2>/dev/null; then
-        if ${DOCKER_COMPOSE_CMD:-docker compose} up -d 2>&1; then
+        if compose_with_secrets "$PWD/docker-compose.yml" "$PWD/.env" up -d 2>&1; then
             output+="done."
         else
             output+="FAILED."

@@ -1,0 +1,40 @@
+#!/bin/bash
+# DCS plugin hook — contract v2 (see .plugins/README.md)
+# stdin: JSON context {event, stack, project, compose_file, action, success,
+#        containers[], template, compose, dry_run}
+# env:   BASE_DIR COMPOSE_DIR DCS_EVENT PLUGIN_NAME PLUGIN_DIR PLUGIN_STATE_DIR
+#        DCS_PLUGIN_CONFIG (JSON) DCS_DRY_RUN DCS_NTFY_URL NTFY_TOKEN
+#        DOCKER_COMPOSE_CMD TZ + the names listed in the manifest's "env"
+set -u
+CTX=$(cat)
+j() { printf '%s' "$CTX" | jq -r "$1" 2>/dev/null; }
+cfg() { printf '%s' "${DCS_PLUGIN_CONFIG:-{\}}" | jq -r "$1 // empty" 2>/dev/null; }
+STACK=$(j '.stack // empty'); SUCCESS=$(j 'if .success == null then "" else (.success|tostring) end')
+DRY="${DCS_DRY_RUN:-$(j '.dry_run // false')}"
+STATE="${PLUGIN_STATE_DIR:-${PLUGIN_DIR:-/tmp}/state}"; mkdir -p "$STATE" 2>/dev/null
+containers() { printf '%s' "$CTX" | jq -r '.containers[]? // empty' 2>/dev/null; }
+notify() {   # TITLE MESSAGE [priority]
+    [[ -n "${DCS_NTFY_URL:-}" ]] || return 0
+    curl -s -m 8 -H "Title: $1" -H "Priority: ${3:-default}" ${NTFY_TOKEN:+-H "Authorization: Bearer $NTFY_TOKEN"} \
+        --data-binary "$2" "$DCS_NTFY_URL" >/dev/null 2>&1 || true
+}
+now_ts() { date -u '+%Y-%m-%dT%H:%M:%SZ'; }
+COMPOSE=$(j '.compose // empty'); [[ -n "$COMPOSE" ]] || exit 0
+tmp=$(mktemp -d) || exit 0; trap 'rm -rf "$tmp"' EXIT
+printf '%s' "$COMPOSE" > "$tmp/docker-compose.yml"
+cfgjson=$(cd "$tmp" && ${DOCKER_COMPOSE_CMD:-docker compose} config --format json 2>/dev/null)
+[[ -n "$cfgjson" ]] || { echo "dependency-checker: compose could not parse the template"; exit 0; }
+issues=0
+services=$(jq -r '.services | keys[]' <<< "$cfgjson")
+while IFS=$'\t' read -r svc dep cond; do
+    [[ -z "$svc" ]] && continue
+    if ! grep -qx "$dep" <<< "$services"; then echo "$svc depends on missing service $dep"; issues=$((issues+1)); continue; fi
+    if [[ "$cond" == "service_healthy" ]] && [[ "$(jq -r --arg d "$dep" '.services[$d].healthcheck // empty | length' <<< "$cfgjson")" == "0" ]]; then
+        echo "$svc waits for $dep to be healthy, but $dep has no healthcheck"; issues=$((issues+1))
+    fi
+done < <(jq -r '.services | to_entries[] | .key as $s | (.value.depends_on // {}) | if type == "array" then .[] | [$s, ., "service_started"] else to_entries[] | [$s, .key, (.value.condition // "service_started")] end | @tsv' <<< "$cfgjson")
+# cycles: repeatedly strip services with no remaining deps
+graph=$(jq -c '.services | with_entries(.value = ((.value.depends_on // {}) | if type == "array" then . else keys end))' <<< "$cfgjson")
+cycle=$(jq -r 'def strip: if (to_entries | map(select(.value | length == 0)) | length) == 0 then keys else (to_entries | map(select(.value | length == 0)) | map(.key)) as $done | with_entries(select(.key as $k | ($done | index($k)) == null)) | with_entries(.value |= map(select(. as $d | ($done | index($d)) == null))) | strip end; strip | join(" ")' <<< "$graph")
+[[ -n "$cycle" ]] && { echo "circular depends_on among: $cycle"; issues=$((issues+1)); }
+if (( issues == 0 )); then echo "dependency-checker: $(wc -l <<< "$services") service(s), dependencies consistent"; else echo "dependency-checker: $issues issue(s)"; fi

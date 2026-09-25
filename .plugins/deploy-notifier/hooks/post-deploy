@@ -16,6 +16,8 @@ NOTIFY_DEPLOYS=$(jq -r '.config.notify_deploys // true' "$PLUGIN_DIR/plugin.json
 # Read NTFY config from environment
 NTFY_URL="${NTFY_URL:-}"
 NTFY_TOPIC="${NTFY_TOPIC:-}"
+# DCS passes its configured push endpoint to hooks (contract v2)
+if [[ -n "${DCS_NTFY_URL:-}" ]]; then NTFY_URL="${DCS_NTFY_URL%/*}"; NTFY_TOPIC="${DCS_NTFY_URL##*/}"; fi
 
 # Try to read from .env if not in environment
 if [[ -z "$NTFY_URL" || -z "$NTFY_TOPIC" ]]; then

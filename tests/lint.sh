@@ -12,7 +12,7 @@ mapfile -t SCRIPTS < <(git ls-files -co --exclude-standard '*.sh' 'setup.sh' 'st
 # Plugin hooks are bash too
 while IFS= read -r hook; do
     head -1 "$hook" | grep -qE '^#!/(usr/)?bin/(env )?bash' && SCRIPTS+=("$hook")
-done < <(git ls-files -co --exclude-standard '.plugins/*/hooks/*' 2>/dev/null)
+done < <(git ls-files '.plugins/*/hooks/*' 2>/dev/null)   # bundled plugins only, not ones installed by the user
 
 echo "Syntax (bash -n): ${#SCRIPTS[@]} files"
 for f in "${SCRIPTS[@]}"; do

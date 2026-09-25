@@ -1,0 +1,38 @@
+#!/bin/bash
+# DCS plugin hook — contract v2 (see .plugins/README.md)
+# stdin: JSON context {event, stack, project, compose_file, action, success,
+#        containers[], template, compose, dry_run}
+# env:   BASE_DIR COMPOSE_DIR DCS_EVENT PLUGIN_NAME PLUGIN_DIR PLUGIN_STATE_DIR
+#        DCS_PLUGIN_CONFIG (JSON) DCS_DRY_RUN DCS_NTFY_URL NTFY_TOKEN
+#        DOCKER_COMPOSE_CMD TZ + the names listed in the manifest's "env"
+set -u
+CTX=$(cat)
+j() { printf '%s' "$CTX" | jq -r "$1" 2>/dev/null; }
+cfg() { printf '%s' "${DCS_PLUGIN_CONFIG:-{\}}" | jq -r "$1 // empty" 2>/dev/null; }
+STACK=$(j '.stack // empty'); SUCCESS=$(j 'if .success == null then "" else (.success|tostring) end')
+DRY="${DCS_DRY_RUN:-$(j '.dry_run // false')}"
+STATE="${PLUGIN_STATE_DIR:-${PLUGIN_DIR:-/tmp}/state}"; mkdir -p "$STATE" 2>/dev/null
+containers() { printf '%s' "$CTX" | jq -r '.containers[]? // empty' 2>/dev/null; }
+notify() {   # TITLE MESSAGE [priority]
+    [[ -n "${DCS_NTFY_URL:-}" ]] || return 0
+    curl -s -m 8 -H "Title: $1" -H "Priority: ${3:-default}" ${NTFY_TOKEN:+-H "Authorization: Bearer $NTFY_TOKEN"} \
+        --data-binary "$2" "$DCS_NTFY_URL" >/dev/null 2>&1 || true
+}
+now_ts() { date -u '+%Y-%m-%dT%H:%M:%SZ'; }
+COMPOSE=$(j '.compose // empty'); [[ -n "$COMPOSE" ]] || exit 0
+tmp=$(mktemp -d) || exit 0; trap 'rm -rf "$tmp"' EXIT
+printf '%s' "$COMPOSE" > "$tmp/docker-compose.yml"
+cfgjson=$(cd "$tmp" && ${DOCKER_COMPOSE_CMD:-docker compose} config --format json 2>/dev/null)
+sensitive='3306 5432 6379 27017 9200 5672 11211 2375 2376'
+exposed=""
+if [[ -n "$cfgjson" ]]; then
+    while IFS=$'\t' read -r svc target published host; do
+        [[ -z "$svc" || -z "$target" ]] && continue
+        grep -qw "$target" <<< "$sensitive" || continue
+        [[ -n "$host" && "$host" != "0.0.0.0" && "$host" != "::" ]] && continue
+        exposed+="$svc:$target->host:${published:-?} "
+    done < <(jq -r '.services | to_entries[] | .key as $s | (.value.ports // [])[] | [$s, (.target // ""), (.published // ""), (.host_ip // "")] | @tsv' <<< "$cfgjson")
+else
+    for p in $sensitive; do grep -qE "^\s*-\s*\"?[0-9]*:?$p:$p\"?" <<< "$COMPOSE" && exposed+="$p "; done
+fi
+if [[ -n "$exposed" ]]; then echo "network-firewall: sensitive ports published on every interface: $exposed"; echo "bind them to 127.0.0.1 (\"127.0.0.1:3306:3306\") or drop the ports: entry and let other containers reach the service by name"; notify "DCS: exposed database port" "$(j '.template // "template"') publishes $exposed" high; else echo "network-firewall: no sensitive port published on all interfaces"; fi

@@ -84,6 +84,21 @@ repository, a test suite and generated documentation. The API version is now 1.3
   `status.sh` ignored `DOCKER_STACKS`; the configuration validator's port check could never match;
   `clean-up.sh`'s deletion prompt called a function that was never loaded; headless runs of
   `start.sh` exited on an unanswerable prompt.
+- Automations never ran: rules were written to the user's crontab through a pattern that could
+  also wipe unrelated entries, the matching `cron.sh` did not exist, `POST /automations/{id}/run`
+  did not exist, and the history endpoint returned invalid JSON for an unknown rule.
+- Secrets did not work end to end: the API wrote a different file format than `.lib/secrets.sh`
+  read, `${SECRETS_NAME}` placeholders were only resolved by one code path, stack start silently
+  ran with empty values, and compose validation rewrote `.env` files.
+- Trends only ever showed the last 49 samples: the raw history was trimmed on every read.
+- Plugin hooks received an empty context and no environment, so 21 of the 24 catalogue plugins
+  could not work; `post-*` hooks fired before the action had finished and never learned whether
+  it succeeded.
+- NTFY: the topic configured in `.env` was ignored by half of the senders; `NTFY_TOKEN` is now
+  honoured everywhere.
+- After a power loss, Traefik could come up before its plugins and the Docker socket proxy and
+  route nothing until restarted (see `start.sh --boot` under Added).
+- Factory reset left automations, schedules, metrics and secrets behind.
 
 ### Changed
 
@@ -97,19 +112,55 @@ repository, a test suite and generated documentation. The API version is now 1.3
   logs, plugin state, editor files).
 - `README.md`, `CLAUDE.md` and the systemd unit now describe the All-In-One edition (web UI on
   port 3000, this repository's URL).
+- Stack start/stop/restart/update and template deployments run through one detached runner that
+  fires the `pre-*` hook, performs the action, then fires the `post-*` hook with `success`,
+  `containers` and (for updates) `changed_images` in the context; results are logged to
+  `logs/stack-actions.log`.
+- Metrics are kept in three tiers: raw samples for 7 days, 5-minute averages for 90 days and
+  hourly averages for two years, stitched together and downsampled to at most 1 500 points per
+  request. `GET /metrics/trends` accepts `1h`...`7d`, `30d`, `90d`, `1y` and `all`.
+- `stack start` refuses (422) when a `${SECRETS_*}` placeholder has no stored value; template
+  deploys still write the compose file but hold the auto-start and say why.
+- The `dcs-stacks` service starts after the network is online and after `dcs-api`, waits for the
+  installation's filesystem, and runs `start.sh --boot` (no banners, keep going on failures).
+- `.scripts/metrics.sh` and `.lib/scheduler.sh` daemons are no longer started by `start.sh`; the
+  API server owns metrics, schedules and automations.
+- The `SECRETS_ENCRYPTION` setting is gone: secrets are always encrypted at rest.
 
 ### Added
 
-- `tests/smoke.sh`: 60+ checks that drive the request handler exactly as socat does, in an
+- `tests/smoke.sh`: 110+ checks that drive the request handler exactly as socat does, in an
   isolated temporary installation (no network, no Docker required for most checks).
 - `tests/lint.sh` and a GitHub Actions workflow: `bash -n`, `shellcheck`, compose validation of
   every stack and template, the API reference freshness check and the smoke tests.
-- `docs/API.md`: the complete endpoint reference (210 endpoints) generated from the router by
+- `docs/API.md`: the complete endpoint reference (222 endpoints) generated from the router by
   `.scripts/api-docs.sh`, with access levels taken from the server's own policy.
 - `SECURITY.md`, this changelog, a `VERSION` file (single source for the release version) and a
   plugin authoring guide in `.plugins/README.md`.
 - `API_TRUSTED_PROXIES` and `API_INSECURE_NO_AUTH` settings; `GET /health/score/history` and
   `/metrics/history|summary` now have data; schedules accept `start`, `stop` and `maintenance`.
+- An in-process automation engine: cron expressions and presets (`@hourly`, `@5min`...),
+  conditions (`container_unhealthy`, `container_stopped`, `high_cpu`, `high_memory`,
+  `disk_full`) with a 15-minute cool-down, actions (`stack_start|stop|restart`,
+  `container_restart`, `docker_prune`, `backup_trigger`, `notification_send`), run history and
+  `POST /automations/{id}/run`.
+- Secrets v2: `GET /secrets/{name}/references` shows every compose and `.env` file that uses a
+  secret; names follow `^[A-Za-z_][A-Za-z0-9_]{0,63}$`; the CLI (`run.sh`, `stack-manager.sh`,
+  `update_all_stacks.sh`, scheduler, rollback) resolves the same placeholders as the API.
+- CrowdSec integration: `GET /crowdsec/status`, `GET /crowdsec/decisions`,
+  `DELETE /crowdsec/decisions/{ip}`, `POST /crowdsec/unban-me`, `POST|DELETE /crowdsec/trust`;
+  the home public address (from the DDNS file or ipify) and `CROWDSEC_TRUSTED_IPS` are written
+  to a CrowdSec whitelist parser every ten minutes, so a dynamic address never bans itself.
+- Reverse-proxy reconciliation: `.scripts/proxy-reconcile.sh` probes every Traefik route and
+  restarts Traefik once when none answer; `start.sh --boot`, `PROXY_RECONCILE=true`,
+  `GET /routes/health` and `POST /routes/reconcile`.
+- Plugin contract v2: hooks receive a JSON context on stdin (`event`, `stack`, `project`,
+  `compose_file`, `action`, `success`, `containers`, `template`, `compose`, `dry_run`) and a
+  documented environment (`PLUGIN_DIR`, `PLUGIN_STATE_DIR`, `DCS_PLUGIN_CONFIG`, `DCS_NTFY_URL`,
+  `DOCKER_COMPOSE_CMD`, the `.env` names the manifest lists...). A catalogue of 23 ready-made
+  plugins ships in `.plugins-catalog/` (`GET /plugins/catalog`,
+  `POST /plugins/catalog/{name}/install`).
+- `NTFY_TOKEN` for protected NTFY servers; the setup wizard can deploy an NTFY server itself.
 
 ### Removed
 

@@ -1,0 +1,21 @@
+{
+  "name": "container-notifier",
+  "version": "2.0.0",
+  "author": "DCS Community",
+  "category": "monitoring",
+  "description": "Sends an alert when a deployment or start fails or leaves containers unhealthy \u2014 to DCS's ntfy channel automatically, and to a Slack/Discord/generic webhook when NOTIFY_WEBHOOK_URL is set in .env.",
+  "tags": [
+    "notifications",
+    "webhook",
+    "alerts"
+  ],
+  "env": [
+    "NOTIFY_WEBHOOK_URL"
+  ],
+  "config": {},
+  "hooks": [
+    "post-deploy",
+    "post-start"
+  ],
+  "contract": 2
+}

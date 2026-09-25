@@ -1,0 +1,21 @@
+{
+  "name": "stack-analytics",
+  "version": "2.0.0",
+  "author": "DCS Community",
+  "category": "monitoring",
+  "description": "Records every deployment and start with its outcome and container list to a bounded JSONL timeline in the plugin's state directory \u2014 an operational history you can query with jq.",
+  "tags": [
+    "analytics",
+    "history",
+    "timeline"
+  ],
+  "env": [],
+  "config": {
+    "keep_events": 5000
+  },
+  "hooks": [
+    "post-deploy",
+    "post-start"
+  ],
+  "contract": 2
+}

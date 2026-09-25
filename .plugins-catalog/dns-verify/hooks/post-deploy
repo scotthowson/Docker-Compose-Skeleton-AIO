@@ -1,0 +1,37 @@
+#!/bin/bash
+# DCS plugin hook — contract v2 (see .plugins/README.md)
+# stdin: JSON context {event, stack, project, compose_file, action, success,
+#        containers[], template, compose, dry_run}
+# env:   BASE_DIR COMPOSE_DIR DCS_EVENT PLUGIN_NAME PLUGIN_DIR PLUGIN_STATE_DIR
+#        DCS_PLUGIN_CONFIG (JSON) DCS_DRY_RUN DCS_NTFY_URL NTFY_TOKEN
+#        DOCKER_COMPOSE_CMD TZ + the names listed in the manifest's "env"
+set -u
+CTX=$(cat)
+j() { printf '%s' "$CTX" | jq -r "$1" 2>/dev/null; }
+cfg() { printf '%s' "${DCS_PLUGIN_CONFIG:-{\}}" | jq -r "$1 // empty" 2>/dev/null; }
+STACK=$(j '.stack // empty'); SUCCESS=$(j 'if .success == null then "" else (.success|tostring) end')
+DRY="${DCS_DRY_RUN:-$(j '.dry_run // false')}"
+STATE="${PLUGIN_STATE_DIR:-${PLUGIN_DIR:-/tmp}/state}"; mkdir -p "$STATE" 2>/dev/null
+containers() { printf '%s' "$CTX" | jq -r '.containers[]? // empty' 2>/dev/null; }
+notify() {   # TITLE MESSAGE [priority]
+    [[ -n "${DCS_NTFY_URL:-}" ]] || return 0
+    curl -s -m 8 -H "Title: $1" -H "Priority: ${3:-default}" ${NTFY_TOKEN:+-H "Authorization: Bearer $NTFY_TOKEN"} \
+        --data-binary "$2" "$DCS_NTFY_URL" >/dev/null 2>&1 || true
+}
+now_ts() { date -u '+%Y-%m-%dT%H:%M:%SZ'; }
+[[ -n "$STACK" ]] || exit 0
+deadline=$(( $(date +%s) + 20 )); problems=0
+routes=$(ls "$COMPOSE_DIR/networking-security/App-Data/Traefik/custom_routes/$STACK/"*.yml 2>/dev/null; ls "$BASE_DIR/App-Data/Traefik/custom_routes/$STACK/"*.yml 2>/dev/null)
+for f in $routes; do
+    host=$(grep -oE 'Host\(`[^`]+`\)' "$f" 2>/dev/null | head -1 | sed -E 's/Host\(`([^`]+)`\)/\1/')
+    [[ -n "$host" && "$host" != *'${'* ]] || continue
+    if getent hosts "$host" >/dev/null 2>&1; then echo "dns ok: $host"; else echo "dns MISSING: $host (no record yet)"; problems=$((problems+1)); fi
+done
+while IFS=$'\t' read -r name ports; do
+    [[ -z "$name" ]] && continue
+    for hp in $(grep -oE '(0\.0\.0\.0|\[::\]):[0-9]+' <<< "$ports" | grep -oE '[0-9]+$' | sort -u); do
+        (( $(date +%s) >= deadline )) && break 2
+        if timeout 3 bash -c "exec 3<>/dev/tcp/127.0.0.1/$hp" 2>/dev/null; then echo "port ok: $name :$hp"; else echo "port CLOSED: $name :$hp"; problems=$((problems+1)); fi
+    done
+done < <(docker ps --filter "label=com.docker.compose.project=$STACK" --format '{{.Names}}\t{{.Ports}}' 2>/dev/null)
+if (( problems > 0 )); then echo "dns-verify: $problems problem(s)"; notify "DCS: reachability" "$STACK: $problems reachability problem(s) after deploy" default; else echo "dns-verify: everything reachable"; fi

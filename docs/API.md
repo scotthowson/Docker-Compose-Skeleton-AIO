@@ -4,7 +4,7 @@ Generated from the router in `.scripts/api-server.sh` by `.scripts/api-docs.sh` 
 Run `.scripts/api-docs.sh` after adding or changing a route; CI fails when this file is stale.
 
 The API listens on `API_BIND:API_PORT` (default `0.0.0.0:9876`) and answers JSON.
-Every endpoint below is `210` in total.
+Every endpoint below is `222` in total.
 
 ## Access levels
 
@@ -66,9 +66,9 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | GET | `/disks` | user | Mounted filesystems and their usage |
 | GET | `/version` | user | API, framework, Docker and Compose versions |
 | GET | `/system/metrics` | user | CPU load, memory and per-mount disk usage |
-| GET | `/metrics/trends` | user | Metrics samples for a range (range=1h\|6h\|24h\|7d) |
-| GET | `/metrics/history` | user | Metrics samples for a range (range=1h\|6h\|24h\|7d) |
-| GET | `/metrics/summary` | user | Min, max and average CPU and memory over a range |
+| GET | `/metrics/trends` | user | Metrics samples for a range (range=1h\|6h\|24h\|7d\|30d\|90d\|1y\|all), downsampled, with min/max for rolled-up points |
+| GET | `/metrics/history` | user | Metrics samples for a range (range=1h\|6h\|24h\|7d\|30d\|90d\|1y\|all); same data as /metrics/trends under "data" |
+| GET | `/metrics/summary` | user | Min, max and average CPU, memory and disk over a range (range=1h\|6h\|24h\|7d\|30d\|90d\|1y\|all) |
 | GET | `/health/score` | user | System health score (0-100) with its factors |
 | GET | `/health/score/history` | user | Recorded health scores over a range |
 | GET | `/config/schema` | user | Return contents of .config/schema.json |
@@ -209,11 +209,13 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | Method | Path | Access | Description |
 |--------|------|--------|-------------|
 | GET | `/ddns/status` | admin | Check DDNS status and current IP |
+| GET | `/routes/health` | user | Probe every custom route through Traefik (no changes made) |
 | GET | `/traefik/status` | user | Check if Traefik is deployed and return domain |
 | GET | `/routes` | user | Traefik routes: subdomain, service, stack and target |
 | GET | `/routes/check` | user | Check if a subdomain is available |
 | GET | `/dns/records` | admin | List Cloudflare CNAME records that point to our domain |
 | GET | `/homarr/status` | user | Check if Homarr is deployed and has an API key configured |
+| POST | `/routes/reconcile` | admin | Probe the routes and restart Traefik once if they are dead |
 | PUT | `/routes/{stack}/{service}` | admin | Update a route file's subdomain |
 | DELETE | `/routes/{stack}/{service}` | admin | Delete a route file and optionally clean up DNS |
 
@@ -280,6 +282,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | GET | `/settings/profile` | user | Fetch user's profile settings |
 | GET | `/secrets` | admin | List secret key names (never values) |
 | GET | `/secrets/{key}/exists` | admin | Check if a secret exists (boolean) |
+| GET | `/secrets/{key}/references` | admin | Stacks and env files that reference a secret |
 | POST | `/env` | admin | Save the root .env file (validated as plain KEY=value data) |
 | POST | `/env/validate` | user | Validate .env content without saving it |
 | POST | `/settings/dashboard` | user | Save user's dashboard layout |
@@ -314,6 +317,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | GET | `/automations/{id}/history` | user | Run history of an automation |
 | POST | `/automations` | admin | Create an automation rule |
 | POST | `/automations/{id}/update` | admin | Update an automation rule |
+| POST | `/automations/{id}/run` | admin | Run an automation now |
 | POST | `/schedules` | admin | Create a scheduled task |
 | POST | `/schedules/{id}/update` | admin | Update a scheduled task |
 | POST | `/schedules/{id}/toggle` | admin | Enable/disable a schedule |
@@ -327,12 +331,14 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 |--------|------|--------|-------------|
 | GET | `/plugins` | user | Scan .plugins/ directory, return plugin manifest data |
 | GET | `/plugins/cards` | user | List all available plugin cards across all enabled plugins |
+| GET | `/plugins/catalog` | user | Plugins available to install, with their manifest and installed state |
 | GET | `/plugins/{plugin}/cards/{card}` | user | Return card HTML content as JSON |
 | GET | `/plugins/{plugin}/hooks/{hook}` | admin | Read hook script content |
 | GET | `/plugins/{plugin}/hooks` | admin | List all hooks with metadata |
 | GET | `/plugins/{plugin}/logs` | admin | Execution history |
 | POST | `/plugins/install` | admin | Install a plugin from a git URL (installed disabled) |
 | POST | `/plugins/scaffold` | admin | Create a plugin from an inline manifest, hooks and cards |
+| POST | `/plugins/catalog/*/install` | admin | Install a catalogue plugin (copied into .plugins, disabled) |
 | POST | `/plugins/{plugin}/toggle` | admin | Enable/disable by writing to plugin.json |
 | POST | `/plugins/{plugin}/hooks/{hook}/test` | admin | Dry-run a hook |
 | POST | `/plugins/{plugin}/hooks/{hook}/update` | admin | Update hook script |
@@ -348,4 +354,15 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | POST | `/terminal/auth` | admin | Authenticate with Linux credentials |
 | POST | `/terminal/auth/verify` | admin | Verify a terminal session token |
 | POST | `/terminal/auth/logout` | admin | Invalidate a terminal session |
+
+## Other
+
+| Method | Path | Access | Description |
+|--------|------|--------|-------------|
+| GET | `/crowdsec/status` | user | CrowdSec presence, whitelist state and active decisions |
+| GET | `/crowdsec/decisions` | user | Active CrowdSec decisions (bans) |
+| POST | `/crowdsec/trust` | admin | Add an address to the whitelist (body {ip}; defaults to the home public address and the caller) |
+| POST | `/crowdsec/unban-me` | user | Unban the caller: its client address and the home public address |
+| DELETE | `/crowdsec/decisions/*` | admin | Remove every decision for an address (unban) |
+| DELETE | `/crowdsec/trust/*` | admin | Remove an address from the whitelist |
 

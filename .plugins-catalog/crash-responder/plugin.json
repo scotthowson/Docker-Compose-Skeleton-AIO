@@ -1,0 +1,22 @@
+{
+  "name": "crash-responder",
+  "version": "2.0.0",
+  "author": "DCS Community",
+  "category": "operations",
+  "description": "After a start: finds containers of the stack that exited with an error, saves their last 50 log lines, and optionally restarts them \u2014 at most three times per hour per container.",
+  "tags": [
+    "crash",
+    "recovery",
+    "logs"
+  ],
+  "env": [],
+  "config": {
+    "auto_restart": true,
+    "max_restarts_per_hour": 3,
+    "log_lines": 50
+  },
+  "hooks": [
+    "post-start"
+  ],
+  "contract": 2
+}

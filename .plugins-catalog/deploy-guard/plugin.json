@@ -1,0 +1,22 @@
+{
+  "name": "deploy-guard",
+  "version": "2.0.0",
+  "author": "DCS Community",
+  "category": "safety",
+  "description": "Logs every deployment with its outcome, checkpoints the running containers of a stack before an update, and verifies container health after a start (with a push notification when something is unhealthy).",
+  "tags": [
+    "safety",
+    "deployment",
+    "health"
+  ],
+  "env": [],
+  "config": {
+    "health_wait_seconds": 20
+  },
+  "hooks": [
+    "post-deploy",
+    "pre-update",
+    "post-start"
+  ],
+  "contract": 2
+}

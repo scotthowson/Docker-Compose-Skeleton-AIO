@@ -139,6 +139,76 @@ check "XFF from untrusted peer ignored" yes "$(tail -1 "$LOG" | grep -q '\[192.0
 printf 'GET /version HTTP/1.1\r\nX-Forwarded-For: 127.0.0.1, 192.0.2.9\r\n\r\n' | env "${NOAUTH[@]}" SOCAT_PEERADDR=10.9.9.9 API_TRUSTED_PROXIES=10.0.0.0/8 API_IP_WHITELIST=192.168.1.0/24 "$API" --handle-request 2>/dev/null | status_of | { read -r s; check "spoofed loopback in XFF cannot bypass whitelist" 403 "$s"; }
 printf 'GET /version HTTP/1.1\r\nX-Forwarded-For: 192.168.1.20\r\n\r\n' | env "${NOAUTH[@]}" SOCAT_PEERADDR=10.9.9.9 API_TRUSTED_PROXIES=10.0.0.0/8 API_IP_WHITELIST=192.168.1.0/24 "$API" --handle-request 2>/dev/null | status_of | { read -r s; check "whitelisted client behind trusted proxy admitted" 200 "$s"; }
 
+echo "Automations, schedules and the cron matcher"
+_lib() { local -a _c=("$@"); ( set --; source "$API" >/dev/null 2>&1; "${_c[@]}" ) 2>/dev/null; }
+VTOKEN=$(request POST /auth/login '{"username":"viewer","password":"viewer-pass-123"}' "${AUTH[@]}" | body_of | jq -r '.token // empty')
+check "viewer signed in again"          200 "$(viewer_request GET /stacks | status_of)"
+# Schedules run in the installation's TZ (from .env); compute test instants the same way
+_cron() { _lib _cron_matches "$1" "$(TZ="$(grep -m1 '^TZ=' "$WORK/.env" | cut -d= -f2- | tr -d '"')" date -d "$2" +%s)"; echo $?; }
+check "cron: */5 fires at :15"          0 "$(_cron '*/5 * * * *' '2026-09-24 10:15:00')"
+check "cron: */5 silent at :16"         1 "$(_cron '*/5 * * * *' '2026-09-24 10:16:00')"
+check "cron: @daily at midnight"        0 "$(_cron '@daily' '2026-09-24 00:00:00')"
+check "cron: @daily not at 00:01"       1 "$(_cron '@daily' '2026-09-24 00:01:00')"
+check "cron: range + list"              0 "$(_cron '30 9-17 * * 1,3,5' '2026-09-25 14:30:00')"
+check "cron: weekday mismatch"          1 "$(_cron '30 9-17 * * 1,3,5' '2026-09-24 14:30:00')"
+check "cron: @5min preset accepted"     0 "$(_lib _validate_cron_expression '@5min'; echo $?)"
+check "cron: injection rejected"        1 "$(_lib _validate_cron_expression '* * * * * ; id'; echo $?)"
+AID=$(auth_request POST /automations '{"name":"smoke","trigger_type":"schedule","trigger_value":"*/5 * * * *","action_type":"notification_send","action_target":"hello"}' | body_of | jq -r '.id // empty' 2>/dev/null)
+check "automation created"              yes "$([[ -n "$AID" ]] && echo yes || echo no)"
+check "automation rejects unknown action" 400 "$(auth_request POST /automations '{"name":"x","trigger_type":"schedule","trigger_value":"* * * * *","action_type":"rm_rf"}' | status_of)"
+check "automation rejects bad cron"     400 "$(auth_request POST /automations '{"name":"x","trigger_type":"schedule","trigger_value":"every day","action_type":"docker_prune"}' | status_of)"
+check "automation rejects bad condition" 400 "$(auth_request POST /automations '{"name":"x","trigger_type":"condition","trigger_value":"moon_full","action_type":"docker_prune"}' | status_of)"
+check "automation run now answers"      200 "$(auth_request POST "/automations/$AID/run" | status_of)"
+check "automation history recorded"     1 "$(auth_request GET "/automations/$AID/history" | body_of | jq '.history | length' 2>/dev/null)"
+check "automation run_count incremented" 1 "$(auth_request GET /automations | body_of | jq '.automations[0].run_count' 2>/dev/null)"
+check "unknown automation history"      404 "$(auth_request GET /automations/nope/history | status_of)"
+check "viewer cannot run automations"   403 "$(viewer_request POST "/automations/$AID/run" | status_of)"
+check "no crontab line installed"       0 "$(crontab -l 2>/dev/null | grep -c 'DCS-AUTO' || true)"
+check "automation deleted"              200 "$(auth_request DELETE "/automations/$AID" | status_of)"
+check "delete unknown automation"       404 "$(auth_request DELETE /automations/nope | status_of)"
+
+echo "Secrets"
+check "secret name rule enforced"       400 "$(auth_request POST /secrets '{"key":"bad-name","value":"x"}' | status_of)"
+check "secret stored"                   200 "$(auth_request POST /secrets '{"key":"DEMO_PASSWORD","value":"s3cret-value"}' | status_of)"
+check "secret listed by name"           DEMO_PASSWORD "$(auth_request GET /secrets | body_of | jq -r '.secrets[0].key' 2>/dev/null)"
+check "secret value never listed"       no "$(auth_request GET /secrets | body_of | grep -q 's3cret-value' && echo yes || echo no)"
+check "library decrypts the API's file" s3cret-value "$( (BASE_DIR="$WORK"; source "$WORK/.lib/secrets.sh"; secrets_get DEMO_PASSWORD) 2>/dev/null)"
+check "viewer cannot list secrets"      403 "$(viewer_request GET /secrets | status_of)"
+printf 'services:\n  x:\n    image: alpine\n    environment:\n      - A=${SECRETS_DEMO_PASSWORD}\n      - B=${SECRETS_MISSING_ONE}\n' > "$WORK/Stacks/demo/docker-compose.yml"
+check "references resolve to stack"     demo "$(auth_request GET /secrets/DEMO_PASSWORD/references | body_of | jq -r '.stacks[0]' 2>/dev/null)"
+check "start refuses missing secret"    422 "$(auth_request POST /stacks/demo/start | status_of)"
+check "validate never resolves secrets" no "$(auth_request POST /stacks/demo/compose/validate "$(jq -Rs '{content: .}' < "$WORK/Stacks/demo/docker-compose.yml")" | body_of | grep -q 's3cret-value' && echo yes || echo no)"
+printf 'services:\n  x:\n    image: alpine\n' > "$WORK/Stacks/demo/docker-compose.yml"
+check "secret deleted"                  200 "$(auth_request DELETE /secrets/DEMO_PASSWORD | status_of)"
+check "delete unknown secret"           404 "$(auth_request DELETE /secrets/DEMO_PASSWORD | status_of)"
+
+echo "Metrics history"
+NOW=$(date +%s)
+for i in $(seq 0 399); do printf '{"ts":"x","epoch":%d,"cpu_pct":%d,"mem_pct":50,"disk_pct":10,"load1":0.5,"mem_used_mb":100,"mem_total_mb":200}\n' $((NOW - 14400 + i * 36)) $((i % 100)); done > "$WORK/.api-auth/metrics-history.jsonl"
+check "trends 6h returns all samples"   400 "$(auth_request GET '/metrics/trends?range=6h' | body_of | jq '.count' 2>/dev/null)"
+check "trends 1h returns the last hour" yes "$(auth_request GET '/metrics/trends?range=1h' | body_of | jq -e '.count >= 99 and .count <= 100' >/dev/null 2>&1 && echo yes || echo no)"
+check "trends unknown range falls back" 1h "$(auth_request GET '/metrics/trends?range=nope' | body_of | jq -r '.range' 2>/dev/null)"
+check "trends 1y stitches raw when young" 400 "$(auth_request GET '/metrics/trends?range=1y' | body_of | jq '.count' 2>/dev/null)"
+check "trends reports oldest sample"    yes "$(auth_request GET '/metrics/trends?range=all' | body_of | jq -e '.oldest_epoch != null and .resolution_s == 30' >/dev/null 2>&1 && echo yes || echo no)"
+_lib _metrics_rollup
+check "5-minute rollup written"         yes "$([[ -s "$WORK/.data/metrics/rollup-5m.jsonl" ]] && echo yes || echo no)"
+check "rollup rows carry min/max"       yes "$(head -1 "$WORK/.data/metrics/rollup-5m.jsonl" | jq -e 'has("cpu_max") and has("n")' >/dev/null 2>&1 && echo yes || echo no)"
+check "hourly rollup written"           yes "$([[ -s "$WORK/.data/metrics/rollup-1h.jsonl" ]] && echo yes || echo no)"
+check "summary includes disk"           yes "$(auth_request GET '/metrics/summary?range=24h' | body_of | jq -e '.disk.max == 10 and .samples == 400' >/dev/null 2>&1 && echo yes || echo no)"
+for i in $(seq 0 3999); do printf '{"ts":"x","epoch":%d,"cpu_pct":1,"mem_pct":1,"disk_pct":1}\n' $((NOW - 86000 + i * 21)); done > "$WORK/.api-auth/metrics-history.jsonl"
+check "large ranges are downsampled"    yes "$(auth_request GET '/metrics/trends?range=24h' | body_of | jq -e '.count <= 1500 and .total == 4000 and .resolution_s >= 30' >/dev/null 2>&1 && echo yes || echo no)"
+[[ "${SMOKE_DEBUG:-}" == "1" ]] && auth_request GET '/metrics/trends?range=24h' | body_of | jq -c '{count,total,resolution_s,oldest_epoch,newest_epoch}' 2>/dev/null
+check "bad sample lines are skipped"    yes "$(printf 'not json\n' >> "$WORK/.api-auth/metrics-history.jsonl"; auth_request GET '/metrics/trends?range=1h' | body_of | jq -e '.count > 0' >/dev/null 2>&1 && echo yes || echo no)"
+
+echo "CrowdSec and proxy routes"
+check "crowdsec status without container" false "$(auth_request GET /crowdsec/status | body_of | jq '.installed' 2>/dev/null)"
+check "crowdsec unban validates ip"     400 "$(auth_request DELETE '/crowdsec/decisions/not-an-ip' | status_of)"
+check "crowdsec trust validates ip"     400 "$(auth_request POST /crowdsec/trust '{"ip":"999.1.1.1"}' | status_of)"
+check "viewer may unban itself"         404 "$(viewer_request POST /crowdsec/unban-me | status_of)"
+check "viewer cannot edit trust list"   403 "$(viewer_request POST /crowdsec/trust '{"ip":"203.0.113.9"}' | status_of)"
+check "routes health answers"           200 "$(auth_request GET /routes/health | status_of)"
+check "viewer cannot reconcile proxy"   403 "$(viewer_request POST /routes/reconcile | status_of)"
+
 echo "Docker-backed endpoints (skipped when Docker is unavailable)"
 if docker info >/dev/null 2>&1; then
     check "GET /status"                 200 "$(auth_request GET /status | status_of)"

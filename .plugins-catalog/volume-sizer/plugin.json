@@ -1,0 +1,18 @@
+{
+  "name": "volume-sizer",
+  "version": "2.0.0",
+  "author": "DCS Community",
+  "category": "operations",
+  "description": "After a deployment: measures every Docker volume through the Docker API (no root needed), lists volumes that no container uses, and shows the ten largest.",
+  "tags": [
+    "volumes",
+    "disk",
+    "cleanup"
+  ],
+  "env": [],
+  "config": {},
+  "hooks": [
+    "post-deploy"
+  ],
+  "contract": 2
+}

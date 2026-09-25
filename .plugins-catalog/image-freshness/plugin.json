@@ -1,0 +1,20 @@
+{
+  "name": "image-freshness",
+  "version": "2.0.0",
+  "author": "DCS Community",
+  "category": "safety",
+  "description": "After a deployment: reports how old each image of the stack is (from the image metadata), warns above the configured age, and flags services on a :latest tag without a pinned digest.",
+  "tags": [
+    "images",
+    "updates",
+    "safety"
+  ],
+  "env": [],
+  "config": {
+    "max_age_days": 30
+  },
+  "hooks": [
+    "post-deploy"
+  ],
+  "contract": 2
+}

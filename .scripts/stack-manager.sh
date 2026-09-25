@@ -32,6 +32,8 @@
 if [[ -z "${BASE_DIR:-}" ]]; then
     _SM_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     BASE_DIR="$(cd "$_SM_SCRIPT_DIR/.." && pwd)"
+# shellcheck source=/dev/null
+[[ -f "$BASE_DIR/.lib/secrets.sh" ]] && source "$BASE_DIR/.lib/secrets.sh"
     unset _SM_SCRIPT_DIR
 fi
 
@@ -72,6 +74,19 @@ fi
 # =============================================================================
 # DOCKER COMPOSE COMMAND DETECTION
 # =============================================================================
+
+
+# docker compose for the stack whose compose_file/env_file the caller set, with
+# ${SECRETS_*} references injected from the encrypted store.
+_sm_compose() {
+    if command -v compose_with_secrets >/dev/null 2>&1; then
+        compose_with_secrets "$compose_file" "$env_file" "$@"
+    else
+        local -a _a=(-f "$compose_file")
+        [[ -f "$env_file" ]] && _a+=(--env-file "$env_file")
+        $DOCKER_COMPOSE_CMD "${_a[@]}" "$@"
+    fi
+}
 
 _sm_detect_compose() {
     if [[ -n "${DOCKER_COMPOSE_CMD:-}" ]]; then
@@ -387,7 +402,7 @@ cmd_update() {
     # Phase 2: Pull latest images
     _sm_info "Pulling latest images..."
     echo ""
-    if ! $DOCKER_COMPOSE_CMD "${compose_args[@]}" pull; then
+    if ! _sm_compose pull; then
         _sm_error "Failed to pull images"
         return 1
     fi
@@ -414,12 +429,12 @@ cmd_update() {
         _sm_info "Recreating containers with new images..."
         echo ""
 
-        local -a up_args=("${compose_args[@]}" up -d --remove-orphans)
+        local -a up_args=(up -d --remove-orphans)
         if [[ "${SKIP_HEALTHCHECK_WAIT:-false}" != "true" ]]; then
             up_args+=(--wait)
         fi
 
-        if $DOCKER_COMPOSE_CMD "${up_args[@]}"; then
+        if _sm_compose "${up_args[@]}"; then
             echo ""
             _sm_success "Stack ${_SM_BOLD}$stack${_SM_RESET} updated successfully"
             echo ""

@@ -21,6 +21,17 @@
 # =============================================================================
 
 # Convert a human-readable size string (e.g., "1.5GB", "200MB") to bytes.
+
+# docker compose for the stack in the current directory, with ${SECRETS_*}
+# references injected when the secrets library is loaded (start.sh loads it).
+_uas_compose() {
+    if command -v compose_with_secrets >/dev/null 2>&1; then
+        compose_with_secrets "$PWD/docker-compose.yml" "$PWD/.env" "$@"
+    else
+        $DOCKER_COMPOSE_CMD "$@"
+    fi
+}
+
 _uas_size_to_bytes() {
     local size_str="$1"
     local num unit
@@ -100,7 +111,7 @@ update_all_stacks() {
             my_result="$(mktemp /tmp/pull_result_${stack_name}.XXXXXX)"
             cd "$dir" || exit 1
 
-            if $DOCKER_COMPOSE_CMD pull --quiet 2>/dev/null; then
+            if _uas_compose pull --quiet 2>/dev/null; then
                 echo "SUCCESS:$stack_name" > "$my_result"
             else
                 echo "FAILED:$stack_name" > "$my_result"
@@ -225,7 +236,7 @@ update_all_stacks() {
             if [[ "$images_changed" == "true" ]]; then
                 log_important "$stack_name — Applying rolling update to $running_containers containers"
 
-                if $DOCKER_COMPOSE_CMD up -d --remove-orphans 2>/dev/null; then
+                if _uas_compose up -d --remove-orphans 2>/dev/null; then
                     log_success "$stack_name — Successfully updated with new images"
                     echo "UPDATED" >> "$temp_results"
                     sleep 1
@@ -244,7 +255,7 @@ update_all_stacks() {
                     done
 
                     if [[ "$rollback_ok" == "true" ]]; then
-                        if $DOCKER_COMPOSE_CMD up -d --remove-orphans 2>/dev/null; then
+                        if _uas_compose up -d --remove-orphans 2>/dev/null; then
                             log_warning "$stack_name — Rolled back to previous images"
                             echo "ROLLED_BACK" >> "$temp_results"
                         else

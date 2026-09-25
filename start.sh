@@ -40,12 +40,14 @@ export COMPOSE_DIR APP_DATA_DIR
 # =============================================================================
 
 DEBUG_REQUESTED=false
+BOOT_MODE=false
 SHOW_HELP=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --help|-h)   SHOW_HELP=true; shift ;;
         --debug|-d)  DEBUG_REQUESTED=true; shift ;;
+        --boot)      BOOT_MODE=true; shift ;;
         *)
             echo "Unknown option: $1"
             echo "Run './start.sh --help' for usage."
@@ -53,6 +55,12 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+# Unattended boot (systemd): quiet output, never stop on one failed stack, and
+# reconcile the reverse proxy once every stack has been started.
+if [[ "$BOOT_MODE" == "true" ]]; then
+    export SHOW_BANNERS=false CONTINUE_ON_FAILURE=true DCS_BOOT=true
+fi
 
 if [[ "$SHOW_HELP" == "true" ]]; then
     cat <<'EOF'
@@ -66,6 +74,9 @@ optional image updates, cleanup, and health monitoring.
 OPTIONS:
   --help, -h     Show this help message and exit
   --debug, -d    Enable debug-level logging and bash trace
+  --boot         Unattended mode for the systemd unit: no banners, keep going on
+                 failures, verify Traefik's routes afterwards (restart it once
+                 when they are dead)
 
 STARTUP SEQUENCE:
   1. Verify environment (Docker, directories)
@@ -256,6 +267,11 @@ main() {
     # Step 1: Verify Environment
     # ══════════════════════════════════════════════════════════════════
     log_step 1 "$total_steps" "Verifying Docker environment"
+    # Secrets store first: stacks may reference ${SECRETS_*} when they start
+    if command -v secrets_init >/dev/null 2>&1; then
+        secrets_init && log_debug "Secrets store ready"
+    fi
+
     if ! _verify_environment; then
         log_error "Environment verification failed — aborting"
         _graceful_exit 1
@@ -360,14 +376,25 @@ main() {
     fi
 
     # ══════════════════════════════════════════════════════════════════
+    # Reverse proxy reconciliation (boot mode, or PROXY_RECONCILE=true)
+    # After a power loss Traefik can come up before its plugins, its socket
+    # proxy or the services exist and then serve 404s until restarted. Probe
+    # the routes through Traefik and restart it once when they are dead.
+    # ══════════════════════════════════════════════════════════════════
+    if [[ "${BOOT_MODE:-false}" == "true" || "${PROXY_RECONCILE:-false}" == "true" ]] && [[ -x "$BASE_DIR/.scripts/proxy-reconcile.sh" ]]; then
+        log_info "Verifying reverse proxy routes..."
+        local _pr_out _pr_rc=0
+        _pr_out=$("$BASE_DIR/.scripts/proxy-reconcile.sh" --wait "${PROXY_RECONCILE_WAIT:-15}" 2>&1) || _pr_rc=$?
+        case "$_pr_rc" in
+            0) log_success "Reverse proxy routes verified: ${_pr_out##*: }" ;;
+            2) log_info "Reverse proxy check skipped: ${_pr_out##*: }" ;;
+            *) log_warning "Reverse proxy routes still failing after a restart: ${_pr_out##*: }"; exit_status=1 ;;
+        esac
+    fi
+
+    # ══════════════════════════════════════════════════════════════════
     # Optional: Initialize v2.0 Subsystems
     # ══════════════════════════════════════════════════════════════════
-
-    # Secrets management
-    if [[ "${SECRETS_ENCRYPTION:-true}" == "true" ]] && command -v secrets_init >/dev/null 2>&1; then
-        secrets_init
-        log_success "Secrets management initialized"
-    fi
 
     # Plugin system
     if [[ "${PLUGINS_ENABLED:-true}" == "true" ]] && command -v plugins_init >/dev/null 2>&1; then
@@ -376,18 +403,8 @@ main() {
         log_success "Plugin system initialized"
     fi
 
-    # Metrics collector daemon
-    if [[ "${METRICS_ENABLED:-true}" == "true" ]] && command -v metrics_init >/dev/null 2>&1; then
-        metrics_init
-        metrics_collector_start
-        log_success "Metrics collector started (interval: ${METRICS_COLLECT_INTERVAL:-30}s)"
-    fi
-
-    # Scheduler daemon
-    if [[ "${SCHEDULER_ENABLED:-false}" == "true" ]] && command -v scheduler_daemon_start >/dev/null 2>&1; then
-        scheduler_daemon_start
-        log_success "Scheduler daemon started (interval: ${SCHEDULER_CHECK_INTERVAL:-60}s)"
-    fi
+    # Metrics history, schedules and automations run inside the API server
+    # (see .scripts/api-server.sh); the standalone daemons are no longer started.
 
     # ── Disable debug trace ───────────────────────────────────────────
     { set +x; } 2>/dev/null

@@ -214,9 +214,12 @@ Per-stack settings live in `Stacks/<category>/.env`. Everything has a sensible d
 
 ## Plugins
 
-Plugins add lifecycle hooks (`pre-deploy`, `post-start`, ...) and dashboard cards. Four ship with
-the repository; the format, the sandbox rules and the API are described in
-[.plugins/README.md](.plugins/README.md).
+Plugins add lifecycle hooks (`pre-deploy`, `post-start`, ...) and dashboard cards. Four ship
+enabled-ready in `.plugins/`, and a catalogue of 23 more (deploy guards, backups, monitors,
+security audits, notifiers...) lives in `.plugins-catalog/`: install any of them from the Plugins
+page or with `POST /plugins/catalog/{name}/install`, then enable it. The hook contract (JSON
+context on stdin, the environment a hook sees, timeouts, state directory) and the API are
+described in [.plugins/README.md](.plugins/README.md).
 
 ---
 
@@ -227,6 +230,13 @@ the repository; the format, the sandbox rules and the API are described in
   (Ctrl+Shift+R) or sign out; with web UI 2.23.1 or newer this happens automatically.
 - **`API server failed to start`** after `./setup.sh`: `logs/api-server.log` names the process
   that already holds the port. Stop it or change `API_PORT` in `.env`.
+- **After a power loss Traefik is up but no site answers** until it is restarted: the stacks came
+  up before Traefik could load its plugins or reach the Docker socket. `start.sh --boot` (what the
+  `dcs-stacks` service runs) probes every route once the stacks are healthy and restarts Traefik
+  if none answer; `GET /routes/health` shows the probe and `POST /routes/reconcile` runs it now.
+- **CrowdSec banned my own address** (the site works from the phone but not from the PC): the
+  Protection card on the dashboard has "Unban me" and "Trust my address"; the whitelist follows
+  the DDNS/public address every ten minutes, and `CROWDSEC_TRUSTED_IPS` in `.env` pins more.
 - **A viewer account gets 403** on an action: by design. Only admins change the system; see
   [docs/API.md](docs/API.md) for the access level of every endpoint.
 - **Everything else**: `.scripts/config-validator.sh` checks the installation, `tests/lint.sh` the

@@ -1,0 +1,18 @@
+{
+  "name": "network-policy",
+  "version": "2.0.0",
+  "author": "DCS Community",
+  "category": "advanced",
+  "description": "After a deployment: maps which networks the stack's containers share, flags containers on the default bridge (no isolation) and records the topology for later comparison.",
+  "tags": [
+    "network",
+    "isolation",
+    "topology"
+  ],
+  "env": [],
+  "config": {},
+  "hooks": [
+    "post-deploy"
+  ],
+  "contract": 2
+}
