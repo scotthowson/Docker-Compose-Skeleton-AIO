@@ -151,14 +151,23 @@ systemctl daemon-reload
 systemctl enable dcs-api.service
 systemctl enable dcs-stacks.service
 
-# Configure SELinux contexts if enforcing
-if command -v getenforce >/dev/null 2>&1 && [[ "$(getenforce 2>/dev/null)" == "Enforcing" ]]; then
+# SELinux: systemd only transitions a service into unconfined_service_t from a
+# bin_t executable. Scripts left as user_home_t run as init_t, and every file
+# they touch is denied (enforcing) or logged by setroubleshoot (permissive).
+# Label the entry points bin_t through a persistent fcontext rule.
+if command -v getenforce >/dev/null 2>&1 && [[ "$(getenforce 2>/dev/null)" != "Disabled" ]]; then
     echo -e "${CYAN}  Configuring SELinux contexts...${RST}"
-    # Restore contexts on scripts and service files
-    restorecon -Rv "$BASE_DIR/.scripts/" 2>/dev/null || true
-    restorecon -Rv "$BASE_DIR/start.sh" "$BASE_DIR/stop.sh" "$BASE_DIR/restart.sh" 2>/dev/null || true
+    entry_scripts=("$BASE_DIR/start.sh" "$BASE_DIR/stop.sh" "$BASE_DIR/restart.sh" "$BASE_DIR/status.sh" "$BASE_DIR/.scripts/api-server.sh")
+    if command -v semanage >/dev/null 2>&1; then
+        for rule in "$BASE_DIR/(start|stop|restart|status)\.sh" "$BASE_DIR/\.scripts/api-server\.sh"; do
+            semanage fcontext -a -t bin_t "$rule" 2>/dev/null || semanage fcontext -m -t bin_t "$rule" 2>/dev/null || true
+        done
+        restorecon -v "${entry_scripts[@]}" 2>/dev/null || true
+    else
+        chcon -t bin_t "${entry_scripts[@]}" 2>/dev/null || true
+    fi
     restorecon -Rv /etc/systemd/system/dcs-*.service 2>/dev/null || true
-    echo -e "${GREEN}  ✓${RST} SELinux contexts restored"
+    echo -e "${GREEN}  ✓${RST} SELinux contexts set (entry scripts labelled bin_t)"
 fi
 
 echo ""

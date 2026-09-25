@@ -3,6 +3,26 @@
 All notable changes to Docker Compose Skeleton AIO are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [3.1.1] - 2026-09-25
+
+### Fixed
+
+- Server Config wrote values without quotes, so a Server Name with a space
+  (`SERVER_NAME=Howson Server`) broke every script that sources `.env`: start.sh, stop.sh,
+  status.sh and setup.sh printed "Server: command not found" and lost the value, and the boot
+  unit ran the stacks without it. Values are now quoted the way bash reads them
+  (`.lib/envfile.sh`), the API parses them back identically, the setup wizard writes through the
+  same path, and the scripts repair an already broken `.env` before sourcing it (the original is
+  kept as `.env.bak-repair`).
+- A stack listed in `DOCKER_STACKS` without a `docker-compose.yml` no longer fails the whole
+  start or stop (and with it `dcs-stacks.service` at boot); it is reported as skipped.
+- `install-service.sh` labels the entry scripts `bin_t` on SELinux systems (persistent
+  `semanage` rule, `chcon` fallback) so systemd runs them as `unconfined_service_t` instead of
+  `init_t`; that ends the setroubleshoot denials at boot and real failures once SELinux enforces.
+  Re-run it with sudo on an existing install to apply.
+- `_envfile_set` keeps the file's mode (a stack `.env` no longer turns world-readable after a
+  container environment edit) and no longer mangles backslashes.
+
 ## [3.1.0] - 2026-09-25
 
 ### Added

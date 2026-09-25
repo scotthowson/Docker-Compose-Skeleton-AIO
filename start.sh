@@ -20,6 +20,9 @@ export BASE_DIR
 
 # Load root .env before anything else (provides APP_DATA_DIR, NTFY_URL, etc.)
 if [[ -f "$BASE_DIR/.env" ]]; then
+    # A value saved without quotes but holding a space would run as a command
+    # here; quote such lines first (the original is kept next to the file)
+    [[ -f "$BASE_DIR/.lib/envfile.sh" ]] && source "$BASE_DIR/.lib/envfile.sh" && envfile_repair "$BASE_DIR/.env"
     set -a
     source "$BASE_DIR/.env"
     set +a

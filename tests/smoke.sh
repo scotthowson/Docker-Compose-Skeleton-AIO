@@ -257,7 +257,7 @@ check "env edit: map style"              1 "$(printf 'services:\n  x:\n    envir
 check "env edit: creates the block"      1 "$(printf 'services:\n  x:\n    image: a\n  y:\n    image: b\n' | _lib _compose_env_edit x A 1 set | sed -n '/^  x:/,/^  y:/p' | grep -c '^      - A=1$')"
 check "env get: raw reference"           '${FOO:-1}' "$(printf 'services:\n  x:\n    environment:\n      - A=${FOO:-1}\n' | _lib _compose_env_get x A)"
 _ENVF=$(mktemp); printf 'FOO=1\n' > "$_ENVF"; _lib _envfile_set "$_ENVF" FOO 'a b'; _lib _envfile_set "$_ENVF" NEW 'x#y'
-check "envfile set: replace"             'FOO=a b' "$(grep '^FOO=' "$_ENVF")"
+check "envfile set: replace (quoted)"    'FOO="a b"' "$(grep '^FOO=' "$_ENVF")"
 check "envfile set: append quoted"       'NEW="x#y"' "$(grep '^NEW=' "$_ENVF")"; rm -f "$_ENVF"
 check "container env: unknown container" 404 "$(auth_request POST /containers/nope-zz/env '{"set":{"A":"1"}}' | status_of)"
 check "container env: viewer denied"     403 "$(viewer_request POST /containers/nope-zz/env '{"set":{"A":"1"}}' | status_of)"
@@ -285,6 +285,23 @@ check "discord webhook: discord URL accepted" "https://discord.com/api/webhooks/
 check "config reports discord configured" true "$(auth_request GET /config | body_of | jq -r '.discord_configured' 2>/dev/null)"
 check "config hides the webhook"        yes "$(auth_request GET /config | body_of | grep -q 'webhooks/1/abc' && echo no || echo yes)"
 sed -i '/^DISCORD_WEBHOOK_URL=/d' "$WORK/.env"
+
+echo ".env quoting (scripts source it, the API reads it as data)"
+auth_request POST /config '{"SERVER_NAME":"Howson Server"}' >/dev/null
+check "config write quotes a spaced value" 'SERVER_NAME="Howson Server"' "$(grep '^SERVER_NAME=' "$WORK/.env")"
+check "env file still sources cleanly"   0 "$(bash -c "set -a; source '$WORK/.env'" >/dev/null 2>&1; echo $?)"
+check "quoted value reads back as data"  "Howson Server" "$(auth_request GET /config | body_of | jq -r '.server_name' 2>/dev/null)"
+_ENVQ=$(mktemp); printf 'A=x y\nB="kept"\nE=a b # note\n' > "$_ENVQ"; _lib envfile_repair "$_ENVQ" 2>/dev/null
+check "envfile repair quotes the bad line" 'A="x y"' "$(grep '^A=' "$_ENVQ")"
+check "envfile repair keeps good lines"    'B="kept"' "$(grep '^B=' "$_ENVQ")"
+check "envfile repair keeps a comment"     'E="a b" # note' "$(grep '^E=' "$_ENVQ")"
+check "envfile repair keeps a backup"      yes "$([[ -f "$_ENVQ.bak-repair" ]] && echo yes || echo no)"
+_lib _envfile_set "$_ENVQ" C 'back\slash $x' bash
+check "envfile set escapes for bash"       'C="back\\slash \$x"' "$(grep '^C=' "$_ENVQ")"
+check "loader unescapes what bash would"   'back\slash $x' "$(_lib eval "_api_load_env_file '$_ENVQ'; printf '%s' \"\$C\"")"
+_lib _envfile_set "$_ENVQ" D 'ref ${OTHER}' compose
+check "envfile set keeps compose refs"     'D="ref ${OTHER}"' "$(grep '^D=' "$_ENVQ")"
+rm -f "$_ENVQ" "$_ENVQ.bak-repair"
 
 echo "Docker-backed endpoints (skipped when Docker is unavailable)"
 if docker info >/dev/null 2>&1; then

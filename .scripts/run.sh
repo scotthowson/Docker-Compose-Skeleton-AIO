@@ -219,6 +219,7 @@ start_docker_compose_services() {
     local -a result_durations=()
 
     local failed_services=()
+    local skipped_services=()
     local started_count=0
 
     log_info "Initiating startup of $total_services Docker service stacks..."
@@ -228,7 +229,7 @@ start_docker_compose_services() {
     for service in "${services_to_start[@]}"; do
         (( stack_index++ )) || true
 
-        if [[ -d "$COMPOSE_DIR/$service" ]]; then
+        if [[ -d "$COMPOSE_DIR/$service" && -f "$COMPOSE_DIR/$service/docker-compose.yml" ]]; then
             local timer_start
             timer_start="$(date '+%s')"
 
@@ -263,8 +264,13 @@ start_docker_compose_services() {
                 log_warning "Service '$service' failed to start cleanly"
             fi
         else
-            log_warning "Service directory for '$service' does not exist, skipping"
-            failed_services+=("$service")
+            # Listed but not set up: nothing to start, and not a failure of the run
+            if [[ -d "$COMPOSE_DIR/$service" ]]; then
+                log_warning "Stack '$service' has no docker-compose.yml yet, skipping (deploy something into it or drop it from DOCKER_STACKS)"
+            else
+                log_warning "Service directory for '$service' does not exist, skipping"
+            fi
+            skipped_services+=("$service")
 
             result_names+=("$service")
             result_statuses+=("SKIPPED")
@@ -292,10 +298,11 @@ start_docker_compose_services() {
 
     # ---- Final log lines ----
 
-    log_info "Total: $total_services | Succeeded: $started_count | Failed: ${#failed_services[@]}"
+    log_info "Total: $total_services | Succeeded: $started_count | Failed: ${#failed_services[@]} | Skipped: ${#skipped_services[@]}"
 
     if [[ ${#failed_services[@]} -eq 0 ]]; then
-        log_success "All $started_count service stacks started successfully"
+        log_success "All $started_count configured service stacks started successfully"
+        [[ ${#skipped_services[@]} -gt 0 ]] && log_warning "Skipped (not set up): ${skipped_services[*]}"
         return 0
     else
         log_warning "Failed stacks: ${failed_services[*]}"

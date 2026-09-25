@@ -53,6 +53,8 @@ _api_load_env_file() {
         [[ "$key" =~ ^(${_API_ENV_RESERVED_KEYS})$ || "$key" == BASH_FUNC_* ]] && continue
         if [[ ${#val} -ge 2 && "$val" == \"*\" ]]; then
             val="${val:1:${#val}-2}"
+            # inside double quotes bash reads \\ \" \$ \` as the bare character
+            [[ "$val" == *\\* ]] && val=$(printf '%s' "$val" | sed 's/\\\([\\"$`]\)/\1/g')
         elif [[ ${#val} -ge 2 && "$val" == \'*\' ]]; then
             val="${val:1:${#val}-2}"
         else
@@ -4735,16 +4737,17 @@ _compose_env_edit() {
 }
 
 # Set KEY=VALUE in a Compose .env file (replace the line or append); quotes when needed
+# _envfile_set FILE KEY VALUE [bash|compose] — set one variable, quoting what
+# the file's reader would misread (compose for stack files, bash for the root
+# .env). Backslashes reach awk through ENVIRON, which does not interpret them.
 _envfile_set() {
-    local file="$1" key="$2" val="$3" out
-    if [[ "$val" =~ [[:space:]]$ || "$val" =~ ^[[:space:]] || "$val" == *'#'* || "$val" == *'"'* || "$val" == *"'"* || -z "$val" ]]; then
-        local esc="${val//\\/\\\\}"
-        esc="${esc//\"/\\\"}"
-        val="\"$esc\""
-    fi
+    local file="$1" key="$2" val="$3" mode="${4:-compose}" out
+    val=$(envfile_quote "$val" "$mode")
     [[ -f "$file" ]] || : > "$file"
-    out=$(awk -v k="$key" -v v="$val" 'BEGIN{done=0} $0 ~ ("^(export[ \t]+)?" k "[ \t]*=") && !done { print k "=" v; done=1; next } { print } END { if (!done) print k "=" v }' "$file") || return 1
-    printf '%s\n' "$out" > "$file.tmp.$$" && mv -f "$file.tmp.$$" "$file"
+    out=$(K="$key" V="$val" awk 'BEGIN{done=0; k=ENVIRON["K"]; v=ENVIRON["V"]} $0 ~ ("^(export[ \t]+)?" k "[ \t]*=") && !done { print k "=" v; done=1; next } { print } END { if (!done) print k "=" v }' "$file") || return 1
+    printf '%s\n' "$out" > "$file.tmp.$$" || { rm -f "$file.tmp.$$"; return 1; }
+    chmod --reference="$file" "$file.tmp.$$" 2>/dev/null
+    mv -f "$file.tmp.$$" "$file"
 }
 
 # POST /containers/{container}/env — Change a Compose-managed container's environment in its stack {set{}, unset[], recreate}
@@ -6077,12 +6080,12 @@ handle_config_update() {
         local value="${updates[$key]}"
         if grep -q "^${key}=" "$env_file" 2>/dev/null; then
             grep -v "^${key}=" "$env_file" > "${env_file}.tmp" 2>/dev/null
-            printf '%s=%s\n' "$key" "$value" >> "${env_file}.tmp"
+            printf '%s=%s\n' "$key" "$(envfile_quote "$value" bash)" >> "${env_file}.tmp"
             chmod --reference="$env_file" "${env_file}.tmp" 2>/dev/null
             mv -f "${env_file}.tmp" "$env_file"
         else
             [[ -s "$env_file" && "$(tail -c1 "$env_file")" != "" ]] && printf '\n' >> "$env_file"
-            printf '%s=%s\n' "$key" "$value" >> "$env_file"
+            printf '%s=%s\n' "$key" "$(envfile_quote "$value" bash)" >> "$env_file"
         fi
         changed=$(( changed + 1 ))
     done
@@ -14880,9 +14883,11 @@ handle_setup_configure() {
         touch "$env_file"
     fi
 
-    # Read env content
-    local env_content
-    env_content=$(cat "$env_file")
+    # Work on a private copy and swap it in at the end. Every value goes
+    # through _envfile_set in bash mode, so whatever the user typed (spaces,
+    # quotes, dollars) survives both the scripts' `source` and the API's parser.
+    local tmp_env="${env_file}.tmp"
+    (umask 077; cp "$env_file" "$tmp_env") || { _api_error 500 "Cannot write .env"; return; }
 
     # Apply each env_var from the request
     local env_updated=0
@@ -14897,39 +14902,25 @@ handle_setup_configure() {
         if [[ "$key" == "CF_DNS_API_TOKEN" && "$val" == *"curl "* ]]; then
             val=$(printf '%s' "$val" | sed -n 's/.*Bearer \([A-Za-z0-9_-]*\).*/\1/p' | head -1)
         fi
-        # .env is read as data by the API and sourced by the shell scripts:
-        # reject anything that would not survive both
         val=$(printf '%s' "$val" | tr -d '\n\r')
         local _problem
-        if ! _problem=$(_api_validate_env_kv "$key" "$val") || [[ "$val" == *'"'* ]]; then
-            _api_error 400 "Rejected value for $key: ${_problem:-double quotes are not allowed}"
+        if ! _problem=$(_api_validate_env_kv "$key" "$val"); then
+            rm -f "$tmp_env"
+            _api_error 400 "Rejected value for $key: $_problem"
             return
         fi
-        # SECURITY: Escape sed delimiter and special chars in value
-        local safe_val="${val//\\/\\\\}"
-        safe_val="${safe_val//|/\\|}"
-        safe_val="${safe_val//&/\\&}"
-        # Replace existing KEY=... line or append
-        if echo "$env_content" | grep -q "^${key}="; then
-            env_content=$(echo "$env_content" | sed "s|^${key}=.*|${key}=\"${safe_val}\"|")
-            ((env_updated++))
-        else
-            env_content+=$'\n'"${key}=\"${val}\""
-            ((env_updated++))
-        fi
+        _envfile_set "$tmp_env" "$key" "$val" bash || { rm -f "$tmp_env"; _api_error 500 "Cannot write .env"; return; }
+        env_updated=$(( env_updated + 1 ))
     done
 
-    # Always set DOCKER_STACKS
-    if echo "$env_content" | grep -q "^DOCKER_STACKS="; then
-        env_content=$(echo "$env_content" | sed "s|^DOCKER_STACKS=.*|DOCKER_STACKS=\"${docker_stacks_str}\"|")
-    else
-        # Append with a proper section header so .env stays organized
-        env_content+=$'\n\n'"# ─── Stack Configuration ─────────────────────────────────────────────────────"
-        env_content+=$'\n'"DOCKER_STACKS=\"${docker_stacks_str}\""
+    # Always set DOCKER_STACKS (under its own header when the key is new)
+    if ! grep -q '^DOCKER_STACKS=' "$tmp_env" 2>/dev/null; then
+        printf '\n# ─── Stack Configuration ─────────────────────────────────────────────────────\n' >> "$tmp_env"
     fi
+    _envfile_set "$tmp_env" DOCKER_STACKS "$docker_stacks_str" bash || { rm -f "$tmp_env"; _api_error 500 "Cannot write .env"; return; }
 
-    # Write .env (private: it holds tokens)
-    (umask 077; printf '%s\n' "$env_content" > "${env_file}.tmp") && mv -f "${env_file}.tmp" "$env_file"
+    # Swap in (private: it holds tokens)
+    mv -f "$tmp_env" "$env_file"
 
     # Sync stack directories
     local created_list="" removed_list="" warned_list=""
@@ -15367,6 +15358,8 @@ handle_rollback_diff() {
 # that start.sh, stack-manager.sh, the scheduler and the API behave the same.
 # shellcheck source=/dev/null
 source "$BASE_DIR/.lib/secrets.sh"
+# Quoting rules shared with the shell scripts (.env is sourced by them, read as data here)
+source "$BASE_DIR/.lib/envfile.sh"
 
 # GET /secrets — List secret key names (never values)
 handle_secrets_list() {

@@ -169,6 +169,7 @@ stop_docker_compose_services() {
     local -a result_durations=()
 
     local failed_services=()
+    local skipped_services=()
     local stopped_count=0
 
     log_info "Initiating shutdown of $total_services Docker service stacks..."
@@ -178,7 +179,7 @@ stop_docker_compose_services() {
     for service in "${services_to_stop[@]}"; do
         (( stack_index++ )) || true
 
-        if [[ -d "$COMPOSE_DIR/$service" ]]; then
+        if [[ -d "$COMPOSE_DIR/$service" && -f "$COMPOSE_DIR/$service/docker-compose.yml" ]]; then
             local timer_start
             timer_start="$(date '+%s')"
 
@@ -213,8 +214,13 @@ stop_docker_compose_services() {
                 log_warning "Service '$service' failed to stop cleanly"
             fi
         else
-            log_warning "Service directory for '$service' does not exist, skipping"
-            failed_services+=("$service")
+            # Listed but not set up: nothing to stop, and not a failure of the run
+            if [[ -d "$COMPOSE_DIR/$service" ]]; then
+                log_warning "Stack '$service' has no docker-compose.yml yet, skipping (deploy something into it or drop it from DOCKER_STACKS)"
+            else
+                log_warning "Service directory for '$service' does not exist, skipping"
+            fi
+            skipped_services+=("$service")
 
             result_names+=("$service")
             result_statuses+=("SKIPPED")
@@ -242,7 +248,7 @@ stop_docker_compose_services() {
 
     # ---- Final log lines ----
 
-    log_info "Total: $total_services | Stopped: $stopped_count | Failed: ${#failed_services[@]}"
+    log_info "Total: $total_services | Stopped: $stopped_count | Failed: ${#failed_services[@]} | Skipped: ${#skipped_services[@]}"
 
     if [[ ${#failed_services[@]} -eq 0 ]]; then
         log_success "All $stopped_count service stacks stopped successfully"
