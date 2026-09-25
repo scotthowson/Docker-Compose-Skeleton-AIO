@@ -8316,7 +8316,10 @@ METRICS_ROLLUP_5M="$METRICS_ROLLUP_DIR/rollup-5m.jsonl"
 METRICS_ROLLUP_1H="$METRICS_ROLLUP_DIR/rollup-1h.jsonl"
 METRICS_RAW_DAYS="${METRICS_RAW_DAYS:-7}"
 METRICS_5M_DAYS="${METRICS_5M_DAYS:-90}"
-METRICS_RETENTION_DAYS="${METRICS_RETENTION_DAYS:-730}"
+# Hourly rows are tiny (8,760 a year): keep them for two years. The legacy
+# METRICS_RETENTION_DAYS (7 in older .env files) only ever meant the raw tier
+# and must not cut the long history short.
+METRICS_HOURLY_DAYS="${METRICS_HOURLY_DAYS:-730}"
 METRICS_MAX_POINTS="${METRICS_MAX_POINTS:-1500}"
 
 # jq helpers shared by the reader and the rollup
@@ -8392,7 +8395,7 @@ _metrics_rollup() {
         flock -n 9 || exit 0
         local raw_cut=$(( now - METRICS_RAW_DAYS * 86400 ))
         local c5=$(( now - METRICS_5M_DAYS * 86400 ))
-        local c1=$(( now - METRICS_RETENTION_DAYS * 86400 ))
+        local c1=$(( now - METRICS_HOURLY_DAYS * 86400 ))
         if [[ -s "$METRICS_HISTORY_FILE" ]]; then
             jq -Rc --argjson c "$raw_cut" 'fromjson? | select(type == "object" and (.epoch // 0) >= $c)' "$METRICS_HISTORY_FILE" > "$METRICS_HISTORY_FILE.tmp" 2>/dev/null \
                 && mv -f "$METRICS_HISTORY_FILE.tmp" "$METRICS_HISTORY_FILE" || rm -f "$METRICS_HISTORY_FILE.tmp"
@@ -17105,8 +17108,21 @@ handle_plugin_cards_list() {
                 local _card_dirname
                 _card_dirname=$(basename "$card_dir")
                 local card_meta
-                card_meta=$(jq -c --arg plugin "$plugin_name" --arg cid "plugin:${plugin_name}:${_card_dirname}" \
-                    '. + {plugin: $plugin, id: $cid}' "$card_json" 2>/dev/null)
+                # Manifests come in two dialects: defaultW/defaultH or size (small,
+                # medium, large), refreshInterval or refresh_interval. The dashboard
+                # gets one shape, always with numbers it can place on the grid.
+                card_meta=$(jq -c --arg plugin "$plugin_name" --arg cid "plugin:${plugin_name}:${_card_dirname}" --arg cname "$_card_dirname" '
+                    (if .size == "small" then {w: 6, h: 4} elif .size == "large" then {w: 12, h: 8} else {w: 8, h: 5} end) as $sz
+                    | . + {plugin: $plugin, id: $cid}
+                    | .title = (.title // .name // $cname)
+                    | .icon = (.icon // "Box")
+                    | .description = (.description // "")
+                    | .defaultW = ((.defaultW // $sz.w) | tonumber? // $sz.w)
+                    | .defaultH = ((.defaultH // $sz.h) | tonumber? // $sz.h)
+                    | .refreshInterval = ((.refreshInterval // .refresh_interval // 0) | tonumber? // 0)
+                    | .minW = ((.minW // 3) | tonumber? // 3) | .minH = ((.minH // 2) | tonumber? // 2)
+                    | .maxW = ((.maxW // 24) | tonumber? // 24) | .maxH = ((.maxH // 16) | tonumber? // 16)
+                ' "$card_json" 2>/dev/null)
                 [[ -n "$card_meta" ]] && entries+=("$card_meta")
             fi
         done
@@ -17144,6 +17160,28 @@ handle_plugin_card_content() {
 
     local content
     content=$(head -c 1048576 "$html_file" 2>/dev/null)
+
+    # The dashboard renders the card from a blob URL, where a relative
+    # stylesheet or script cannot resolve: inline the card's own files here.
+    shopt -u patsub_replacement 2>/dev/null || true
+    local card_dir="$plugin_dir/cards/$card_name" ref asset_file tag guard=0
+    while (( guard++ < 20 )) && [[ "$content" =~ \<link[^\>]*href=\"([A-Za-z0-9_./-]+\.css)\"[^\>]*\> ]]; do
+        tag="${BASH_REMATCH[0]}"; ref="${BASH_REMATCH[1]}"; asset_file="$card_dir/$ref"
+        if [[ "$ref" != *..* && -f "$asset_file" ]]; then
+            content="${content/"$tag"/<style>$(head -c 262144 "$asset_file")</style>}"
+        else
+            content="${content/"$tag"/}"
+        fi
+    done
+    guard=0
+    while (( guard++ < 20 )) && [[ "$content" =~ \<script[^\>]*src=\"([A-Za-z0-9_./-]+\.js)\"[^\>]*\>[[:space:]]*\</script\> ]]; do
+        tag="${BASH_REMATCH[0]}"; ref="${BASH_REMATCH[1]}"; asset_file="$card_dir/$ref"
+        if [[ "$ref" != *..* && -f "$asset_file" ]]; then
+            content="${content/"$tag"/<script>$(head -c 262144 "$asset_file")</script>}"
+        else
+            content="${content/"$tag"/}"
+        fi
+    done
 
     _api_success "{\"plugin\": \"$(_api_json_escape "$plugin_name")\", \"card\": \"$(_api_json_escape "$card_name")\", \"html\": \"$(_api_json_escape "$content")\"}"
 }

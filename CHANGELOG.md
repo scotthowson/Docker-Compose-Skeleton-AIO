@@ -3,6 +3,20 @@
 All notable changes to Docker Compose Skeleton AIO are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [3.0.3] - 2026-09-25
+
+### Fixed
+
+- Resource Trends history was cut to seven days: the hourly tier honoured the old
+  `METRICS_RETENTION_DAYS=7` from existing `.env` files. The tiers now have their own settings
+  (`METRICS_RAW_DAYS` 7, `METRICS_5M_DAYS` 90, `METRICS_HOURLY_DAYS` 730) and the long ranges
+  fill up over time.
+- Plugin cards: manifests written with `size` instead of `defaultW`/`defaultH` (the Traefik
+  subdomain card) produced a card with no dimensions and broke the dashboard grid; the cards
+  list now normalises every manifest to numbers. A card's own `style.css`/`script.js` are
+  inlined into its HTML, since the dashboard renders cards from a blob URL where relative
+  files cannot load.
+
 ## [3.0.2] - 2026-09-25
 
 ### Fixed
