@@ -103,7 +103,7 @@
     <div class="date" id="d"></div>
     <div class="label">
       <span class="dot"></span>
-      Plugin Card
+      <span id="tz">Local time</span>
     </div>
   </div>
 
@@ -111,6 +111,11 @@
   <script>
     var timeEl = document.getElementById('t');
     var dateEl = document.getElementById('d');
+    // The badge names the time zone the clock shows, not the card type
+    try {
+      document.getElementById('tz').textContent =
+        Intl.DateTimeFormat().resolvedOptions().timeZone.replace(/_/g, ' ');
+    } catch (e) { /* keep "Local time" */ }
 
     function updateClock() {
       var now = new Date();

@@ -3,6 +3,34 @@
 All notable changes to Docker Compose Skeleton AIO are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [3.1.0] - 2026-09-25
+
+### Added
+
+- Discord notifications: set `DISCORD_WEBHOOK_URL` (a channel webhook, or a `${SECRETS_name}`
+  reference) and every notification rule, automation and test also posts a rich embed to Discord:
+  an emoji and colour per event, the event's facts as fields, the host and DCS version in the
+  footer, and a title linking back to the dashboard (`DASHBOARD_PUBLIC_URL`, otherwise
+  `https://ui.<PROXY_DOMAIN>`). The setup wizard and Server Config take the webhook; `GET /config`
+  reports `discord_configured` and the last characters of the URL, never the URL itself.
+- Discord bot template (`discord-bot`): deploys `ghcr.io/scotthowson/dcs-discord-bot`, which signs
+  in to the API with its own user and answers `/status`, `/usage`, `/health`, `/containers`,
+  `/stacks`, `/updates`, `/container <name> <info|logs|start|stop|restart|recreate>` and
+  `/stack <name> <info|start|stop|restart|update>`. Commands that change the server are limited
+  to the Discord user IDs in `DISCORD_ADMIN_IDS`.
+- Card Studio endpoints: `POST /plugins/{plugin}/cards/{card}` writes a dashboard card
+  (`card.json` + `index.html`, creating an enabled card-only plugin when needed),
+  `GET .../source` returns it for editing and `DELETE` removes it. Admin only, 1 MiB limit.
+- `GET /system` reports `virtualization` (`none` on bare metal, otherwise what
+  `systemd-detect-virt` names) and `guest_agent` (QEMU guest agent installed, running, and the
+  VM's agent channel present), so a Proxmox/KVM guest can see what its backups rely on.
+
+### Changed
+
+- `POST /notifications/test` tries every configured channel and names the one that failed; it
+  used to blame ntfy for a Discord error. API version 1.5.0, 234 endpoints, smoke suite 177 checks.
+- The example System Clock card's badge shows the time zone instead of "Plugin Card".
+
 ## [3.0.3] - 2026-09-25
 
 ### Fixed

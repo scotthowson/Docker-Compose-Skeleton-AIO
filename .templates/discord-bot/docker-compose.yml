@@ -1,0 +1,17 @@
+services:
+  discord-bot:
+    container_name: DCS-Discord-Bot
+    image: ghcr.io/scotthowson/dcs-discord-bot:latest
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-UTC}
+      - DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN}
+      - DISCORD_GUILD_ID=${DISCORD_GUILD_ID}
+      - DISCORD_ADMIN_IDS=${DISCORD_ADMIN_IDS:-}
+      - DCS_API_URL=${DCS_API_URL:-http://host.docker.internal:9876}
+      - DCS_BOT_USERNAME=${DCS_BOT_USERNAME:-discord-bot}
+      - DCS_BOT_PASSWORD=${DCS_BOT_PASSWORD}
+      - DCS_SERVER_NAME=${SERVER_NAME:-DCS}
+      - DCS_DASHBOARD_URL=${DCS_DASHBOARD_URL:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

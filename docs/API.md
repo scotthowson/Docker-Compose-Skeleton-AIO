@@ -4,7 +4,7 @@ Generated from the router in `.scripts/api-server.sh` by `.scripts/api-docs.sh` 
 Run `.scripts/api-docs.sh` after adding or changing a route; CI fails when this file is stale.
 
 The API listens on `API_BIND:API_PORT` (default `0.0.0.0:9876`) and answers JSON.
-Every endpoint below is `231` in total.
+Every endpoint below is `234` in total.
 
 ## Access levels
 
@@ -310,7 +310,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | GET | `/webhooks` | user | List webhooks |
 | POST | `/alerts/config` | admin | Update alert thresholds |
 | POST | `/notifications/rules` | admin | Create or update a notification rule |
-| POST | `/notifications/test` | admin | Send a test NTFY notification |
+| POST | `/notifications/test` | admin | Send a test notification to every configured channel (NTFY, Discord) |
 | POST | `/webhooks` | admin | Create a webhook |
 | POST | `/webhooks/{id}/test` | admin | Test a webhook |
 | DELETE | `/notifications/rules/{id}` | admin | Delete a notification rule |
@@ -341,6 +341,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | GET | `/plugins` | user | Scan .plugins/ directory, return plugin manifest data |
 | GET | `/plugins/cards` | user | List all available plugin cards across all enabled plugins |
 | GET | `/plugins/catalog` | user | Plugins available to install, with their manifest and installed state |
+| GET | `/plugins/{plugin}/cards/*/source` | admin | The card's manifest and raw HTML, for editing |
 | GET | `/plugins/{plugin}/cards/{card}` | user | Return card HTML content as JSON |
 | GET | `/plugins/{plugin}/hooks/{hook}` | admin | Read hook script content |
 | GET | `/plugins/{plugin}/hooks` | admin | List all hooks with metadata |
@@ -348,10 +349,12 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | POST | `/plugins/install` | admin | Install a plugin from a git URL (installed disabled) |
 | POST | `/plugins/scaffold` | admin | Create a plugin from an inline manifest, hooks and cards |
 | POST | `/plugins/catalog/*/install` | admin | Install a catalogue plugin (copied into .plugins, disabled) |
+| POST | `/plugins/{plugin}/cards/{card}` | admin | Create or replace a dashboard card in a plugin {meta{}, html} |
 | POST | `/plugins/{plugin}/toggle` | admin | Enable/disable by writing to plugin.json |
 | POST | `/plugins/{plugin}/hooks/{hook}/test` | admin | Dry-run a hook |
 | POST | `/plugins/{plugin}/hooks/{hook}/update` | admin | Update hook script |
 | POST | `/plugins/{plugin}/config` | admin | Update plugin configuration |
+| DELETE | `/plugins/{plugin}/cards/{card}` | admin | Remove a dashboard card from a plugin |
 | DELETE | `/plugins/{plugin}` | admin | Remove plugin directory |
 
 ## Terminal

@@ -1,0 +1,56 @@
+{
+  "name": "discord-bot",
+  "title": "DCS Discord Bot",
+  "description": "Slash commands for this server from Discord: /status, /usage, /health, /containers, /stacks, /updates, and start/stop/restart/recreate/update for a container or a stack. Separate from notifications, which use the Discord webhook in Server Config.",
+  "category": "tools",
+  "target_stack": "monitoring-management",
+  "icon": "🤖",
+  "tags": ["discord", "bot", "commands", "chatops", "monitoring"],
+  "variables": [
+    {
+      "name": "DISCORD_BOT_TOKEN",
+      "label": "Discord bot token",
+      "description": "Discord developer portal → your application → Bot → Reset Token",
+      "type": "password",
+      "required": true
+    },
+    {
+      "name": "DISCORD_GUILD_ID",
+      "label": "Discord server ID",
+      "description": "Right-click your server → Copy Server ID (Developer Mode). Commands register there instantly.",
+      "required": true
+    },
+    {
+      "name": "DISCORD_ADMIN_IDS",
+      "label": "Admin user IDs",
+      "description": "Comma-separated Discord user IDs allowed to start, stop, restart, recreate and update",
+      "required": false
+    },
+    {
+      "name": "DCS_BOT_USERNAME",
+      "label": "DCS user for the bot",
+      "description": "Create a dedicated user on the Users page (admin for the control commands); the bot signs in as it",
+      "default": "discord-bot",
+      "required": true
+    },
+    {
+      "name": "DCS_BOT_PASSWORD",
+      "label": "That user's password",
+      "type": "password",
+      "required": true
+    },
+    {
+      "name": "DCS_API_URL",
+      "label": "DCS API address",
+      "description": "As seen from a container on this host",
+      "default": "http://host.docker.internal:9876",
+      "required": true
+    },
+    {
+      "name": "DCS_DASHBOARD_URL",
+      "label": "Dashboard link",
+      "description": "Optional link on every message, e.g. https://ui.example.com",
+      "required": false
+    }
+  ]
+}

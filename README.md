@@ -210,6 +210,37 @@ Per-stack settings live in `Stacks/<category>/.env`. Everything has a sensible d
 `.config/settings.cfg`; runtime environment variables override all of it
 (`LOG_LEVEL=DEBUG ./start.sh`).
 
+### Notifications
+
+Two channels, both optional, set in `.env` (the setup wizard and the Server Config page write them):
+
+| Key | Meaning |
+|-----|---------|
+| `NTFY_URL`, `NTFY_TOPIC`, `NTFY_TOKEN` | push notifications through an ntfy server |
+| `DISCORD_WEBHOOK_URL` | a Discord channel webhook (or a `${SECRETS_name}` reference); every rule, automation and test also posts a rich embed there: colour and emoji per event, the event's facts as fields, the host and version in the footer, and a title that links to the dashboard |
+| `DASHBOARD_PUBLIC_URL` | where those links point (defaults to `https://ui.<PROXY_DOMAIN>`) |
+
+Commands from Discord are a separate integration: deploy the **DCS Discord Bot** template
+(`ghcr.io/scotthowson/dcs-discord-bot`), which signs in to the API with its own user and answers
+`/status`, `/usage`, `/health`, `/containers`, `/stacks`, `/updates`, `/container <name> <action>`
+and `/stack <name> <action>`. Anything that changes the server is limited to the Discord user IDs
+you list in `DISCORD_ADMIN_IDS`.
+
+### Running inside a VM (Proxmox, KVM, QEMU)
+
+DCS needs nothing special in a virtual machine. What helps is the **QEMU guest agent**, an OS
+package the hypervisor talks to: with it Proxmox can freeze the filesystem for consistent
+snapshot backups (your `App-Data` and volumes live on that filesystem), read the VM's IP
+addresses and shut the VM down cleanly. The System page shows what the host runs on and whether
+the agent is installed, running and reachable:
+
+```bash
+sudo apt install qemu-guest-agent && sudo systemctl enable --now qemu-guest-agent
+```
+
+then switch on **Options → QEMU Guest Agent** for the VM in Proxmox. `GET /system` reports the
+same facts as `virtualization` and `guest_agent`.
+
 ---
 
 ## Plugins
