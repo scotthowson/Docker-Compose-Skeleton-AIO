@@ -303,6 +303,16 @@ _lib _envfile_set "$_ENVQ" D 'ref ${OTHER}' compose
 check "envfile set keeps compose refs"     'D="ref ${OTHER}"' "$(grep '^D=' "$_ENVQ")"
 rm -f "$_ENVQ" "$_ENVQ.bak-repair"
 
+echo "State files: empty or corrupt files heal themselves"
+mkdir -p "$WORK/.data/schedules"; : > "$WORK/.data/schedules/schedules.json"
+check "empty schedules file answers cleanly" 0 "$(auth_request GET /schedules | body_of | jq -r '.count' 2>/dev/null)"
+check "empty schedules file was repaired"    '[]' "$(tr -d '\n' < "$WORK/.data/schedules/schedules.json")"
+check "corrupt copy kept for inspection"     yes "$(ls "$WORK/.data/schedules/"schedules.json.corrupt-* >/dev/null 2>&1 && echo yes || echo no)"
+printf '{"rules": ' > "$WORK/.api-auth/notifications.json"
+check "corrupt notifications file heals"     '[]' "$(auth_request GET /notifications/rules | body_of | jq -c '.rules' 2>/dev/null)"
+check "response guard turns bad JSON into 500" 500 "$(_lib _api_response 200 '{"schedules": , "count": }' | status_of)"
+check "response guard leaves good JSON alone"  200 "$(_lib _api_response 200 '{"ok": true}' | status_of)"
+
 echo "Docker-backed endpoints (skipped when Docker is unavailable)"
 if docker info >/dev/null 2>&1; then
     check "GET /status"                 200 "$(auth_request GET /status | status_of)"

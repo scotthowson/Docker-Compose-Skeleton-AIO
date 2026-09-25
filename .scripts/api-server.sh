@@ -453,6 +453,17 @@ _api_response() {
         500) status_text="Internal Server Error" ;;
     esac
 
+    # A handler that interpolated empty jq output (a truncated state file) must
+    # not reach the client as broken JSON: answer a real 500 and log it
+    if [[ "$status_code" == 2* ]]; then
+        local lead="${body#"${body%%[![:space:]]*}"}"
+        if [[ "$lead" == \{* || "$lead" == \[* ]] && ! printf '%s' "$body" | jq -e . >/dev/null 2>&1; then
+            echo "$(date '+%Y-%m-%d %H:%M:%S') invalid JSON built for ${REQUEST_METHOD:-?} ${REQUEST_PATH:-?} — a state file is probably empty or corrupt" >&2
+            status_code=500; status_text="Internal Server Error"
+            body='{"error": true, "code": 500, "message": "The server built an invalid response for this request; a state file is probably empty or corrupt (see logs/api-server.log)"}'
+        fi
+    fi
+
     # Use byte count (not char count) for Content-Length — critical for UTF-8
     local content_length
     content_length=$(printf '%s' "$body" | wc -c)
@@ -1177,6 +1188,33 @@ _api_jq_update_file() {
         [[ -n "$out" ]] || exit 1
         printf '%s\n' "$out" > "$file.tmp" && chmod 600 "$file.tmp" 2>/dev/null && mv -f "$file.tmp" "$file"
     ) 200>"$file.lock"
+}
+
+# _api_state_file FILE DEFAULT [array|object] — make sure a JSON state file
+# exists and holds valid JSON of the expected shape. A file left empty or
+# corrupt (a crash mid-write, a full disk) is moved aside as FILE.corrupt-<ts>
+# and replaced by DEFAULT, so one bad file never turns responses into broken
+# JSON. Returns 0 when the file was fine, 1 when it was created or repaired.
+_api_state_file() {
+    local file="$1" default="$2" type="${3:-}" dir
+    dir=$(dirname "$file")
+    [[ -d "$dir" ]] || mkdir -p "$dir" 2>/dev/null || true
+    if [[ ! -e "$file" ]]; then
+        printf '%s\n' "$default" > "$file" 2>/dev/null || true
+        chmod 600 "$file" 2>/dev/null || true
+        return 1
+    fi
+    if [[ -s "$file" ]] && jq -e --arg t "$type" 'if $t == "" then true else type == $t end' "$file" >/dev/null 2>&1; then
+        return 0
+    fi
+    local ts
+    ts=$(date -u '+%Y%m%dT%H%M%SZ')
+    mv -f "$file" "$file.corrupt-$ts" 2>/dev/null || true
+    printf '%s\n' "$default" > "$file" 2>/dev/null || true
+    chmod 600 "$file" 2>/dev/null || true
+    echo "$(date '+%Y-%m-%d %H:%M:%S') state file repaired: $file was empty or corrupt (kept as $file.corrupt-$ts)" >&2
+    _audit_log "STATE_FILE_REPAIRED" "$file (copy kept as .corrupt-$ts)" 2>/dev/null || true
+    return 1
 }
 
 # Format a byte count for humans (K/M/G with one decimal)
@@ -8818,9 +8856,7 @@ handle_image_update() {
 NOTIFICATIONS_FILE="$BASE_DIR/.api-auth/notifications.json"
 
 _init_notifications_file() {
-    if [[ ! -f "$NOTIFICATIONS_FILE" ]]; then
-        echo '{"rules": [], "history": []}' > "$NOTIFICATIONS_FILE"
-    fi
+    _api_state_file "$NOTIFICATIONS_FILE" '{"rules": [], "history": []}' object || true
 }
 
 # GET /notifications/rules — NTFY notification rules
@@ -9510,7 +9546,7 @@ TEMPLATES_DIR="$BASE_DIR/.templates"
 DEPLOY_HISTORY_FILE="$BASE_DIR/.api-auth/deploy-history.json"
 
 _init_deploy_history() {
-    [[ ! -f "$DEPLOY_HISTORY_FILE" ]] && echo '[]' > "$DEPLOY_HISTORY_FILE"
+    _api_state_file "$DEPLOY_HISTORY_FILE" '[]' array || true
 }
 
 # Record a deploy/undeploy event in the audit log
@@ -13712,9 +13748,7 @@ handle_template_delete() {
 AUTOMATIONS_FILE="$BASE_DIR/.api-auth/automations.json"
 
 _init_automations_file() {
-    if [[ ! -f "$AUTOMATIONS_FILE" ]]; then
-        echo '[]' > "$AUTOMATIONS_FILE"
-    fi
+    _api_state_file "$AUTOMATIONS_FILE" '[]' array || true
 }
 
 # GET /automations — Automation rules
@@ -15463,30 +15497,20 @@ handle_secret_references() {
 # FEATURE: SCHEDULE MANAGEMENT
 # =============================================================================
 
+_init_schedules_file() {
+    _api_state_file "$BASE_DIR/.data/schedules/schedules.json" '[]' array || true
+}
+
 # GET /schedules — Return schedules.json content
 handle_schedules_list() {
     local sched_file="$BASE_DIR/.data/schedules/schedules.json"
-
-    if [[ ! -f "$sched_file" ]]; then
-        _api_success "{\"schedules\": [], \"count\": 0}"
-        return
-    fi
-
-    local content
-    content=$(cat "$sched_file" 2>/dev/null)
-
-    # Validate JSON content
-    if command -v jq >/dev/null 2>&1; then
-        if ! echo "$content" | jq '.' >/dev/null 2>&1; then
-            _api_error 500 "Invalid schedules data file"
-            return
-        fi
-        local count
-        count=$(echo "$content" | jq 'length' 2>/dev/null || echo 0)
-        _api_success "{\"schedules\": $content, \"count\": $count}"
-    else
-        _api_success "{\"schedules\": $content, \"count\": 0}"
-    fi
+    _init_schedules_file
+    local content count
+    content=$(jq -c 'if type == "array" then . else [] end' "$sched_file" 2>/dev/null) || content="[]"
+    [[ -n "$content" ]] || content="[]"
+    count=$(printf '%s' "$content" | jq 'length' 2>/dev/null) || count=0
+    [[ "$count" =~ ^[0-9]+$ ]] || count=0
+    _api_success "{\"schedules\": $content, \"count\": $count}"
 }
 
 # POST /schedules — body: schedule entry JSON
@@ -15559,6 +15583,7 @@ handle_schedule_update() {
     local sched_id="$1"
     local body="$2"
     local sched_file="$BASE_DIR/.data/schedules/schedules.json"
+    _init_schedules_file
 
     if ! command -v jq >/dev/null 2>&1; then
         _api_error 500 "jq is required for schedule management"
@@ -15618,6 +15643,7 @@ handle_schedule_update() {
 handle_schedule_delete() {
     local sched_id="$1"
     local sched_file="$BASE_DIR/.data/schedules/schedules.json"
+    _init_schedules_file
 
     if ! command -v jq >/dev/null 2>&1; then
         _api_error 500 "jq is required for schedule management"
@@ -15646,6 +15672,7 @@ handle_schedule_delete() {
 handle_schedule_toggle() {
     local sched_id="$1"
     local sched_file="$BASE_DIR/.data/schedules/schedules.json"
+    _init_schedules_file
 
     if ! command -v jq >/dev/null 2>&1; then
         _api_error 500 "jq is required for schedule management"
@@ -15710,6 +15737,7 @@ _api_validate_schedule_target() {
 handle_schedule_run() {
     local sched_id="$1"
     local sched_file="$BASE_DIR/.data/schedules/schedules.json"
+    _init_schedules_file
 
     if ! command -v jq >/dev/null 2>&1; then
         _api_error 500 "jq is required"

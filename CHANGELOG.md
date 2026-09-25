@@ -3,6 +3,17 @@
 All notable changes to Docker Compose Skeleton AIO are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [3.1.3] - 2026-09-25
+
+### Fixed
+
+- An empty or corrupt state file (a schedules.json left at 0 bytes by an old crash) made
+  `GET /schedules` answer `{"schedules": , "count": }`, which the dashboard reported as
+  "Invalid JSON response". State files (schedules, notifications, automations, deploy history)
+  are now checked before use: a bad one is moved aside as `<file>.corrupt-<timestamp>` and
+  replaced by an empty default, with an audit entry. The response writer also refuses to send
+  a body that is not valid JSON and answers a real 500 with a hint instead.
+
 ## [3.1.2] - 2026-09-25
 
 ### Changed
