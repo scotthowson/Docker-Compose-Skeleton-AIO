@@ -1792,7 +1792,7 @@ _api_container_json() {
                 image_id: (.Image | split(":") | .[1][:12] // ""),
                 created: .Created,
                 uptime_seconds: (if .State.Status == "running" and .State.StartedAt != "0001-01-01T00:00:00Z" then
-                    (($now - (.State.StartedAt | split(".")[0] + "Z" | fromdateiso8601)) // 0) else 0 end),
+                    (try ($now - (.State.StartedAt | split(".")[0] + "Z" | fromdateiso8601)) catch 0) else 0 end),
                 ports: ([.NetworkSettings.Ports | to_entries[] |
                     select(.value != null) | .value[] |
                     (if .HostIp == "" or .HostIp == "0.0.0.0" then "0.0.0.0" else .HostIp end) +
@@ -1850,7 +1850,9 @@ handle_status() {
             total_containers=$(printf '%s' "$dinfo" | jq '.Containers // 0' 2>/dev/null)
             running_containers=$(printf '%s' "$dinfo" | jq '.ContainersRunning // 0' 2>/dev/null)
             stopped_containers=$(printf '%s' "$dinfo" | jq '.ContainersStopped // 0' 2>/dev/null)
-            total_images=$(printf '%s' "$dinfo" | jq '.Images // 0' 2>/dev/null)
+            # Top-level images, the same rows the Images page lists (docker info's
+            # count also includes untagged intermediate layers)
+            total_images=$(docker images -q 2>/dev/null | wc -l | tr -d ' ')
         fi
     fi
 
@@ -2684,7 +2686,7 @@ handle_container_detail() {
             image_id: (.Image | split(":") | .[1][:12] // ""),
             created: .Created,
             uptime_seconds: (if .State.Status == "running" and .State.StartedAt != "0001-01-01T00:00:00Z" then
-                (($now - (.State.StartedAt | split(".")[0] + "Z" | fromdateiso8601)) // 0) else 0 end),
+                (try ($now - (.State.StartedAt | split(".")[0] + "Z" | fromdateiso8601)) catch 0) else 0 end),
             ports: ([.NetworkSettings.Ports | to_entries[] |
                 select(.value != null) | .value[] |
                 (if .HostIp == "" or .HostIp == "0.0.0.0" then "0.0.0.0" else .HostIp end) +

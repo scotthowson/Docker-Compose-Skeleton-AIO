@@ -3,6 +3,16 @@
 All notable changes to Docker Compose Skeleton AIO are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [3.0.2] - 2026-09-25
+
+### Fixed
+
+- The dashboard's image count came from `docker info`, which also counts untagged intermediate
+  layers, so it disagreed with the Images page; `GET /status` now counts the same top-level
+  images the page lists.
+- Container uptime in `GET /health` and `GET /containers/{container}` tolerates a start time
+  jq cannot parse instead of failing the whole response.
+
 ## [3.0.1] - 2026-09-25
 
 ### Added
