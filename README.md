@@ -245,6 +245,12 @@ described in [.plugins/README.md](.plugins/README.md).
 - **Run Command on the Containers page** runs without a terminal and with stdin closed:
   interactive programs (`ollama run`, editors, shells) exit or time out after 30 seconds; use the
   Terminal page for those.
+- **The dashboard behind Traefik answers 502** after changing `DCS_UI_PORT`: that setting only
+  moves the host port. Traefik reaches the container over the proxy network, so the route must
+  keep `http://DCS-UI:3000` (the port nginx listens on inside the container).
+- **Phone or desktop app**: every web UI release on GitHub ships an Android APK and Linux/Windows
+  installers; the Updates page links to the latest release. Nothing of that is part of a DCS
+  installation.
 - **A viewer account gets 403** on an action: by design. Only admins change the system; see
   [docs/API.md](docs/API.md) for the access level of every endpoint.
 - **Everything else**: `.scripts/config-validator.sh` checks the installation, `tests/lint.sh` the

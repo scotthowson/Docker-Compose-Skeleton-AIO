@@ -3,6 +3,11 @@
 # =============================================================================
 # Serves the Docker Compose Skeleton web UI behind Traefik with automatic TLS.
 # Template variables are substituted during deployment.
+#
+# The service URL uses the port nginx listens on INSIDE the container, which
+# is always 3000. DCS_UI_PORT in .env only changes the host port mapping and
+# must not be written here — Traefik reaches the container over the proxy
+# network, not through the host port.
 # =============================================================================
 
 http:
