@@ -251,6 +251,10 @@ described in [.plugins/README.md](.plugins/README.md).
 - **Phone or desktop app**: every web UI release on GitHub ships an Android APK and Linux/Windows
   installers; the Updates page links to the latest release. Nothing of that is part of a DCS
   installation.
+- **Connecting from outside the house**: the API is reachable through the dashboard's address,
+  `https://ui.<your domain>/api` — the dashboard's nginx forwards `/api/` to the API, Traefik
+  and Cloudflare do the TLS. Type the dashboard address into the app's Connect screen; it finds
+  the `/api` path and the port by itself. Port 9876 never needs to be opened to the internet.
 - **A viewer account gets 403** on an action: by design. Only admins change the system; see
   [docs/API.md](docs/API.md) for the access level of every endpoint.
 - **Everything else**: `.scripts/config-validator.sh` checks the installation, `tests/lint.sh` the
