@@ -99,6 +99,12 @@ repository, a test suite and generated documentation. The API version is now 1.3
 - After a power loss, Traefik could come up before its plugins and the Docker socket proxy and
   route nothing until restarted (see `start.sh --boot` under Added).
 - Factory reset left automations, schedules, metrics and secrets behind.
+- The factory reset's "wipe stacks" option killed every container on the host and pruned every
+  image, including ones that were never DCS's. It now takes down only DCS stacks (never
+  core-infrastructure, so the dashboard survives), their volumes and the images they used.
+- `POST /containers/{name}/exec` passed `-T` to `docker exec`, which does not exist, so every
+  command from the Containers page failed with exit 125. Commands now run without a terminal,
+  with stdin closed, and fall back to `bash` or a direct exec when the image has no `sh`.
 
 ### Changed
 
@@ -161,6 +167,16 @@ repository, a test suite and generated documentation. The API version is now 1.3
   plugins ships in `.plugins-catalog/` (`GET /plugins/catalog`,
   `POST /plugins/catalog/{name}/install`).
 - `NTFY_TOKEN` for protected NTFY servers; the setup wizard can deploy an NTFY server itself.
+- Cloudflare DNS management: `GET /dns/status` (token source and validity, zone), `GET /dns/zones`,
+  `GET /dns/records` (every type, with the DCS route that uses each name), `POST /dns/records`,
+  `PUT /dns/records/{id}`, `DELETE /dns/records/{id}` (the zone apex and names a route uses need
+  `force=true`) and `POST /dns/records/sync` (creates the CNAMEs routes are missing). The token
+  is read from the secret `CF_DNS_API_TOKEN` first, and a `${SECRETS_CF_DNS_API_TOKEN}`
+  placeholder in any `.env` resolves through the secret store; the setup wizard stores the
+  token that way.
+- `GET /images/check-updates` reports `registry_checked_at`; `POST /images/{image}/update`
+  reports `containers_failed` (recreated but not running) and fires the `post-update` plugin
+  hook for every stack it touched.
 
 ### Removed
 

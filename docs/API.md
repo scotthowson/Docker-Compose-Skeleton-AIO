@@ -4,7 +4,7 @@ Generated from the router in `.scripts/api-server.sh` by `.scripts/api-docs.sh` 
 Run `.scripts/api-docs.sh` after adding or changing a route; CI fails when this file is stale.
 
 The API listens on `API_BIND:API_PORT` (default `0.0.0.0:9876`) and answers JSON.
-Every endpoint below is `222` in total.
+Every endpoint below is `228` in total.
 
 ## Access levels
 
@@ -213,10 +213,16 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | GET | `/traefik/status` | user | Check if Traefik is deployed and return domain |
 | GET | `/routes` | user | Traefik routes: subdomain, service, stack and target |
 | GET | `/routes/check` | user | Check if a subdomain is available |
-| GET | `/dns/records` | admin | List Cloudflare CNAME records that point to our domain |
+| GET | `/dns/status` | user | Cloudflare integration: where the token comes from, whether it is valid, the zone |
+| GET | `/dns/zones` | admin | Zones the Cloudflare token can manage |
+| GET | `/dns/records` | admin | DNS records of the zone (all types) with their DCS route links |
 | GET | `/homarr/status` | user | Check if Homarr is deployed and has an API key configured |
+| POST | `/dns/records` | admin | Create a record {type, name, content, ttl, proxied, priority, comment, zone} |
+| POST | `/dns/records/sync` | admin | Create the proxied CNAME records that DCS routes are missing |
 | POST | `/routes/reconcile` | admin | Probe the routes and restart Traefik once if they are dead |
+| PUT | `/dns/records/*` | admin | Change a record's type, name, content, TTL, proxy status, priority or comment |
 | PUT | `/routes/{stack}/{service}` | admin | Update a route file's subdomain |
+| DELETE | `/dns/records/*` | admin | Delete a record (the zone apex and names DCS routes use need force=true) |
 | DELETE | `/routes/{stack}/{service}` | admin | Delete a route file and optionally clean up DNS |
 
 ## Logs and events

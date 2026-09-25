@@ -237,6 +237,14 @@ described in [.plugins/README.md](.plugins/README.md).
 - **CrowdSec banned my own address** (the site works from the phone but not from the PC): the
   Protection card on the dashboard has "Unban me" and "Trust my address"; the whitelist follows
   the DDNS/public address every ten minutes, and `CROWDSEC_TRUSTED_IPS` in `.env` pins more.
+- **DNS records**: the DNS & Routes page manages the Cloudflare zone (every record type, proxy
+  toggle, TTL, comments) and links each record to the DCS route that uses it; records a route
+  needs cannot be deleted by accident. Store the Cloudflare API token as the secret
+  `CF_DNS_API_TOKEN` (the setup wizard does this); `.env` files reference it as
+  `${SECRETS_CF_DNS_API_TOKEN}`, so it never sits in plain text.
+- **Run Command on the Containers page** runs without a terminal and with stdin closed:
+  interactive programs (`ollama run`, editors, shells) exit or time out after 30 seconds; use the
+  Terminal page for those.
 - **A viewer account gets 403** on an action: by design. Only admins change the system; see
   [docs/API.md](docs/API.md) for the access level of every endpoint.
 - **Everything else**: `.scripts/config-validator.sh` checks the installation, `tests/lint.sh` the
