@@ -4,7 +4,7 @@ Generated from the router in `.scripts/api-server.sh` by `.scripts/api-docs.sh` 
 Run `.scripts/api-docs.sh` after adding or changing a route; CI fails when this file is stale.
 
 The API listens on `API_BIND:API_PORT` (default `0.0.0.0:9876`) and answers JSON.
-Every endpoint below is `229` in total.
+Every endpoint below is `230` in total.
 
 ## Access levels
 
@@ -181,10 +181,11 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | GET | `/volumes` | user | Docker volumes |
 | GET | `/topology` | user | Container and network topology graph |
 | GET | `/networks/{network}` | user | Network detail with its members |
-| POST | `/networks` | admin | Create a Docker network |
+| POST | `/networks` | admin | Create a Docker network {name, driver, subnet, gateway, ip_range, internal, attachable, ipv6, labels} |
 | POST | `/networks/{network}/delete` | admin | Remove a Docker network |
 | POST | `/networks/{network}/connect` | admin | Connect a container to a network |
 | POST | `/networks/{network}/disconnect` | admin | Disconnect a container from a network |
+| POST | `/networks/{network}/recreate` | admin | Rebuild a network with new settings and reconnect its containers |
 | POST | `/volumes/{volume}/delete` | admin | Remove a Docker volume |
 
 ## Templates
@@ -196,7 +197,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | GET | `/templates/gallery` | user | List templates from gallery catalog |
 | GET | `/templates/{template}` | user | Template metadata, compose file and .env |
 | POST | `/templates/{template}/deploy` | admin | Deploy a template into a stack (merge, routes, DNS, optional start) |
-| POST | `/templates/{template}/undeploy` | admin | Remove a template's services from a stack (optionally data, images, routes) |
+| POST | `/templates/{template}/undeploy` | admin | Remove a template's services from a stack with their containers (remove_containers=false keeps them; optionally data, images, routes) |
 | POST | `/templates/{template}/dry-run` | user | Preview a deployment: conflicts, ports, variables and policy findings |
 | POST | `/templates/import` | admin | Import a template from compose content |
 | POST | `/templates/fetch-url` | admin | Fetch compose content from URL without saving |

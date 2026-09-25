@@ -238,6 +238,16 @@ mkdir -p "$WORK/.templates/demo-tpl" && printf '{"name":"demo-tpl","title":"Demo
 check "template detail lists secrets"   DEMO_TPL_PW "$(auth_request GET /templates/demo-tpl | body_of | jq -r '.secrets[0].name' 2>/dev/null)"
 check "template secret reported missing" false "$(auth_request GET /templates/demo-tpl | body_of | jq -r '.secrets[0].exists' 2>/dev/null)"
 check "image check exposes registry time" yes "$(auth_request GET /images/check-updates | body_of | jq -e 'has("registry_checked_at")' >/dev/null 2>&1 && echo yes || echo no)"
+check "network flags: driver default"   yes "$(_lib _network_create_flags '{}' | grep -qx -- 'bridge' && echo yes || echo no)"
+check "network flags: attachable+ipv6"  2 "$(_lib _network_create_flags '{"attachable":true,"ipv6":true}' | grep -c -- '--attachable\|--ipv6')"
+check "network flags: label"            "team=ops" "$(_lib _network_create_flags '{"labels":{"team":"ops"}}' | grep -A1 -x -- '--label' | tail -1)"
+check "network flags reject bad subnet" 1 "$(_lib _network_create_flags '{"subnet":"nope"}' >/dev/null; echo $?)"
+check "network flags reject bad label"  1 "$(_lib _network_create_flags '{"labels":{"bad key":"x"}}' >/dev/null; echo $?)"
+check "network flags: gateway needs subnet" 1 "$(_lib _network_create_flags '{"gateway":"10.0.0.1"}' >/dev/null; echo $?)"
+check "network recreate built-in"       403 "$(auth_request POST /networks/bridge/recreate '{}' | status_of)"
+check "network recreate unknown"        404 "$(auth_request POST /networks/nope-zz/recreate '{}' | status_of)"
+check "network recreate viewer denied"  403 "$(viewer_request POST /networks/nope-zz/recreate '{}' | status_of)"
+check "network create rejects bad range" 400 "$(auth_request POST /networks '{"name":"zz-net","subnet":"10.9.0.0/24","ip_range":"bad"}' | status_of)"
 
 echo "Docker-backed endpoints (skipped when Docker is unavailable)"
 if docker info >/dev/null 2>&1; then

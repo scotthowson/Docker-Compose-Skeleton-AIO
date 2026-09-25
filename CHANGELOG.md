@@ -3,6 +3,35 @@
 All notable changes to Docker Compose Skeleton AIO are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [3.0.0] - 2026-09-25
+
+The long-term release. Everything from the 2.1.0 readiness pass plus the deployment,
+network and update work verified on a real install. The API version is now 1.4.0.
+
+### Added
+
+- `POST /networks/{network}/recreate` rebuilds a network with new settings: its containers are
+  disconnected, the network removed and created again, the containers reconnected. Compose
+  ownership labels survive unless the request replaces them; if Docker refuses the new
+  settings the old network is restored. `POST /networks` accepts `ip_range`, `attachable`,
+  `ipv6` and `labels`; `GET /networks/{network}` reports them plus `created` and the owning
+  Compose project.
+- Template deployments accept `container_names` ({service: name}). Names are validated,
+  refused when another stack's container already uses them, and written into the merged
+  compose so routes, activity tracking and the container page all use them.
+- `POST /images/update` takes `recreate` (default true). With `false` the image is only
+  pulled; the containers keep running on the old image. A successful pull marks the image
+  current in the registry cache, so `GET /images/check-updates` stops calling it stale
+  until the next registry check.
+
+### Changed
+
+- `POST /templates/{template}/undeploy` removes the containers of the services it drops
+  unless `remove_containers` is `false` (the dashboard always asked for it; a raw call that
+  purged App-Data under a still-running container was a trap).
+- API version 1.4.0; 230 documented endpoints; smoke suite 148 checks (network option
+  validation, recreate policy, deploy container-name validation).
+
 ## [2.1.0] - 2026-09-24
 
 The release-readiness pass: a security review of the whole API server, a clean-up of the
