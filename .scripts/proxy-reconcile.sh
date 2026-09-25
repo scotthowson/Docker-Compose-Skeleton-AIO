@@ -14,8 +14,11 @@
 #
 # Usage:  .scripts/proxy-reconcile.sh [--json] [--dry-run] [--wait SECONDS]
 #         Sourced: proxy_reconcile [--json] [--dry-run]
+# A 502/503/504 means Traefik routed the request but the app did not answer
+# (still starting, crashed): that is reported, never "fixed" by a restart.
 # Exit:   0 routing healthy (or nothing to do), 1 still broken after a restart,
-#         2 could not probe (no Traefik, no routes)
+#         2 could not probe (no Traefik, no routes), 3 routing fine but some
+#         apps are not answering yet
 # =============================================================================
 
 _pr_base_dir() {
@@ -95,8 +98,8 @@ proxy_reconcile() {
         return 2
     fi
 
-    _pr_check() {   # fills DEAD (routes broken while their container runs) and PASS counters
-        DEAD=(); PASS=0; SKIPPED=0
+    _pr_check() {   # fills DEAD (Traefik not routing), BACKEND (app not answering) and PASS
+        DEAD=(); BACKEND=(); PASS=0; SKIPPED=0
         local r host url code cname
         for r in "${routes[@]}"; do
             host="${r%%	*}"; url="${r#*	}"
@@ -106,13 +109,14 @@ proxy_reconcile() {
             fi
             code=$(_pr_probe "$entry" "$host")
             case "$code" in
-                000|404|502|503|504) DEAD+=("$host=$code") ;;
+                000|404) DEAD+=("$host=$code") ;;
+                502|503|504) BACKEND+=("$host=$code") ;;
                 *) PASS=$((PASS+1)) ;;
             esac
         done
     }
 
-    local DEAD PASS SKIPPED
+    local DEAD BACKEND PASS SKIPPED
     _pr_check
     local restarted=false
     if [[ ${#DEAD[@]} -gt 0 ]]; then
@@ -130,17 +134,19 @@ proxy_reconcile() {
     fi
 
     local status="healthy"
-    [[ ${#DEAD[@]} -gt 0 ]] && status="broken"
-    local dead_json="[]"
+    if [[ ${#DEAD[@]} -gt 0 ]]; then status="broken"; elif [[ ${#BACKEND[@]} -gt 0 ]]; then status="backends_down"; fi
+    local dead_json="[]" backend_json="[]"
     [[ ${#DEAD[@]} -gt 0 ]] && dead_json=$(printf '%s\n' "${DEAD[@]}" | jq -R . | jq -s -c .)
+    [[ ${#BACKEND[@]} -gt 0 ]] && backend_json=$(printf '%s\n' "${BACKEND[@]}" | jq -R . | jq -s -c .)
     if $json; then
-        printf '{"traefik": "%s", "status": "%s", "routes": %d, "passing": %d, "skipped_target_down": %d, "dead": %s, "restarted": %s, "dry_run": %s}\n' \
-            "$traefik" "$status" "${#routes[@]}" "$PASS" "$SKIPPED" "$dead_json" "$restarted" "$dry"
+        printf '{"traefik": "%s", "status": "%s", "routes": %d, "passing": %d, "skipped_target_down": %d, "dead": %s, "backend_down": %s, "restarted": %s, "dry_run": %s}\n' \
+            "$traefik" "$status" "${#routes[@]}" "$PASS" "$SKIPPED" "$dead_json" "$backend_json" "$restarted" "$dry"
     else
-        echo "proxy-reconcile: $traefik — ${#routes[@]} routes, $PASS passing, $SKIPPED skipped (target down), ${#DEAD[@]} dead${restarted:+, restarted=$restarted}"
+        echo "proxy-reconcile: $traefik — ${#routes[@]} routes, $PASS passing, $SKIPPED skipped (target down), ${#DEAD[@]} dead, ${#BACKEND[@]} not answering${restarted:+, restarted=$restarted}"
         [[ ${#DEAD[@]} -gt 0 ]] && printf '  dead: %s\n' "${DEAD[@]}"
+        [[ ${#BACKEND[@]} -gt 0 ]] && printf '  not answering: %s\n' "${BACKEND[@]}"
     fi
-    [[ "$status" == "healthy" ]]
+    case "$status" in healthy) return 0 ;; backends_down) return 3 ;; *) return 1 ;; esac
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then

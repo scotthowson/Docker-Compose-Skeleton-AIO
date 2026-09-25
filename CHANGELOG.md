@@ -3,6 +3,21 @@
 All notable changes to Docker Compose Skeleton AIO are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [3.1.2] - 2026-09-25
+
+### Changed
+
+- Unattended boots (`dcs-stacks.service`) no longer pull image updates for every stack: the
+  services come back with the images they have, and updates stay with the Updates page and
+  schedules. `UPDATE_ON_BOOT=true` restores the old behaviour. Two pulls timing out at boot
+  used to leave "Failed to pull images" errors in every boot log.
+- `proxy-reconcile.sh` restarts Traefik only when routes are missing (000/404). An app that
+  answers 502/503/504 is reported as "not answering yet" (exit 3) instead of triggering a
+  Traefik restart, and start.sh logs it as a warning instead of failing the boot unit; a slow
+  starter such as Pelican Wings or Plex turned the unit red on every boot.
+- start.sh returns its outcome without tripping its own error trap, which logged a misleading
+  "Script interrupted" and wrote the session summary twice.
+
 ## [3.1.1] - 2026-09-25
 
 ### Fixed

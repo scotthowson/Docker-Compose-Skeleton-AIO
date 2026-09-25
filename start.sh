@@ -348,7 +348,11 @@ main() {
     # Step 5: Update Docker Stacks (Pull Latest Images)
     # ══════════════════════════════════════════════════════════════════
     log_step 5 "$total_steps" "Pulling and applying image updates"
-    if command -v update_all_stacks >/dev/null 2>&1; then
+    if [[ "${BOOT_MODE:-false}" == "true" && "${UPDATE_ON_BOOT:-false}" != "true" ]]; then
+        # An unattended boot brings services back with the images it has; pulls
+        # belong to the Updates page and schedules (UPDATE_ON_BOOT=true restores them)
+        log_info "Image updates are not pulled during an unattended boot (UPDATE_ON_BOOT=false)"
+    elif command -v update_all_stacks >/dev/null 2>&1; then
         if ! update_all_stacks; then
             log_warning "Some stacks failed to update, but continuing"
             [[ "${CONTINUE_ON_FAILURE:-true}" == "true" ]] || exit_status=1
@@ -391,7 +395,11 @@ main() {
         case "$_pr_rc" in
             0) log_success "Reverse proxy routes verified: ${_pr_out##*: }" ;;
             2) log_info "Reverse proxy check skipped: ${_pr_out##*: }" ;;
-            *) log_warning "Reverse proxy routes still failing after a restart: ${_pr_out##*: }"; exit_status=1 ;;
+            3) log_warning "Reverse proxy routes fine, apps still starting: ${_pr_out##*: }" ;;
+            # A route that still answers badly is reported, not treated as a failed
+            # start: the stacks are up, and an app that is slow to come up (Plex)
+            # would otherwise turn the boot unit red every time
+            *) log_warning "Reverse proxy routes still failing after a restart: ${_pr_out##*: }" ;;
         esac
     fi
 
@@ -436,5 +444,8 @@ main() {
 # RUN
 # =============================================================================
 
-main "$@"
-exit $?
+# A non-zero return from main is the outcome, not an error: keep it out of the
+# ERR trap (which would log "Script interrupted" and close the logger twice)
+_rc=0
+main "$@" || _rc=$?
+exit "$_rc"
