@@ -248,6 +248,19 @@ check "network recreate built-in"       403 "$(auth_request POST /networks/bridg
 check "network recreate unknown"        404 "$(auth_request POST /networks/nope-zz/recreate '{}' | status_of)"
 check "network recreate viewer denied"  403 "$(viewer_request POST /networks/nope-zz/recreate '{}' | status_of)"
 check "network create rejects bad range" 400 "$(auth_request POST /networks '{"name":"zz-net","subnet":"10.9.0.0/24","ip_range":"bad"}' | status_of)"
+_ENVC=$(printf 'services:\n  x:\n    image: a\n    environment:\n      - A=1\n      - "B=2"\n  y:\n    image: b\n')
+check "env edit: replace list entry"     1 "$(printf '%s\n' "$_ENVC" | _lib _compose_env_edit x A 9 set | grep -c '^      - A=9$')"
+check "env edit: append quoted"          1 "$(printf '%s\n' "$_ENVC" | _lib _compose_env_edit x C 'v #x' set | grep -c '^      - "C=v #x"$')"
+check "env edit: other service untouched" 0 "$(printf '%s\n' "$_ENVC" | _lib _compose_env_edit x C 3 set | sed -n '/^  y:/,$p' | grep -c 'C=3')"
+check "env edit: unset"                  0 "$(printf '%s\n' "$_ENVC" | _lib _compose_env_edit x A '' unset | grep -c 'A=1')"
+check "env edit: map style"              1 "$(printf 'services:\n  x:\n    environment:\n      A: 1\n' | _lib _compose_env_edit x A hello set | grep -c '^      A: hello$')"
+check "env edit: creates the block"      1 "$(printf 'services:\n  x:\n    image: a\n  y:\n    image: b\n' | _lib _compose_env_edit x A 1 set | sed -n '/^  x:/,/^  y:/p' | grep -c '^      - A=1$')"
+check "env get: raw reference"           '${FOO:-1}' "$(printf 'services:\n  x:\n    environment:\n      - A=${FOO:-1}\n' | _lib _compose_env_get x A)"
+_ENVF=$(mktemp); printf 'FOO=1\n' > "$_ENVF"; _lib _envfile_set "$_ENVF" FOO 'a b'; _lib _envfile_set "$_ENVF" NEW 'x#y'
+check "envfile set: replace"             'FOO=a b' "$(grep '^FOO=' "$_ENVF")"
+check "envfile set: append quoted"       'NEW="x#y"' "$(grep '^NEW=' "$_ENVF")"; rm -f "$_ENVF"
+check "container env: unknown container" 404 "$(auth_request POST /containers/nope-zz/env '{"set":{"A":"1"}}' | status_of)"
+check "container env: viewer denied"     403 "$(viewer_request POST /containers/nope-zz/env '{"set":{"A":"1"}}' | status_of)"
 
 echo "Docker-backed endpoints (skipped when Docker is unavailable)"
 if docker info >/dev/null 2>&1; then

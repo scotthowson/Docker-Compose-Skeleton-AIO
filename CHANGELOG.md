@@ -3,6 +3,28 @@
 All notable changes to Docker Compose Skeleton AIO are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [3.0.1] - 2026-09-25
+
+### Added
+
+- `POST /containers/{container}/env` changes a Compose-managed container's environment where
+  it is defined: the service's `environment` entry in `docker-compose.yml` (list or map form,
+  formatting and comments kept), or the stack `.env` variable the entry references. Validated
+  like a compose save (policy scan, `compose config`, backup, version history) and the container
+  is recreated unless `recreate` is `false`.
+- `GET /containers/{container}` reports `compose_project`, `compose_service` and `compose_dir`.
+
+### Fixed
+
+- `GET /containers` dropped every container whose Docker uptime reads "About an hour ago" or
+  "About a minute ago": the uptime parser found no digit and emptied the whole entry out of the
+  list, so the Containers page showed fewer containers than the sidebar until the wording
+  changed to "2 hours ago".
+
+### Changed
+
+- Smoke suite at 159 checks (environment editor helpers and endpoint policy).
+
 ## [3.0.0] - 2026-09-25
 
 The long-term release. Everything from the 2.1.0 readiness pass plus the deployment,
