@@ -231,6 +231,12 @@ check "record validator: cname payload" app.example.com "$(_lib _dns_validate_re
 check "record validator: proxied ttl"   1 "$(_lib _dns_validate_record example.com A app 203.0.113.9 300 true "" "" | jq -r '.ttl' 2>/dev/null)"
 check "record validator: apex"          example.com "$(_lib _dns_validate_record example.com TXT @ "v=spf1 -all" 3600 false "" "" | jq -r '.name' 2>/dev/null)"
 check "record validator: mx priority"   10 "$(_lib _dns_validate_record example.com MX @ mail.example.com 1 false "" "" | jq -r '.priority' 2>/dev/null)"
+check "stack activity idle"             idle "$(auth_request GET /stacks/demo/activity | body_of | jq -r '.phase' 2>/dev/null)"
+check "stack activity unknown stack"    404 "$(auth_request GET /stacks/nope/activity | status_of)"
+check "container name derives project"  demo-x-1 "$(_lib _compose_container_name "$WORK/Stacks/demo" x)"
+mkdir -p "$WORK/.templates/demo-tpl" && printf '{"name":"demo-tpl","title":"Demo","category":"other","variables":[]}\n' > "$WORK/.templates/demo-tpl/template.json" && printf 'services:\n  demo:\n    image: alpine\n    environment:\n      - PW=${SECRETS_DEMO_TPL_PW}\n' > "$WORK/.templates/demo-tpl/docker-compose.yml"
+check "template detail lists secrets"   DEMO_TPL_PW "$(auth_request GET /templates/demo-tpl | body_of | jq -r '.secrets[0].name' 2>/dev/null)"
+check "template secret reported missing" false "$(auth_request GET /templates/demo-tpl | body_of | jq -r '.secrets[0].exists' 2>/dev/null)"
 check "image check exposes registry time" yes "$(auth_request GET /images/check-updates | body_of | jq -e 'has("registry_checked_at")' >/dev/null 2>&1 && echo yes || echo no)"
 
 echo "Docker-backed endpoints (skipped when Docker is unavailable)"

@@ -4,7 +4,7 @@ Generated from the router in `.scripts/api-server.sh` by `.scripts/api-docs.sh` 
 Run `.scripts/api-docs.sh` after adding or changing a route; CI fails when this file is stale.
 
 The API listens on `API_BIND:API_PORT` (default `0.0.0.0:9876`) and answers JSON.
-Every endpoint below is `228` in total.
+Every endpoint below is `229` in total.
 
 ## Access levels
 
@@ -117,6 +117,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | GET | `/stacks` | user | All stacks with running-container counts |
 | GET | `/stacks/{stack}/compose/history/{version}` | user | View a specific compose version's content |
 | GET | `/stacks/{stack}/compose/history` | user | Saved versions of a stack's compose file |
+| GET | `/stacks/{stack}/activity` | user | Progress of the action running (or last run) on a stack: phase, per-service state, compose output |
 | GET | `/stacks/{stack}/services` | user | Services of a stack with container state, health and image |
 | GET | `/stacks/{stack}/containers` | user | Containers of one stack |
 | GET | `/stacks/{stack}/logs` | user | Recent log lines of a stack |

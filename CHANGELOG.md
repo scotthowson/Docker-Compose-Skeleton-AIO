@@ -105,6 +105,14 @@ repository, a test suite and generated documentation. The API version is now 1.3
 - `POST /containers/{name}/exec` passed `-T` to `docker exec`, which does not exist, so every
   command from the Containers page failed with exit 125. Commands now run without a terminal,
   with stdin closed, and fall back to `bash` or a direct exec when the image has no `sh`.
+- Deploy auto-start used `--no-recreate`, so a replaced service kept running with its old
+  definition; the ownership fix after a deployment chowned every root-owned directory in the
+  stack's App-Data and restarted the whole stack. It now recreates only the deployed services,
+  fixes only their own bind mounts and restarts only them.
+- The nginx-web template mounted an empty `conf.d`, so a fresh deployment served nothing and
+  failed its health check; it now ships a default server block and page.
+- `GET /auth/verify` answers 401 for a missing or dead token (see Auth above); the connect
+  screens resolve any address form; the DCS-UI route template documents the container port.
 
 ### Changed
 
@@ -177,6 +185,13 @@ repository, a test suite and generated documentation. The API version is now 1.3
 - `GET /images/check-updates` reports `registry_checked_at`; `POST /images/{image}/update`
   reports `containers_failed` (recreated but not running) and fires the `post-update` plugin
   hook for every stack it touched.
+- Real deployment progress: every background stack action (deploy auto-start, start, stop,
+  restart) keeps a record and its compose output under `.data/stack-actions/`, and
+  `GET /stacks/{stack}/activity` reports the phase (pulling, creating, starting, health check,
+  running, failed, unhealthy, exited), each service's container, state, health and the
+  container's own health-check output or last log lines. The deploy response carries the
+  container names and the activity id. `GET /templates/{name}` lists the `${SECRETS_…}`
+  names a template uses and whether each exists.
 
 ### Removed
 
