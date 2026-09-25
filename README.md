@@ -170,6 +170,17 @@ JSON in and out, no runtime to install. It starts with `setup.sh`/`start.sh` or 
 | `./stop.sh` | Stop every stack in reverse order and the API (`--force` for a short timeout) |
 | `./restart.sh` | Stop then start |
 | `./status.sh` | Container status per stack |
+| `./compose.sh <stack> …` | `docker compose` for one stack with the root `.env`, the stack `.env` and the secret store applied (`--list` names the stacks) |
+
+Everything under `Stacks/<category>/` is plain Compose, but `${SECRETS_name}` references are
+resolved from the encrypted store only by DCS itself. A bare `docker compose` in a stack directory
+prints `The "SECRETS_…" variable is not set` and starts the container with blank secrets, so when
+you work by hand, go through the wrapper:
+
+```bash
+./compose.sh networking-security up -d --force-recreate --no-deps cloudflare-ddns
+./compose.sh media-services logs -f plex
+```
 
 <details>
 <summary><strong>Management utilities (<code>.scripts/</code>)</strong></summary>

@@ -19,6 +19,7 @@ trap 'rm -rf "$WORK"' EXIT
 # Minimal isolated installation: scripts, config, one stack, an .env
 mkdir -p "$WORK/.scripts" "$WORK/.lib" "$WORK/.config" "$WORK/Stacks/demo" "$WORK/.data" "$WORK/logs" "$WORK/.api-auth" "$WORK/.templates"
 cp "$ROOT/.scripts/api-server.sh" "$WORK/.scripts/"
+cp "$ROOT/compose.sh" "$WORK/"
 cp -r "$ROOT/.lib/." "$WORK/.lib/"
 cp -r "$ROOT/.config/." "$WORK/.config/"
 grep -vE '^(API_BIND|API_AUTH_ENABLED|API_INSECURE_NO_AUTH|API_TRUSTED_PROXIES|API_IP_WHITELIST|API_PORT)=' "$ROOT/.env.example" > "$WORK/.env"
@@ -312,6 +313,18 @@ printf '{"rules": ' > "$WORK/.api-auth/notifications.json"
 check "corrupt notifications file heals"     '[]' "$(auth_request GET /notifications/rules | body_of | jq -c '.rules' 2>/dev/null)"
 check "response guard turns bad JSON into 500" 500 "$(_lib _api_response 200 '{"schedules": , "count": }' | status_of)"
 check "response guard leaves good JSON alone"  200 "$(_lib _api_response 200 '{"ok": true}' | status_of)"
+
+echo "compose.sh wrapper (secrets reach docker compose by hand)"
+check "wrapper lists stacks"             demo "$(cd "$WORK" && ./compose.sh --list | head -1)"
+check "wrapper rejects unknown stack"    2 "$(cd "$WORK" && ./compose.sh nope-zz ps >/dev/null 2>&1; echo $?)"
+mkdir -p "$WORK/Stacks/zz-wrap"; printf 'services:\n  x:\n    image: alpine\n    environment:\n      - A=${SECRETS_WRAP_DEMO}\n' > "$WORK/Stacks/zz-wrap/docker-compose.yml"
+auth_request POST /secrets '{"key":"WRAP_DEMO","value":"wrap-value"}' >/dev/null
+if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
+    check "wrapper injects the stored secret" 1 "$(cd "$WORK" && ./compose.sh zz-wrap config 2>/dev/null | grep -c 'A: wrap-value')"
+    check "bare compose would leave it blank" 0 "$(cd "$WORK/Stacks/zz-wrap" && docker compose -f docker-compose.yml config 2>/dev/null | grep -c 'wrap-value')"
+else
+    echo "  skip (docker compose plugin not available)"
+fi
 
 echo "Docker-backed endpoints (skipped when Docker is unavailable)"
 if docker info >/dev/null 2>&1; then

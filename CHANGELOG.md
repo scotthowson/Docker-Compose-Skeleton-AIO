@@ -3,6 +3,15 @@
 All notable changes to Docker Compose Skeleton AIO are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [3.1.4] - 2026-09-25
+
+### Added
+
+- `./compose.sh <stack> [args…]`: docker compose for one stack the way the dashboard and
+  start.sh run it, with the root `.env`, the stack `.env` and the encrypted secret store
+  applied (`--list` names the stacks). A bare `docker compose` in a stack directory cannot see
+  `${SECRETS_name}` values and recreates a container with blank secrets; the README says so now.
+
 ## [3.1.3] - 2026-09-25
 
 ### Fixed
