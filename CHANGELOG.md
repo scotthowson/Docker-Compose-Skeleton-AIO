@@ -3,6 +3,23 @@
 All notable changes to Docker Compose Skeleton AIO are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [3.1.5] - 2026-09-26
+
+### Fixed
+
+- The traefik template said "leave the Cloudflare token empty to use the HTTP challenge", but
+  the deployed `traefik.yml` always kept `dnsChallenge`, so an install without a token never
+  got a certificate: browsers warned, Cloudflare in Full (strict) mode answered 526. The deploy
+  now keeps the challenge that matches the deploy (token → DNS-01, none → HTTP-01 on port 80)
+  through markers in the template's `traefik.yml`; redeploying switches it either way.
+
+### Added
+
+- `GET /routes/certificates`: the proxy's TLS state — challenge in use, ACME account email,
+  whether the token is set, `acme.json` presence and mode, every certificate Traefik holds with
+  its expiry, the last ACME errors from Traefik's log, and plain-language hints for the usual
+  causes. The DNS & Routes page shows it as a Certificates panel.
+
 ## [3.1.4] - 2026-09-25
 
 ### Added

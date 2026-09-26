@@ -136,12 +136,16 @@ certificatesResolvers:
     acme:
       email: ${TRAEFIK_ACME_EMAIL:-admin@example.com}
       storage: /etc/traefik/acme.json
-      # DNS challenge via Cloudflare (recommended for wildcard certs)
+      # DCS keeps one of the two challenges below when the template is deployed:
+      # a Cloudflare token (CF_DNS_API_TOKEN) selects the DNS challenge (wildcards,
+      # no open port 80 needed), an empty token the HTTP challenge on port 80.
+      # dcs-challenge: dns
       dnsChallenge:
         provider: cloudflare
         resolvers:
           - '1.1.1.1:53'
           - '1.0.0.1:53'
-      # HTTP challenge alternative (uncomment and remove dnsChallenge above)
+      # dcs-challenge: http
       # httpChallenge:
       #   entryPoint: web
+      # dcs-challenge: end

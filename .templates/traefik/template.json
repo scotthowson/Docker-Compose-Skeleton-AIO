@@ -68,7 +68,7 @@
     {
       "name": "CF_DNS_API_TOKEN",
       "label": "Cloudflare DNS API Token",
-      "description": "Cloudflare API token for DNS-01 ACME challenge (leave empty to use HTTP challenge instead)",
+      "description": "Cloudflare API token (Zone:DNS:Edit) for the DNS-01 challenge; leave empty and Traefik uses the HTTP challenge on port 80 instead",
       "default": "",
       "required": false
     }

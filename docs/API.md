@@ -4,7 +4,7 @@ Generated from the router in `.scripts/api-server.sh` by `.scripts/api-docs.sh` 
 Run `.scripts/api-docs.sh` after adding or changing a route; CI fails when this file is stale.
 
 The API listens on `API_BIND:API_PORT` (default `0.0.0.0:9876`) and answers JSON.
-Every endpoint below is `234` in total.
+Every endpoint below is `235` in total.
 
 ## Access levels
 
@@ -215,6 +215,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | GET | `/routes/health` | user | Probe every custom route through Traefik (no changes made) |
 | GET | `/traefik/status` | user | Check if Traefik is deployed and return domain |
 | GET | `/routes` | user | Traefik routes: subdomain, service, stack and target |
+| GET | `/routes/certificates` | user | TLS state of the reverse proxy: ACME challenge, account email, the certificates Traefik holds and its recent ACME errors, with hints |
 | GET | `/routes/check` | user | Check if a subdomain is available |
 | GET | `/dns/status` | user | Cloudflare integration: where the token comes from, whether it is valid, the zone |
 | GET | `/dns/zones` | admin | Zones the Cloudflare token can manage |

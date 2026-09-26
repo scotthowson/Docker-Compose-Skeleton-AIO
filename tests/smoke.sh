@@ -326,6 +326,17 @@ else
     echo "  skip (docker compose plugin not available)"
 fi
 
+echo "Traefik: ACME challenge follows the token; certificate view"
+_TY=$(mktemp); cp "$ROOT/.templates/traefik/config/traefik.yml" "$_TY"
+_lib _traefik_pick_challenge "$_TY" http
+check "no token: http challenge active"   1 "$(grep -c '^      httpChallenge:' "$_TY")"
+check "no token: dns challenge commented" 1 "$(grep -c '^      # dnsChallenge:' "$_TY")"
+_lib _traefik_pick_challenge "$_TY" dns
+check "token: dns challenge active"       1 "$(grep -c '^      dnsChallenge:' "$_TY")"
+check "token: http challenge commented"   1 "$(grep -c '^      # httpChallenge:' "$_TY")"
+rm -f "$_TY"
+check "certificates view without traefik" none "$(auth_request GET /routes/certificates | body_of | jq -r '.challenge' 2>/dev/null)"
+
 echo "Docker-backed endpoints (skipped when Docker is unavailable)"
 if docker info >/dev/null 2>&1; then
     check "GET /status"                 200 "$(auth_request GET /status | status_of)"
