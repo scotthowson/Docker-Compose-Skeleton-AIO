@@ -38,6 +38,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Routes generated for protected services referenced `authelia-forwardauth`, which the template
   never defined; new installs now get a working reference.
+- **Restart from the page works everywhere.** A listener started with `nohup` inherits SIGHUP
+  ignored, which bash cannot trap, so the 3.3.0 in-place restart was a silent no-op there. New
+  listeners advertise `reexec-usr1` and restart on SIGUSR1; a 3.3.0 listener under systemd still
+  gets SIGHUP, and one outside systemd is stopped and started again with its own arguments by a
+  detached helper (`relaunch`). `GET /system/update/check` reports the method in `restart_method`.
 - **Prunes spare on-demand containers.** Every prune (Maintenance, deep prune, the `prune`
   schedule, the `docker_prune` automation) used `docker system prune`, which deletes stopped
   containers — and a container Sablier put to sleep is stopped. They now remove stopped containers
