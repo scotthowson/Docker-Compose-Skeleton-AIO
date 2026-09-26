@@ -548,6 +548,11 @@ for _sid in $(auth_request GET /schedules | body_of | jq -r '.schedules[]? | sel
 check "automation: dcs_update accepted" 200 "$(auth_request POST /automations '{"name":"u","trigger_type":"schedule","trigger_value":"@weekly","action_type":"dcs_update","action_target":"images"}' | status_of)"
 check "automation: dcs_update bad target" 400 "$(auth_request POST /automations '{"name":"u2","trigger_type":"schedule","trigger_value":"@weekly","action_type":"dcs_update","action_target":"bogus"}' | status_of)"
 for _aid in $(auth_request GET /automations | body_of | jq -r '.automations[]? | select(.action_type=="dcs_update") | .id' 2>/dev/null); do auth_request DELETE "/automations/$_aid" >/dev/null; done
+check "create user: admin creates"      200 "$(auth_request POST /auth/users '{"username":"bot-smoke","password":"Botpass-1234","role":"admin"}' | status_of)"
+check "create user: duplicate refused"  409 "$(auth_request POST /auth/users '{"username":"bot-smoke","password":"Botpass-1234"}' | status_of)"
+check "create user: bad name refused"   400 "$(auth_request POST /auth/users '{"username":"x!","password":"Botpass-1234"}' | status_of)"
+check "create user: viewer denied"      403 "$(viewer_request POST /auth/users '{"username":"nope-zz","password":"Botpass-1234"}' | status_of)"
+check "create user: can sign in"        200 "$(request POST /auth/login '{"username":"bot-smoke","password":"Botpass-1234"}' "${AUTH[@]}" | status_of)"
 check "homarr register: validation"     400 "$(auth_request POST /homarr/register '{"name":"","url":"nope"}' | status_of)"
 check "homarr register: no Homarr here" 409 "$(auth_request POST /homarr/register '{"name":"Smoke","url":"http://127.0.0.1:1/"}' | status_of)"
 check "homarr register: viewer denied"  403 "$(viewer_request POST /homarr/register '{"name":"Smoke","url":"http://127.0.0.1:1/"}' | status_of)"

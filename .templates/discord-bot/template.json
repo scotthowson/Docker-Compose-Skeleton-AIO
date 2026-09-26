@@ -5,7 +5,13 @@
   "category": "tools",
   "target_stack": "monitoring-management",
   "icon": "🤖",
-  "tags": ["discord", "bot", "commands", "chatops", "monitoring"],
+  "tags": [
+    "discord",
+    "bot",
+    "commands",
+    "chatops",
+    "monitoring"
+  ],
   "variables": [
     {
       "name": "DISCORD_BOT_TOKEN",
@@ -29,7 +35,7 @@
     {
       "name": "DCS_BOT_USERNAME",
       "label": "DCS user for the bot",
-      "description": "Create a dedicated user on the Users page (admin for the control commands); the bot signs in as it",
+      "description": "The DCS account the bot signs in as — created for you (admin) if it does not exist yet. Never your own login: single-session would sign you out",
       "default": "discord-bot",
       "required": true
     },
@@ -37,7 +43,8 @@
       "name": "DCS_BOT_PASSWORD",
       "label": "That user's password",
       "type": "password",
-      "required": true
+      "required": true,
+      "description": "Password for that account (press the lock to keep it in the secret store)"
     },
     {
       "name": "DCS_API_URL",

@@ -4,7 +4,7 @@ Generated from the router in `.scripts/api-server.sh` by `.scripts/api-docs.sh` 
 Run `.scripts/api-docs.sh` after adding or changing a route; CI fails when this file is stale.
 
 The API listens on `API_BIND:API_PORT` (default `0.0.0.0:9876`) and answers JSON.
-Every endpoint below is `248` in total.
+Every endpoint below is `249` in total.
 
 ## Access levels
 
@@ -95,6 +95,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | POST | `/auth/totp/verify` | user | Verify a TOTP code and enable 2FA |
 | POST | `/auth/totp/disable` | user | Disable 2FA (requires password confirmation) |
 | POST | `/auth/invite` | admin | Generate an invite code (admin only) |
+| POST | `/auth/users` | admin | Create a user account directly {username, password, role} (admin; for bots and family) |
 | POST | `/auth/revoke` | admin | Revoke a user's access (admin only) |
 | POST | `/auth/logout-all` | admin | Invalidate all sessions for a user (admin only) |
 | POST | `/auth/factory-reset` | admin | Wipe auth state and return server to first-run mode |

@@ -3,6 +3,14 @@
 All notable changes to Docker Compose Skeleton AIO are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [3.4.2] - 2026-09-26
+
+### Added
+
+- `POST /auth/users {username, password, role}`: an admin creates an account directly, no invite
+  code — for the Discord bot and for people who should not register themselves. Deploying the
+  `discord-bot` template creates the DCS account it signs in as when it does not exist yet.
+
 ## [3.4.1] - 2026-09-26
 
 ### Fixed
