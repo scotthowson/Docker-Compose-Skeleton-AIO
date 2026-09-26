@@ -3,6 +3,17 @@
 All notable changes to Docker Compose Skeleton AIO are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [3.1.7] - 2026-09-26
+
+### Fixed
+
+- Authelia could not be deployed since 3.0.0: the security hardening of 2026-09-24 validated
+  a template's `config_path` as a single directory name, and Authelia's template uses the
+  nested `Authelia/config`, so every deploy (setup wizard included) was refused with
+  "Template metadata has an invalid config_path". Nested relative paths are accepted again;
+  absolute paths and `..` segments are still refused. Without Authelia every Traefik route
+  that names its middleware answered 404.
+
 ## [3.1.6] - 2026-09-26
 
 ### Changed

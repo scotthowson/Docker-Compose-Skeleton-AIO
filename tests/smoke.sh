@@ -337,6 +337,14 @@ check "token: http challenge commented"   1 "$(grep -c '^      # httpChallenge:'
 rm -f "$_TY"
 check "certificates view without traefik" none "$(auth_request GET /routes/certificates | body_of | jq -r '.challenge' 2>/dev/null)"
 
+echo "Template config_path (Authelia uses a nested one)"
+check "nested config_path accepted"      0 "$(_lib _api_config_path_ok 'Authelia/config'; echo $?)"
+check "plain config_path accepted"       0 "$(_lib _api_config_path_ok 'Traefik'; echo $?)"
+check "traversal refused"                1 "$(_lib _api_config_path_ok 'a/../b'; echo $?)"
+check "absolute path refused"            1 "$(_lib _api_config_path_ok '/etc'; echo $?)"
+check "empty segment refused"            1 "$(_lib _api_config_path_ok 'a//b'; echo $?)"
+check "dot segment refused"              1 "$(_lib _api_config_path_ok './x'; echo $?)"
+
 echo "Docker-backed endpoints (skipped when Docker is unavailable)"
 if docker info >/dev/null 2>&1; then
     check "GET /status"                 200 "$(auth_request GET /status | status_of)"

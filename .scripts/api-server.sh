@@ -9798,6 +9798,13 @@ _api_validate_subdomain() {
     return 0
 }
 
+# A template's config_path: one or more plain segments joined by "/" (Authelia/config);
+# each segment starts with a letter or digit, so "..", "." and absolute paths are refused
+_api_config_path_ok() {
+    local p="$1"
+    [[ -n "$p" && ${#p} -le 200 && "$p" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)*$ ]]
+}
+
 # Helper: find Traefik custom_routes directory (shared by all route handlers)
 # Uses the SAME per-stack resolution as handle_traefik_status() which is known to work
 _find_traefik_routes_dir() {
@@ -10638,10 +10645,10 @@ handle_template_deploy() {
         meta=$(jq -c '.' "$tdir/template.json" 2>/dev/null || echo "{}")
     fi
     # config_path is joined to App-Data and handed to rm -rf/rsync/chmod later:
-    # it must be a plain directory name
+    # a relative path of plain segments (Authelia/config), never absolute or ..
     local _meta_config_path
     _meta_config_path=$(printf '%s' "$meta" | jq -r '.config_path // empty' 2>/dev/null)
-    if [[ -n "$_meta_config_path" && ! "$_meta_config_path" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+    if [[ -n "$_meta_config_path" ]] && ! _api_config_path_ok "$_meta_config_path"; then
         _api_error 400 "Template metadata has an invalid config_path: $_meta_config_path"
         return
     fi
@@ -13022,8 +13029,8 @@ handle_template_undeploy() {
         [[ "$_app_data" == ./* ]] && _app_data="$target_dir/${_app_data#./}"
         local _config_path
         _config_path=$(printf '%s' "$meta" | jq -r '.config_path // empty' 2>/dev/null)
-        # Only a plain directory name may be removed under App-Data
-        [[ "$_config_path" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || _config_path=""
+        # Only a safe relative path (plain segments, Authelia/config) may be removed under App-Data
+        _api_config_path_ok "$_config_path" || _config_path=""
         local _backup_file="$target_dir/docker-compose.yml.bak.${timestamp}"
         (
             # 1. Remove per-service App-Data
