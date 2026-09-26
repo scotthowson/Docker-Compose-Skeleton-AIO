@@ -2003,6 +2003,8 @@ handle_health() {
 
         if [[ "$state" != "running" && -n "${_on_demand[$name]:-}" ]]; then
             sleeping=$(( sleeping + 1 ))
+            # stopped on purpose: its last health check is history, not a problem
+            health="sleeping"
         elif [[ "$state" != "running" ]]; then
             stopped=$(( stopped + 1 ))
             _fire_notifications "container_stopped" "container=$name" "status=stopped" 2>/dev/null

@@ -3,6 +3,13 @@
 All notable changes to Docker Compose Skeleton AIO are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [3.4.1] - 2026-09-26
+
+### Fixed
+
+- `GET /health` reports a stopped on-demand container with `health: "sleeping"` instead of the
+  stale result of its last health check, so dashboards stop calling it unhealthy.
+
 ## [3.4.0] - 2026-09-26
 
 ### Added
