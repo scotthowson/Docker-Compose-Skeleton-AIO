@@ -9812,7 +9812,10 @@ handle_routes_certificates() {
 _sablier_names() {
     local dir; dir=$(_find_traefik_routes_dir) || return 0
     [[ -n "$dir" && -d "$dir" ]] || return 0
-    find "$dir" -type f \( -name '*.yml' -o -name '*.yaml' \) -print0 2>/dev/null | xargs -0 awk '
+    # Route files, plus dynamic files kept beside traefik.yml and mounted into
+    # the routes directory by hand (a TraefikRoutes.yml from an older setup)
+    { find "$dir" -type f \( -name '*.yml' -o -name '*.yaml' \) -print0 2>/dev/null
+      find "$(dirname "$dir")" -maxdepth 1 -type f \( -name '*.yml' -o -name '*.yaml' \) ! -name 'traefik.yml' -print0 2>/dev/null; } | xargs -0 awk '
         function indent(l,  m) { match(l, /^[ \t]*/); return RLENGTH }
         /^[ \t]*sablier:[ \t]*$/ { insab=1; base=indent($0); next }
         insab && indent($0) <= base && $0 !~ /^[ \t]*$/ { insab=0; inlist=0 }

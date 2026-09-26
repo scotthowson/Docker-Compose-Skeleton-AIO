@@ -3,6 +3,14 @@
 All notable changes to Docker Compose Skeleton AIO are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [3.2.1] - 2026-09-26
+
+### Fixed
+
+- Sablier detection also reads dynamic files kept beside `traefik.yml` and mounted into the
+  routes directory by hand (a `TraefikRoutes.yml` from an older setup), so containers managed
+  there count as on demand too.
+
 ## [3.2.0] - 2026-09-26
 
 ### Added
