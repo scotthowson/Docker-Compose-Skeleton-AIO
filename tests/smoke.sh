@@ -459,7 +459,9 @@ sleep 300 & _UPD_SLEEP=$!
 printf '%s\n' "$_UPD_SLEEP" > "$WORK/.data/api-server.pid"
 check "restart method: old listener"    "manual $_UPD_SLEEP" "$(_lib _api_restart_method)"
 printf 'reexec\n' > "$WORK/.data/api-server.caps"
-check "restart method: new listener"    "reexec $_UPD_SLEEP" "$(_lib _api_restart_method)"
+check "restart method: 3.3 listener (HUP)" "reexec $_UPD_SLEEP HUP" "$(_lib _api_restart_method)"
+printf 'reexec-usr1\n' > "$WORK/.data/api-server.caps"
+check "restart method: new listener (USR1)" "reexec $_UPD_SLEEP USR1" "$(_lib _api_restart_method)"
 kill "$_UPD_SLEEP" 2>/dev/null; wait "$_UPD_SLEEP" 2>/dev/null || true
 rm -f "$WORK/.data/api-server.pid" "$WORK/.data/api-server.caps"
 

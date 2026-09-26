@@ -8209,12 +8209,10 @@ _api_update_resolve_target() {
             return 1
         fi
         UPD_TARGET_NAME="$tag"
-        # A tag never moves: fetch it once, reuse it afterwards
-        if ! git rev-parse -q --verify "refs/tags/$tag^{commit}" >/dev/null 2>&1; then
-            if ! out=$(timeout 90 git fetch --no-tags origin "+refs/tags/$tag:refs/tags/$tag" 2>&1); then
-                UPD_ERROR="Could not fetch release $tag: $(printf '%s' "$out" | tail -1)"
-                return 1
-            fi
+        # Forced refspec: a tag that was moved (a re-cut pre-release) is followed too
+        if ! out=$(timeout 90 git fetch --no-tags origin "+refs/tags/$tag:refs/tags/$tag" 2>&1); then
+            UPD_ERROR="Could not fetch release $tag: $(printf '%s' "$out" | tail -1)"
+            return 1
         fi
         UPD_TARGET=$(git rev-parse "refs/tags/$tag^{commit}" 2>/dev/null || true)
     else
@@ -8394,7 +8392,8 @@ _api_restart_method() {
     local pid="" pol=""
     [[ -f "$API_PID_FILE" ]] && pid=$(cat "$API_PID_FILE" 2>/dev/null || true)
     if [[ -z "$pid" ]] || ! kill -0 "$pid" 2>/dev/null; then echo "manual 0"; return; fi
-    if [[ -f "$API_CAPS_FILE" ]] && grep -qx reexec "$API_CAPS_FILE" 2>/dev/null; then echo "reexec $pid"; return; fi
+    if [[ -f "$API_CAPS_FILE" ]] && grep -qx reexec-usr1 "$API_CAPS_FILE" 2>/dev/null; then echo "reexec $pid USR1"; return; fi
+    if [[ -f "$API_CAPS_FILE" ]] && grep -qx reexec "$API_CAPS_FILE" 2>/dev/null; then echo "reexec $pid HUP"; return; fi
     if grep -q 'dcs-api\.service' "/proc/$pid/cgroup" 2>/dev/null; then
         pol=$(systemctl show -p Restart --value dcs-api 2>/dev/null || true)
         case "$pol" in on-failure|always|on-abnormal|on-abort) echo "systemd $pid"; return ;; esac
@@ -8405,12 +8404,12 @@ _api_restart_method() {
 # Restart the listener once this response is on its way. Sets
 # UPD_RESTART_METHOD, UPD_RESTART_ETA (seconds) and UPD_RESTART_HINT.
 _api_restart_schedule() {
-    local method pid
-    read -r method pid <<< "$(_api_restart_method)"
+    local method pid sig
+    read -r method pid sig <<< "$(_api_restart_method)"
     UPD_RESTART_METHOD="$method" UPD_RESTART_ETA=0 UPD_RESTART_HINT=""
     case "$method" in
         reexec)
-            ( sleep 1; kill -HUP "$pid" ) </dev/null >/dev/null 2>&1 &
+            ( sleep 1; kill "-${sig:-USR1}" "$pid" ) </dev/null >/dev/null 2>&1 &
             disown
             UPD_RESTART_ETA=5 ;;
         systemd)
@@ -8464,7 +8463,7 @@ handle_system_update_check() {
 
     local last_backup="" method pid
     last_backup=$(git tag -l 'dcs-backup-*' --sort=-creatordate 2>/dev/null | head -1 || true)
-    read -r method pid <<< "$(_api_restart_method)"
+    read -r method pid _ <<< "$(_api_restart_method)"
 
     _api_success "{
   \"available\": $available,
@@ -8595,7 +8594,7 @@ handle_system_update_apply() {
         _api_restart_schedule
     else
         local method pid
-        read -r method pid <<< "$(_api_restart_method)"
+        read -r method pid _ <<< "$(_api_restart_method)"
         UPD_RESTART_METHOD="$method"
     fi
 
@@ -8688,7 +8687,7 @@ handle_system_update_rollback() {
         _api_restart_schedule
     else
         local method pid
-        read -r method pid <<< "$(_api_restart_method)"
+        read -r method pid _ <<< "$(_api_restart_method)"
         UPD_RESTART_METHOD="$method"
     fi
 
@@ -20194,7 +20193,7 @@ start_server() {
 
     # Write PID file (use $BASHPID for the actual process PID, not $$ which is always the parent)
     echo "${BASHPID:-$$}" > "$API_PID_FILE"
-    echo reexec > "$API_CAPS_FILE" 2>/dev/null || true
+    echo reexec-usr1 > "$API_CAPS_FILE" 2>/dev/null || true
 
     if [[ "$API_AUTH_FORCED" == "true" ]]; then
         echo "  WARNING: API_AUTH_ENABLED=false was ignored because the listener is not"
@@ -20209,8 +20208,10 @@ start_server() {
 
     # Graceful shutdown: stop the listener and every helper loop we started
     trap '_api_shutdown_children; rm -f "$API_PID_FILE" "$API_CAPS_FILE"; exit 0' SIGTERM SIGINT
-    # SIGHUP (POST /system/restart): re-execute in place, same PID
-    trap '_api_reexec' SIGHUP
+    # POST /system/restart: re-execute in place, same PID. SIGUSR1 is the signal
+    # that always works (nohup leaves SIGHUP ignored, and an ignored signal cannot
+    # be trapped); SIGHUP is kept for listeners systemd started.
+    trap '_api_reexec' SIGUSR1 SIGHUP
 
     local self_path
     self_path="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
@@ -20362,7 +20363,7 @@ _api_shutdown_children() {
 # arguments — same PID, so a systemd unit does not even notice.
 _api_reexec() {
     echo ""
-    echo "  Restarting API server (SIGHUP) ..."
+    echo "  Restarting API server in place ..."
     _api_shutdown_children
     wait 2>/dev/null || true
     local i self
