@@ -3,6 +3,14 @@
 All notable changes to Docker Compose Skeleton AIO are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [3.5.1] - 2026-09-27
+
+### Fixed
+
+- `POST /crowdsec/notifications` also finds the webhook the crowdsec template was deployed with
+  (the stack's `.env`) or the one CrowdSec already posts to, so re-applying the alert template
+  works on installs that never set `DISCORD_WEBHOOK_URL` in the root config.
+
 ## [3.5.0] - 2026-09-27
 
 Discord, finished: every message DCS posts now reads like the dashboard, the bot grew up, and the

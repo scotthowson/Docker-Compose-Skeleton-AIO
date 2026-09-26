@@ -16766,8 +16766,15 @@ handle_crowdsec_notifications_apply() {
     webhook=$(printf '%s' "$body" | jq -r '.webhook // empty' 2>/dev/null)
     test=$(printf '%s' "$body" | jq -r 'if .test == true then "true" else "false" end' 2>/dev/null)
     [[ -n "$webhook" ]] || webhook=$(_discord_webhook 2>/dev/null || true)
+    if [[ -z "$webhook" ]]; then
+        # The webhook the template was deployed with, else the one CrowdSec already posts to
+        local _cs_proj
+        _cs_proj=$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project.working_dir"}}' "$container" 2>/dev/null)
+        [[ -n "$_cs_proj" && -f "$_cs_proj/.env" ]] && webhook=$(sed -n 's/^DISCORD_WEBHOOK_URL=//p' "$_cs_proj/.env" | head -1 | tr -d '"'"'"'')
+        [[ -n "$webhook" ]] || webhook=$(docker exec "$container" sed -n 's/^url:[[:space:]]*//p' /etc/crowdsec/notifications/http.yaml 2>/dev/null | head -1 | tr -d '"'"'"' \r')
+    fi
     if [[ "$webhook" =~ ^\$\{SECRETS[._]([A-Za-z_][A-Za-z0-9_]*)\}$ ]]; then webhook=$(secrets_get "${BASH_REMATCH[1]}" 2>/dev/null || true); fi
-    _discord_is_webhook "$webhook" || { _api_error 400 "No Discord webhook: pass {\"webhook\": \"https://discord.com/api/webhooks/…\"} or set one under Server Config → Notifications"; return; }
+    _discord_is_webhook "$webhook" || { _api_error 400 "No Discord webhook: pass {\"webhook\": \"https://discord.com/api/webhooks/…\"}, set one under Server Config → Notifications, or deploy the crowdsec template with one"; return; }
     tdir="$TEMPLATES_DIR/crowdsec"
     [[ -f "$tdir/files/notifications-discord.yaml" && -f "$tdir/files/profiles.yaml" ]] || { _api_error 500 "The crowdsec template files are missing from $tdir/files"; return; }
     domain=$(_find_traefik_domain); [[ -n "$domain" ]] || domain="${PROXY_DOMAIN:-DCS}"
