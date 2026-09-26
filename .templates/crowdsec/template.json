@@ -1,17 +1,38 @@
 {
   "name": "crowdsec",
   "title": "CrowdSec",
-  "description": "Community-powered intrusion prevention system. Analyzes logs, detects attacks, blocks malicious IPs, and shares threat intelligence with the CrowdSec network. Modern Fail2ban alternative.",
+  "description": "Intrusion detection from Traefik's access log with the CrowdSec community blocklists. DCS registers a Traefik bouncer so bans are enforced at the proxy, and posts every decision to Discord when a webhook is set.",
   "category": "security",
   "target_stack": "networking-security",
-  "icon": "🛡️",
-  "tags": ["security", "intrusion-detection", "firewall", "fail2ban", "threat-intelligence", "ips"],
+  "icon": "\ud83d\udee1\ufe0f",
+  "tags": [
+    "security",
+    "intrusion-detection",
+    "firewall",
+    "fail2ban",
+    "threat-intelligence",
+    "ips"
+  ],
   "variables": [
     {
       "name": "PORT_CROWDSEC",
       "label": "Local API Port",
       "description": "Port for the CrowdSec Local API (used by bouncers)",
       "default": "8070",
+      "required": false
+    },
+    {
+      "name": "ENABLE_TRAEFIK_BOUNCER",
+      "label": "Block at the proxy (Traefik bouncer)",
+      "description": "Registers a bouncer on the CrowdSec LAPI and puts the crowdsec-bouncer middleware in Traefik's chain, so banned IPs are refused before they reach any app. Needs the traefik template.",
+      "default": "true",
+      "required": false
+    },
+    {
+      "name": "DISCORD_WEBHOOK_URL",
+      "label": "Discord webhook for alerts",
+      "description": "Every ban posts an embed to this channel; leave empty to use the server's DISCORD_WEBHOOK_URL, or to send nothing",
+      "default": "",
       "required": false
     }
   ]

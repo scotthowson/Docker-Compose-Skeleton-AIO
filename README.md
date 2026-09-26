@@ -68,7 +68,8 @@ cd Docker-Compose-Skeleton-AIO
 `setup.sh` prints the URL of the web UI when it is healthy. The wizard then walks through:
 
 1. **Account** — the first admin account (PBKDF2-hashed, rate-limited, optional TOTP).
-2. **Configure** — domain, timezone, PUID/PGID, notifications, Traefik, dynamic DNS.
+2. **Configure** — domain, timezone, PUID/PGID, notifications (ntfy, Discord), Traefik with
+   Authelia and CrowdSec, dynamic DNS; you choose which stack the proxy services land in.
 3. **Authelia** — optional SSO with generated configuration and Redis sessions.
 4. **Complete** — deploys Traefik (and Authelia), creates DNS records and starts the core stack.
 
@@ -236,6 +237,23 @@ Commands from Discord are a separate integration: deploy the **DCS Discord Bot**
 `/status`, `/usage`, `/health`, `/containers`, `/stacks`, `/updates`, `/container <name> <action>`
 and `/stack <name> <action>`. Anything that changes the server is limited to the Discord user IDs
 you list in `DISCORD_ADMIN_IDS`.
+
+### Services that start on demand (Sablier)
+
+Deploy the **Sablier** template and any container behind a Traefik route can sleep when idle:
+open it on the Containers page and press **Start on demand**. DCS writes the Sablier middleware
+onto its route (declaring the plugin in Traefik's static config if an older install lacks it),
+Traefik shows a short "starting" page on the first request, and Sablier stops the container
+after 30 minutes idle. Health, Uptime and the container list show such containers as
+**on demand** instead of stopped, and they raise no "container stopped" notification.
+
+### Intrusion detection (CrowdSec)
+
+The setup wizard offers CrowdSec next to Traefik; it can also be deployed later from Templates.
+CrowdSec reads Traefik's JSON access log with the community collections, DCS registers a Traefik
+bouncer so banned addresses are refused at the proxy (no root needed), and every decision is
+posted to your Discord webhook as an embed. The host firewall bouncer (nftables, root) is a
+separate install described in the CrowdSec docs; DCS never touches host packages.
 
 ### Running inside a VM (Proxmox, KVM, QEMU)
 

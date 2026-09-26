@@ -4,7 +4,7 @@ Generated from the router in `.scripts/api-server.sh` by `.scripts/api-docs.sh` 
 Run `.scripts/api-docs.sh` after adding or changing a route; CI fails when this file is stale.
 
 The API listens on `API_BIND:API_PORT` (default `0.0.0.0:9876`) and answers JSON.
-Every endpoint below is `235` in total.
+Every endpoint below is `236` in total.
 
 ## Access levels
 
@@ -158,6 +158,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | POST | `/containers/{container}/recreate` | admin | Start, stop, restart, recreate (Compose-managed only) or remove a container |
 | POST | `/containers/{container}/remove` | admin | Start, stop, restart, recreate (Compose-managed only) or remove a container |
 | POST | `/containers/{container}/exec` | admin | Run a command inside a container (30 s limit) |
+| POST | `/containers/{container}/sablier` | admin | Start this container on demand through Sablier (enabled: true) or serve it normally again; writes or removes the Traefik middleware on its route |
 | POST | `/containers/{container}/env` | admin | Change a Compose-managed container's environment in its stack {set{}, unset[], recreate} |
 | POST | `/containers/{container}/rename` | admin | Rename a container |
 

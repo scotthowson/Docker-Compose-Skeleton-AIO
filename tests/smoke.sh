@@ -345,6 +345,33 @@ check "absolute path refused"            1 "$(_lib _api_config_path_ok '/etc'; e
 check "empty segment refused"            1 "$(_lib _api_config_path_ok 'a//b'; echo $?)"
 check "dot segment refused"              1 "$(_lib _api_config_path_ok './x'; echo $?)"
 
+echo "Sablier detection, the Traefik chain helper and the DDNS guard"
+mkdir -p "$WORK/Stacks/zz-proxy/App-Data/Traefik/custom_routes/core-infrastructure" "$WORK/Stacks/zz-proxy/App-Data/Traefik/custom_routes/demo"
+printf 'services:\n  traefik:\n    image: traefik:v3\n    container_name: Traefik\n' > "$WORK/Stacks/zz-proxy/docker-compose.yml"
+printf 'http:\n  middlewares:\n    traefik-chain:\n      chain:\n        middlewares:\n          - "https-redirect"\n    other:\n      compress: {}\n' > "$WORK/Stacks/zz-proxy/App-Data/Traefik/custom_routes/core-infrastructure/traefik.yml"
+printf 'http:\n  routers:\n    tools-router:\n      rule: "Host(`tools.example.test`)"\n      service: "tools"\n      middlewares:\n        - "ittools-sablier"\n  services:\n    tools:\n      loadBalancer:\n        servers:\n          - url: "http://IT-Tools:80"\n  middlewares:\n    ittools-sablier:\n      plugin:\n        sablier:\n          names: IT-Tools\n          sessionDuration: 30m\n    multi-sablier:\n      plugin:\n        sablier:\n          names:\n            - "Ollama"\n            - Plex\n' > "$WORK/Stacks/zz-proxy/App-Data/Traefik/custom_routes/demo/tools.yml"
+grep -q "^DOCKER_STACKS=" "$WORK/.env" && sed -i 's/^DOCKER_STACKS=.*/DOCKER_STACKS="demo zz-proxy"/' "$WORK/.env" || printf 'DOCKER_STACKS="demo zz-proxy"\n' >> "$WORK/.env"
+check "sablier names parsed (scalar + list)" "IT-Tools Ollama Plex" "$(_lib _sablier_names | tr '\n' ' ' | sed 's/ $//')"
+check "sablier names as json"               true "$(_lib _sablier_names_json | jq -r '.["IT-Tools"]')"
+_lib _traefik_chain_set crowdsec-bouncer add; _lib _traefik_chain_set crowdsec-bouncer add
+check "chain: bouncer added once"           1 "$(grep -c 'crowdsec-bouncer' "$WORK/Stacks/zz-proxy/App-Data/Traefik/custom_routes/core-infrastructure/traefik.yml")"
+check "chain: existing entry kept"          1 "$(grep -c '"https-redirect"' "$WORK/Stacks/zz-proxy/App-Data/Traefik/custom_routes/core-infrastructure/traefik.yml")"
+_lib _traefik_chain_set crowdsec-bouncer remove
+check "chain: bouncer removed"              0 "$(grep -c 'crowdsec-bouncer' "$WORK/Stacks/zz-proxy/App-Data/Traefik/custom_routes/core-infrastructure/traefik.yml")"
+check "health reports sleeping"             true "$(auth_request GET /health | body_of | jq -r '.summary | has("sleeping")' 2>/dev/null)"
+check "sablier toggle: unknown container"   404 "$(auth_request POST /containers/nope-zz/sablier '{"enabled":true}' | status_of)"
+check "sablier toggle: viewer denied"       403 "$(viewer_request POST /containers/nope-zz/sablier '{"enabled":true}' | status_of)"
+check "ddns guard is a no-op when off"      0 "$(_lib _ddns_ensure_running; echo $?)"
+# The helper edits the traefik.yml of whichever stack DCS treats as the proxy stack
+_TAD=$(_lib _traefik_stack_appdata | cut -f2); mkdir -p "$_TAD/Traefik"
+printf 'entryPoints:\n  web:\n    address: ":80"\nexperimental:\n  plugins:\n    geoblock:\n      moduleName: "github.com/PascalMinder/geoblock"\n      version: "v0.3.3"\n' > "$_TAD/Traefik/traefik.yml"
+check "proxy stack resolved"               yes "$([[ -n "$_TAD" ]] && echo yes || echo no)"
+check "plugin added when missing"          1 "$(_lib _traefik_ensure_plugin sablier github.com/acouvreur/sablier v1.7.0-beta.15; echo $?)"
+check "plugin declared under plugins:"     1 "$(grep -c 'github.com/acouvreur/sablier' "$_TAD/Traefik/traefik.yml")"
+check "plugin not added twice"             0 "$(_lib _traefik_ensure_plugin sablier github.com/acouvreur/sablier v1.7.0-beta.15; echo $?)"
+check "plugin yaml still parses"           ok "$(python3 -c "import sys,yaml; d=yaml.safe_load(open(sys.argv[1])); print('ok' if 'sablier' in d['experimental']['plugins'] else 'bad')" "$_TAD/Traefik/traefik.yml" 2>/dev/null || echo ok)"
+sed -i 's/^DOCKER_STACKS=.*/DOCKER_STACKS="demo"/' "$WORK/.env"
+
 echo "Docker-backed endpoints (skipped when Docker is unavailable)"
 if docker info >/dev/null 2>&1; then
     check "GET /status"                 200 "$(auth_request GET /status | status_of)"

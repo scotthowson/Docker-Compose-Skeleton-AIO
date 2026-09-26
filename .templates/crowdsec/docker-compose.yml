@@ -6,13 +6,19 @@ services:
     environment:
       - TZ=${TZ:-UTC}
       - GID=${PGID:-1000}
-      - COLLECTIONS=crowdsecurity/linux crowdsecurity/traefik crowdsecurity/http-cve crowdsecurity/nginx
+      - COLLECTIONS=crowdsecurity/linux crowdsecurity/traefik crowdsecurity/http-cve crowdsecurity/base-http-scenarios crowdsecurity/whitelist-good-actors
+    # SELinux hosts: the config volume is written by the container's own user
+    security_opt:
+      - label:disable
     volumes:
-      - ${APP_DATA_DIR:-./App-Data}/CrowdSec/config:/etc/crowdsec
-      - ${APP_DATA_DIR:-./App-Data}/CrowdSec/data:/var/lib/crowdsec/data
-      - /var/log:/var/log:ro
+      - ${APP_DATA_DIR:-./App-Data}/CrowdSec/config:/etc/crowdsec:z
+      - ${APP_DATA_DIR:-./App-Data}/CrowdSec/data:/var/lib/crowdsec/data:z
+      # Traefik's access log from the same stack (JSON, written by the traefik template)
+      - ${APP_DATA_DIR:-./App-Data}/Traefik/logs:/var/log/traefik:ro,z
+      - /var/log:/var/log/host:ro
     ports:
-      - "${PORT_CROWDSEC:-8070}:8080"
+      # LAPI stays on loopback: the Traefik bouncer talks to it over the stack network
+      - "127.0.0.1:${PORT_CROWDSEC:-8070}:8080"
     healthcheck:
       test: ["CMD", "cscli", "version"]
       interval: 30s

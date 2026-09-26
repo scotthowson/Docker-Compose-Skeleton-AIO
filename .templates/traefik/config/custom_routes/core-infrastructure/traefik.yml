@@ -113,8 +113,8 @@ http:
     local-ipwhitelist:
       IPAllowList:
         sourceRange:
-          - 127.0.0.1/32     # Localhost
-          - 192.168.2.0/24   # LAN Subnet
+          - 127.0.0.1/32                              # Localhost
+          - ${TRAEFIK_TRUSTED_LAN:-192.168.1.0/24}    # LAN subnet from the deploy
 
 # -----------------------------------------------------------------------------
 # Utility Middlewares
@@ -137,10 +137,6 @@ http:
         cloudflarewarp:
           disableDefault: false
 
-    cache:
-      plugin:
-        cache:
-          path: /etc/traefik/cache
 
     log4shell:
       plugin:
@@ -174,6 +170,86 @@ http:
 # Mozilla Intermediate compatibility
 # https://ssl-config.mozilla.org/#server=traefik&version=3.0&config=intermediate
 # =============================================================================
+    # ---- Shared header sets and chains (also used by user-written routes) ----
+    default-headers:
+      headers:
+        frameDeny: true
+        browserXssFilter: true
+        contentTypeNosniff: true
+        forceSTSHeader: true
+        stsIncludeSubdomains: true
+        stsPreload: true
+        stsSeconds: 15552000
+        customFrameOptionsValue: SAMEORIGIN
+        referrerPolicy: strict-origin-when-cross-origin
+        customRequestHeaders:
+          X-Forwarded-Proto: https
+        customResponseHeaders:
+          X-Robots-Tag: "none,noarchive,nosnippet,notranslate,noimageindex"
+          server: ""
+          X-Forwarded-Proto: "https,wss"
+        hostsProxyHeaders:
+          - X-Forwarded-Host
+    security-headers:
+      headers:
+        customResponseHeaders:
+          X-Robots-Tag: "none,noarchive,nosnippet,notranslate,noimageindex"
+          X-Forwarded-Proto: https
+          server: ""
+        customRequestHeaders:
+          X-Forwarded-Proto: https
+        sslProxyHeaders:
+          X-Forwarded-Proto: https
+        referrerPolicy: same-origin
+        hostsProxyHeaders:
+          - X-Forwarded-Host
+        contentTypeNosniff: true
+        browserXssFilter: true
+        forceSTSHeader: true
+        stsIncludeSubdomains: true
+        stsSeconds: 63072000
+        stsPreload: true
+    nextcloud-secure-headers:
+      headers:
+        hostsProxyHeaders:
+          - "X-Forwarded-Host"
+        referrerPolicy: "same-origin"
+    cors-all:
+      headers:
+        customRequestHeaders:
+          X-Forwarded-Proto: https
+        customResponseHeaders:
+          X-Forwarded-Proto: https
+        accessControlAllowMethods:
+          - OPTION
+          - POST
+          - GET
+          - PUT
+          - DELETE
+        accessControlAllowHeaders:
+          - Authorization
+          - Content-Type
+          - X-Requested-With
+          - X-Forwarded-Proto
+        accessControlAllowOriginList:
+          - "*"
+        accessControlMaxAge: 100
+        addVaryHeader: true
+    secure-chain:
+      chain:
+        middlewares:
+          - https-redirect
+          - default-headers
+    nextcloud-chain:
+      chain:
+        middlewares:
+          - https-redirect
+          - nextcloud-secure-headers
+    nextcloud-redirectregex:
+      redirectRegex:
+        permanent: true
+        regex: https://(.*)/.well-known/(?:card|cal)dav
+        replacement: https://${1}/remote.php/dav
 tls:
   options:
     default:

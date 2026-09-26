@@ -1,0 +1,11 @@
+# Traefik's JSON access log and its own log, mounted read-only from the proxy stack's App-Data
+---
+filenames:
+  - /var/log/traefik/access.log
+labels:
+  type: traefik
+---
+filenames:
+  - /var/log/traefik/traefik.log
+labels:
+  type: traefik

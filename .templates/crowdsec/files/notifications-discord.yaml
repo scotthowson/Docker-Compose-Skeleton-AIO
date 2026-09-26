@@ -1,0 +1,44 @@
+# Discord webhook notification: one embed per alert, coloured by scenario family.
+# DCS fills url and the footer's domain when the template is deployed.
+type: http
+name: http_default
+log_level: info
+group_wait: 5s
+group_threshold: 10
+max_retry: 3
+timeout: 10s
+format: |
+  {
+    "username": "CrowdSec",
+    "embeds": [
+      {{range $i, $alert := . -}}
+      {{if $i}},{{end}}
+      {
+        "title": "{{$alert.Scenario}}",
+        "color": {{if hasPrefix "crowdsecurity/ssh" $alert.Scenario -}}13369344
+                 {{- else if hasPrefix "crowdsecurity/http-cve" $alert.Scenario -}}10181046
+                 {{- else if hasPrefix "crowdsecurity/http-sqli" $alert.Scenario -}}15105570
+                 {{- else if hasPrefix "crowdsecurity/http-xss" $alert.Scenario -}}15105570
+                 {{- else if hasPrefix "crowdsecurity/http-path-traversal" $alert.Scenario -}}15105570
+                 {{- else if hasPrefix "crowdsecurity/http-admin" $alert.Scenario -}}15844367
+                 {{- else if hasPrefix "crowdsecurity/http-bad-user-agent" $alert.Scenario -}}15844367
+                 {{- else if hasPrefix "crowdsecurity/http-probing" $alert.Scenario -}}15844367
+                 {{- else if hasPrefix "crowdsecurity/http-sensitive" $alert.Scenario -}}15844367
+                 {{- else -}}15158332{{- end}},
+        "fields": [
+          {"name": "Source",   "value": "{{$alert.Source.Value}}",                                                            "inline": true},
+          {"name": "Country",  "value": "{{if $alert.Source.Cn}}{{$alert.Source.Cn}}{{else}}-{{end}}",                        "inline": true},
+          {"name": "AS",       "value": "{{if $alert.Source.AsName}}{{$alert.Source.AsName}}{{else}}-{{end}}",                "inline": true},
+          {"name": "Events",   "value": "{{$alert.EventsCount}}",                                                             "inline": true},
+          {"name": "Action",   "value": "{{(index $alert.Decisions 0).Type}} for {{(index $alert.Decisions 0).Duration}}",    "inline": true},
+          {"name": "Scope",    "value": "{{(index $alert.Decisions 0).Scope}}",                                               "inline": true}
+        ],
+        "footer": {"text": "CrowdSec @ __DOMAIN__"}
+      }
+      {{end}}
+    ]
+  }
+url: __WEBHOOK__
+method: POST
+headers:
+  Content-Type: application/json

@@ -3,6 +3,38 @@
 All notable changes to Docker Compose Skeleton AIO are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [3.2.0] - 2026-09-26
+
+### Added
+
+- **Sablier awareness.** Containers that Traefik starts on demand (a `sablier` plugin middleware
+  naming them in any route file) are reported as `on_demand`; stopped ones count as `sleeping`
+  in `GET /health` instead of stopped and no longer raise "container stopped" notifications.
+  `POST /containers/{c}/sablier {enabled}` writes or removes the middleware on the container's
+  route (its own `<name>-sablier.yml` file), declares the plugin in `traefik.yml` when an older
+  install lacks it, and restarts Traefik once in that case.
+- **CrowdSec from the setup wizard.** The crowdsec template reads Traefik's JSON access log,
+  registers a Traefik bouncer on its LAPI (`dcs-traefik-bouncer`) and puts `crowdsec-bouncer`
+  first in `traefik-chain`, posts every decision to Discord with a per-scenario embed when a
+  webhook is known, and undoes the chain and middleware on undeploy. The Traefik template now
+  writes a JSON access log to `App-Data/Traefik/logs` for it.
+- `_traefik_ensure_plugin`: a plugin used by DCS-written middleware is declared in the static
+  config of an existing install before it is referenced, so no route is ever dropped for a
+  missing plugin.
+
+### Changed
+
+- Traefik template: plugins are declared and pinned (geoblock, cloudflarewarp, log4shell,
+  sablier, crowdsec-bouncer); the shipped but never-loaded `traefikRouters.yml` is gone and its
+  middlewares (default/security headers, cors-all, nextcloud chain) live in the loaded
+  `custom_routes/…/traefik.yml`; the LAN allow-list uses the deploy's `TRAEFIK_TRUSTED_LAN`
+  instead of a hard-coded subnet; the dead `cache` middleware (undeclared plugin) is removed.
+- Traefik stack detection matches the proxy image only (`traefik/whoami` is not Traefik) and
+  prefers the stack whose App-Data holds Traefik's config.
+- DDNS starts as soon as the wizard or Server Config enables it, not at the next API restart,
+  and stops when disabled.
+- API 1.6.0, 236 endpoints, smoke suite 222 checks.
+
 ## [3.1.7] - 2026-09-26
 
 ### Fixed

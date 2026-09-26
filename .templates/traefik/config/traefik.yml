@@ -68,33 +68,27 @@ entryPoints:
 # -----------------------------------------------------------------------------
 # Plugins (optional — uncomment to enable)
 # -----------------------------------------------------------------------------
-# experimental:
-#   plugins:
-#     geoblock:
-#       moduleName: "github.com/PascalMinder/geoblock"
-#       version: "v0.3.3"
-#     theme-park:
-#       modulename: "github.com/packruler/traefik-themepark"
-#       version: "v1.4.2"
-#     sablier:
-#       moduleName: "github.com/acouvreur/sablier"
-#       version: "v1.7.0-beta.15"
-#     cloudflarewarp:
-#       modulename: github.com/BetterCorp/cloudflarewarp
-#       version: v1.3.3
-#     maintenance-mode:
-#       moduleName: github.com/TRIMM/traefik-maintenance
-#       version: v1.0.1
-#     log4shell:
-#       modulename: github.com/traefik/plugin-log4shell
-#       version: v0.1.2
-#     cache:
-#       modulename: github.com/traefik/plugin-simplecache
-#       version: v0.2.1
+# Plugins Traefik downloads at start (versions pinned to a known-good set).
+# Middlewares in custom_routes/ refer to them; Sablier and the CrowdSec bouncer
+# are wired by DCS when those templates are deployed.
+experimental:
+  plugins:
+    geoblock:
+      moduleName: "github.com/PascalMinder/geoblock"
+      version: "v0.3.3"
+    cloudflarewarp:
+      moduleName: "github.com/BetterCorp/cloudflarewarp"
+      version: "v1.3.3"
+    log4shell:
+      moduleName: "github.com/traefik/plugin-log4shell"
+      version: "v0.1.2"
+    sablier:
+      moduleName: "github.com/acouvreur/sablier"
+      version: "v1.7.0-beta.15"
+    crowdsec-bouncer-traefik-plugin:
+      moduleName: "github.com/maxlerebourg/crowdsec-bouncer-traefik-plugin"
+      version: "v1.4.4"
 
-# -----------------------------------------------------------------------------
-# Providers
-# -----------------------------------------------------------------------------
 providers:
   providersThrottleDuration: 2s
 
@@ -127,6 +121,12 @@ ping:
 # -----------------------------------------------------------------------------
 log:
   level: INFO
+
+# JSON access log on disk: CrowdSec reads it (mounted read-only into its container)
+accessLog:
+  filePath: /var/log/traefik/access.log
+  format: json
+  bufferingSize: 100
 
 # -----------------------------------------------------------------------------
 # Certificate Resolvers
