@@ -4,7 +4,7 @@ Generated from the router in `.scripts/api-server.sh` by `.scripts/api-docs.sh` 
 Run `.scripts/api-docs.sh` after adding or changing a route; CI fails when this file is stale.
 
 The API listens on `API_BIND:API_PORT` (default `0.0.0.0:9876`) and answers JSON.
-Every endpoint below is `237` in total.
+Every endpoint below is `247` in total.
 
 ## Access levels
 
@@ -107,6 +107,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 |--------|------|--------|-------------|
 | GET | `/setup/status` | public | Always available, no auth. Reports whether server needs setup. |
 | GET | `/setup/defaults` | public | Defaults and detected system values for the setup wizard (anonymous until setup is complete, admin afterwards) |
+| POST | `/setup/restore` | public | First-run only: restore a recovery bundle sent by the setup wizard {content_b64, passphrase} |
 | POST | `/setup/configure` | user | Apply the setup wizard's settings and stack list |
 | POST | `/setup/complete` | user | Mark first-run setup as finished |
 
@@ -214,7 +215,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 |--------|------|--------|-------------|
 | GET | `/ddns/status` | admin | Check DDNS status and current IP |
 | GET | `/routes/health` | user | Probe every custom route through Traefik (no changes made) |
-| GET | `/traefik/status` | user | Check if Traefik is deployed and return domain |
+| GET | `/traefik/status` | user | Traefik status |
 | GET | `/routes` | user | Traefik routes: subdomain, service, stack and target |
 | GET | `/routes/certificates` | user | Reverse-proxy health: domain, ACME challenge and account, certificates held, a live probe of every route through Traefik, the last Traefik errors, and hints |
 | GET | `/routes/check` | user | Check if a subdomain is available |
@@ -247,6 +248,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | Method | Path | Access | Description |
 |--------|------|--------|-------------|
 | GET | `/system/update/check` | admin | Newer DCS release on the channel? Version, release notes, local edits and how the API can restart |
+| GET | `/system/update/history` | admin | Outcomes of unattended self-updates (last 30) and whether a job runs now |
 | GET | `/system/os-update/status` | admin | Poll background OS update progress |
 | GET | `/system/crontab` | admin | User crontab entries |
 | GET | `/system/crontab/system` | admin | System-level cron entries |
@@ -273,7 +275,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | GET | `/rollback/{stack}/snapshots` | user | Rollback snapshots of a stack |
 | GET | `/rollback/{stack}/diff/{snapshot}` | user | Diff between a snapshot and the current stack files |
 | GET | `/snapshots/{snapshot}/download` | admin | Download a snapshot archive |
-| POST | `/maintenance/prune` | admin | Prune stopped containers, dangling images and unused networks |
+| POST | `/maintenance/prune` | admin | Maintenance prune |
 | POST | `/maintenance/image-prune` | admin | Prune unused images |
 | POST | `/maintenance/deep-prune` | admin | Prune everything unused, volumes included (confirmation required) |
 | POST | `/maintenance/log-rotate` | admin | Rotate and archive the framework log |
@@ -374,8 +376,16 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 
 | Method | Path | Access | Description |
 |--------|------|--------|-------------|
+| GET | `/power` | user | UPS status: mains or battery, charge, runtime, load, and whether the watch loop runs |
+| GET | `/recovery` | admin | Recovery bundles on this box and how they are made (destination, off-box copy, retention, passphrase set?) |
 | GET | `/crowdsec/status` | user | CrowdSec presence, whitelist state and active decisions |
 | GET | `/crowdsec/decisions` | user | Active CrowdSec decisions (bans) |
+| GET | `/recovery/*/download` | admin | Download a recovery bundle |
+| POST | `/power/sample` | admin | Read the UPS right now (also refreshes what GET /power shows) |
+| POST | `/sablier/repair` | admin | Recreate on-demand containers that a prune removed (created, not started, so Sablier can wake them) |
+| POST | `/recovery/bundle` | admin | Write an encrypted recovery bundle now {passphrase?, include_app_data: [stacks], copy_remote} |
+| POST | `/recovery/restore` | admin | Restore a bundle from this box {file, passphrase, confirm, restart}; a pre-restore snapshot is kept |
+| POST | `/recovery/upload` | admin | Store a bundle sent by the browser {filename, content_b64} |
 | POST | `/crowdsec/trust` | admin | Add an address to the whitelist (body {ip}; defaults to the home public address and the caller) |
 | POST | `/crowdsec/unban-me` | user | Unban the caller: its client address and the home public address |
 | DELETE | `/crowdsec/decisions/*` | admin | Remove every decision for an address (unban) |

@@ -3,6 +3,49 @@
 All notable changes to Docker Compose Skeleton AIO are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [3.4.0] - 2026-09-26
+
+### Added
+
+- **Deploy switches.** The deploy request takes `authelia_services` and `on_demand_services`:
+  a route is protected by whatever forward-auth middleware this install defines
+  (`authelia-forwardauth` in hand-built configs, `authelia` in the template — the deploy rewrites
+  the reference, so a route never points at a middleware that does not exist), and an on-demand
+  service ships with its Sablier middleware, the plugin declared in Traefik once. `GET /traefik/status`
+  reports `authelia_middleware`, `authelia` and `sablier` so the deploy screen only offers what exists.
+- **Recovery bundles.** `POST /recovery/bundle` writes one AES-256 encrypted archive with the root
+  `.env`, the secret store and its key, accounts, rules and layouts, schedules, every stack's files,
+  Traefik and Authelia data (App-Data of chosen stacks on request), templates and plugins.
+  `GET /recovery` lists bundles, `GET /recovery/{file}/download` fetches one, `POST /recovery/upload`
+  and `POST /recovery/restore` put one back (pre-restore snapshot kept), and `POST /setup/restore`
+  does the same from the setup wizard before any account exists. The passphrase lives in the secret
+  store as `RECOVERY_PASSPHRASE`; `RECOVERY_REMOTE` receives a copy (rsync target or mounted path).
+  Schedule action `recovery` and automation action `recovery_bundle`.
+- **UPS watch.** With `UPS_ENABLED=true` the listener polls a NUT server over the network
+  protocol (no client binaries needed) or apcupsd, keeps `.data/power.json`, alerts on every
+  mains/battery transition, and below `UPS_SHUTDOWN_CHARGE` or `UPS_SHUTDOWN_RUNTIME` stops every
+  stack cleanly (`UPS_ON_BATTERY_ACTION`), runs `UPS_HOST_SHUTDOWN_CMD` when set, and optionally
+  starts the stacks again when mains returns. `GET /power`, `POST /power/sample`. New template
+  `nut-upsd` serves a USB UPS from a container.
+- **Unattended self-update.** `api-server.sh --self-update [--images]` (schedule action
+  `dcs-update`, automation action `dcs_update`) runs outside the listener: it applies the channel's
+  release, restarts the API, optionally pulls image updates for every stack, waits
+  `UPDATE_HEALTH_GRACE` seconds and rolls back to the backup tag when the health score fell by
+  `UPDATE_ROLLBACK_DROP` points (`UPDATE_AUTO_ROLLBACK`). Outcomes go to the notification channels
+  and `GET /system/update/history`. Edited framework files are never replaced unattended.
+
+### Fixed
+
+- Routes generated for protected services referenced `authelia-forwardauth`, which the template
+  never defined; new installs now get a working reference.
+- **Prunes spare on-demand containers.** Every prune (Maintenance, deep prune, the `prune`
+  schedule, the `docker_prune` automation) used `docker system prune`, which deletes stopped
+  containers — and a container Sablier put to sleep is stopped. They now remove stopped containers
+  one by one, skipping the on-demand ones, keep the networks those need, and the orphan report no
+  longer lists them. On-demand containers an older prune already removed are recreated (created,
+  not started) at API start and by `POST /sablier/repair`; `GET /health` reports them under
+  `summary.on_demand_missing`.
+
 ## [3.3.0] - 2026-09-26
 
 ### Added

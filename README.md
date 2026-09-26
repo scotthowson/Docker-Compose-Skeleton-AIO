@@ -1,7 +1,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/bash-4.0+-4EAA25?style=flat-square&logo=gnubash&logoColor=white" alt="Bash 4+" />
   <img src="https://img.shields.io/badge/docker-compose_v2-2496ED?style=flat-square&logo=docker&logoColor=white" alt="Docker Compose v2" />
-  <img src="https://img.shields.io/badge/templates-105-34d399?style=flat-square" alt="105 templates" />
+  <img src="https://img.shields.io/badge/templates-106-34d399?style=flat-square" alt="106 templates" />
   <img src="https://img.shields.io/badge/API_endpoints-210-06b6d4?style=flat-square" alt="210 API endpoints" />
   <a href="https://github.com/scotthowson/Docker-Compose-Skeleton-AIO/actions/workflows/ci.yml"><img src="https://github.com/scotthowson/Docker-Compose-Skeleton-AIO/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
   <img src="https://img.shields.io/badge/license-MIT-f472b6?style=flat-square" alt="MIT" />
@@ -41,7 +41,7 @@ Browser ──► DCS-UI (container, :3000) ──/api/──► api-server.sh (
   `core-infrastructure → networking-security → monitoring-management → development-tools →
   media-services → web-applications → storage-backup → communication-collaboration →
   entertainment-personal → miscellaneous-services`.
-- **105 templates** — deploy Jellyfin, Nextcloud, Grafana, Vaultwarden, Immich and 100 more into any
+- **106 templates** — deploy Jellyfin, Nextcloud, Grafana, Vaultwarden, Immich and 101 more into any
   stack. Each deployment is security-scanned, port-checked, merged into the stack's compose file,
   given a Traefik route and a Cloudflare CNAME, connected to the proxy network and started.
   Undeploy reverses every step.
@@ -108,7 +108,7 @@ install missing ones through `apt`, `dnf`, `yum`, `pacman`, `zypper` or `xbps`.
 ## Templates
 
 <details>
-<summary><strong>All 105 templates by category</strong></summary>
+<summary><strong>All 106 templates by category</strong></summary>
 
 | Category | Templates |
 |----------|-----------|
@@ -264,6 +264,33 @@ and `.plugins/` are kept exactly as they are. A framework file you patched by ha
 only when you tick the box, and the old copy lands in `.data/update-backups/`. The API restarts
 itself afterwards (no root needed) and a backup tag lets you roll back. By hand,
 `git pull --ff-only` in the install directory does the same without the safety net.
+
+### Recovery bundle
+
+The Backup page writes one encrypted archive that rebuilds this install anywhere: the root `.env`,
+the secret store with its key, accounts, rules and dashboard layouts, schedules, every stack's
+files, the Traefik and Authelia data, templates and plugins (App-Data of chosen stacks on request).
+Store the passphrase as the secret `RECOVERY_PASSPHRASE`, point `RECOVERY_REMOTE` at an rsync
+target or a mounted drive for an off-box copy, and add a `recovery` schedule. On a fresh box the
+setup wizard offers **Restore a recovery bundle** before the first account is created; on a
+running one the Backup page restores a bundle after a pre-restore snapshot.
+
+### Power (UPS)
+
+Set `UPS_ENABLED=true` and point DCS at a NUT server (`UPS_NUT_HOST`, `UPS_NUT_PORT`, `UPS_NAME`;
+the `nut-upsd` template serves a USB UPS from a container) or install apcupsd. The dashboard
+Power card shows charge, runtime and load; every switch to battery and back is announced on your
+notification channels; below `UPS_SHUTDOWN_CHARGE` percent or `UPS_SHUTDOWN_RUNTIME` seconds the
+stacks are stopped cleanly, `UPS_HOST_SHUTDOWN_CMD` runs when set, and `UPS_START_ON_POWER=true`
+starts them again when mains returns.
+
+### Unattended updates
+
+A `dcs-update` schedule (target `images` to pull image updates too) applies the channel's release
+outside the listener, restarts the API, waits `UPDATE_HEALTH_GRACE` seconds and rolls back to the
+backup tag when the health score dropped by `UPDATE_ROLLBACK_DROP` points. The outcome is posted
+to your notification channels and listed on the Updates page. Framework files you edited by hand
+are never replaced unattended — the Updates page asks you first.
 
 ### Running inside a VM (Proxmox, KVM, QEMU)
 

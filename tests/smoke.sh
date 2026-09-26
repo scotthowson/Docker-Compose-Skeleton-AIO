@@ -463,6 +463,93 @@ check "restart method: new listener"    "reexec $_UPD_SLEEP" "$(_lib _api_restar
 kill "$_UPD_SLEEP" 2>/dev/null; wait "$_UPD_SLEEP" 2>/dev/null || true
 rm -f "$WORK/.data/api-server.pid" "$WORK/.data/api-server.caps"
 
+echo "Round 2: prune safety, power watch, recovery bundles, new schedule actions, deploy switches"
+mkdir -p "$WORK/fakebin"
+cat > "$WORK/fakebin/docker" <<'FAKE'
+#!/bin/bash
+case "$*" in
+  "ps -a --filter status=exited --filter status=created --filter status=dead --format {{.Names}}") printf 'zz-stopped\nIT-Tools\nzz-other\n' ;;
+  "inspect Ollama") exit 1 ;;
+  *) exit 0 ;;
+esac
+FAKE
+cat > "$WORK/fakebin/apcaccess" <<'FAKE'
+#!/bin/bash
+printf 'APC      : 001,036,0872\nSTATUS   : ONBATT\nBCHARGE  : 42.0 Percent\nTIMELEFT : 23.0 Minutes\nLOADPCT  : 12.0 Percent\nLINEV    : 0.0 Volts\nMODEL    : Smoke UPS\n'
+FAKE
+chmod +x "$WORK/fakebin/docker" "$WORK/fakebin/apcaccess"
+check "prune spares on-demand containers" 'zz-stopped zz-other' "$(PATH="$WORK/fakebin:$PATH" _lib _prune_stopped_candidates | tr '\n' ' ' | sed 's/ $//')"
+check "missing on-demand container found" Ollama "$(PATH="$WORK/fakebin:$PATH" _lib _sablier_missing | tr '\n' ' ' | sed 's/ $//')"
+check "health lists missing on-demand"   array "$(auth_request GET /health | body_of | jq -r '.summary.on_demand_missing | type' 2>/dev/null)"
+check "sablier repair answers"          200 "$(auth_request POST /sablier/repair | status_of)"
+check "sablier repair: viewer denied"   403 "$(viewer_request POST /sablier/repair | status_of)"
+PW=$(PATH="$WORK/fakebin:$PATH" UPS_SOURCE=apcupsd _lib _power_sample)
+check "power: apcupsd parsed"           apcupsd "$(printf '%s' "$PW" | jq -r '.source')"
+check "power: on battery"               true "$(printf '%s' "$PW" | jq -r '.on_battery')"
+check "power: charge"                   42 "$(printf '%s' "$PW" | jq -r '.charge')"
+check "power: runtime seconds"          1380 "$(printf '%s' "$PW" | jq -r '.runtime_seconds')"
+check "power: model"                    'Smoke UPS' "$(printf '%s' "$PW" | jq -r '.model')"
+if command -v socat >/dev/null 2>&1; then
+    NUTP=$((30000 + RANDOM % 20000))
+    printf 'BEGIN LIST VAR ups\nVAR ups ups.status "OB DISCHRG"\nVAR ups battery.charge "42"\nVAR ups battery.runtime "1380"\nVAR ups ups.load "23"\nVAR ups input.voltage "0.0"\nVAR ups ups.model "Smoke UPS"\nEND LIST VAR ups\n' > "$WORK/nut.txt"
+    socat "TCP-LISTEN:${NUTP},reuseaddr,fork" SYSTEM:"cat $WORK/nut.txt" >/dev/null 2>&1 &
+    NUTPID=$!
+    sleep 0.5
+    PN=$(UPS_SOURCE=nut UPS_NUT_HOST=127.0.0.1 UPS_NUT_PORT=$NUTP UPS_NAME=ups _lib _power_sample)
+    check "power: NUT over TCP"             nut "$(printf '%s' "$PN" | jq -r '.source')"
+    check "power: NUT on battery"           true "$(printf '%s' "$PN" | jq -r '.on_battery')"
+    check "power: NUT charge"               42 "$(printf '%s' "$PN" | jq -r '.charge')"
+    check "power: NUT load"                 23 "$(printf '%s' "$PN" | jq -r '.load')"
+    kill "$NUTPID" 2>/dev/null; wait "$NUTPID" 2>/dev/null || true
+    PU=$(UPS_SOURCE=nut UPS_NUT_HOST=127.0.0.1 UPS_NUT_PORT=$NUTP UPS_NAME=ups _lib _power_sample)
+    check "power: NUT unreachable reported" false "$(printf '%s' "$PU" | jq -r '.ok')"
+fi
+check "GET /power when off"             false "$(auth_request GET /power | body_of | jq -r '.enabled')"
+check "traefik status: switch facts"    true "$(auth_request GET /traefik/status | body_of | jq -r 'has("authelia_middleware") and has("sablier") and has("authelia")')"
+check "deploy: on demand needs Sablier" 409 "$(auth_request POST /templates/demo-tpl/deploy '{"target_stack":"demo","on_demand_services":["demo"]}' | status_of)"
+check "deploy: protect needs Authelia"  409 "$(auth_request POST /templates/demo-tpl/deploy '{"target_stack":"demo","authelia_services":["demo"]}' | status_of)"
+RB=$(auth_request POST /recovery/bundle '{"passphrase":"smoke-pass-123","copy_remote":false}')
+check "recovery: bundle written"        200 "$(printf '%s' "$RB" | status_of)"
+RBF=$(printf '%s' "$RB" | body_of | jq -r '.file')
+check "recovery: file exists"           yes "$([[ -s "$WORK/.data/recovery/$RBF" ]] && echo yes || echo no)"
+check "recovery: checksum beside it"    yes "$([[ -s "$WORK/.data/recovery/$RBF.sha256" ]] && echo yes || echo no)"
+check "recovery: listed"                1 "$(auth_request GET /recovery | body_of | jq -r '.bundles | length')"
+check "recovery: passphrase not stored" false "$(auth_request GET /recovery | body_of | jq -r '.passphrase_set')"
+check "recovery: viewer denied"         403 "$(viewer_request GET /recovery | status_of)"
+check "recovery: short passphrase"      400 "$(auth_request POST /recovery/bundle '{"passphrase":"short"}' | status_of)"
+printf '# changed after the bundle\n' >> "$WORK/Stacks/demo/docker-compose.yml"
+check "recovery: wrong passphrase"      400 "$(auth_request POST /recovery/restore "{\"file\":\"$RBF\",\"passphrase\":\"nope-nope-nope\",\"confirm\":true,\"restart\":false}" | status_of)"
+check "recovery: change still there"    yes "$(grep -q 'changed after the bundle' "$WORK/Stacks/demo/docker-compose.yml" && echo yes || echo no)"
+RR=$(auth_request POST /recovery/restore "{\"file\":\"$RBF\",\"passphrase\":\"smoke-pass-123\",\"confirm\":true,\"restart\":false}")
+check "recovery: restore succeeds"      200 "$(printf '%s' "$RR" | status_of)"
+check "recovery: stack file restored"   no "$(grep -q 'changed after the bundle' "$WORK/Stacks/demo/docker-compose.yml" && echo yes || echo no)"
+check "recovery: users restored count"  yes "$([[ "$(printf '%s' "$RR" | body_of | jq -r '.users')" -ge 1 ]] && echo yes || echo no)"
+check "recovery: pre-restore snapshot"  yes "$(ls "$WORK"/.snapshots/pre-restore-*.tar.gz >/dev/null 2>&1 && echo yes || echo no)"
+: > "$WORK/.api-auth/.setup-complete"
+check "recovery: setup restore refused when set up" 403 "$(request POST /setup/restore '{"content_b64":"AAAA","passphrase":"smoke-pass-123"}' "${AUTH[@]}" | status_of)"
+rm -f "$WORK/.api-auth/.setup-complete"
+check "recovery: setup restore rejects junk" 400 "$(request POST /setup/restore '{"content_b64":"AAAA","passphrase":"smoke-pass-123"}' "${AUTH[@]}" | status_of)"
+UPB=$(base64 -w0 "$WORK/.data/recovery/$RBF")
+check "recovery: upload accepted"       200 "$(auth_request POST /recovery/upload "{\"filename\":\"dcs-recovery-smoke-20260101-000000.tar.gz.enc\",\"content_b64\":\"$UPB\"}" | status_of)"
+check "recovery: upload name checked"   400 "$(auth_request POST /recovery/upload '{"filename":"../evil.enc","content_b64":"AAAA"}' | status_of)"
+check "recovery: two bundles listed"    2 "$(auth_request GET /recovery | body_of | jq -r '.bundles | length')"
+check "secret stored for schedules"     200 "$(auth_request POST /secrets '{"key":"RECOVERY_PASSPHRASE","value":"smoke-pass-123"}' | status_of)"
+check "recovery: passphrase stored"     true "$(auth_request GET /recovery | body_of | jq -r '.passphrase_set')"
+SID=$(auth_request POST /schedules '{"name":"rb","schedule":"@daily","action":"recovery","target":""}' | body_of | jq -r '.id // .schedule.id // empty' 2>/dev/null)
+check "schedule: recovery accepted"     yes "$([[ -n "$SID" ]] && echo yes || echo no)"
+check "schedule: recovery runs"         200 "$(auth_request POST "/schedules/$SID/run" | status_of)"
+check "recovery: schedule made a bundle" 3 "$(auth_request GET /recovery | body_of | jq -r '.bundles | length')"
+[[ -n "$SID" ]] && auth_request DELETE "/schedules/$SID" >/dev/null
+check "schedule: dcs-update accepted"   200 "$(auth_request POST /schedules '{"name":"su","schedule":"@weekly","action":"dcs-update","target":"images"}' | status_of)"
+check "schedule: dcs-update bad target" 400 "$(auth_request POST /schedules '{"name":"su2","schedule":"@weekly","action":"dcs-update","target":"bogus"}' | status_of)"
+for _sid in $(auth_request GET /schedules | body_of | jq -r '.schedules[]? | select(.action=="dcs-update") | .id' 2>/dev/null); do auth_request DELETE "/schedules/$_sid" >/dev/null; done
+check "automation: dcs_update accepted" 200 "$(auth_request POST /automations '{"name":"u","trigger_type":"schedule","trigger_value":"@weekly","action_type":"dcs_update","action_target":"images"}' | status_of)"
+check "automation: dcs_update bad target" 400 "$(auth_request POST /automations '{"name":"u2","trigger_type":"schedule","trigger_value":"@weekly","action_type":"dcs_update","action_target":"bogus"}' | status_of)"
+for _aid in $(auth_request GET /automations | body_of | jq -r '.automations[]? | select(.action_type=="dcs_update") | .id' 2>/dev/null); do auth_request DELETE "/automations/$_aid" >/dev/null; done
+check "update history answers"          array "$(auth_request GET /system/update/history | body_of | jq -r '.entries | type')"
+check "update history: viewer denied"   403 "$(viewer_request GET /system/update/history | status_of)"
+auth_request DELETE /secrets/RECOVERY_PASSPHRASE >/dev/null
+
 echo "Docker-backed endpoints (skipped when Docker is unavailable)"
 if docker info >/dev/null 2>&1; then
     check "GET /status"                 200 "$(auth_request GET /status | status_of)"

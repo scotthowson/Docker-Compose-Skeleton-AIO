@@ -1,0 +1,18 @@
+{
+  "name": "nut-upsd",
+  "title": "NUT UPS Server",
+  "description": "Network UPS Tools server for a USB-connected UPS. Publishes battery charge, runtime and mains status on port 3493, which the DCS power watch reads to alert you and stop the stacks cleanly before the battery runs out.",
+  "category": "monitoring",
+  "target_stack": "monitoring-management",
+  "icon": "🔋",
+  "tags": ["ups", "power", "battery", "nut", "monitoring"],
+  "variables": [
+    { "name": "UPS_NAME", "label": "UPS Name", "description": "Name clients use (also UPS_NAME in the DCS power settings)", "default": "ups", "required": false },
+    { "name": "UPS_DESC", "label": "Description", "description": "Free text shown to clients", "default": "My UPS", "required": false },
+    { "name": "UPS_DRIVER", "label": "Driver", "description": "NUT driver: usbhid-ups covers most USB units (APC, CyberPower, Eaton); see networkupstools.org for others", "default": "usbhid-ups", "required": false },
+    { "name": "UPS_PORT", "label": "Port / Device", "description": "auto for USB, or a serial device path", "default": "auto", "required": false },
+    { "name": "NUT_API_USER", "label": "API User", "description": "User for upsmon clients", "default": "upsmon", "required": false },
+    { "name": "NUT_API_PASSWORD", "label": "API Password", "description": "Password for the API user", "default": "changeme", "required": true },
+    { "name": "PORT_NUT", "label": "Host Port", "description": "Port to publish the NUT server on", "default": "3493", "required": false }
+  ]
+}
