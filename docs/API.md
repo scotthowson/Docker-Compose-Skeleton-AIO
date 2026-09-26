@@ -215,7 +215,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | GET | `/routes/health` | user | Probe every custom route through Traefik (no changes made) |
 | GET | `/traefik/status` | user | Check if Traefik is deployed and return domain |
 | GET | `/routes` | user | Traefik routes: subdomain, service, stack and target |
-| GET | `/routes/certificates` | user | TLS state of the reverse proxy: ACME challenge, account email, the certificates Traefik holds and its recent ACME errors, with hints |
+| GET | `/routes/certificates` | user | Reverse-proxy health: domain, ACME challenge and account, certificates held, a live probe of every route through Traefik, the last Traefik errors, and hints |
 | GET | `/routes/check` | user | Check if a subdomain is available |
 | GET | `/dns/status` | user | Cloudflare integration: where the token comes from, whether it is valid, the zone |
 | GET | `/dns/zones` | admin | Zones the Cloudflare token can manage |

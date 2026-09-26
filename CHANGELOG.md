@@ -3,6 +3,16 @@
 All notable changes to Docker Compose Skeleton AIO are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [3.1.6] - 2026-09-26
+
+### Changed
+
+- `GET /routes/certificates` grew into the proxy health view: the domain routes are built on,
+  a live probe of every route through Traefik (passing, dead with their HTTP code, backends
+  down), the last Traefik errors and warnings from its log, and hints that name the usual
+  cause of a 404 from Traefik (a route referencing a middleware or service that does not
+  exist, another domain, an unread routes directory) or of an `example.com` domain.
+
 ## [3.1.5] - 2026-09-26
 
 ### Fixed
