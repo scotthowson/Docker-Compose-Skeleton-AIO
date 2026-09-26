@@ -229,14 +229,25 @@ Two channels, both optional, set in `.env` (the setup wizard and the Server Conf
 | Key | Meaning |
 |-----|---------|
 | `NTFY_URL`, `NTFY_TOPIC`, `NTFY_TOKEN` | push notifications through an ntfy server |
-| `DISCORD_WEBHOOK_URL` | a Discord channel webhook (or a `${SECRETS_name}` reference); every rule, automation and test also posts a rich embed there: colour and emoji per event, the event's facts as fields, the host and version in the footer, and a title that links to the dashboard |
+| `DISCORD_WEBHOOK_URL` | a Discord channel webhook (or a `${SECRETS_name}` reference); every rule, automation, UPS event, self-update and test posts an embed there: your server as the author line, an emoji and colour per event, the facts as fields, the host and version in the footer, a title that links to the dashboard |
+| `DISCORD_WEBHOOK_NAME`, `DISCORD_WEBHOOK_AVATAR` | the name and picture those posts appear with (default `DCS Manager` and the DCS icon) |
+| `NOTIFY_COOLDOWN_MINUTES` | how long a container rule waits before repeating the same event for the same container while the problem lasts (default 60; disk rules wait 6 h, image rules a day, deploys and backups always post); a rule can set its own |
 | `DASHBOARD_PUBLIC_URL` | where those links point (defaults to `https://ui.<PROXY_DOMAIN>`) |
 
+Rules fire for unhealthy, stopped, busy or memory-hungry containers, low disk space, stacks that
+stop or fail, deploys, image updates and ageing images, backups, automations and every change of
+the server's overall health. Generic webhooks on the Notifications page get the same embed when
+they point at Discord, text when they point at Slack, and a JSON envelope elsewhere.
+
 Commands from Discord are a separate integration: deploy the **DCS Discord Bot** template
-(`ghcr.io/scotthowson/dcs-discord-bot`), which signs in to the API with its own user and answers
-`/status`, `/usage`, `/health`, `/containers`, `/stacks`, `/updates`, `/container <name> <action>`
-and `/stack <name> <action>`. Anything that changes the server is limited to the Discord user IDs
-you list in `DISCORD_ADMIN_IDS`.
+(`ghcr.io/scotthowson/dcs-discord-bot`), which signs in to the API with its own **bot account**
+(day-to-day operations only, no access to accounts, secrets, files or DCS itself) and answers
+`/status`, `/usage`, `/health`, `/containers`, `/stacks`, `/top`, `/disk`, `/updates`, `/logs`,
+`/routes`, `/power`, `/security`, `/schedules`, `/audit`, `/dcs`, and for the Discord users and
+roles you name `/start`, `/stop`, `/restart`, `/update`, `/deploy`, `/backup`, `/prune`, `/run`,
+`/unban` — with buttons, confirmations, and a channel lock. **Every step, ID and permission is in
+[docs/DISCORD.md](docs/DISCORD.md)**, together with Rich Presence for the desktop app and the
+brand kit for avatars and banners.
 
 ### Services that start on demand (Sablier)
 
@@ -252,8 +263,29 @@ after 30 minutes idle. Health, Uptime and the container list show such container
 The setup wizard offers CrowdSec next to Traefik; it can also be deployed later from Templates.
 CrowdSec reads Traefik's JSON access log with the community collections, DCS registers a Traefik
 bouncer so banned addresses are refused at the proxy (no root needed), and every decision is
-posted to your Discord webhook as an embed. The host firewall bouncer (nftables, root) is a
-separate install described in the CrowdSec docs; DCS never touches host packages.
+posted to your Discord webhook as an embed: what was blocked in plain words, the address with its
+flag and network, hits, duration, scenario, and links to CrowdSec CTI and AbuseIPDB
+(`POST /crowdsec/notifications {test: true}` re-applies the template to a running CrowdSec and
+posts a sample). The host firewall bouncer (nftables, root) is a separate install described in the
+CrowdSec docs; DCS never touches host packages.
+
+### Nuke & reinstall a container
+
+When an app has wedged itself (a lost admin password, a corrupt database, a config you cannot
+untangle), the container's page offers **Nuke & reinstall**: the container is removed, the
+App-Data folders it owns are moved to `App-Data/.trash` (kept `RESET_TRASH_KEEP_DAYS`, default 7,
+so a mistake can be undone by hand), its own named volumes go when you tick them, and the service
+is created again from the compose file — a first install, with every setting coming from the
+compose file and `.env` like the first time. Folders another container also mounts are never
+touched; the preview lists everything with sizes before you type the container's name to confirm.
+
+### Accounts and roles
+
+Three roles: **admin** (everything), **user** (read-only viewer), and **bot** — for chat bots and
+scripts: day-to-day operations (start, stop, restart, update, deploy, back up, prune, run
+schedules, unban) with no access to accounts, secrets, files, `.env`, the host or DCS itself, and
+several sessions at once even in single-session mode. Create accounts on the Users page or with
+`POST /auth/users`, change roles there or with `POST /auth/users/{username}/role`.
 
 ### Updating
 

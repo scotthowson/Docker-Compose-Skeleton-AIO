@@ -4,7 +4,7 @@ Generated from the router in `.scripts/api-server.sh` by `.scripts/api-docs.sh` 
 Run `.scripts/api-docs.sh` after adding or changing a route; CI fails when this file is stale.
 
 The API listens on `API_BIND:API_PORT` (default `0.0.0.0:9876`) and answers JSON.
-Every endpoint below is `249` in total.
+Every endpoint below is `253` in total.
 
 ## Access levels
 
@@ -96,6 +96,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | POST | `/auth/totp/disable` | user | Disable 2FA (requires password confirmation) |
 | POST | `/auth/invite` | admin | Generate an invite code (admin only) |
 | POST | `/auth/users` | admin | Create a user account directly {username, password, role} (admin; for bots and family) |
+| POST | `/auth/users/*/role` | admin | Change an account's role {role: admin\|user\|bot} (admin; the last admin cannot be demoted; the account's sessions are signed out) |
 | POST | `/auth/revoke` | admin | Revoke a user's access (admin only) |
 | POST | `/auth/logout-all` | admin | Invalidate all sessions for a user (admin only) |
 | POST | `/auth/factory-reset` | admin | Wipe auth state and return server to first-run mode |
@@ -153,12 +154,14 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | GET | `/containers/{container}/stats` | user | Live CPU, memory, network and block I/O of a container |
 | GET | `/containers/{container}/logs` | user | Recent log lines of a container |
 | GET | `/containers/{container}/processes` | user | Process list inside a container |
+| GET | `/containers/{container}/reset` | admin | Preview a nuke & reinstall: stack, service, image, App-Data folders that would be emptied (with sizes), named volumes, and folders kept because another container shares them |
 | GET | `/containers/{container}` | user | Container detail |
 | POST | `/containers/{container}/start` | admin | Start, stop, restart, recreate (Compose-managed only) or remove a container |
 | POST | `/containers/{container}/stop` | admin | Start, stop, restart, recreate (Compose-managed only) or remove a container |
 | POST | `/containers/{container}/restart` | admin | Start, stop, restart, recreate (Compose-managed only) or remove a container |
 | POST | `/containers/{container}/recreate` | admin | Start, stop, restart, recreate (Compose-managed only) or remove a container |
 | POST | `/containers/{container}/remove` | admin | Start, stop, restart, recreate (Compose-managed only) or remove a container |
+| POST | `/containers/{container}/reset` | admin | Nuke & reinstall {confirm: "<container>", wipe_app_data: true, wipe_volumes: false, pull: true}: remove the container, move its App-Data folders to App-Data/.trash, drop its own named volumes when asked, pull and create it again from the compose file |
 | POST | `/containers/{container}/exec` | admin | Run a command inside a container (30 s limit) |
 | POST | `/containers/{container}/sablier` | admin | Start this container on demand through Sablier (enabled: true) or serve it normally again; writes or removes the Traefik middleware on its route |
 | POST | `/containers/{container}/env` | admin | Change a Compose-managed container's environment in its stack {set{}, unset[], recreate} |
@@ -390,6 +393,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | POST | `/recovery/upload` | admin | Store a bundle sent by the browser {filename, content_b64} |
 | POST | `/crowdsec/trust` | admin | Add an address to the whitelist (body {ip}; defaults to the home public address and the caller) |
 | POST | `/crowdsec/unban-me` | user | Unban the caller: its client address and the home public address |
+| POST | `/crowdsec/notifications` | admin | Send CrowdSec's alerts to Discord {webhook?, test?}: renders the template with the webhook (default: the server's), restarts CrowdSec, and optionally posts a test alert |
 | DELETE | `/crowdsec/decisions/*` | admin | Remove every decision for an address (unban) |
 | DELETE | `/crowdsec/trust/*` | admin | Remove an address from the whitelist |
 

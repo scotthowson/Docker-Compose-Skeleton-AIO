@@ -1,5 +1,9 @@
-# Discord webhook notification: one embed per alert, coloured by scenario family.
-# DCS fills url and the footer's domain when the template is deployed.
+# CrowdSec → Discord: one embed per alert, in the DCS style. Every ban says what
+# was blocked in plain words (the scenario family), where it came from (address,
+# flag, network), how hard it hit and for how long it is banned, and links the
+# address to the CrowdSec threat-intelligence page.
+# DCS fills the webhook and the footer's domain when the template is deployed
+# (POST /crowdsec/notifications re-applies it to a running CrowdSec).
 type: http
 name: http_default
 log_level: info
@@ -8,34 +12,63 @@ group_threshold: 10
 max_retry: 3
 timeout: 10s
 format: |
+  {{- /* Colours follow the dashboard: rose for break-ins, violet for exploits,
+         amber for injection and scanning, cyan for community signals */ -}}
   {
     "username": "CrowdSec",
+    "avatar_url": "https://raw.githubusercontent.com/scotthowson/Docker-Compose-Skeleton-UI/v2.0.0/brand/discord/crowdsec-avatar.png",
+    "allowed_mentions": {"parse": []},
     "embeds": [
-      {{range $i, $alert := . -}}
-      {{if $i}},{{end}}
+      {{- range $i, $alert := . }}
+      {{- $s := $alert.Scenario }}
+      {{- $label := "Attack blocked" }}{{ $color := 15942494 }}
+      {{- if hasPrefix "crowdsecurity/ssh" $s }}{{ $label = "SSH brute force" }}{{ $color = 15942494 }}
+      {{- else if hasPrefix "crowdsecurity/http-cve" $s }}{{ $label = "Exploit attempt" }}{{ $color = 10979578 }}
+      {{- else if hasPrefix "crowdsecurity/CVE" $s }}{{ $label = "Exploit attempt" }}{{ $color = 10979578 }}
+      {{- else if hasPrefix "crowdsecurity/http-sqli" $s }}{{ $label = "SQL injection probe" }}{{ $color = 16098851 }}
+      {{- else if hasPrefix "crowdsecurity/http-xss" $s }}{{ $label = "Cross-site scripting probe" }}{{ $color = 16098851 }}
+      {{- else if hasPrefix "crowdsecurity/http-path-traversal" $s }}{{ $label = "Path traversal probe" }}{{ $color = 16098851 }}
+      {{- else if hasPrefix "crowdsecurity/http-backdoors" $s }}{{ $label = "Backdoor probe" }}{{ $color = 10979578 }}
+      {{- else if hasPrefix "crowdsecurity/http-admin-interface" $s }}{{ $label = "Admin panel probe" }}{{ $color = 16098851 }}
+      {{- else if hasPrefix "crowdsecurity/http-bad-user-agent" $s }}{{ $label = "Known bad scanner" }}{{ $color = 16098851 }}
+      {{- else if hasPrefix "crowdsecurity/http-probing" $s }}{{ $label = "Web probing" }}{{ $color = 16098851 }}
+      {{- else if hasPrefix "crowdsecurity/http-sensitive-files" $s }}{{ $label = "Sensitive file probe" }}{{ $color = 16098851 }}
+      {{- else if hasPrefix "crowdsecurity/http-crawl" $s }}{{ $label = "Aggressive crawler" }}{{ $color = 16098851 }}
+      {{- else if hasPrefix "crowdsecurity/http-generic-bf" $s }}{{ $label = "Web login brute force" }}{{ $color = 15942494 }}
+      {{- else if hasPrefix "crowdsecurity/http-open-proxy" $s }}{{ $label = "Open proxy probe" }}{{ $color = 16098851 }}
+      {{- else if hasPrefix "crowdsecurity/http-wordpress" $s }}{{ $label = "WordPress attack" }}{{ $color = 16098851 }}
+      {{- else if hasPrefix "crowdsecurity/http-dos" $s }}{{ $label = "HTTP flood" }}{{ $color = 15942494 }}
+      {{- else if hasPrefix "crowdsecurity/nginx-req-limit" $s }}{{ $label = "Request flood" }}{{ $color = 15942494 }}
+      {{- else if hasPrefix "LePresidente/" $s }}{{ $label = "Application brute force" }}{{ $color = 15942494 }}
+      {{- else if hasPrefix "crowdsecurity/traefik" $s }}{{ $label = "Traefik abuse" }}{{ $color = 16098851 }}
+      {{- end }}
+      {{- $ip := $alert.Source.Value }}
+      {{- $target := "" }}{{ $path := "" }}
+      {{- range $e := $alert.Events }}{{ range $m := $e.Meta }}
+        {{- if and (eq $m.Key "target_fqdn") (eq $target "") }}{{ $target = $m.Value }}{{ end }}
+        {{- if and (eq $m.Key "http_path") (eq $path "") }}{{ $path = $m.Value }}{{ end }}
+      {{- end }}{{ end }}
+      {{- $dtype := "ban" }}{{ $dur := "" }}{{ $origin := "" }}
+      {{- /* decision fields are pointers: a string function (trim) dereferences them */ -}}
+      {{- if $alert.Decisions }}{{ $d := index $alert.Decisions 0 }}{{ $dtype = ($d.Type | trim) }}{{ $dur = ($d.Duration | trim) }}{{ $origin = ($d.Origin | trim) }}{{ end }}
+      {{- if eq $dtype "captcha" }}{{ $color = 2282478 }}{{ end }}
+      {{- if $i }},{{ end }}
       {
-        "title": "{{$alert.Scenario}}",
-        "color": {{if hasPrefix "crowdsecurity/ssh" $alert.Scenario -}}13369344
-                 {{- else if hasPrefix "crowdsecurity/http-cve" $alert.Scenario -}}10181046
-                 {{- else if hasPrefix "crowdsecurity/http-sqli" $alert.Scenario -}}15105570
-                 {{- else if hasPrefix "crowdsecurity/http-xss" $alert.Scenario -}}15105570
-                 {{- else if hasPrefix "crowdsecurity/http-path-traversal" $alert.Scenario -}}15105570
-                 {{- else if hasPrefix "crowdsecurity/http-admin" $alert.Scenario -}}15844367
-                 {{- else if hasPrefix "crowdsecurity/http-bad-user-agent" $alert.Scenario -}}15844367
-                 {{- else if hasPrefix "crowdsecurity/http-probing" $alert.Scenario -}}15844367
-                 {{- else if hasPrefix "crowdsecurity/http-sensitive" $alert.Scenario -}}15844367
-                 {{- else -}}15158332{{- end}},
+        "title": "🛡️ {{ $label }}",
+        "url": "https://app.crowdsec.net/cti/{{ $ip | js }}",
+        "color": {{ $color }},
+        "description": "**{{ $ip | js }}**{{ if eq (len $alert.Source.Cn) 2 }} :flag_{{ lower $alert.Source.Cn }}: {{ $alert.Source.Cn }}{{ end }}{{ if $alert.Source.AsName }} · {{ $alert.Source.AsName | js }}{{ end }}\n{{ $alert.EventsCount }} hits → **{{ $dtype }}**{{ if $dur }} for {{ $dur }}{{ end }}{{ if $target }} · aimed at **{{ $target | js }}**{{ end }}",
         "fields": [
-          {"name": "Source",   "value": "{{$alert.Source.Value}}",                                                            "inline": true},
-          {"name": "Country",  "value": "{{if $alert.Source.Cn}}{{$alert.Source.Cn}}{{else}}-{{end}}",                        "inline": true},
-          {"name": "AS",       "value": "{{if $alert.Source.AsName}}{{$alert.Source.AsName}}{{else}}-{{end}}",                "inline": true},
-          {"name": "Events",   "value": "{{$alert.EventsCount}}",                                                             "inline": true},
-          {"name": "Action",   "value": "{{(index $alert.Decisions 0).Type}} for {{(index $alert.Decisions 0).Duration}}",    "inline": true},
-          {"name": "Scope",    "value": "{{(index $alert.Decisions 0).Scope}}",                                               "inline": true}
+          {"name": "Scenario", "value": "`{{ $s | trimPrefix "crowdsecurity/" | js }}`", "inline": true},
+          {"name": "Scope",    "value": "{{ $alert.Source.Scope | js }}{{ if $origin }} · {{ $origin | js }}{{ end }}", "inline": true},
+          {"name": "Lookup",   "value": "[CrowdSec CTI](https://app.crowdsec.net/cti/{{ $ip | js }}) · [AbuseIPDB](https://www.abuseipdb.com/check/{{ $ip | js }})", "inline": true}
+          {{- if $path }},
+          {"name": "First request", "value": "`{{ $path | js | trunc 200 }}`", "inline": false}
+          {{- end }}
         ],
-        "footer": {"text": "CrowdSec @ __DOMAIN__"}
+        "footer": {"text": "CrowdSec · __DOMAIN__{{ if $alert.MachineID }} · {{ $alert.MachineID | js }}{{ end }}"}
       }
-      {{end}}
+      {{- end }}
     ]
   }
 url: __WEBHOOK__

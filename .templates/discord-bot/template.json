@@ -1,7 +1,7 @@
 {
   "name": "discord-bot",
   "title": "DCS Discord Bot",
-  "description": "Slash commands for this server from Discord: /status, /usage, /health, /containers, /stacks, /updates, and start/stop/restart/recreate/update for a container or a stack. Separate from notifications, which use the Discord webhook in Server Config.",
+  "description": "Slash commands for this server from Discord, with buttons and confirmations: /status, /usage, /health, /containers, /stacks, /top, /disk, /updates, /logs, /audit, /schedules, /power, /security, /routes, /dcs for everyone the bot answers; /start, /stop, /restart, /update, /deploy, /backup, /prune, /unban and the container and stack actions for the admins you list. Separate from notifications, which use the Discord webhook in Server Config. Setup guide: docs/DISCORD.md",
   "category": "tools",
   "target_stack": "monitoring-management",
   "icon": "🤖",
@@ -29,13 +29,25 @@
     {
       "name": "DISCORD_ADMIN_IDS",
       "label": "Admin user IDs",
-      "description": "Comma-separated Discord user IDs allowed to start, stop, restart, recreate and update",
+      "description": "Comma-separated Discord user IDs allowed to start, stop, restart, update, deploy, prune, back up and unban (Developer Mode → right-click a user → Copy User ID)",
+      "required": false
+    },
+    {
+      "name": "DISCORD_ADMIN_ROLE_IDS",
+      "label": "Admin role IDs",
+      "description": "Comma-separated Discord role IDs whose members get the same control commands (right-click a role → Copy Role ID)",
+      "required": false
+    },
+    {
+      "name": "DISCORD_CHANNEL_IDS",
+      "label": "Allowed channels",
+      "description": "Comma-separated channel IDs the bot answers in; leave empty to answer wherever it is invited",
       "required": false
     },
     {
       "name": "DCS_BOT_USERNAME",
       "label": "DCS user for the bot",
-      "description": "The DCS account the bot signs in as — created for you (admin) if it does not exist yet. Never your own login: single-session would sign you out",
+      "description": "The DCS account the bot signs in as — created for you as a bot account (day-to-day operations, no access to accounts, secrets, files or DCS itself) if it does not exist yet. Never your own login.",
       "default": "discord-bot",
       "required": true
     },

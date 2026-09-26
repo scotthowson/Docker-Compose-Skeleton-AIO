@@ -3,6 +3,59 @@
 All notable changes to Docker Compose Skeleton AIO are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [3.5.0] - 2026-09-27
+
+Discord, finished: every message DCS posts now reads like the dashboard, the bot grew up, and the
+whole setup is written down in `docs/DISCORD.md`.
+
+### Added
+
+- **Notification embeds rebuilt**: the server as author line, an emoji and colour per event
+  (emerald / amber / rose / cyan / violet, the dashboard's palette), the event's facts as fields
+  with identifiers in bold, a footer with event, host and version, and the title linking to the
+  dashboard; the posts carry the DCS avatar and can never ping anyone. `DISCORD_WEBHOOK_NAME` and
+  `DISCORD_WEBHOOK_AVATAR` change the identity; ptb/canary webhook hosts are accepted.
+- **Events that were advertised now fire**: `deploy_complete`, `health_change` (once per change of
+  the overall verdict), `backup_complete` / `backup_failed`, `disk_warning` (per mounted filesystem),
+  `container_high_cpu` / `container_high_memory` (only when a rule asks), `update_available` (once
+  per set of images), `image_stale`. Stack starts, stops, restarts and updates are audited
+  (`stack_start`, `stack_stop`, `stack_restart`, `stack_update`), so the Integrations webhooks
+  finally receive them. Container events carry their stack.
+- **Cooldowns**: a rule repeats the same event for the same target at most once per cooldown while
+  the condition lasts (`NOTIFY_COOLDOWN_MINUTES`, default 60 for container rules; 6 h for disk,
+  a day for images; deploys, backups and health changes always post); `cooldown_minutes` per rule;
+  a recovered container may alert again right away. Default wording per event when a rule's
+  templates are empty.
+- **Generic webhooks speak Discord and Slack**: an Integrations hook pointed at a Discord webhook
+  gets the same embed, a Slack incoming webhook gets text, anything else a JSON envelope with a
+  human title.
+- **CrowdSec alerts redesigned**: what was blocked in plain words, address with flag and network,
+  hits, decision and duration, scenario, CTI and AbuseIPDB links, the first request; the DCS
+  shield avatar. Deploying restarts CrowdSec so the plugin reads it, and
+  `POST /crowdsec/notifications {webhook?, test?}` re-applies it to a running CrowdSec and can
+  post a test alert.
+- **Bot accounts** (`role: bot`): day-to-day operations only — read what a user can plus the audit
+  log, backups and update checks; start, stop, restart, update and recreate stacks and
+  containers, deploy, back up, prune, run schedules, unban. No accounts, secrets, files, host,
+  network or DCS changes. Several sessions at once even in single-session mode. The Discord bot
+  template creates its account with this role. `POST /auth/users/{username}/role` changes a role
+  (the last admin stays; the account's sessions are signed out).
+- **Nuke & reinstall** a container: `GET /containers/{name}/reset` previews what goes (App-Data
+  folders with sizes, named volumes, folders kept because another container shares them);
+  `POST /containers/{name}/reset {confirm, wipe_app_data, wipe_volumes, pull}` removes the
+  container, moves its folders to `App-Data/.trash` (kept `RESET_TRASH_KEEP_DAYS`, default 7),
+  drops its own volumes when asked, pulls and creates it again from the compose file. Backups skip
+  the trash.
+- `docs/DISCORD.md`: webhook, rules and cooldowns, CrowdSec alerts, the bot (application, invite
+  URL, IDs, account, template, commands, channel lock, troubleshooting), Rich Presence, the brand
+  kit, generic webhooks, a reference of every event's look.
+- Discord bot template: `DISCORD_ADMIN_ROLE_IDS` and `DISCORD_CHANNEL_IDS`.
+
+### Fixed
+
+- Discord embeds never showed their fields (the payload used a key Discord ignores).
+- A rule for a stopped or unhealthy container posted on every health poll.
+
 ## [3.4.2] - 2026-09-26
 
 ### Added
