@@ -4,7 +4,7 @@ Generated from the router in `.scripts/api-server.sh` by `.scripts/api-docs.sh` 
 Run `.scripts/api-docs.sh` after adding or changing a route; CI fails when this file is stale.
 
 The API listens on `API_BIND:API_PORT` (default `0.0.0.0:9876`) and answers JSON.
-Every endpoint below is `247` in total.
+Every endpoint below is `248` in total.
 
 ## Access levels
 
@@ -223,6 +223,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | GET | `/dns/zones` | admin | Zones the Cloudflare token can manage |
 | GET | `/dns/records` | admin | DNS records of the zone (all types) with their DCS route links |
 | GET | `/homarr/status` | user | Check if Homarr is deployed and has an API key configured |
+| POST | `/homarr/register` | admin | Put an app on the Homarr dashboard now {name, url, icon, description} |
 | POST | `/dns/records` | admin | Create a record {type, name, content, ttl, proxied, priority, comment, zone} |
 | POST | `/dns/records/sync` | admin | Create the proxied CNAME records that DCS routes are missing |
 | POST | `/routes/reconcile` | admin | Probe the routes and restart Traefik once if they are dead |

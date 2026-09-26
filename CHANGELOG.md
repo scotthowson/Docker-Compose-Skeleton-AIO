@@ -38,6 +38,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Routes generated for protected services referenced `authelia-forwardauth`, which the template
   never defined; new installs now get a working reference.
+- The `bentopdf` template pointed at port 80; the published image serves on 8080.
 - **Restart from the page works everywhere.** A listener started with `nohup` inherits SIGHUP
   ignored, which bash cannot trap, so the 3.3.0 in-place restart was a silent no-op there. New
   listeners advertise `reexec-usr1` and restart on SIGUSR1; a 3.3.0 listener under systemd still
@@ -72,6 +73,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `restart: true` to do it right after the switch, and the Updates page waits for the API to
   come back.
 - BentoPDF template (`bentopdf`): the browser-side PDF toolkit — one nginx image, no data.
+- **Add to Homarr places a tile.** Registration uses Homarr 1.x's REST API when the secret
+  `HOMARR_API_KEY` is stored: the app is created (or reused when its URL exists) and a tile is put
+  on the home board; without a key the app only lands in the library, as before.
+  `POST /homarr/register {name, url, icon, description}` does the same for anything else.
 
 ### Fixed
 
