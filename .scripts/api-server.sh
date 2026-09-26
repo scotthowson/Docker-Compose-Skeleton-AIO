@@ -8383,22 +8383,57 @@ _upd_json_commits() {
     printf '%s]' "$out"
 }
 
-# How the running listener can be restarted without root. Prints "METHOD PID":
-# reexec  — SIGHUP makes it re-execute itself (listeners started by 3.3.0+)
-# systemd — an older listener under a unit that restarts on failure: it is
-#           killed and systemd brings it back with the new code
-# manual  — nothing DCS can do by itself
+# How the running listener can be restarted without root. Prints "METHOD PID [SIGNAL]":
+# reexec   — the listener re-executes itself on a signal: SIGUSR1 (3.4.0+) or
+#            SIGHUP (3.3.0, only when it was not started under nohup)
+# systemd  — an older listener under a unit that restarts on failure: it is
+#            killed and systemd brings it back with the new code
+# relaunch — an older listener outside systemd: stopped, then started again
+#            with the same arguments by a detached helper
+# manual   — nothing DCS can do by itself
 _api_restart_method() {
-    local pid="" pol=""
+    local pid="" pol="" in_unit=false
     [[ -f "$API_PID_FILE" ]] && pid=$(cat "$API_PID_FILE" 2>/dev/null || true)
     if [[ -z "$pid" ]] || ! kill -0 "$pid" 2>/dev/null; then echo "manual 0"; return; fi
+    grep -q 'dcs-api\.service' "/proc/$pid/cgroup" 2>/dev/null && in_unit=true
     if [[ -f "$API_CAPS_FILE" ]] && grep -qx reexec-usr1 "$API_CAPS_FILE" 2>/dev/null; then echo "reexec $pid USR1"; return; fi
-    if [[ -f "$API_CAPS_FILE" ]] && grep -qx reexec "$API_CAPS_FILE" 2>/dev/null; then echo "reexec $pid HUP"; return; fi
-    if grep -q 'dcs-api\.service' "/proc/$pid/cgroup" 2>/dev/null; then
+    if [[ "$in_unit" == "true" ]]; then
+        if [[ -f "$API_CAPS_FILE" ]] && grep -qx reexec "$API_CAPS_FILE" 2>/dev/null; then echo "reexec $pid HUP"; return; fi
         pol=$(systemctl show -p Restart --value dcs-api 2>/dev/null || true)
         case "$pol" in on-failure|always|on-abnormal|on-abort) echo "systemd $pid"; return ;; esac
+        echo "manual $pid"
+        return
+    fi
+    # Outside systemd a 3.3.0 listener ignores SIGHUP when nohup started it: relaunch
+    if [[ -r "/proc/$pid/cmdline" ]] && tr '\0' ' ' < "/proc/$pid/cmdline" | grep -q -- 'api-server.sh'; then
+        echo "relaunch $pid"
+        return
     fi
     echo "manual $pid"
+}
+
+# Stop an older listener and start it again with the arguments it had, from a
+# helper that outlives this request (new session, not a request handler, so
+# the old listener's shutdown does not take it down).
+_api_relaunch_listener() {
+    local pid="$1" self a seen=false
+    local -a argv=() rest=()
+    self="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+    mapfile -d '' -t argv < "/proc/$pid/cmdline" 2>/dev/null || return 1
+    for a in "${argv[@]}"; do
+        if [[ "$seen" == "true" ]]; then rest+=("$a"); elif [[ "$a" == *api-server.sh ]]; then seen=true; fi
+    done
+    mkdir -p "$(dirname "$API_LOG_FILE")" 2>/dev/null
+    setsid nohup bash -c '
+        pid="$1"; self="$2"; shift 2
+        sleep 1
+        kill -TERM "$pid" 2>/dev/null
+        for _ in $(seq 1 100); do kill -0 "$pid" 2>/dev/null || break; sleep 0.1; done
+        sleep 0.5
+        exec "$self" "$@"
+    ' _ "$pid" "$self" ${rest[@]+"${rest[@]}"} >> "$API_LOG_FILE" 2>&1 < /dev/null &
+    disown
+    return 0
 }
 
 # Restart the listener once this response is on its way. Sets
@@ -8417,6 +8452,14 @@ _api_restart_schedule() {
             disown
             UPD_RESTART_ETA=15
             UPD_RESTART_HINT="An older listener is running: systemd brings the service back in about 10 seconds" ;;
+        relaunch)
+            if _api_relaunch_listener "$pid"; then
+                UPD_RESTART_ETA=8
+                UPD_RESTART_HINT="An older listener is running: it is stopped and started again with the same arguments"
+            else
+                UPD_RESTART_METHOD="manual"
+                UPD_RESTART_HINT="Restart the API by hand: $BASE_DIR/.scripts/api-server.sh --stop followed by ./start.sh"
+            fi ;;
         *)
             UPD_RESTART_HINT="Restart the API by hand: sudo systemctl restart dcs-api, or $BASE_DIR/.scripts/api-server.sh --stop followed by ./start.sh" ;;
     esac
