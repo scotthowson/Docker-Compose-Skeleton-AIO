@@ -1,7 +1,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/bash-4.0+-4EAA25?style=flat-square&logo=gnubash&logoColor=white" alt="Bash 4+" />
   <img src="https://img.shields.io/badge/docker-compose_v2-2496ED?style=flat-square&logo=docker&logoColor=white" alt="Docker Compose v2" />
-  <img src="https://img.shields.io/badge/templates-103-34d399?style=flat-square" alt="103 templates" />
+  <img src="https://img.shields.io/badge/templates-105-34d399?style=flat-square" alt="105 templates" />
   <img src="https://img.shields.io/badge/API_endpoints-210-06b6d4?style=flat-square" alt="210 API endpoints" />
   <a href="https://github.com/scotthowson/Docker-Compose-Skeleton-AIO/actions/workflows/ci.yml"><img src="https://github.com/scotthowson/Docker-Compose-Skeleton-AIO/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
   <img src="https://img.shields.io/badge/license-MIT-f472b6?style=flat-square" alt="MIT" />
@@ -41,7 +41,7 @@ Browser ──► DCS-UI (container, :3000) ──/api/──► api-server.sh (
   `core-infrastructure → networking-security → monitoring-management → development-tools →
   media-services → web-applications → storage-backup → communication-collaboration →
   entertainment-personal → miscellaneous-services`.
-- **103 templates** — deploy Jellyfin, Nextcloud, Grafana, Vaultwarden, Immich and 98 more into any
+- **105 templates** — deploy Jellyfin, Nextcloud, Grafana, Vaultwarden, Immich and 100 more into any
   stack. Each deployment is security-scanned, port-checked, merged into the stack's compose file,
   given a Traefik route and a Cloudflare CNAME, connected to the proxy network and started.
   Undeploy reverses every step.
@@ -108,7 +108,7 @@ install missing ones through `apt`, `dnf`, `yum`, `pacman`, `zypper` or `xbps`.
 ## Templates
 
 <details>
-<summary><strong>All 103 templates by category</strong></summary>
+<summary><strong>All 105 templates by category</strong></summary>
 
 | Category | Templates |
 |----------|-----------|
@@ -124,7 +124,7 @@ install missing ones through `apt`, `dnf`, `yum`, `pacman`, `zypper` or `xbps`.
 | **Communication & publishing** | ntfy, Gotify, FreshRSS, SearXNG, PrivateBin, Flarum, Ghost |
 | **Entertainment & gaming** | EmulatorJS, MonkeyType, Your Spotify, Pelican Panel + Wings, RustDesk Server |
 | **AI** | Ollama, Open WebUI + Ollama |
-| **Tools** | Excalidraw, IT-Tools, Stirling-PDF, Sablier |
+| **Tools** | BentoPDF, Excalidraw, IT-Tools, Stirling-PDF, Sablier |
 
 </details>
 
@@ -254,6 +254,16 @@ CrowdSec reads Traefik's JSON access log with the community collections, DCS reg
 bouncer so banned addresses are refused at the proxy (no root needed), and every decision is
 posted to your Discord webhook as an embed. The host firewall bouncer (nftables, root) is a
 separate install described in the CrowdSec docs; DCS never touches host packages.
+
+### Updating
+
+The Updates page checks the release channel set by `UPDATE_CHANNEL` in `.env` (`stable`, the
+newest tagged release, is the default; `main` follows every commit), shows the release notes and
+applies the update with one click. Files you edited under `Stacks/`, `.templates/`, `.api-auth/`
+and `.plugins/` are kept exactly as they are. A framework file you patched by hand is replaced
+only when you tick the box, and the old copy lands in `.data/update-backups/`. The API restarts
+itself afterwards (no root needed) and a backup tag lets you roll back. By hand,
+`git pull --ff-only` in the install directory does the same without the safety net.
 
 ### Running inside a VM (Proxmox, KVM, QEMU)
 

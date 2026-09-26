@@ -372,6 +372,97 @@ check "plugin not added twice"             0 "$(_lib _traefik_ensure_plugin sabl
 check "plugin yaml still parses"           ok "$(python3 -c "import sys,yaml; d=yaml.safe_load(open(sys.argv[1])); print('ok' if 'sablier' in d['experimental']['plugins'] else 'bad')" "$_TAD/Traefik/traefik.yml" 2>/dev/null || echo ok)"
 sed -i 's/^DOCKER_STACKS=.*/DOCKER_STACKS="demo"/' "$WORK/.env"
 
+echo "Self-update: release channels, user files kept, rollback, restart method"
+UPD_ORIGIN="$WORK/upd-origin.git"; UPD_SRC="$WORK/upd-src"; UPD="$WORK/upd"
+git init -q --bare "$UPD_ORIGIN" && git -C "$UPD_ORIGIN" symbolic-ref HEAD refs/heads/main
+_gs() { git -C "$UPD_SRC" -c user.name=smoke -c user.email=smoke@example.com "$@"; }
+_gu() { git -C "$UPD" -c user.name=smoke -c user.email=smoke@example.com "$@"; }
+git init -q -b main "$UPD_SRC"
+mkdir -p "$UPD_SRC/.scripts" "$UPD_SRC/Stacks/demo" "$UPD_SRC/.plugins/x"
+printf '1.0.0\n' > "$UPD_SRC/VERSION"
+printf '# Changelog\n\n## [1.0.0] - 2026-01-01\n\n- First\n' > "$UPD_SRC/CHANGELOG.md"
+printf 'echo one\n' > "$UPD_SRC/.scripts/tool.sh"
+printf 'services:\n  demo:\n    image: alpine:3\n' > "$UPD_SRC/Stacks/demo/docker-compose.yml"
+printf '{"name":"x"}\n' > "$UPD_SRC/.plugins/x/plugin.json"
+printf 'KEY_A=1\n' > "$UPD_SRC/.env.example"
+_gs add -A >/dev/null && _gs commit -q -m 'release 1.0.0' && _gs tag v1.0.0 && _gs remote add origin "$UPD_ORIGIN" && _gs push -q origin main --tags
+git clone -q "$UPD_ORIGIN" "$UPD"
+mkdir -p "$UPD/.scripts" "$UPD/.lib" "$UPD/.config" "$UPD/.data" "$UPD/logs" "$UPD/.api-auth"
+cp "$API" "$UPD/.scripts/" && cp -r "$ROOT/.lib/." "$UPD/.lib/" && cp -r "$ROOT/.config/." "$UPD/.config/"
+cp "$WORK/.env" "$UPD/.env" && printf 'KEY_A=1\n' >> "$UPD/.env" && cp -r "$WORK/.api-auth/." "$UPD/.api-auth/"
+UPD_API="$UPD/.scripts/api-server.sh"
+# upstream: a tagged 1.1.0 (framework file, template compose, new setting) and an untagged commit after it
+printf '1.1.0\n' > "$UPD_SRC/VERSION"
+printf '# Changelog\n\n## [1.1.0] - 2026-02-01\n\n- New thing\n\n## [1.0.0] - 2026-01-01\n\n- First\n' > "$UPD_SRC/CHANGELOG.md"
+printf 'echo two\n' > "$UPD_SRC/.scripts/tool.sh"
+printf 'services:\n  demo:\n    image: alpine:3.20\n' > "$UPD_SRC/Stacks/demo/docker-compose.yml"
+printf 'KEY_A=1\nKEY_B=2\n' > "$UPD_SRC/.env.example"
+printf '{"name":"x","v":2}\n' > "$UPD_SRC/.plugins/x/plugin.json"
+_gs add -A >/dev/null && _gs commit -q -m 'release 1.1.0' && _gs tag v1.1.0
+printf 'wip\n' > "$UPD_SRC/README.md" && _gs add -A >/dev/null && _gs commit -q -m 'wip after release' && _gs push -q origin main --tags
+# the install: a user-edited stack file, a deleted plugin file, an edited framework file
+printf 'services:\n  demo:\n    image: alpine:3\n    # mine\n' > "$UPD/Stacks/demo/docker-compose.yml"
+rm -f "$UPD/.plugins/x/plugin.json"
+printf 'echo local\n' > "$UPD/.scripts/tool.sh"
+# requests go through the install's own API copy (admin token, real router)
+_upd() { local m="$1" p="$2" b="${3:-}"; printf '%s %s HTTP/1.1\r\nAuthorization: Bearer %s\r\nContent-Length: %d\r\n\r\n%s' "$m" "$p" "$TOKEN" "${#b}" "$b" | env DOCKER_COMPOSE_CMD="${DOCKER_COMPOSE_CMD:-docker compose}" "${AUTH[@]}" "$UPD_API" --handle-request 2>/dev/null; }
+_upd_channel() { sed -i '/^UPDATE_CHANNEL=/d' "$UPD/.env"; printf 'UPDATE_CHANNEL=%s\n' "$1" >> "$UPD/.env"; }
+CHK=$(_upd GET /system/update/check | body_of)
+check "check: release available"        true "$(printf '%s' "$CHK" | jq -r '.available')"
+check "check: state behind"             behind "$(printf '%s' "$CHK" | jq -r '.state')"
+check "check: newest tag chosen"        v1.1.0 "$(printf '%s' "$CHK" | jq -r '.latest_name')"
+check "check: target version"           1.1.0 "$(printf '%s' "$CHK" | jq -r '.latest_version')"
+check "check: only the release counts"  1 "$(printf '%s' "$CHK" | jq -r '.commits_behind')"
+check "check: release notes"            yes "$(printf '%s' "$CHK" | jq -r '.release_notes' | grep -q 'New thing' && echo yes || echo no)"
+check "check: notes stop at current"    no "$(printf '%s' "$CHK" | jq -r '.release_notes' | grep -q 'First' && echo yes || echo no)"
+check "check: user edits will be kept"  '.plugins/x/plugin.json Stacks/demo/docker-compose.yml' "$(printf '%s' "$CHK" | jq -r '.local_changes.kept | join(" ")')"
+check "check: framework edit conflicts" '.scripts/tool.sh' "$(printf '%s' "$CHK" | jq -r '.local_changes.conflicts | join(" ")')"
+check "check: deleted plugin listed"    yes "$(printf '%s' "$CHK" | jq -r '.local_changes.user[]' | grep -q 'plugins/x/plugin.json' && echo yes || echo no)"
+check "check: restart method (no pid)"  manual "$(printf '%s' "$CHK" | jq -r '.restart_method')"
+check "apply: needs confirm"            400 "$(_upd POST /system/update/apply '{}' | status_of)"
+check "apply: refuses framework edits"  409 "$(_upd POST /system/update/apply '{"confirm":true}' | status_of)"
+check "apply: nothing moved on refusal" 1.0.0 "$(tr -d '[:space:]' < "$UPD/VERSION")"
+APPLY=$(_upd POST /system/update/apply '{"confirm":true,"replace_local":true}')
+check "apply: succeeds with replace"    200 "$(printf '%s' "$APPLY" | status_of)"
+check "apply: new version"              1.1.0 "$(printf '%s' "$APPLY" | body_of | jq -r '.new_version')"
+check "apply: VERSION on disk"          1.1.0 "$(tr -d '[:space:]' < "$UPD/VERSION")"
+check "apply: HEAD is the tag"          "$(git -C "$UPD_SRC" rev-parse v1.1.0)" "$(git -C "$UPD" rev-parse HEAD)"
+check "apply: user compose kept"        yes "$(grep -q '# mine' "$UPD/Stacks/demo/docker-compose.yml" && echo yes || echo no)"
+check "apply: deleted plugin stays gone" no "$([[ -e "$UPD/.plugins/x/plugin.json" ]] && echo yes || echo no)"
+check "apply: framework file replaced"  'echo two' "$(cat "$UPD/.scripts/tool.sh")"
+check "apply: replaced copy kept"       'echo local' "$(cat "$(printf '%s' "$APPLY" | body_of | jq -r '.backup_dir')/.scripts/tool.sh" 2>/dev/null)"
+check "apply: kept list (deleted too)"  '.plugins/x/plugin.json Stacks/demo/docker-compose.yml' "$(printf '%s' "$APPLY" | body_of | jq -r '.kept_local | join(" ")')"
+check "apply: replaced list"            '.scripts/tool.sh' "$(printf '%s' "$APPLY" | body_of | jq -r '.replaced_local | join(" ")')"
+check "apply: new setting reported"     KEY_B "$(printf '%s' "$APPLY" | body_of | jq -r '.new_settings | join(" ")')"
+check "apply: no stash left behind"     0 "$(_gu stash list | wc -l)"
+check "apply: backup tag created"       1 "$(_gu tag -l 'dcs-backup-*' | wc -l)"
+BACKUP_TAG=$(printf '%s' "$APPLY" | body_of | jq -r '.backup_tag')
+check "check: current after update"     current "$(_upd GET /system/update/check | body_of | jq -r '.state')"
+check "apply: already up to date"       false "$(_upd POST /system/update/apply '{"confirm":true}' | body_of | jq -r '.updated')"
+_upd_channel main
+CHK_MAIN=$(_upd GET /system/update/check | body_of)
+check "main channel: sees the wip commit" true "$(printf '%s' "$CHK_MAIN" | jq -r '.available')"
+check "main channel: name"              main "$(printf '%s' "$CHK_MAIN" | jq -r '.latest_name')"
+check "main channel: applies"           true "$(_upd POST /system/update/apply '{"confirm":true}' | body_of | jq -r '.updated')"
+check "main channel: at origin/main"    "$(git -C "$UPD_SRC" rev-parse main)" "$(git -C "$UPD" rev-parse HEAD)"
+check "main channel: user compose kept" yes "$(grep -q '# mine' "$UPD/Stacks/demo/docker-compose.yml" && echo yes || echo no)"
+_upd_channel stable
+check "rollback: bad tag rejected"      400 "$(_upd POST /system/update/rollback '{"backup_tag":"v1.0.0"}' | status_of)"
+RB=$(_upd POST /system/update/rollback "{\"backup_tag\":\"$BACKUP_TAG\"}")
+check "rollback: succeeds"              200 "$(printf '%s' "$RB" | status_of)"
+check "rollback: restored version"      1.0.0 "$(printf '%s' "$RB" | body_of | jq -r '.restored_version')"
+check "rollback: user compose kept"     yes "$(grep -q '# mine' "$UPD/Stacks/demo/docker-compose.yml" && echo yes || echo no)"
+check "rollback: framework file back"   'echo one' "$(cat "$UPD/.scripts/tool.sh")"
+check "user path: Stacks"               0 "$(_lib _api_git_is_user_path Stacks/demo/.env; echo $?)"
+check "user path: scripts are not"      1 "$(_lib _api_git_is_user_path .scripts/api-server.sh; echo $?)"
+sleep 300 & _UPD_SLEEP=$!
+printf '%s\n' "$_UPD_SLEEP" > "$WORK/.data/api-server.pid"
+check "restart method: old listener"    "manual $_UPD_SLEEP" "$(_lib _api_restart_method)"
+printf 'reexec\n' > "$WORK/.data/api-server.caps"
+check "restart method: new listener"    "reexec $_UPD_SLEEP" "$(_lib _api_restart_method)"
+kill "$_UPD_SLEEP" 2>/dev/null; wait "$_UPD_SLEEP" 2>/dev/null || true
+rm -f "$WORK/.data/api-server.pid" "$WORK/.data/api-server.caps"
+
 echo "Docker-backed endpoints (skipped when Docker is unavailable)"
 if docker info >/dev/null 2>&1; then
     check "GET /status"                 200 "$(auth_request GET /status | status_of)"

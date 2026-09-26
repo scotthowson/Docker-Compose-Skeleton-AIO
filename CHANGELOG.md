@@ -3,6 +3,34 @@
 All notable changes to Docker Compose Skeleton AIO are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [3.3.0] - 2026-09-26
+
+### Added
+
+- **Self-update that needs no shell.** `GET /system/update/check` follows a release channel
+  (`UPDATE_CHANNEL=stable`, the newest `vX.Y.Z` tag, or `main`) instead of the checked-out
+  branch, so an install left on an old release branch sees every release. It reports the release
+  notes, whether GitHub answered at all (`checked`, `error`), the relation to the release
+  (`state`: current, behind, ahead, diverged) and which local edits the update would touch.
+  `POST /system/update/apply` keeps every edited file under `Stacks/`, `.templates/`,
+  `.api-auth/` and `.plugins/` byte for byte, deleted ones stay deleted, and no `git stash` is
+  involved any more. Edited framework files stop the update until `replace_local` is sent; the
+  replaced copies are kept under `.data/update-backups/`. The response lists what was kept and
+  replaced, new settings that appeared in `.env.example`, and whether the systemd unit template
+  changed. Backup tags are pruned to the last ten; rollback keeps user files the same way.
+- `POST /system/restart`: the listener restarts without root. A listener started by this version
+  re-executes itself on SIGHUP (same PID, systemd notices nothing); an older one running under a
+  unit with `Restart=on-failure` is relaunched by systemd. `apply` and `rollback` accept
+  `restart: true` to do it right after the switch, and the Updates page waits for the API to
+  come back.
+- BentoPDF template (`bentopdf`): the browser-side PDF toolkit — one nginx image, no data.
+
+### Fixed
+
+- Template preview and deploy: "Target stack not found" lists the stacks that actually have a
+  compose file instead of the stale `DOCKER_STACKS` value.
+- `GET /config` reports `update_channel`; `POST /config` accepts `UPDATE_CHANNEL`.
+
 ## [3.2.1] - 2026-09-26
 
 ### Fixed

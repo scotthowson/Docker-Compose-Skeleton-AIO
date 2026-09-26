@@ -4,7 +4,7 @@ Generated from the router in `.scripts/api-server.sh` by `.scripts/api-docs.sh` 
 Run `.scripts/api-docs.sh` after adding or changing a route; CI fails when this file is stale.
 
 The API listens on `API_BIND:API_PORT` (default `0.0.0.0:9876`) and answers JSON.
-Every endpoint below is `236` in total.
+Every endpoint below is `237` in total.
 
 ## Access levels
 
@@ -246,14 +246,15 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 
 | Method | Path | Access | Description |
 |--------|------|--------|-------------|
-| GET | `/system/update/check` | admin | Check for available DCS updates via git |
+| GET | `/system/update/check` | admin | Newer DCS release on the channel? Version, release notes, local edits and how the API can restart |
 | GET | `/system/os-update/status` | admin | Poll background OS update progress |
 | GET | `/system/crontab` | admin | User crontab entries |
 | GET | `/system/crontab/system` | admin | System-level cron entries |
 | POST | `/system/crontab` | admin | Update user crontab |
-| POST | `/system/update/apply` | admin | Apply update safely using git pull --ff-only |
+| POST | `/system/restart` | admin | Restart the API listener without root: it re-executes itself (older listeners under systemd are relaunched by the unit) |
+| POST | `/system/update/apply` | admin | Update to the channel's release {confirm, replace_local, restart}; user files are kept, a backup tag allows rollback |
 | POST | `/system/ui-update/apply` | admin | Pull latest DCS-UI image and recreate container |
-| POST | `/system/update/rollback` | admin | Rollback to a previously created backup tag |
+| POST | `/system/update/rollback` | admin | Return to a backup tag {backup_tag, restart}; user files are kept, edited framework files backed up |
 | POST | `/system/os-update/check` | admin | List available OS package updates (terminal session required) |
 | POST | `/system/os-update/apply` | admin | Apply OS package updates in the background (terminal session required) |
 

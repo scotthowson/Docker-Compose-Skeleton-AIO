@@ -1,0 +1,18 @@
+{
+  "name": "bentopdf",
+  "title": "BentoPDF",
+  "description": "Privacy-first PDF toolkit that runs entirely in the browser — merge, split, compress, convert, sign, watermark, redact and edit PDFs without uploading a single file. One small nginx image, no database, nothing to configure.",
+  "category": "tools",
+  "target_stack": "development-tools",
+  "icon": "🍱",
+  "tags": ["pdf", "documents", "tools", "privacy", "client-side", "convert", "merge"],
+  "variables": [
+    {
+      "name": "PORT_BENTOPDF",
+      "label": "Host Port",
+      "description": "Port to expose BentoPDF on",
+      "default": "8087",
+      "required": false
+    }
+  ]
+}
