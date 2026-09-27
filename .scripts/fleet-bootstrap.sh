@@ -12,7 +12,8 @@ set -u
 say() { echo "→ $*"; }
 die() { echo "✗ $*"; exit 1; }
 export DEBIAN_FRONTEND=noninteractive
-: "${DCS_HUB_URL:?}" "${DCS_JOIN_TOKEN:?}" "${DCS_STACKS:?}" "${DCS_BUNDLE_URL:?}"
+# a bake (DCS_BAKE=true) installs and seals only: it needs no hub, code or stack
+if [[ "${DCS_BAKE:-false}" != "true" ]]; then : "${DCS_HUB_URL:?}" "${DCS_JOIN_TOKEN:?}" "${DCS_STACKS:?}" "${DCS_BUNDLE_URL:?}"; fi
 DIR="$HOME/.Docker-Compose-Skeleton-AIO"
 have() { command -v "$1" >/dev/null 2>&1; }
 
@@ -34,12 +35,18 @@ if ! curl -sS -m 12 -o /dev/null https://deb.debian.org/ 2>/dev/null && ! curl -
     die "the VM cannot reach the internet: the gateway ${gw:-?} $gwok, DNS ${dns:-?} — check the bridge, the address range, the gateway and the DNS given for the VMs (the hub reaches this VM over ssh, so the bridge itself works)"
 fi
 
-say "Installing curl, git, jq, socat, openssl, python3 and the QEMU guest agent…"
-pkg_install curl git jq socat openssl python3 ca-certificates gnupg qemu-guest-agent
+# a VM cloned from a baked template has all of this already: nothing to install, nothing to wait for
+baked=false
+if have curl && have git && have jq && have socat && have openssl && have python3 && have docker && sg docker -c "docker compose version" >/dev/null 2>&1; then
+    baked=true; say "Tools, Docker and Compose are already here (a baked template) — skipping the installs"
+else
+    say "Installing curl, git, jq, socat, openssl, python3 and the QEMU guest agent…"
+    pkg_install curl git jq socat openssl python3 ca-certificates gnupg qemu-guest-agent
+fi
 for t in curl git jq socat openssl python3; do have "$t" || die "$t did not install — no internet from the VM, or the package manager is broken (check the VM's console)"; done
 sudo -n systemctl enable --now qemu-guest-agent >/dev/null 2>&1 && say "QEMU guest agent running" || say "QEMU guest agent not started (Proxmox still works; the agent gives it the VM's address)"
 
-if ! have docker; then
+if [[ "$baked" != true ]] && ! have docker; then
     say "Installing Docker (get.docker.com)…"
     if curl -fsSL https://get.docker.com -o /tmp/get-docker.sh; then sudo -n sh /tmp/get-docker.sh >/dev/null 2>&1 || true; rm -f /tmp/get-docker.sh; fi
     have docker || { say "Docker's installer did not finish; trying the distribution's package…"; pkg_install docker.io docker-compose; }
@@ -64,6 +71,18 @@ say "Docker: $(docker --version 2>/dev/null | head -1) · $(sg docker -c 'docker
 if command -v firewall-cmd >/dev/null 2>&1 && sudo -n systemctl is-active --quiet firewalld 2>/dev/null; then
     sudo -n firewall-cmd --permanent --add-port="${DCS_API_PORT:-9876}/tcp" >/dev/null 2>&1 && sudo -n firewall-cmd --reload >/dev/null 2>&1 \
         && say "firewalld: port ${DCS_API_PORT:-9876}/tcp open for the hub" || say "firewalld is on but the port could not be opened — open ${DCS_API_PORT:-9876}/tcp by hand"
+fi
+# baking a template: everything above is installed; seal the image so every clone is its own machine, then power off
+if [[ "${DCS_BAKE:-false}" == "true" ]]; then
+    say "Sealing the template: cloud-init clean, fresh machine id and host keys, package caches dropped…"
+    sudo -n cloud-init clean --logs --machine-id >/dev/null 2>&1 || { sudo -n cloud-init clean --logs >/dev/null 2>&1 || true; sudo -n truncate -s0 /etc/machine-id; sudo -n rm -f /var/lib/dbus/machine-id; }
+    sudo -n rm -f /etc/ssh/ssh_host_* 2>/dev/null || true
+    rm -rf "$DIR" 2>/dev/null || true
+    (have apt-get && sudo -n apt-get clean >/dev/null 2>&1) || (have dnf && sudo -n dnf clean all >/dev/null 2>&1) || true
+    sudo -n sync
+    say "Template baked: $(grep PRETTY_NAME /etc/os-release | cut -d= -f2 | tr -d '"') with $(docker --version 2>/dev/null | cut -d, -f1) — powering off"
+    sudo -n nohup sh -c 'sleep 2; poweroff' >/dev/null 2>&1 &
+    exit 0
 fi
 say "Fetching DCS from the hub…"
 rm -rf "$DIR" && mkdir -p "$DIR"

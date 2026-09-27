@@ -98,11 +98,13 @@ TimeoutStopSec=20
 
 # Hardening. NoNewPrivileges is deliberately NOT set: the web terminal and the
 # OS-update feature escalate with sudo when the admin asks them to.
+# RestrictSUIDSGID is not set either: under it systemd answers tar's openat2()
+# with ENOSYS (seen on Fedora 44, systemd 259), so a code update the API
+# unpacks over itself (a VM following its hub) fails to create files.
 PrivateTmp=true
 ProtectSystem=full
 ProtectKernelTunables=true
 ProtectControlGroups=true
-RestrictSUIDSGID=true
 
 # Environment
 Environment="HOME=$DCS_HOME"

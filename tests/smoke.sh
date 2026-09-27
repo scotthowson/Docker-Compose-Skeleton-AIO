@@ -20,6 +20,7 @@ trap 'rm -rf "$WORK"' EXIT
 mkdir -p "$WORK/.scripts" "$WORK/.lib" "$WORK/.config" "$WORK/Stacks/demo" "$WORK/.data" "$WORK/logs" "$WORK/.api-auth" "$WORK/.templates"
 cp "$ROOT/.scripts/api-server.sh" "$WORK/.scripts/"
 cp "$ROOT/compose.sh" "$WORK/"
+cp "$ROOT/VERSION" "$WORK/"   # the hub's bundle carries it; /ping and /fleet/versions report it
 cp -r "$ROOT/.lib/." "$WORK/.lib/"
 cp -r "$ROOT/.config/." "$WORK/.config/"
 grep -vE '^(API_BIND|API_AUTH_ENABLED|API_INSECURE_NO_AUTH|API_TRUSTED_PROXIES|API_IP_WHITELIST|API_PORT)=' "$ROOT/.env.example" > "$WORK/.env"
@@ -425,6 +426,8 @@ check "apply: nothing moved on refusal" 1.0.0 "$(tr -d '[:space:]' < "$UPD/VERSI
 APPLY=$(_upd POST /system/update/apply '{"confirm":true,"replace_local":true}')
 check "apply: succeeds with replace"    200 "$(printf '%s' "$APPLY" | status_of)"
 check "apply: new version"              1.1.0 "$(printf '%s' "$APPLY" | body_of | jq -r '.new_version')"
+check "apply: fleet flag, no members"   false "$(_upd POST /system/update/apply '{"confirm":true,"fleet":true}' | body_of | jq -r '.fleet_update_queued // false')"
+check "apply: no round queued then"     no "$([[ -f "$UPD/.data/fleet-update-pending" ]] && echo yes || echo no)"
 check "apply: VERSION on disk"          1.1.0 "$(tr -d '[:space:]' < "$UPD/VERSION")"
 check "apply: HEAD is the tag"          "$(git -C "$UPD_SRC" rev-parse v1.1.0)" "$(git -C "$UPD" rev-parse HEAD)"
 check "apply: user compose kept"        yes "$(grep -q '# mine' "$UPD/Stacks/demo/docker-compose.yml" && echo yes || echo no)"
@@ -703,6 +706,7 @@ _envset API_AUTH_ENABLED true; _envset FLEET_SCAN_PORTS "$FLEET_PORT"; _envset A
 _menvset API_AUTH_ENABLED true; _menvset API_PORT "$FLEET_PORT"; _menvset SERVER_NAME "Media VM"
 sed -i '/^PROXMOX_/d;/^FLEET_SCAN_PORTS=/d' "$MWORK/.env"
 rm -f "$MWORK/.data/fleet.json" "$MWORK/.data/api-server.pid" "$WORK/.data/fleet.json"
+printf '3.8.99\n' > "$MWORK/VERSION"   # an older member: the hub brings it to its own version further down
 (cd "$WORK"  && setsid nohup "$API" --bind 127.0.0.1 --port "$HUB_PORT" > "$WORK/logs/hub-listener.log" 2>&1 < /dev/null &)
 (cd "$MWORK" && FLEET_IDENTITY_UUID=11111111-2222-3333-4444-555555555555 setsid nohup "$MWORK/.scripts/api-server.sh" --bind 127.0.0.1 --port "$FLEET_PORT" > "$MWORK/logs/member-listener.log" 2>&1 < /dev/null &)
 timeout 30 bash -c "until curl -s -m 1 http://127.0.0.1:$HUB_PORT/ping | grep -q '\"ok\"' && curl -s -m 1 http://127.0.0.1:$FLEET_PORT/ping | grep -q '\"ok\"'; do sleep 0.3; done" 2>/dev/null
@@ -755,6 +759,65 @@ check "fleet: scan with values (wizard)" 1 "$(auth_request POST /fleet/discover 
 check "fleet: viewer cannot scan"       403 "$(viewer_request GET /fleet/discover | status_of)"
 check "fleet: test reports reachable"   true "$(auth_request POST "/fleet/members/$MID/test" '{}' | body_of | jq -r '.reachable' 2>/dev/null)"
 check "fleet: test rematches guest"     100 "$(auth_request POST "/fleet/members/$MID/test" '{}' | body_of | jq -r '.match.vmid' 2>/dev/null)"
+# the hub brings the member to its own DCS version: the member fetches the hub's bundle, keeps its files and re-executes on the new code
+_envset FLEET_SELF_URL "http://127.0.0.1:$HUB_PORT"
+_VER=$(tr -d '[:space:]' < "$ROOT/VERSION")
+check "update: member reports old version" 3.8.99 "$(curl -s -m 2 "http://127.0.0.1:$FLEET_PORT/ping" | jq -r '.version' 2>/dev/null)"
+check "update: versions sees it behind"    1 "$(auth_request GET /fleet/versions | body_of | jq -r '.behind' 2>/dev/null)"
+check "update: versions names the member"  "$MID" "$(auth_request GET /fleet/versions | body_of | jq -r '.members[0].id' 2>/dev/null)"
+check "update: hub version in the answer"  "$_VER" "$(auth_request GET /fleet/versions | body_of | jq -r '.hub.version' 2>/dev/null)"
+check "update: viewer cannot see versions" 403 "$(viewer_request GET /fleet/versions | status_of)"
+check "update: viewer cannot run a round"  403 "$(viewer_request POST /fleet/update '{"members":"all"}' | status_of)"
+check "update: unknown member reported"    "unknown member" "$(auth_request POST /fleet/update '{"members":["nobody"]}' | body_of | jq -r '.results[0].message' 2>/dev/null)"
+_UPD=$(auth_request POST /fleet/update '{"members":"all"}' | body_of)
+check "update: round succeeds"             1 "$(jq -r '.updated' <<< "$_UPD" 2>/dev/null)"
+check "update: from → to reported"         "3.8.99 → $_VER" "$(jq -r '.results[0] | "\(.from) → \(.to)"' <<< "$_UPD" 2>/dev/null)"
+check "update: member restarts in place"   reexec "$(jq -r '.results[0].restart' <<< "$_UPD" 2>/dev/null)"
+timeout 30 bash -c "until curl -s -m 1 http://127.0.0.1:$FLEET_PORT/ping | grep -q '\"version\": \"$_VER\"'; do sleep 0.5; done" 2>/dev/null
+sleep 3; timeout 20 bash -c "until curl -s -m 1 http://127.0.0.1:$FLEET_PORT/ping | grep -q '\"ok\"'; do sleep 0.3; done" 2>/dev/null   # the re-exec a second after the answer
+check "update: member on the hub's version" "$_VER" "$(curl -s -m 2 "http://127.0.0.1:$FLEET_PORT/ping" | jq -r '.version' 2>/dev/null)"
+check "update: member has no git → hub"   member "$(member_request GET /system/update/check | jq -r '.state' 2>/dev/null)"
+check "update: member names its hub"      yes "$(member_request GET /system/update/check | jq -e '.hub.url | length > 0' >/dev/null 2>&1 && echo yes || echo no)"
+check "update: member's last update time" yes "$(member_request GET /system/update/check | jq -e '.last_updated_at | length > 10' >/dev/null 2>&1 && echo yes || echo no)"
+check "update: hub without git → manual"  manual "$(auth_request GET /system/update/check | body_of | jq -r '.state' 2>/dev/null)"
+check "images: fleet list tags the VM"    "$MID" "$(auth_request GET /fleet/images | body_of | jq -r '[.images[] | select(.member != null)] | .[0].member' 2>/dev/null)"
+check "images: fleet list has the hub"    yes "$(auth_request GET /fleet/images | body_of | jq -e '[.images[] | select(.member == null)] | length > 0' >/dev/null 2>&1 && echo yes || echo no)"
+check "images: per-DCS counts"            2 "$(auth_request GET /fleet/images | body_of | jq -r '.members | length' 2>/dev/null)"
+check "images: totals add up"             yes "$(auth_request GET /fleet/images | body_of | jq -e '.total == (.images | length) and .total == ([.members[].total] | add)' >/dev/null 2>&1 && echo yes || echo no)"
+check "images: viewer may read the list"  200 "$(viewer_request GET /fleet/images | status_of)"
+check "update: member kept its old code"   yes "$(ls "$MWORK"/.snapshots/dcs-code-3.8.99-*.tar.gz >/dev/null 2>&1 && echo yes || echo no)"
+check "update: member kept its settings"   "Media VM" "$(grep '^SERVER_NAME=' "$MWORK/.env" | cut -d= -f2-)"
+check "update: member kept its accounts"   yes "$(jq -e '[.[] | select(.username == "dcs-hub")] | length == 1' "$MWORK/.api-auth/users.json" >/dev/null 2>&1 && echo yes || echo no)"
+check "update: member history entry"       updated "$(jq -r '.[-1] | select(.message == "from the hub'"'"'s bundle") | .result' "$MWORK/.api-auth/update-history.json" 2>/dev/null)"
+check "update: nobody behind afterwards"   0 "$(auth_request GET /fleet/versions | body_of | jq -r '.behind' 2>/dev/null)"
+check "update: last round remembered"      1 "$(auth_request GET /fleet/versions | body_of | jq -r '.last_round.updated' 2>/dev/null)"
+check "update: member version recorded"    "$_VER" "$(auth_request GET /fleet/members | body_of | jq -r '.members[0].version' 2>/dev/null)"
+check "update: the round's code revoked"   0 "$(auth_request GET /fleet/join-tokens | body_of | jq -r '[.tokens[] | select(.created_by == "update")] | length' 2>/dev/null)"
+check "update: audited on the hub"         yes "$(grep -q 'fleet_update' "$WORK/.data/audit.jsonl" 2>/dev/null && echo yes || echo no)"
+MTOKEN=$(curl -s -m 5 -X POST "http://127.0.0.1:$FLEET_PORT/auth/login" -H 'Content-Type: application/json' -d '{"username":"admin","password":"correct horse battery"}' | jq -r '.token // empty' 2>/dev/null)
+check "update: self-update wants a URL"    400 "$(curl -s -o /dev/null -w '%{http_code}' -m 5 -X POST "http://127.0.0.1:$FLEET_PORT/fleet/self-update" -H "Authorization: Bearer $MTOKEN" -H 'Content-Type: application/json' -d '{"bundle_url":"nope"}')"
+check "update: self-update wants a bundle" 400 "$(curl -s -o /dev/null -w '%{http_code}' -m 15 -X POST "http://127.0.0.1:$FLEET_PORT/fleet/self-update" -H "Authorization: Bearer $MTOKEN" -H 'Content-Type: application/json' -d "{\"bundle_url\":\"http://127.0.0.1:$HUB_PORT/ping\"}")"
+# the hub's own update takes the VMs along: {fleet: true} leaves a marker, and the round runs by itself when the hub's API is back on the new code
+(cd "$MWORK" && "$MWORK/.scripts/api-server.sh" --stop >/dev/null 2>&1)
+timeout 10 bash -c "while curl -s -m 1 http://127.0.0.1:$FLEET_PORT/ping >/dev/null 2>&1; do sleep 0.3; done" 2>/dev/null
+printf '3.8.98\n' > "$MWORK/VERSION"
+(cd "$MWORK" && FLEET_IDENTITY_UUID=11111111-2222-3333-4444-555555555555 setsid nohup "$MWORK/.scripts/api-server.sh" --bind 127.0.0.1 --port "$FLEET_PORT" >> "$MWORK/logs/member-listener.log" 2>&1 < /dev/null &)
+timeout 30 bash -c "until curl -s -m 1 http://127.0.0.1:$FLEET_PORT/ping | grep -q '\"3.8.98\"'; do sleep 0.5; done" 2>/dev/null
+check "queued: member behind again"        1 "$(auth_request GET /fleet/versions | body_of | jq -r '.behind' 2>/dev/null)"
+touch "$WORK/.data/fleet-update-pending"
+check "queued: versions says pending"      true "$(auth_request GET /fleet/versions | body_of | jq -r '.pending' 2>/dev/null)"
+(cd "$WORK" && "$API" --stop >/dev/null 2>&1)
+timeout 10 bash -c "while curl -s -m 1 http://127.0.0.1:$HUB_PORT/ping >/dev/null 2>&1; do sleep 0.3; done" 2>/dev/null
+(cd "$WORK" && setsid nohup "$API" --bind 127.0.0.1 --port "$HUB_PORT" >> "$WORK/logs/hub-listener.log" 2>&1 < /dev/null &)
+timeout 30 bash -c "until curl -s -m 1 http://127.0.0.1:$HUB_PORT/ping | grep -q '\"ok\"'; do sleep 0.3; done" 2>/dev/null
+check "queued: hub back, session kept"     hub "$(auth_request GET /fleet/status | body_of | jq -r '.role' 2>/dev/null)"
+timeout 45 bash -c "until curl -s -m 1 http://127.0.0.1:$FLEET_PORT/ping | grep -q '\"$_VER\"'; do sleep 0.5; done" 2>/dev/null
+check "queued: round ran at startup"       "$_VER" "$(curl -s -m 2 "http://127.0.0.1:$FLEET_PORT/ping" | jq -r '.version' 2>/dev/null)"
+check "queued: marker consumed"            no "$([[ -f "$WORK/.data/fleet-update-pending" ]] && echo yes || echo no)"
+check "queued: nobody behind"              0 "$(auth_request GET /fleet/versions | body_of | jq -r '.behind' 2>/dev/null)"
+check "queued: round audited as startup"   yes "$(grep 'fleet_update' "$WORK/.data/audit.jsonl" 2>/dev/null | tail -1 | grep -q '(startup)' && echo yes || echo no)"
+sleep 3; timeout 20 bash -c "until curl -s -m 1 http://127.0.0.1:$FLEET_PORT/ping | grep -q '\"ok\"'; do sleep 0.3; done" 2>/dev/null   # the member re-executes once more
+_envdel FLEET_SELF_URL
 check "fleet: rename member"            "Media VM" "$(auth_request PUT "/fleet/members/$MID" '{"name":"Media VM"}' | body_of | jq -r '.member.name' 2>/dev/null)"
 check "fleet: remap by hand"            manual "$(auth_request PUT "/fleet/members/$MID" '{"vmid":101,"node":"pve","type":"qemu"}' | body_of | jq -r '.member.matched_by' 2>/dev/null)"
 check "fleet: bad password refused"     502 "$(auth_request PUT "/fleet/members/$MID" '{"password":"wrong-wrong"}' | status_of)"
@@ -821,6 +884,7 @@ case "$*" in
   "bash -s"|*dcs-bootstrap*)
     script=$(cat)
     eval "$(printf '%s\n' "$script" | grep '^export DCS_')"
+    if [[ "${DCS_BAKE:-false}" == "true" ]]; then echo "→ (stand-in) template baked: tools, Docker, agent — powering off"; exit 0; fi
     port="${DCS_MEMBER_URL##*:}"; host=$(sed -E 's#^https?://([^:/]+).*#\1#' <<< "$DCS_MEMBER_URL")
     [[ -f "$SHIM_DIR/.data/api-server.pid" ]] && (cd "$SHIM_DIR" && "$SHIM_DIR/.scripts/api-server.sh" --stop >/dev/null 2>&1)
     rm -rf "$SHIM_DIR"; git clone -q "$SHIM_ROOT" "$SHIM_DIR" || { echo "clone failed"; exit 1; }
@@ -928,6 +992,29 @@ _IVM=$(auth_request GET "/fleet/jobs/$IJOB" | body_of | jq -r '.vmid' 2>/dev/nul
 check "iso build: VM has the ISO"       yes "$(auth_request GET "/proxmox/vms/pve/qemu/$_IVM" | body_of | jq -r '.config.ide2 // ""' 2>/dev/null | grep -q 'tiny-installer.iso' && echo yes || echo no)"
 check "iso build: join line in the log" yes "$(auth_request GET "/fleet/jobs/$IJOB" | body_of | jq -r '.log[].text' 2>/dev/null | grep -q 'DCS_JOIN_TOKEN=' && echo yes || echo no)"
 check "iso build: dismiss destroys it"  true "$(auth_request DELETE "/fleet/jobs/$IJOB?destroy=true" | body_of | jq -r '.vm_destroyed' 2>/dev/null)"
+# a baked DCS template: one bake job (the stand-in installs nothing and "powers off"; the hub shuts the VM down and makes it a template),
+# then a build that clones it instead of importing the image
+BK=$(auth_request POST /fleet/templates '{"node":"pve","storage":"local-lvm","image_storage":"local","gateway":"192.0.2.1","ip_start":"192.0.2.90","image":"debian-13"}')
+check "bake: queued"                    true "$(body_of <<< "$BK" | jq -r '.success' 2>/dev/null)"
+BJOB=$(body_of <<< "$BK" | jq -r '.jobs[0].id' 2>/dev/null)
+_BST=""; for _i in $(seq 1 90); do _BST=$(auth_request GET "/fleet/jobs/$BJOB" | body_of | jq -r '.status' 2>/dev/null); [[ "$_BST" == "done" || "$_BST" == "failed" ]] && break; sleep 2; done
+check "bake: finished"                  "done" "$_BST"
+[[ "$_BST" == "done" ]] || auth_request GET "/fleet/jobs/$BJOB" | body_of | jq -r '.error, (.steps[] | "\(.id): \(.state) \(.detail)"), (.log[-12:][] | .text)' 2>/dev/null | sed 's/^/    /'
+check "bake: eight steps done"          8 "$(auth_request GET "/fleet/jobs/$BJOB" | body_of | jq -r '[.steps[] | select(.state == "done")] | length' 2>/dev/null)"
+TVM=$(auth_request GET /fleet/templates | body_of | jq -r '.templates[0].vmid' 2>/dev/null)
+check "bake: template recorded"         debian-13 "$(auth_request GET /fleet/templates | body_of | jq -r '.templates[0].image_id' 2>/dev/null)"
+check "bake: twice refused"             409 "$(auth_request POST /fleet/templates '{"node":"pve","storage":"local-lvm","gateway":"192.0.2.1","ip_start":"192.0.2.90","image":"debian-13"}' | status_of)"
+check "defaults: template offered"      1 "$(auth_request GET /fleet/provision/defaults | body_of | jq -r '.images.templates | length' 2>/dev/null)"
+CL=$(auth_request POST /fleet/provision "{\"node\":\"pve\",\"storage\":\"local-lvm\",\"image_storage\":\"local\",\"bridge\":\"vmbr0\",\"cidr\":24,\"gateway\":\"192.0.2.1\",\"dns\":\"192.0.2.1\",\"ip_start\":\"192.0.2.91\",\"image\":\"debian-13\",\"vms\":[{\"stack\":\"smoke-clone\",\"cores\":1,\"memory_mb\":1024,\"disk_gb\":12,\"ip\":\"127.0.0.1\"}]}")
+CJOB=$(body_of <<< "$CL" | jq -r '.jobs[0].id' 2>/dev/null)
+_CST=""; for _i in $(seq 1 150); do _CST=$(auth_request GET "/fleet/jobs/$CJOB" | body_of | jq -r '.status' 2>/dev/null); [[ "$_CST" == "done" || "$_CST" == "failed" ]] && break; sleep 2; done
+check "clone build: finished"           "done" "$_CST"
+[[ "$_CST" == "done" ]] || auth_request GET "/fleet/jobs/$CJOB" | body_of | jq -r '.error, (.steps[] | "\(.id): \(.state) \(.detail)"), (.log[-12:][] | .text)' 2>/dev/null | sed 's/^/    /'
+check "clone build: cloned the template" yes "$(auth_request GET "/fleet/jobs/$CJOB" | body_of | jq -r '.log[].text' 2>/dev/null | grep -q 'cloning the DCS template VM' && echo yes || echo no)"
+check "clone build: member joined"      smoke-clone "$(auth_request GET /fleet/members | body_of | jq -r '.members[] | select(.name == "smoke-clone") | .id' 2>/dev/null)"
+auth_request DELETE '/fleet/members/smoke-clone?destroy=true' >/dev/null; auth_request DELETE "/fleet/jobs/$CJOB" >/dev/null; auth_request DELETE "/fleet/jobs/$BJOB" >/dev/null
+check "template: deleted with its VM"   true "$(auth_request DELETE "/fleet/templates/$TVM" | body_of | jq -r '.success' 2>/dev/null)"
+(cd "$VMWORK" && "$VMWORK/.scripts/api-server.sh" --stop >/dev/null 2>&1)
 (cd "$VMWORK" && "$VMWORK/.scripts/api-server.sh" --stop >/dev/null 2>&1)
 (cd "$VMWORK/Stacks/smoke-photos" 2>/dev/null && docker compose -p smoke-photos down --remove-orphans >/dev/null 2>&1) || true
 # --stop trusts the pid file only for this installation's own server (a copied .data/ must never stop another one)

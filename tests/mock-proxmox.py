@@ -123,6 +123,17 @@ class H(http.server.BaseHTTPRequestHandler):
             f = form(self); st = parts[6]
             IMPORTS.setdefault(st, []).append(f"{st}:{f.get('content', 'import')}/{f.get('filename', 'image.qcow2')}")
             return self._send(200, {'data': mk_upid('download')})
+        if len(parts) >= 8 and parts[3] == 'nodes' and parts[5] == 'qemu' and parts[7] in ('clone', 'template'):
+            vmid = int(parts[6]); vm = VMS.get(vmid)
+            if not vm: return self._send(500, {'message': f'VM {vmid} does not exist', 'data': None})
+            if parts[7] == 'template':
+                vm['template'] = 1; vm['status'] = 'stopped'; save(); return self._send(200, {'data': mk_upid('qmtemplate', vmid)})
+            f = form(self); newid = int(f.get('newid', NEXT_ID[0])); NEXT_ID[0] = max(NEXT_ID[0], newid + 1)
+            if newid in VMS: return self._send(500, {'message': f'VM {newid} already exists', 'data': None})
+            VMS[newid] = dict(vm, vmid=newid, name=f.get('name', f'clone-{newid}'), status='stopped', template=0, uptime=0)
+            CONFIGS[newid] = dict(CONFIGS.get(vmid, {}), name=f.get('name', f'clone-{newid}'))
+            UUIDS[newid] = f'bbbbbbbb-0000-0000-0000-{newid:012d}'
+            save(); return self._send(200, {'data': mk_upid('qmclone', newid)})
         if len(parts) >= 9 and parts[3] == 'nodes' and parts[5] in ('qemu', 'lxc') and parts[7] == 'status':
             vmid = int(parts[6]); action = parts[8]; vm = VMS.get(vmid)
             if not vm: return self._send(500, {'message': 'no such vm', 'data': None})

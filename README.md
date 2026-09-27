@@ -417,7 +417,8 @@ the VMs page or the Proxmox page builds one more. A stack counts as the hub's ow
 way of a VM. On a hub the Stacks page is the **VMs** page: open a VM for the containers running
 in it, their controls, the compose editor and the VM's power. VMs are built from Debian (the
 default), Ubuntu, Fedora or AlmaLinux cloud images, a cloud image already on Proxmox or from a
-URL — or from an installer ISO on Proxmox, installed by hand and joined with one line.
+URL — or from an installer ISO on Proxmox, installed by hand and joined with one line. The hub
+bakes a DCS template once and clones it for every VM after that, so a build takes about 40 s.
 
 The hub's **API is the fleet API**: `GET /stacks` lists every VM's stack next to its own with a
 *VM* chip, and stacks, containers and template deploys that live in a VM are forwarded to that
@@ -429,7 +430,11 @@ stack going down, and it comes back at boot. VMs you made yourself join with a *
 for DCS installs, and every member's routes ride along in the hub's Traefik feed. A member that
 stops answering raises `fleet_member_down`; a finished build `fleet_vm_ready`. Nothing is
 scheduled or moved between VMs: a control plane over independent compose hosts, and a VM that
-loses its hub keeps running. [docs/PROXMOX.md](docs/PROXMOX.md) is the full guide, from the
+loses its hub keeps running. The hub keeps the VMs on its own DCS version: the Updates page
+lists every VM's version, *Update all VMs* hands each one the hub's code (data, accounts and
+stacks stay; the API restarts in place), a hub update takes the VMs along, and the image list
+covers the hub and every VM at once, each pull going where the image runs.
+[docs/PROXMOX.md](docs/PROXMOX.md) is the full guide, from the
 token roles (PVEVMAdmin, PVEDatastoreAdmin, PVESDNUser) to the troubleshooting table.
 
 ### A Traefik in another VM or machine

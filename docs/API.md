@@ -4,7 +4,7 @@ Generated from the router in `.scripts/api-server.sh` by `.scripts/api-docs.sh` 
 Run `.scripts/api-docs.sh` after adding or changing a route; CI fails when this file is stale.
 
 The API listens on `API_BIND:API_PORT` (default `0.0.0.0:9876`) and answers JSON.
-Every endpoint below is `298` in total.
+Every endpoint below is `306` in total.
 
 ## Access levels
 
@@ -173,10 +173,10 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 |--------|------|--------|-------------|
 | GET | `/images` | user | Images with age, size and staleness (/images/stale lists only stale ones) |
 | GET | `/images/stale` | user | Images with age, size and staleness (/images/stale lists only stale ones) |
-| GET | `/images/check-updates` | user | Image staleness from age plus the cached registry check |
+| GET | `/images/check-updates` | user | Images check updates get |
 | GET | `/images/search` | user | Search Docker Hub for images |
 | POST | `/images/{image}/delete` | admin | Remove an image |
-| POST | `/images/check-updates` | admin | Compare local image digests with their registries (slow) |
+| POST | `/images/check-updates` | admin | Images check updates post |
 | POST | `/images/update` | admin | Pull an image and recreate the Compose services that use it |
 | POST | `/images/{image}/update` | admin | Pull an image and recreate the Compose services that use it |
 
@@ -388,6 +388,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | GET | `/fleet/bundle` | public | The hub's own DCS code as a tar.gz for a VM being bootstrapped (needs ?token= — a valid join code); never includes data, accounts, secrets, stacks or logs |
 | GET | `/power` | user | UPS status: mains or battery, charge, runtime, load, and whether the watch loop runs |
 | GET | `/recovery` | admin | Recovery bundles on this box and how they are made (destination, off-box copy, retention, passphrase set?) |
+| GET | `/fleet/images` | user | Every image on the hub and on each member in one list, each tagged with where it runs (member null = the hub); the counts add up across the fleet, registry_checked_at is the oldest check, last_update_at the newest pull |
 | GET | `/crowdsec/status` | user | CrowdSec presence, whitelist state and active decisions |
 | GET | `/crowdsec/decisions` | user | Active CrowdSec decisions (bans) |
 | GET | `/proxmox/status` | user | The Proxmox link: configured, reachable, version, node and VM counts, and what to fix when it is not |
@@ -402,6 +403,8 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | GET | `/fleet/join-tokens` | admin | The join codes that are still valid (admin) |
 | GET | `/fleet/provision/defaults` | admin | Suggested values for creating VMs: node, storages, bridge, an address range next to the hub, the cloud image, the admin name (admin) |
 | GET | `/fleet/jobs` | admin | VMs being created (and the ones that finished or failed), newest first |
+| GET | `/fleet/templates` | admin | The DCS templates the hub baked (VMs cloned from one build in about 40 s) |
+| GET | `/fleet/versions` | admin | The hub's DCS version next to every member's, asked live; behind = members on another version, plus the last update round and whether one is queued for after the hub's restart |
 | GET | `/fleet/jobs/*` | admin | One VM job with its steps and log |
 | GET | `/proxmox/capabilities` | admin | What the API token may do on /: the privileges that creating VMs needs, and which are missing (POST with {url, token_id, token_secret, verify_tls} before the link is saved) |
 | GET | `/proxmox/storage` | admin | The node's storages with content types and free space (import_ready: can hold a cloud image) |
@@ -421,6 +424,9 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | POST | `/fleet/provision/defaults` | admin | Suggested values for creating VMs: node, storages, bridge, an address range next to the hub, the cloud image, the admin name (admin) |
 | POST | `/proxmox/capabilities` | admin | What the API token may do on /: the privileges that creating VMs needs, and which are missing (POST with {url, token_id, token_secret, verify_tls} before the link is saved) |
 | POST | `/proxmox/storage` | admin | The node's storages with content types and free space (import_ready: can hold a cloud image) |
+| POST | `/fleet/templates` | admin | Bake a DCS template from a cloud image {node, storage, image_storage, bridge, cidr, gateway, dns, ip_start, image\|image_url\|image_file, cores?, memory_mb?, disk_gb?}: a build job of kind "bake" |
+| POST | `/fleet/update` | admin | Bring members to this hub's DCS version {members: ["id", …] or "all"}: each fetches the hub's code bundle, keeps its own files and re-executes; the answer lists what happened per member |
+| POST | `/fleet/self-update` | admin | Install a DCS code bundle over this server's own code {bundle_url, version?}: data, accounts, secrets, stacks and the settings in .config are kept, the old code is saved under .snapshots, then the API re-executes on the new code |
 | POST | `/fleet/jobs/*/retry` | admin | Run a failed VM job again from the step that failed |
 | POST | `/fleet/members/*/test` | admin | Log in to the member afresh, read its identity and version, and say which guest it matches |
 | POST | `/fleet/members/*/api/*` | admin | Forward the call (GET, POST, PUT or DELETE) to that member with the hub's account; the caller's own role is checked against the inner path as if it were local (streams and auth are not forwarded) |
@@ -429,6 +435,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | POST | `/recovery/bundle` | admin | Write an encrypted recovery bundle now {passphrase?, include_app_data: [stacks], copy_remote} |
 | POST | `/recovery/restore` | admin | Restore a bundle from this box {file, passphrase, confirm, restart}; a pre-restore snapshot is kept |
 | POST | `/recovery/upload` | admin | Store a bundle sent by the browser {filename, content_b64} |
+| POST | `/fleet/images/check` | admin | Registry check on the hub and on every member at once (each compares digests with its registries, no pulls); the answer counts per DCS |
 | POST | `/crowdsec/trust` | admin | Add an address to the whitelist (body {ip}; defaults to the home public address and the caller) |
 | POST | `/crowdsec/unban-me` | user | Unban the caller: its client address and the home public address |
 | POST | `/crowdsec/notifications` | admin | Send CrowdSec's alerts to Discord {webhook?, test?}: renders the template with the webhook (default: the server's), restarts CrowdSec, and optionally posts a test alert |
@@ -436,6 +443,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | PUT | `/fleet/members/*` | admin | Change a member's name, address, account or the guest it is mapped to {name?, url?, username?, password?, vmid?, node?, type?, insecure?} |
 | DELETE | `/fleet/members/*/api/*` | admin | Forward the call (GET, POST, PUT or DELETE) to that member with the hub's account; the caller's own role is checked against the inner path as if it were local (streams and auth are not forwarded) |
 | DELETE | `/fleet/members/*` | admin | Forget a member (its dcs-hub account is removed there when it answers) |
+| DELETE | `/fleet/templates/*` | admin | Forget a DCS template and destroy the template VM on Proxmox |
 | DELETE | `/fleet/jobs/*` | admin | Forget a finished or failed job; ?destroy=true also destroys the VM a failed build (or a by-hand install that never joined) left behind |
 | DELETE | `/fleet/join-tokens/*` | admin | Revoke a join code |
 | DELETE | `/fleet/hub` | admin | Leave the hub: forget it and remove its dcs-hub account here (the hub drops this member when it next fails to answer, or when removed there) |

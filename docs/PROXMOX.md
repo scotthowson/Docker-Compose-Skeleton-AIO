@@ -271,6 +271,46 @@ volume Docker must write). A `.config/fleet-images.json` on the hub (an array of
 `{id, label, url, file, family}`) replaces the catalogue. The choice applies to every VM of a
 build; *New VM* can pick a different one per VM.
 
+### Faster builds: the baked DCS template
+
+A build from a cloud image spends most of its 85 seconds installing packages and Docker. Tick
+**Bake a DCS template first** in the VM settings (on by default) and the hub does that work
+once: it builds one VM from the chosen image, installs the tools, Docker and the guest agent,
+seals it (`cloud-init clean`, a fresh machine id and host keys) and turns it into a Proxmox
+**template** tagged `dcs;template`. Every VM for that image is then a **full clone** of the
+template plus its own cloud-init: the build takes about 40 seconds and only the fresh DCS code
+from the hub, the setup and the join run inside. The picker lists baked templates first; a
+template stays for the next builds, and one bake serves the wizard's whole layout. `GET
+/fleet/templates` lists them, `POST /fleet/templates` bakes one by hand, `DELETE
+/fleet/templates/{vmid}` removes one (with its VM) — bake again after a big OS update.
+
+### Keeping the VMs on the hub's version
+
+The hub's code is the fleet's code. On a hub, the Updates page shows **The VMs** under the DCS
+Framework card: every member with the DCS version it answers with (asked live, `GET
+/fleet/versions`), amber when it differs from the hub's. **Update all VMs** (`POST /fleet/update
+{members: "all"}`, or a list of ids) hands each answering member the hub's own code: the member
+downloads the hub's bundle with a one-hour join code minted for the round (`POST
+/fleet/self-update {bundle_url}` on the member, admin only), saves the code it had as
+`.snapshots/dcs-code-<version>-<time>.tar.gz`, unpacks the bundle over its install — its `.env`,
+`.data`, accounts, secrets, stacks, logs and the settings files it already has in `.config` are
+untouched — writes an entry to its update history and restarts its API in place (the same
+`kill -USR1` re-exec the hub's own updates use, under systemd or not). The answer lists what
+happened per member and the last round stays on the card. A hub update with **Then update the
+VMs** ticked (the default on a hub with members: `POST /system/update/apply {fleet: true}`)
+queues a round that the hub runs by itself once its API is back on the new code. When the
+installer changed with the code (the systemd unit comes from it), a member runs it again and
+restarts through systemd instead, so the unit follows too. Every card carries the same status
+line: up to date or not, when it was checked, when it last changed.
+
+Image updates see the whole fleet: the Updates page of a hub opens on **Everywhere** — every
+image on the hub and on each VM in one list (`GET /fleet/images`), each row saying where it
+runs, with *Check Registry* asking every DCS at once (`POST /fleet/images/check`) and each pull
+going to the DCS the row belongs to. The **Images on** row narrows the list to the hub alone or
+to one VM (the member proxy carries the calls, so nothing new is exposed). Without Proxmox
+nothing changes: a DCS without members shows neither the card nor the row, and a VM's own
+Updates page says *Updated by its hub* instead of looking for releases.
+
 ### VMs you made yourself
 
 Any VM with DCS in it can join the same fleet, and the hub then treats it like a built one:
@@ -345,6 +385,12 @@ guest*, and the member menu's *Test* re-matches.
 | POST | `/fleet/provision` | admin — build one VM per stack `{node, storage, image_storage, bridge, cidr, gateway, dns, ip_start, vms: [{stack, source, cores, memory_mb, disk_gb, ip}]}`; `source` is the hub folder that moves into the VM (default: the stack name) |
 | GET | `/fleet/jobs`, `/fleet/jobs/{id}` | admin — the builds with steps and log |
 | POST / DELETE | `/fleet/jobs/{id}/retry`, `/fleet/jobs/{id}` (`?destroy=true` also destroys a failed build's VM) | admin |
+| GET / POST / DELETE | `/fleet/templates`, `/fleet/templates/{vmid}` | admin — the baked DCS templates: list, bake one, remove one with its VM |
+| GET | `/fleet/versions` | admin — the hub's DCS version next to every member's (asked live), who is behind, the last update round |
+| POST | `/fleet/update` | admin — bring members to the hub's version `{members: ["id", …] or "all"}`: each fetches the hub's bundle and re-executes |
+| POST | `/fleet/self-update` | admin, on a member — install a code bundle over this install `{bundle_url}`; data, accounts, secrets, stacks and settings stay, the old code lands in `.snapshots` |
+| GET | `/fleet/images` | user — every image on the hub and on each member, tagged with where it runs; the counts add up |
+| POST | `/fleet/images/check` | admin — the registry check on the hub and on every member at once |
 | GET / POST | `/proxmox/capabilities`, `/proxmox/storage` | admin — what the token may do, the storages |
 | GET / POST / DELETE | `/fleet/join-tokens`, `/fleet/join-tokens/{token}` | admin — join codes |
 | POST | `/fleet/join` | public — a member registers with a join code |
@@ -405,6 +451,8 @@ Command line, on any DCS: `.scripts/api-server.sh --join-hub URL CODE [NAME]`, `
 | A member shows *no guest matched* | No guest agent (uuid still works for a VM if the hub reads `smbios1`, but an LXC or a VM whose name differs from the hostname needs the address or the name to match): pick the guest from the member menu. |
 | The scan finds nothing | The scan needs each guest's addresses from the QEMU guest agent (or container interfaces) and DCS answering on port 9876 there (`FLEET_SCAN_PORTS` for others). A VM without the agent shows *address unknown*. |
 | A member's stacks are missing from the Proxmox page | *Members answering* in the page header says whether the hub reached it; the member menu's *Test* explains a refusal (a changed password on the member: edit the member and enter it again). |
+| An update round says *the bundle could not be unpacked: … Function not implemented* | The member's `dcs-api.service` still carries `RestrictSUIDSGID=true` from an older installer; under it systemd answers tar's `openat2()` with ENOSYS on Fedora 44 (systemd 259). Run `sudo .scripts/install-service.sh` once on that VM and restart the service — every later round refreshes the unit by itself when the installer changes. |
+| A VM's own Updates page says *Updated by its hub* | By design: a VM built by the hub has no git checkout, its code comes from the hub's Updates page (*Update all VMs*). |
 | Detection says nothing about Proxmox | Detection reads `systemd-detect-virt` and the DMI vendor; a VM without the guest agent still shows as *QEMU/KVM*, which is treated as a probable Proxmox VM. The probe looks for port 8006 on the default gateway and on `pve`, `proxmox`, `pve.local`, `proxmox.local`; if your host has another name, just type the URL. |
 
 Related: [README → Running inside a VM](../README.md#running-inside-a-vm-proxmox-kvm-qemu),

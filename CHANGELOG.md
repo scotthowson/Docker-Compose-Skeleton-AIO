@@ -20,6 +20,23 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   join and a check. Every step is on a progress card in the wizard's success screen and on the
   Proxmox page (`GET /fleet/jobs`, retry from the failed step, dismiss); *New VM stack* builds one
   more; *Stop and destroy the VM* removes one (`DELETE /fleet/members/{id}?destroy=true`).
+- **The fleet follows the hub's version.** On a hub the Updates page shows *The VMs* — every
+  member with the DCS version it answers with (`GET /fleet/versions`) — and *Update all VMs*
+  (`POST /fleet/update {members}`) hands each one the hub's own code: the member fetches the hub's
+  bundle with a join code minted for the round (`POST /fleet/self-update`), keeps its `.env`,
+  data, accounts, secrets, stacks and settings, saves the old code under `.snapshots`, records
+  the update in its history and re-executes its API in place. A hub update with *Then update the
+  VMs* ticked (`{fleet: true}`) queues the round for right after the hub's own restart; a member
+  whose installer changed runs it again and restarts through systemd, so the unit follows. Image
+  updates see the whole fleet: *Everywhere* lists every image on the hub and on each VM with
+  where it runs (`GET /fleet/images`), *Check Registry* asks every DCS at once
+  (`POST /fleet/images/check`), each pull goes to the DCS its row belongs to, and *Images on*
+  narrows to the hub or one VM. Every card on the Updates page carries the same status line (up
+  to date or not, checked when, last changed when); a VM's own page says *Updated by its hub*,
+  a copy without git *Installed without git*, and a failed check shows the reason with a retry
+  instead of an endless skeleton. Without members nothing changes.
+- The service unit no longer sets `RestrictSUIDSGID`: under it systemd 259 (Fedora 44) answers
+  tar's `openat2()` with ENOSYS, which broke code updates unpacked by the API.
 - **The hub's API is the fleet API.** `GET /stacks` on a hub lists the members' stacks next to
   its own (`placement`, `member`, `vmid`, `reachable`), `GET /containers` every member's
   containers (`member`), and `/stacks/{name}/…`, `/containers/{name}/…` (`?member=` when a name
@@ -86,6 +103,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (compose, `.env`, config files — never `App-Data`, data or backups) is copied into the VM over
   ssh and started through the member's API; a row renamed in the wizard keeps the folder it came
   from (`source`). Nothing to copy: the VM starts empty and takes templates.
+- **A baked DCS template makes builds fast.** With *Bake a DCS template first* (on by default)
+  the hub builds one VM from the chosen image, installs the tools, Docker and the guest agent,
+  seals it with cloud-init and turns it into a Proxmox template; every VM for that image is then
+  a full clone plus cloud-init — about 40 seconds instead of about 85 — with only the fresh DCS
+  code, the setup and the join running inside. `GET/POST /fleet/templates`,
+  `DELETE /fleet/templates/{vmid}`; the picker lists baked templates first.
 - **The operating system is a choice.** The VM settings offer a catalogue (Debian 13, Debian 12,
   Ubuntu Server 26.04/24.04/22.04 LTS, Fedora Cloud, AlmaLinux 9), whatever Proxmox already
   holds (imported cloud images, installer ISOs from *ISO Images*) and a URL; `.config/fleet-
