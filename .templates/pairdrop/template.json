@@ -1,0 +1,24 @@
+{
+  "name": "pairdrop",
+  "title": "PairDrop",
+  "description": "PairDrop is AirDrop for every device: open the page on two phones or computers on the same network (or pair them with a code) and send files and text directly, browser to browser. Nothing is stored on the server.",
+  "category": "storage",
+  "target_stack": "storage-backup",
+  "icon": "📲",
+  "tags": [
+    "file-sharing",
+    "airdrop",
+    "transfer",
+    "webrtc",
+    "pairdrop"
+  ],
+  "variables": [
+    {
+      "name": "PORT_PAIRDROP",
+      "label": "Web port",
+      "description": "Host port for web port",
+      "default": "3015",
+      "required": false
+    }
+  ]
+}

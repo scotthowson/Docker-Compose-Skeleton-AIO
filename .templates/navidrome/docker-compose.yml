@@ -1,0 +1,22 @@
+services:
+  navidrome:
+    container_name: Navidrome
+    image: deluan/navidrome:latest
+    restart: unless-stopped
+    user: "${PUID:-1000}:${PGID:-1000}"
+    environment:
+      - TZ=${TZ:-UTC}
+      - ND_SCANSCHEDULE=${NAVIDROME_SCAN_SCHEDULE:-1h}
+      - ND_LOGLEVEL=info
+      - ND_SESSIONTIMEOUT=24h
+    ports:
+      - "${PORT_NAVIDROME:-4533}:4533"
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Navidrome/data:/data
+      - ${MUSIC_PATH:-/srv/media/music}:/music:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:4533/ping >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s

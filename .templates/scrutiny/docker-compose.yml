@@ -1,0 +1,23 @@
+services:
+  scrutiny:
+    container_name: Scrutiny
+    image: ghcr.io/analogj/scrutiny:master-omnibus
+    restart: unless-stopped
+    privileged: true
+    cap_add:
+      - SYS_RAWIO
+      - SYS_ADMIN
+    environment:
+      - TZ=${TZ:-UTC}
+    ports:
+      - "${PORT_SCRUTINY:-8482}:8080"
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Scrutiny/config:/opt/scrutiny/config
+      - ${APP_DATA_DIR:-./App-Data}/Scrutiny/influxdb:/opt/scrutiny/influxdb
+      - /run/udev:/run/udev:ro
+    healthcheck:
+      test: ["CMD", "curl", "-fso", "/dev/null", "http://127.0.0.1:8080/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s

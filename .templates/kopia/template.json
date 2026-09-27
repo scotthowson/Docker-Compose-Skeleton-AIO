@@ -1,0 +1,61 @@
+{
+  "name": "kopia",
+  "title": "Kopia",
+  "description": "Kopia makes fast, encrypted, deduplicated backups to a local folder, S3, B2, SFTP or a cloud drive, with a web UI for snapshots and restores. Open the UI (login below), create or connect a repository — /repository is the mounted backup folder — and snapshot /data, which is the source folder you choose here.",
+  "category": "backup",
+  "target_stack": "storage-backup",
+  "icon": "🗃️",
+  "tags": [
+    "backup",
+    "snapshots",
+    "encryption",
+    "deduplication",
+    "s3",
+    "kopia"
+  ],
+  "variables": [
+    {
+      "name": "PORT_KOPIA",
+      "label": "Web port",
+      "description": "Host port for web port",
+      "default": "51515",
+      "required": false
+    },
+    {
+      "name": "KOPIA_UI_USER",
+      "label": "UI username",
+      "default": "kopia",
+      "required": false
+    },
+    {
+      "name": "KOPIA_UI_PASSWORD",
+      "label": "UI password",
+      "description": "Login for the web UI",
+      "default": "",
+      "required": true,
+      "type": "password"
+    },
+    {
+      "name": "KOPIA_REPO_PASSWORD",
+      "label": "Repository password",
+      "description": "Encrypts the backups — losing it means losing the backups",
+      "default": "",
+      "required": true,
+      "type": "password"
+    },
+    {
+      "name": "KOPIA_SOURCE_PATH",
+      "label": "Folder to back up",
+      "description": "Host directory mounted read-only at /data",
+      "default": "/srv",
+      "required": true
+    },
+    {
+      "name": "KOPIA_REPOSITORY_PATH",
+      "label": "Local repository folder",
+      "description": "Host directory mounted at /repository (use it for a filesystem repository, or pick S3/B2/SFTP in the UI)",
+      "default": "/srv/backups/kopia",
+      "required": false
+    }
+  ]
+}

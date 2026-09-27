@@ -1,0 +1,32 @@
+{
+  "name": "prometheus-exporters",
+  "title": "Prometheus exporters",
+  "description": "Node Exporter (host CPU, memory, disks, network) and cAdvisor (per-container resources) for the Prometheus template. Both listen on 127.0.0.1 only; deploy into the stack that runs Prometheus and add the scrape targets node-exporter:9100 and cadvisor:8080 to its prometheus.yml.",
+  "category": "monitoring",
+  "target_stack": "monitoring-management",
+  "icon": "🔭",
+  "tags": [
+    "prometheus",
+    "metrics",
+    "node-exporter",
+    "cadvisor",
+    "grafana",
+    "monitoring"
+  ],
+  "variables": [
+    {
+      "name": "PORT_NODE_EXPORTER",
+      "label": "Node Exporter port",
+      "description": "Bound to 127.0.0.1 on the host",
+      "default": "9100",
+      "required": false
+    },
+    {
+      "name": "PORT_CADVISOR",
+      "label": "cAdvisor port",
+      "description": "Bound to 127.0.0.1 on the host",
+      "default": "9101",
+      "required": false
+    }
+  ]
+}

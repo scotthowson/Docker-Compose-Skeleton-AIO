@@ -1,0 +1,46 @@
+{
+  "name": "sftpgo",
+  "title": "SFTPGo",
+  "description": "SFTPGo is an SFTP, FTPS, WebDAV and HTTP file server with per-user folders, quotas, virtual folders and a web admin plus a web client for users. Log in to the admin UI with the credentials below and create users under App-Data/SFTPGo/data.",
+  "category": "storage",
+  "target_stack": "storage-backup",
+  "icon": "📁",
+  "tags": [
+    "sftp",
+    "webdav",
+    "ftp",
+    "file-server",
+    "users",
+    "sftpgo"
+  ],
+  "variables": [
+    {
+      "name": "PORT_SFTPGO_WEB",
+      "label": "Web port",
+      "description": "Admin UI and web client",
+      "default": "8590",
+      "required": false
+    },
+    {
+      "name": "PORT_SFTPGO_SFTP",
+      "label": "SFTP port",
+      "description": "Host port for sftp port",
+      "default": "2022",
+      "required": false
+    },
+    {
+      "name": "SFTPGO_ADMIN_USER",
+      "label": "Admin username",
+      "default": "admin",
+      "required": false
+    },
+    {
+      "name": "SFTPGO_ADMIN_PASSWORD",
+      "label": "Admin password",
+      "description": "For the web admin (the first admin is created from these on first start)",
+      "default": "",
+      "required": true,
+      "type": "password"
+    }
+  ]
+}

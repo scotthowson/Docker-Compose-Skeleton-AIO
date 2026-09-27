@@ -1,0 +1,32 @@
+{
+  "name": "beszel-agent",
+  "title": "Beszel Agent",
+  "description": "The agent side of Beszel: reports this host and its containers to a Beszel hub. In the hub click Add System, name it, use host.docker.internal (hub on this machine) or this host's IP with port 45876, copy the public key it shows into the field below, then deploy.",
+  "category": "monitoring",
+  "target_stack": "monitoring-management",
+  "icon": "📡",
+  "tags": [
+    "monitoring",
+    "agent",
+    "metrics",
+    "beszel",
+    "docker"
+  ],
+  "variables": [
+    {
+      "name": "BESZEL_AGENT_HUBKEY",
+      "label": "Hub public key",
+      "description": "The ssh-ed25519 public key shown by the hub when you add a system",
+      "default": "",
+      "required": true,
+      "type": "password"
+    },
+    {
+      "name": "BESZEL_AGENT_PORT",
+      "label": "Agent port",
+      "description": "Port the hub connects to (host network)",
+      "default": "45876",
+      "required": false
+    }
+  ]
+}

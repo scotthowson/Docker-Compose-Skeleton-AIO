@@ -1,0 +1,23 @@
+services:
+  libretranslate:
+    container_name: LibreTranslate
+    image: libretranslate/libretranslate:latest
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-UTC}
+      - LT_LOAD_ONLY=${LIBRETRANSLATE_LANGUAGES:-en,fr,es,de}
+      - LT_UPDATE_MODELS=true
+      - LT_DISABLE_FILES_TRANSLATION=false
+    ports:
+      - "${PORT_LIBRETRANSLATE:-5100}:5000"
+    volumes:
+      - libretranslate-models:/home/libretranslate/.local
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/languages', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 300s
+
+volumes:
+  libretranslate-models: {}

@@ -1,0 +1,52 @@
+{
+  "name": "metube",
+  "title": "MeTube",
+  "description": "MeTube is a web UI for yt-dlp: paste a video or playlist URL and it downloads to your media folder, with format and quality presets. Pair it with Jellyfin or Navidrome by pointing the download path at a library.",
+  "category": "download",
+  "target_stack": "media-services",
+  "icon": "⬇️",
+  "tags": [
+    "youtube",
+    "yt-dlp",
+    "download",
+    "video",
+    "metube",
+    "media"
+  ],
+  "variables": [
+    {
+      "name": "PORT_METUBE",
+      "label": "Web port",
+      "description": "Host port for web port",
+      "default": "8098",
+      "required": false
+    },
+    {
+      "name": "METUBE_DOWNLOAD_PATH",
+      "label": "Download folder",
+      "description": "Host directory downloads land in",
+      "default": "/srv/media/downloads/metube",
+      "required": true
+    },
+    {
+      "name": "METUBE_THEME",
+      "label": "Theme",
+      "default": "auto",
+      "required": false,
+      "options": [
+        {
+          "value": "auto",
+          "label": "Follow the browser"
+        },
+        {
+          "value": "dark",
+          "label": "Dark"
+        },
+        {
+          "value": "light",
+          "label": "Light"
+        }
+      ]
+    }
+  ]
+}

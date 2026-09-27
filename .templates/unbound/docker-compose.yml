@@ -1,0 +1,19 @@
+services:
+  unbound:
+    container_name: Unbound
+    image: mvance/unbound:latest
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-UTC}
+    ports:
+      - "${PORT_UNBOUND:-5335}:53/tcp"
+      - "${PORT_UNBOUND:-5335}:53/udp"
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Unbound/a-records.conf:/opt/unbound/etc/unbound/a-records.conf
+      - ${APP_DATA_DIR:-./App-Data}/Unbound/forward-records.conf:/opt/unbound/etc/unbound/forward-records.conf
+    healthcheck:
+      test: ["CMD", "drill", "@127.0.0.1", "cloudflare.com"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s

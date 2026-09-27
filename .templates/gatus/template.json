@@ -1,0 +1,33 @@
+{
+  "name": "gatus",
+  "title": "Gatus",
+  "description": "Gatus is a status page that checks your endpoints on a schedule (HTTP, TCP, DNS, ICMP, TLS expiry) and alerts on Discord, ntfy, Slack and more. Deploys with two example checks (the DCS API and the internet); edit App-Data/Gatus/config/config.yaml and restart to add yours.",
+  "category": "monitoring",
+  "target_stack": "monitoring-management",
+  "icon": "🟢",
+  "tags": [
+    "status-page",
+    "uptime",
+    "health-checks",
+    "alerts",
+    "gatus",
+    "monitoring"
+  ],
+  "config_path": "Gatus",
+  "variables": [
+    {
+      "name": "PORT_GATUS",
+      "label": "Web port",
+      "description": "Host port for web port",
+      "default": "8480",
+      "required": false
+    },
+    {
+      "name": "GATUS_TITLE",
+      "label": "Page title",
+      "description": "Shown in the header of the status page",
+      "default": "Status",
+      "required": false
+    }
+  ]
+}

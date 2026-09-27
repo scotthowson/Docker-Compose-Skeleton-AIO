@@ -1,0 +1,25 @@
+services:
+  webtop:
+    container_name: Webtop
+    image: lscr.io/linuxserver/webtop:latest
+    restart: unless-stopped
+    shm_size: "1gb"
+    security_opt:
+      - seccomp:unconfined
+    environment:
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+      - TZ=${TZ:-UTC}
+      - TITLE=${WEBTOP_TITLE:-Webtop}
+      - CUSTOM_USER=${WEBTOP_USER:-}
+      - PASSWORD=${WEBTOP_PASSWORD:-}
+    ports:
+      - "${PORT_WEBTOP:-3016}:3000"
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Webtop/config:/config
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3000/ | grep -qE '^(200|401)$'"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s

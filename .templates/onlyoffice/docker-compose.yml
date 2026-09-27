@@ -1,0 +1,24 @@
+services:
+  onlyoffice:
+    container_name: OnlyOffice
+    image: onlyoffice/documentserver:latest
+    restart: unless-stopped
+    stop_grace_period: 60s
+    environment:
+      - TZ=${TZ:-UTC}
+      - JWT_ENABLED=true
+      - JWT_SECRET=${ONLYOFFICE_JWT_SECRET}
+      - JWT_HEADER=Authorization
+    ports:
+      - "${PORT_ONLYOFFICE:-8300}:80"
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/OnlyOffice/data:/var/www/onlyoffice/Data
+      - ${APP_DATA_DIR:-./App-Data}/OnlyOffice/logs:/var/log/onlyoffice
+      - ${APP_DATA_DIR:-./App-Data}/OnlyOffice/lib:/var/lib/onlyoffice
+      - ${APP_DATA_DIR:-./App-Data}/OnlyOffice/db:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD", "curl", "-fso", "/dev/null", "http://127.0.0.1/healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s

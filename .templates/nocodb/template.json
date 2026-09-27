@@ -1,0 +1,40 @@
+{
+  "name": "nocodb",
+  "title": "NocoDB",
+  "description": "NocoDB turns a database into a spreadsheet-like workspace: tables, forms, kanban, galleries, API and webhooks — an open-source Airtable. Uses its own SQLite store here; sign up on the first visit to become the super admin.",
+  "category": "databases",
+  "target_stack": "development-tools",
+  "icon": "🧮",
+  "tags": [
+    "airtable",
+    "spreadsheet",
+    "database",
+    "no-code",
+    "forms",
+    "nocodb"
+  ],
+  "variables": [
+    {
+      "name": "PORT_NOCODB",
+      "label": "Web port",
+      "description": "Host port for web port",
+      "default": "8470",
+      "required": false
+    },
+    {
+      "name": "NOCODB_PUBLIC_URL",
+      "label": "Public URL",
+      "description": "The URL you open NocoDB at (used in shared links and invites)",
+      "default": "http://localhost:8470",
+      "required": false
+    },
+    {
+      "name": "NOCODB_JWT_SECRET",
+      "label": "Session secret",
+      "description": "Leave empty and DCS generates one on deploy",
+      "default": "",
+      "required": false,
+      "generate": "hex64"
+    }
+  ]
+}

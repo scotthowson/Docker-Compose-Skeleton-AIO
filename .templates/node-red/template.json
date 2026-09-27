@@ -1,0 +1,42 @@
+{
+  "name": "node-red",
+  "title": "Node-RED",
+  "description": "Node-RED, flow-based automation: wire MQTT, HTTP, Home Assistant, timers and devices together in the browser. Flows live in App-Data/Node-RED/data; the editor is open by default, add adminAuth in settings.js to protect it.",
+  "category": "automation",
+  "target_stack": "miscellaneous-services",
+  "icon": "🔴",
+  "tags": [
+    "automation",
+    "flows",
+    "mqtt",
+    "home-automation",
+    "low-code",
+    "node-red"
+  ],
+  "variables": [
+    {
+      "name": "PORT_NODE_RED",
+      "label": "Editor port",
+      "description": "Host port for editor port",
+      "default": "1880",
+      "required": false
+    },
+    {
+      "name": "NODE_RED_PROJECTS",
+      "label": "Projects (git) feature",
+      "description": "Keep flows in git repositories from inside the editor",
+      "default": "false",
+      "required": false,
+      "options": [
+        {
+          "value": "false",
+          "label": "Off"
+        },
+        {
+          "value": "true",
+          "label": "On"
+        }
+      ]
+    }
+  ]
+}

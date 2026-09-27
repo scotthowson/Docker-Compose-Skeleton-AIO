@@ -1,0 +1,25 @@
+{
+  "name": "baikal",
+  "title": "Baïkal",
+  "description": "Baïkal is a small CalDAV and CardDAV server: calendars and contacts that sync with iOS, Android (DAVx⁵), Thunderbird and macOS. Finish the setup at /admin/ on the first visit, then create users and address books there.",
+  "category": "productivity",
+  "target_stack": "communication-collaboration",
+  "icon": "📅",
+  "tags": [
+    "caldav",
+    "carddav",
+    "calendar",
+    "contacts",
+    "sync",
+    "baikal"
+  ],
+  "variables": [
+    {
+      "name": "PORT_BAIKAL",
+      "label": "Web port",
+      "description": "Host port for web port",
+      "default": "8900",
+      "required": false
+    }
+  ]
+}

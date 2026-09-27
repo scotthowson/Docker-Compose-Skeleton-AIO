@@ -1,0 +1,30 @@
+{
+  "name": "unbound",
+  "title": "Unbound",
+  "description": "Unbound is a validating, recursive DNS resolver: it asks the root servers itself instead of forwarding to Google or Cloudflare, with DNSSEC. Made to sit behind AdGuard Home or Pi-hole — set their upstream DNS to <this host's IP>:5335.",
+  "category": "network",
+  "target_stack": "networking-security",
+  "icon": "🧭",
+  "tags": [
+    "dns",
+    "recursive",
+    "resolver",
+    "dnssec",
+    "pihole",
+    "adguard",
+    "unbound"
+  ],
+  "config_path": "Unbound",
+  "route_skip": [
+    "unbound"
+  ],
+  "variables": [
+    {
+      "name": "PORT_UNBOUND",
+      "label": "DNS port",
+      "description": "TCP and UDP; AdGuard/Pi-hole use it as upstream",
+      "default": "5335",
+      "required": false
+    }
+  ]
+}

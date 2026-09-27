@@ -1,0 +1,37 @@
+# =============================================================================
+# Gatus — status page written by the DCS template.
+# Add endpoints, then restart the container. Docs: https://gatus.io/docs
+# =============================================================================
+storage:
+  type: sqlite
+  path: /data/gatus.db
+
+ui:
+  title: ${GATUS_TITLE:-Status}
+  header: ${GATUS_TITLE:-Status}
+
+# alerting:
+#   discord:
+#     webhook-url: https://discord.com/api/webhooks/...
+#     default-alert:
+#       enabled: true
+#       failure-threshold: 3
+#       success-threshold: 2
+#       send-on-resolved: true
+
+endpoints:
+  - name: DCS API
+    group: infrastructure
+    url: http://host.docker.internal:9876/ping
+    interval: 60s
+    conditions:
+      - "[STATUS] == 200"
+      - "[BODY].ok == true"
+
+  - name: Internet
+    group: infrastructure
+    url: https://1.1.1.1
+    interval: 5m
+    conditions:
+      - "[STATUS] == 200"
+      - "[RESPONSE_TIME] < 1000"

@@ -1,0 +1,24 @@
+{
+  "name": "drawio",
+  "title": "draw.io",
+  "description": "The diagrams.net editor served from your own server: flowcharts, network and architecture diagrams, saved to your disk or your Nextcloud. No accounts, no cloud.",
+  "category": "productivity",
+  "target_stack": "communication-collaboration",
+  "icon": "📐",
+  "tags": [
+    "diagrams",
+    "drawio",
+    "diagrams.net",
+    "flowchart",
+    "architecture"
+  ],
+  "variables": [
+    {
+      "name": "PORT_DRAWIO",
+      "label": "Web port",
+      "description": "Host port for web port",
+      "default": "8290",
+      "required": false
+    }
+  ]
+}

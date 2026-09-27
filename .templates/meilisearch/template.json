@@ -1,0 +1,33 @@
+{
+  "name": "meilisearch",
+  "title": "Meilisearch",
+  "description": "Meilisearch is a fast, typo-tolerant search engine with a simple REST API, used by apps like Karakeep, Linkwarden and your own projects. The master key below protects the API; make search-only keys from it for front-ends.",
+  "category": "databases",
+  "target_stack": "development-tools",
+  "icon": "🔍",
+  "tags": [
+    "search",
+    "full-text",
+    "api",
+    "engine",
+    "meilisearch",
+    "database"
+  ],
+  "variables": [
+    {
+      "name": "PORT_MEILISEARCH",
+      "label": "API port",
+      "description": "Host port for api port",
+      "default": "7700",
+      "required": false
+    },
+    {
+      "name": "MEILISEARCH_MASTER_KEY",
+      "label": "Master key",
+      "description": "Leave empty and DCS generates one; find it later in the stack .env",
+      "default": "",
+      "required": false,
+      "generate": "hex64"
+    }
+  ]
+}

@@ -1,0 +1,40 @@
+{
+  "name": "komga",
+  "title": "Komga",
+  "description": "Komga serves comics, manga and ebooks (CBZ, CBR, PDF, EPUB) to the browser and to apps like Tachiyomi/Mihon and Panels. Create the first user on the web page, then add a library pointing at /data.",
+  "category": "media",
+  "target_stack": "media-services",
+  "icon": "📚",
+  "tags": [
+    "comics",
+    "manga",
+    "ebooks",
+    "reader",
+    "library",
+    "komga",
+    "media"
+  ],
+  "variables": [
+    {
+      "name": "PORT_KOMGA",
+      "label": "Web port",
+      "description": "Host port for web port",
+      "default": "25600",
+      "required": false
+    },
+    {
+      "name": "COMICS_PATH",
+      "label": "Comics folder",
+      "description": "Host directory with your comics and books (read-only inside the container)",
+      "default": "/srv/media/comics",
+      "required": true
+    },
+    {
+      "name": "KOMGA_MEMORY",
+      "label": "Java heap",
+      "description": "Maximum memory for Komga (e.g. 512m, 2g)",
+      "default": "1g",
+      "required": false
+    }
+  ]
+}

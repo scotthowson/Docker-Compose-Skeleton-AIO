@@ -1,0 +1,29 @@
+services:
+  kopia:
+    container_name: Kopia
+    image: kopia/kopia:latest
+    restart: unless-stopped
+    command:
+      - server
+      - start
+      - --insecure
+      - --address=0.0.0.0:51515
+      - --server-username=${KOPIA_UI_USER:-kopia}
+      - --server-password=${KOPIA_UI_PASSWORD}
+    environment:
+      - TZ=${TZ:-UTC}
+      - KOPIA_PASSWORD=${KOPIA_REPO_PASSWORD}
+    ports:
+      - "${PORT_KOPIA:-51515}:51515"
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Kopia/config:/app/config
+      - ${APP_DATA_DIR:-./App-Data}/Kopia/cache:/app/cache
+      - ${APP_DATA_DIR:-./App-Data}/Kopia/logs:/app/logs
+      - ${KOPIA_REPOSITORY_PATH:-/srv/backups/kopia}:/repository
+      - ${KOPIA_SOURCE_PATH:-/srv}:/data:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:51515/ | grep -qE '^(200|401)$'"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s

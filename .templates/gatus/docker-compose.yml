@@ -1,0 +1,15 @@
+services:
+  gatus:
+    container_name: Gatus
+    image: twinproduction/gatus:latest
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-UTC}
+      - GATUS_CONFIG_PATH=/config
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "${PORT_GATUS:-8480}:8080"
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Gatus/config:/config
+      - ${APP_DATA_DIR:-./App-Data}/Gatus/data:/data

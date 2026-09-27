@@ -1,0 +1,40 @@
+{
+  "name": "headscale",
+  "title": "Headscale",
+  "description": "Headscale is a self-hosted Tailscale control server: your own mesh VPN with MagicDNS and no account at Tailscale. Set the public URL clients will use (put it behind Traefik), then create a user and keys with docker exec Headscale headscale users create <name> and … preauthkeys create --user <name>; clients join with tailscale up --login-server <url>.",
+  "category": "vpn",
+  "target_stack": "networking-security",
+  "icon": "🛰️",
+  "tags": [
+    "vpn",
+    "tailscale",
+    "headscale",
+    "wireguard",
+    "mesh",
+    "control-server"
+  ],
+  "config_path": "Headscale",
+  "variables": [
+    {
+      "name": "PORT_HEADSCALE",
+      "label": "API port",
+      "description": "Clients and Traefik reach the control server here",
+      "default": "8585",
+      "required": false
+    },
+    {
+      "name": "HEADSCALE_SERVER_URL",
+      "label": "Public URL",
+      "description": "The URL clients log in at — must be reachable from every device (normally the Traefik route)",
+      "default": "https://headscale.example.com",
+      "required": true
+    },
+    {
+      "name": "HEADSCALE_BASE_DOMAIN",
+      "label": "MagicDNS domain",
+      "description": "Devices become <name>.<this domain>; must differ from the public URL's domain",
+      "default": "tailnet.internal",
+      "required": false
+    }
+  ]
+}

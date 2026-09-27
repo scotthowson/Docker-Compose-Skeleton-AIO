@@ -1,0 +1,39 @@
+{
+  "name": "navidrome",
+  "title": "Navidrome",
+  "description": "Navidrome streams your music collection to the browser and to any Subsonic app (Symfonium, play:Sub, DSub, Ultrasonic…). Point it at the folder with your files; the first account you create is the admin.",
+  "category": "media",
+  "target_stack": "media-services",
+  "icon": "🎵",
+  "tags": [
+    "music",
+    "streaming",
+    "subsonic",
+    "audio",
+    "navidrome",
+    "media"
+  ],
+  "variables": [
+    {
+      "name": "PORT_NAVIDROME",
+      "label": "Web port",
+      "description": "Host port for web port",
+      "default": "4533",
+      "required": false
+    },
+    {
+      "name": "MUSIC_PATH",
+      "label": "Music folder",
+      "description": "Host directory with your music (read-only inside the container)",
+      "default": "/srv/media/music",
+      "required": true
+    },
+    {
+      "name": "NAVIDROME_SCAN_SCHEDULE",
+      "label": "Library scan interval",
+      "description": "How often to look for new files (Go duration, e.g. 30m, 6h, 0 to disable)",
+      "default": "1h",
+      "required": false
+    }
+  ]
+}

@@ -1,0 +1,20 @@
+services:
+  komga:
+    container_name: Komga
+    image: gotson/komga:latest
+    restart: unless-stopped
+    user: "${PUID:-1000}:${PGID:-1000}"
+    environment:
+      - TZ=${TZ:-UTC}
+      - JAVA_TOOL_OPTIONS=-Xmx${KOMGA_MEMORY:-1g}
+    ports:
+      - "${PORT_KOMGA:-25600}:25600"
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Komga/config:/config
+      - ${COMICS_PATH:-/srv/media/comics}:/data:ro
+    healthcheck:
+      test: ["CMD", "curl", "-fso", "/dev/null", "http://127.0.0.1:25600/actuator/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 90s

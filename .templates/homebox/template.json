@@ -1,0 +1,42 @@
+{
+  "name": "homebox",
+  "title": "Homebox",
+  "description": "Homebox keeps an inventory of the things you own: locations, labels, warranties, receipts, QR labels for storage boxes and a fast search. Register the first account on the web page, then switch registration off here if you like.",
+  "category": "productivity",
+  "target_stack": "entertainment-personal",
+  "icon": "📦",
+  "tags": [
+    "inventory",
+    "home",
+    "organization",
+    "warranty",
+    "labels",
+    "homebox"
+  ],
+  "variables": [
+    {
+      "name": "PORT_HOMEBOX",
+      "label": "Web port",
+      "description": "Host port for web port",
+      "default": "7745",
+      "required": false
+    },
+    {
+      "name": "HOMEBOX_ALLOW_REGISTRATION",
+      "label": "Open registration",
+      "description": "Anyone who reaches the page may create an account while this is on; turn it off after creating yours",
+      "default": "true",
+      "required": false,
+      "options": [
+        {
+          "value": "true",
+          "label": "On (needed for the first account)"
+        },
+        {
+          "value": "false",
+          "label": "Off"
+        }
+      ]
+    }
+  ]
+}

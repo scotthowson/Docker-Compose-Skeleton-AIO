@@ -1,0 +1,44 @@
+services:
+  mattermost:
+    container_name: Mattermost
+    image: mattermost/mattermost-team-edition:latest
+    restart: unless-stopped
+    user: "${PUID:-1000}:${PGID:-1000}"
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 200
+    environment:
+      - TZ=${TZ:-UTC}
+      - MM_SQLSETTINGS_DRIVERNAME=postgres
+      - MM_SQLSETTINGS_DATASOURCE=postgres://mattermost:${MATTERMOST_DB_PASSWORD}@mattermost-db:5432/mattermost?sslmode=disable&connect_timeout=10
+      - MM_SERVICESETTINGS_SITEURL=${MATTERMOST_SITE_URL:-http://localhost:8065}
+      - MM_BLEVESETTINGS_INDEXDIR=/mattermost/bleve-indexes
+    ports:
+      - "${PORT_MATTERMOST:-8065}:8065"
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Mattermost/config:/mattermost/config
+      - ${APP_DATA_DIR:-./App-Data}/Mattermost/data:/mattermost/data
+      - ${APP_DATA_DIR:-./App-Data}/Mattermost/logs:/mattermost/logs
+      - ${APP_DATA_DIR:-./App-Data}/Mattermost/plugins:/mattermost/plugins
+      - ${APP_DATA_DIR:-./App-Data}/Mattermost/client-plugins:/mattermost/client/plugins
+      - ${APP_DATA_DIR:-./App-Data}/Mattermost/bleve-indexes:/mattermost/bleve-indexes
+    depends_on:
+      mattermost-db:
+        condition: service_healthy
+    # no healthcheck: the image ships neither a shell nor curl
+  mattermost-db:
+    container_name: Mattermost-DB
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=mattermost
+      - POSTGRES_PASSWORD=${MATTERMOST_DB_PASSWORD}
+      - POSTGRES_DB=mattermost
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Mattermost/db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mattermost -d mattermost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s

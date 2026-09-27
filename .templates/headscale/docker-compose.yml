@@ -1,0 +1,13 @@
+services:
+  headscale:
+    container_name: Headscale
+    image: headscale/headscale:stable
+    restart: unless-stopped
+    command: serve
+    environment:
+      - TZ=${TZ:-UTC}
+    ports:
+      - "${PORT_HEADSCALE:-8585}:8080"
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Headscale/config:/etc/headscale
+      - ${APP_DATA_DIR:-./App-Data}/Headscale/data:/var/lib/headscale

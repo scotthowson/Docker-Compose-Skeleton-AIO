@@ -1,0 +1,40 @@
+{
+  "name": "docker-registry",
+  "title": "Docker Registry",
+  "description": "A private Docker image registry with a web UI to browse, inspect and delete images. Push with docker push <host>:5000/name:tag; for pushes over plain HTTP add the host to Docker's insecure-registries, or put it behind Traefik for HTTPS. The registry has no login of its own — keep it on the LAN or behind Authelia.",
+  "category": "development",
+  "target_stack": "development-tools",
+  "icon": "🗄️",
+  "tags": [
+    "docker",
+    "registry",
+    "images",
+    "ci",
+    "development"
+  ],
+  "route_skip": [
+    "registry"
+  ],
+  "variables": [
+    {
+      "name": "PORT_REGISTRY",
+      "label": "Registry port",
+      "description": "Host port docker push/pull talk to",
+      "default": "5000",
+      "required": false
+    },
+    {
+      "name": "PORT_REGISTRY_UI",
+      "label": "Web UI port",
+      "description": "Host port for web ui port",
+      "default": "5002",
+      "required": false
+    },
+    {
+      "name": "REGISTRY_TITLE",
+      "label": "UI title",
+      "default": "Docker Registry",
+      "required": false
+    }
+  ]
+}

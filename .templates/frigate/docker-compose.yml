@@ -1,0 +1,29 @@
+services:
+  frigate:
+    container_name: Frigate
+    image: ghcr.io/blakeblackshear/frigate:stable
+    restart: unless-stopped
+    shm_size: "${FRIGATE_SHM_SIZE:-256mb}"
+    stop_grace_period: 30s
+    environment:
+      - TZ=${TZ:-UTC}
+      - FRIGATE_RTSP_PASSWORD=${FRIGATE_RTSP_PASSWORD:-}
+    ports:
+      - "${PORT_FRIGATE:-8971}:8971"
+      - "${PORT_FRIGATE_RTSP:-8554}:8554"
+      - "${PORT_FRIGATE_WEBRTC:-8555}:8555/tcp"
+      - "${PORT_FRIGATE_WEBRTC:-8555}:8555/udp"
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Frigate/config:/config
+      - ${FRIGATE_MEDIA_PATH:-/srv/media/frigate}:/media/frigate
+      - /etc/localtime:/etc/localtime:ro
+      - type: tmpfs
+        target: /tmp/cache
+        tmpfs:
+          size: 1000000000
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "--output", "/dev/null", "http://127.0.0.1:5000/api/version"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s

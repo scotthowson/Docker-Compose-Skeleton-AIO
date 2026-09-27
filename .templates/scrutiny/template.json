@@ -1,0 +1,26 @@
+{
+  "name": "scrutiny",
+  "title": "Scrutiny",
+  "description": "Scrutiny reads S.M.A.R.T. data from every disk and NVMe on this host, keeps the history and warns before a drive fails, with a clean dashboard. Runs privileged so it can see the drives; all-in-one image with its own InfluxDB.",
+  "category": "monitoring",
+  "target_stack": "monitoring-management",
+  "icon": "💽",
+  "tags": [
+    "smart",
+    "disks",
+    "nvme",
+    "health",
+    "storage",
+    "scrutiny",
+    "monitoring"
+  ],
+  "variables": [
+    {
+      "name": "PORT_SCRUTINY",
+      "label": "Web port",
+      "description": "Host port for web port",
+      "default": "8482",
+      "required": false
+    }
+  ]
+}

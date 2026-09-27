@@ -14158,6 +14158,11 @@ OVERRIDE_EOF
                 local _svc_name
                 while IFS= read -r _svc_name; do
                     [[ -z "$_svc_name" ]] && continue
+                    # A template lists non-HTTP services (game, voice, MQTT, DNS ports) in
+                    # route_skip: no route, no DNS record, no proxy network for those
+                    if [[ -f "$tdir/template.json" ]] && jq -e --arg s "$_svc_name" '(.route_skip // []) | index($s) != null' "$tdir/template.json" >/dev/null 2>&1; then
+                        continue
+                    fi
 
                     local _route_exists=false
                     [[ -f "$traefik_routes_dir/$target_stack/${_svc_name}.yml" ]] && _route_exists=true
@@ -14444,6 +14449,23 @@ print('\n'.join(result))
                 done
             fi
 
+            # The deployed services' App-Data bind-mount directories exist and
+            # belong to PUID:PGID before the first start, so an image that runs
+            # as that user (Komga, Node-RED, Mattermost, Navidrome…) comes up
+            # cleanly instead of crashing on a root-owned directory Docker would
+            # otherwise create. File mounts (traefik.yml, *.conf) are left alone.
+            # shellcheck disable=SC2086
+            while IFS= read -r _vol_path; do
+                [[ -n "$_vol_path" ]] || continue
+                if [[ ! -e "$_vol_path" ]]; then
+                    [[ "$(basename "$_vol_path")" == *.* ]] && continue
+                    mkdir -p "$_vol_path" 2>/dev/null || continue
+                fi
+                [[ -d "$_vol_path" ]] || continue
+                if [[ "$(stat -c '%u' "$_vol_path" 2>/dev/null)" != "$_puid" && "$_puid" != "0" ]]; then
+                    chown "$_puid:$_pgid" "$_vol_path" 2>/dev/null || docker run --rm -v "$_vol_path:/d" alpine chown "$_puid:$_pgid" /d 2>/dev/null || true
+                fi
+            done < <(_compose_bind_mounts "$target_dir" "$_ad" $_svc_list)
             # Start ONLY the deployed services. Compose recreates a replaced
             # service (its definition changed) and leaves the rest of the stack
             # alone; the plain progress output feeds the activity log.

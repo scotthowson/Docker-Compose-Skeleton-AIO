@@ -1,0 +1,85 @@
+{
+  "name": "zigbee2mqtt",
+  "title": "Zigbee2MQTT",
+  "description": "Zigbee2MQTT bridges a Zigbee USB coordinator (Sonoff Dongle Plus, SkyConnect, ConBee…) to MQTT with a web frontend and Home Assistant discovery. Needs the Mosquitto template (or another broker) and the coordinator plugged into this host: find its stable path with ls /dev/serial/by-id/.",
+  "category": "automation",
+  "target_stack": "miscellaneous-services",
+  "icon": "🐝",
+  "tags": [
+    "zigbee",
+    "mqtt",
+    "home-automation",
+    "smart-home",
+    "home-assistant",
+    "iot"
+  ],
+  "variables": [
+    {
+      "name": "PORT_ZIGBEE2MQTT",
+      "label": "Frontend port",
+      "description": "Host port for frontend port",
+      "default": "8081",
+      "required": false
+    },
+    {
+      "name": "ZIGBEE_DEVICE",
+      "label": "Coordinator device",
+      "description": "Host path of the Zigbee USB stick; a /dev/serial/by-id/... path survives reboots",
+      "default": "/dev/ttyUSB0",
+      "required": true
+    },
+    {
+      "name": "ZIGBEE_ADAPTER",
+      "label": "Adapter type",
+      "description": "zstack for Texas Instruments sticks (Sonoff Dongle Plus P, CC2652), ember for Silicon Labs (SkyConnect, Dongle Plus E, SLZB-06M), deconz for ConBee/RaspBee, zigate, zboss",
+      "default": "zstack",
+      "required": false,
+      "options": [
+        {
+          "value": "zstack",
+          "label": "zstack — Sonoff Dongle Plus P, CC2652, CC2531"
+        },
+        {
+          "value": "ember",
+          "label": "ember — SkyConnect, Sonoff Dongle Plus E, SLZB-06M"
+        },
+        {
+          "value": "deconz",
+          "label": "deconz — ConBee II/III, RaspBee"
+        },
+        {
+          "value": "zigate",
+          "label": "zigate"
+        },
+        {
+          "value": "zboss",
+          "label": "zboss — nRF52840"
+        }
+      ]
+    },
+    {
+      "name": "MQTT_SERVER",
+      "label": "MQTT broker",
+      "description": "Broker URL; the Mosquitto template in the same stack is mqtt://Mosquitto:1883, elsewhere use mqtt://<ip>:1883",
+      "default": "mqtt://Mosquitto:1883",
+      "required": false
+    },
+    {
+      "name": "Z2M_HOME_ASSISTANT",
+      "label": "Home Assistant discovery",
+      "description": "Publish devices so Home Assistant finds them automatically",
+      "default": "true",
+      "required": false,
+      "options": [
+        {
+          "value": "true",
+          "label": "On"
+        },
+        {
+          "value": "false",
+          "label": "Off"
+        }
+      ]
+    }
+  ]
+}

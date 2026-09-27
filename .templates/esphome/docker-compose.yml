@@ -1,0 +1,21 @@
+services:
+  esphome:
+    container_name: ESPHome
+    image: ghcr.io/esphome/esphome:stable
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-UTC}
+      - ESPHOME_DASHBOARD_USE_PING=true
+      - USERNAME=${ESPHOME_USERNAME:-}
+      - PASSWORD=${ESPHOME_PASSWORD:-}
+    ports:
+      - "${PORT_ESPHOME:-6052}:6052"
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/ESPHome/config:/config
+      - /etc/localtime:/etc/localtime:ro
+    healthcheck:
+      test: ["CMD", "curl", "-fso", "/dev/null", "http://127.0.0.1:6052/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s

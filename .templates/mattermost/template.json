@@ -1,0 +1,40 @@
+{
+  "name": "mattermost",
+  "title": "Mattermost",
+  "description": "Mattermost Team Edition: a self-hosted Slack — channels, threads, calls, file sharing and integrations, with PostgreSQL. The first account created becomes the system admin; set the site URL to the address people will use (behind Traefik: https://mattermost.<your domain>).",
+  "category": "communication",
+  "target_stack": "communication-collaboration",
+  "icon": "💬",
+  "tags": [
+    "chat",
+    "team",
+    "slack",
+    "messaging",
+    "collaboration",
+    "mattermost"
+  ],
+  "variables": [
+    {
+      "name": "PORT_MATTERMOST",
+      "label": "Web port",
+      "description": "Host port for web port",
+      "default": "8065",
+      "required": false
+    },
+    {
+      "name": "MATTERMOST_SITE_URL",
+      "label": "Site URL",
+      "description": "The URL users open Mattermost at; links in e-mails and notifications use it",
+      "default": "http://localhost:8065",
+      "required": true
+    },
+    {
+      "name": "MATTERMOST_DB_PASSWORD",
+      "label": "Database password",
+      "description": "Leave empty and DCS generates one on deploy",
+      "default": "",
+      "required": false,
+      "generate": "hex64"
+    }
+  ]
+}

@@ -1,0 +1,41 @@
+{
+  "name": "wordpress",
+  "title": "WordPress",
+  "description": "WordPress with its own MariaDB: the first visit runs the famous five-minute install. Files (themes, plugins, uploads) live in App-Data/WordPress/html; put it behind Traefik and set the site URL to the https address in Settings → General.",
+  "category": "web",
+  "target_stack": "web-applications",
+  "icon": "🅦",
+  "tags": [
+    "wordpress",
+    "blog",
+    "cms",
+    "website",
+    "php",
+    "mariadb"
+  ],
+  "variables": [
+    {
+      "name": "PORT_WORDPRESS",
+      "label": "Web port",
+      "description": "Host port for web port",
+      "default": "8280",
+      "required": false
+    },
+    {
+      "name": "WORDPRESS_DB_PASSWORD",
+      "label": "Database password",
+      "description": "Leave empty and DCS generates one on deploy",
+      "default": "",
+      "required": false,
+      "generate": "hex64"
+    },
+    {
+      "name": "WORDPRESS_DB_ROOT_PASSWORD",
+      "label": "Database root password",
+      "description": "Leave empty and DCS generates one on deploy",
+      "default": "",
+      "required": false,
+      "generate": "hex64"
+    }
+  ]
+}

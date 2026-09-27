@@ -3,6 +3,31 @@
 All notable changes to Docker Compose Skeleton AIO are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [3.7.0] - 2026-09-27
+
+### Added
+
+- **45 templates** (151 in the catalogue). Every one was deployed for real and watched until
+  healthy before it shipped; each description says what to do after the first start.
+  - Home automation: Mosquitto MQTT (config with anonymous/password modes), Zigbee2MQTT (adapter
+    picker, MQTT and Home Assistant wired), Node-RED, ESPHome, Frigate NVR (starter config).
+  - Media: Navidrome, Komga, MeTube, Jellystat (+PostgreSQL), PhotoPrism (+MariaDB).
+  - Monitoring: Beszel hub and Beszel Agent, Gatus (status page with two starter checks),
+    Scrutiny (S.M.A.R.T.), Prometheus exporters (Node Exporter + cAdvisor on 127.0.0.1).
+  - Productivity: Wiki.js (+PostgreSQL), Homebox, Grocy, Obsidian LiveSync (CouchDB tuned for
+    the plugin), draw.io, ONLYOFFICE Docs (JWT ready for Nextcloud), Baïkal CalDAV/CardDAV.
+  - Development & data: Docker Registry with web UI, JupyterLab, Mailpit, Umami (+PostgreSQL),
+    NocoDB, Metabase, Meilisearch.
+  - Network: Tailscale (subnet routes, exit node, Headscale login), Headscale (config written for
+    you), Unbound recursive DNS for AdGuard/Pi-hole.
+  - Web: WordPress (+MariaDB), Shlink with its web client pre-connected.
+  - Gaming: Minecraft (Paper/Vanilla/Fabric/Forge/Purpur), Valheim, RomM (+MariaDB).
+  - Storage: Kopia, PairDrop, SFTPGo. Remote: Apache Guacamole, Webtop.
+  - Communication: Mattermost (+PostgreSQL), Mumble. AI: LibreTranslate.
+- **`route_skip`** in `template.json`: services that must not get a Traefik route, DNS record or
+  proxy network (game, voice, MQTT and DNS ports). The README now has a reference of every
+  `template.json` field.
+
 ## [3.6.0] - 2026-09-27
 
 ### Added

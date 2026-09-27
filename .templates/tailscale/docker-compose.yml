@@ -1,0 +1,27 @@
+services:
+  tailscale:
+    container_name: Tailscale
+    image: tailscale/tailscale:latest
+    restart: unless-stopped
+    network_mode: host
+    hostname: ${TAILSCALE_HOSTNAME:-dcs}
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    environment:
+      - TZ=${TZ:-UTC}
+      - TS_AUTHKEY=${TAILSCALE_AUTHKEY}
+      - TS_HOSTNAME=${TAILSCALE_HOSTNAME:-dcs}
+      - TS_STATE_DIR=/var/lib/tailscale
+      - TS_USERSPACE=false
+      - TS_ROUTES=${TAILSCALE_ROUTES:-}
+      - TS_EXTRA_ARGS=${TAILSCALE_EXTRA_ARGS:-}
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Tailscale/state:/var/lib/tailscale
+      - /dev/net/tun:/dev/net/tun
+    healthcheck:
+      test: ["CMD", "tailscale", "status"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s

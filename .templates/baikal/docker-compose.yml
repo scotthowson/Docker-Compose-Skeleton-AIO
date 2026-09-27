@@ -1,0 +1,18 @@
+services:
+  baikal:
+    container_name: Baikal
+    image: ckulka/baikal:nginx
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-UTC}
+    ports:
+      - "${PORT_BAIKAL:-8900}:80"
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Baikal/config:/var/www/baikal/config
+      - ${APP_DATA_DIR:-./App-Data}/Baikal/data:/var/www/baikal/Specific
+    healthcheck:
+      test: ["CMD", "curl", "-fso", "/dev/null", "http://127.0.0.1:80/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s

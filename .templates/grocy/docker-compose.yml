@@ -1,0 +1,19 @@
+services:
+  grocy:
+    container_name: Grocy
+    image: lscr.io/linuxserver/grocy:latest
+    restart: unless-stopped
+    environment:
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+      - TZ=${TZ:-UTC}
+    ports:
+      - "${PORT_GROCY:-9283}:80"
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Grocy/config:/config
+    healthcheck:
+      test: ["CMD", "curl", "-fso", "/dev/null", "http://127.0.0.1:80/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s

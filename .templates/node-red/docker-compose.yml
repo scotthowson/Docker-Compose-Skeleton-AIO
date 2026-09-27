@@ -1,0 +1,19 @@
+services:
+  node-red:
+    container_name: Node-RED
+    image: nodered/node-red:latest
+    restart: unless-stopped
+    user: "${PUID:-1000}:${PGID:-1000}"
+    environment:
+      - TZ=${TZ:-UTC}
+      - NODE_RED_ENABLE_PROJECTS=${NODE_RED_PROJECTS:-false}
+    ports:
+      - "${PORT_NODE_RED:-1880}:1880"
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Node-RED/data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fso", "/dev/null", "http://127.0.0.1:1880/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s

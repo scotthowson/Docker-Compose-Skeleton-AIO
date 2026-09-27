@@ -1,0 +1,46 @@
+{
+  "name": "webtop",
+  "title": "Webtop",
+  "description": "A full Linux desktop (Alpine XFCE by default) in a browser tab, from LinuxServer. Handy as a jump box on your LAN or for running a GUI tool on the server; the home directory persists in App-Data/Webtop/config. Set a password here or put it behind Authelia.",
+  "category": "remote",
+  "target_stack": "miscellaneous-services",
+  "icon": "🪟",
+  "tags": [
+    "desktop",
+    "linux",
+    "browser",
+    "xfce",
+    "kasm",
+    "webtop"
+  ],
+  "variables": [
+    {
+      "name": "PORT_WEBTOP",
+      "label": "Web port",
+      "description": "Host port for web port",
+      "default": "3016",
+      "required": false
+    },
+    {
+      "name": "WEBTOP_TITLE",
+      "label": "Window title",
+      "default": "Webtop",
+      "required": false
+    },
+    {
+      "name": "WEBTOP_USER",
+      "label": "Login username",
+      "description": "Optional HTTP login for the desktop",
+      "default": "",
+      "required": false
+    },
+    {
+      "name": "WEBTOP_PASSWORD",
+      "label": "Login password",
+      "description": "Set together with the username",
+      "default": "",
+      "required": false,
+      "type": "password"
+    }
+  ]
+}

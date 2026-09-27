@@ -1,0 +1,70 @@
+{
+  "name": "shlink",
+  "title": "Shlink",
+  "description": "Shlink is a URL shortener with visit statistics, QR codes and an API, plus the web client to manage links in the browser. Set the short domain (behind Traefik: shlink.<your domain>); the web client opens pre-connected to this server.",
+  "category": "web",
+  "target_stack": "web-applications",
+  "icon": "🔗",
+  "tags": [
+    "url-shortener",
+    "links",
+    "qr",
+    "analytics",
+    "shlink"
+  ],
+  "variables": [
+    {
+      "name": "PORT_SHLINK",
+      "label": "API / short-link port",
+      "description": "Host port for api / short-link port",
+      "default": "8380",
+      "required": false
+    },
+    {
+      "name": "PORT_SHLINK_WEB",
+      "label": "Web client port",
+      "description": "Host port for web client port",
+      "default": "8381",
+      "required": false
+    },
+    {
+      "name": "SHLINK_DOMAIN",
+      "label": "Short domain",
+      "description": "Domain short links are built on, e.g. s.example.com (without https://)",
+      "default": "localhost:8380",
+      "required": true
+    },
+    {
+      "name": "SHLINK_HTTPS",
+      "label": "Served over HTTPS",
+      "description": "true when Traefik terminates TLS for the short domain",
+      "default": "false",
+      "required": false,
+      "options": [
+        {
+          "value": "false",
+          "label": "No — plain http"
+        },
+        {
+          "value": "true",
+          "label": "Yes — behind Traefik"
+        }
+      ]
+    },
+    {
+      "name": "SHLINK_PUBLIC_URL",
+      "label": "API URL for the web client",
+      "description": "What the browser uses to reach the Shlink API (the short domain with its scheme)",
+      "default": "http://localhost:8380",
+      "required": false
+    },
+    {
+      "name": "SHLINK_INITIAL_API_KEY",
+      "label": "API key",
+      "description": "Leave empty and DCS generates one; it is also pre-filled in the web client",
+      "default": "",
+      "required": false,
+      "generate": "hex64"
+    }
+  ]
+}

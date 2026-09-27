@@ -1,0 +1,22 @@
+services:
+  mosquitto:
+    container_name: Mosquitto
+    image: eclipse-mosquitto:2
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-UTC}
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+    ports:
+      - "${PORT_MQTT:-1883}:1883"
+      - "${PORT_MQTT_WS:-9002}:9001"
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Mosquitto/config:/mosquitto/config
+      - ${APP_DATA_DIR:-./App-Data}/Mosquitto/data:/mosquitto/data
+      - ${APP_DATA_DIR:-./App-Data}/Mosquitto/log:/mosquitto/log
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 1883 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

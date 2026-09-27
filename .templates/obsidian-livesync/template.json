@@ -1,0 +1,41 @@
+{
+  "name": "obsidian-livesync",
+  "title": "Obsidian LiveSync",
+  "description": "A CouchDB tuned for the Self-hosted LiveSync plugin, so your Obsidian vaults sync between every device through your own server. In the plugin's setup wizard use this URL (behind Traefik: https://obsidian-livesync.<your domain>), the username and password below, and any database name.",
+  "category": "notes",
+  "target_stack": "communication-collaboration",
+  "icon": "💎",
+  "tags": [
+    "obsidian",
+    "notes",
+    "sync",
+    "couchdb",
+    "markdown",
+    "livesync"
+  ],
+  "config_path": "Obsidian-LiveSync",
+  "variables": [
+    {
+      "name": "PORT_COUCHDB",
+      "label": "CouchDB port",
+      "description": "Host port for couchdb port",
+      "default": "5984",
+      "required": false
+    },
+    {
+      "name": "COUCHDB_USER",
+      "label": "Username",
+      "description": "Admin user the plugin logs in with",
+      "default": "obsidian",
+      "required": false
+    },
+    {
+      "name": "COUCHDB_PASSWORD",
+      "label": "Password",
+      "description": "Set it here and paste it into the plugin",
+      "default": "",
+      "required": true,
+      "type": "password"
+    }
+  ]
+}

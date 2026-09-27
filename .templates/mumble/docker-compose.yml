@@ -1,0 +1,22 @@
+services:
+  mumble:
+    container_name: Mumble
+    image: mumblevoip/mumble-server:latest
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-UTC}
+      - MUMBLE_SUPERUSER_PASSWORD=${MUMBLE_SUPERUSER_PASSWORD}
+      - MUMBLE_CONFIG_SERVER_PASSWORD=${MUMBLE_PASSWORD:-}
+      - MUMBLE_CONFIG_WELCOME_TEXT=${MUMBLE_WELCOME:-Welcome to Mumble}
+      - MUMBLE_CONFIG_USERS=${MUMBLE_MAX_USERS:-100}
+    ports:
+      - "${PORT_MUMBLE:-64738}:64738/tcp"
+      - "${PORT_MUMBLE:-64738}:64738/udp"
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Mumble/data:/data
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/64738"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s

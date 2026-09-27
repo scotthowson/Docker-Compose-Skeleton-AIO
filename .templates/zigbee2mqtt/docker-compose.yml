@@ -1,0 +1,26 @@
+services:
+  zigbee2mqtt:
+    container_name: Zigbee2MQTT
+    image: koenkk/zigbee2mqtt:latest
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-UTC}
+      - ZIGBEE2MQTT_CONFIG_MQTT_SERVER=${MQTT_SERVER:-mqtt://Mosquitto:1883}
+      - ZIGBEE2MQTT_CONFIG_SERIAL_PORT=/dev/ttyACM0
+      - ZIGBEE2MQTT_CONFIG_SERIAL_ADAPTER=${ZIGBEE_ADAPTER:-zstack}
+      - ZIGBEE2MQTT_CONFIG_FRONTEND_ENABLED=true
+      - ZIGBEE2MQTT_CONFIG_FRONTEND_PORT=8080
+      - ZIGBEE2MQTT_CONFIG_HOMEASSISTANT_ENABLED=${Z2M_HOME_ASSISTANT:-true}
+    devices:
+      - ${ZIGBEE_DEVICE:-/dev/ttyUSB0}:/dev/ttyACM0
+    ports:
+      - "${PORT_ZIGBEE2MQTT:-8081}:8080"
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Zigbee2MQTT/data:/app/data
+      - /run/udev:/run/udev:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/ >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s

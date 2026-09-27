@@ -1,0 +1,41 @@
+services:
+  wikijs:
+    container_name: WikiJS
+    image: ghcr.io/requarks/wiki:2
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-UTC}
+      - DB_TYPE=postgres
+      - DB_HOST=wikijs-db
+      - DB_PORT=5432
+      - DB_USER=wikijs
+      - DB_PASS=${WIKIJS_DB_PASSWORD}
+      - DB_NAME=wiki
+    ports:
+      - "${PORT_WIKIJS:-3012}:3000"
+    depends_on:
+      wikijs-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fso", "/dev/null", "http://127.0.0.1:3000/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+
+  wikijs-db:
+    container_name: WikiJS-DB
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=wikijs
+      - POSTGRES_PASSWORD=${WIKIJS_DB_PASSWORD}
+      - POSTGRES_DB=wiki
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/WikiJS/db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wikijs -d wiki"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s

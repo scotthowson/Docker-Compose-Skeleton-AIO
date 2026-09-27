@@ -1,0 +1,40 @@
+{
+  "name": "esphome",
+  "title": "ESPHome",
+  "description": "ESPHome dashboard: write YAML for ESP32/ESP8266 boards, compile and flash them over USB or over the air, and they show up in Home Assistant. Device status uses ping (no host networking needed).",
+  "category": "automation",
+  "target_stack": "miscellaneous-services",
+  "icon": "🔌",
+  "tags": [
+    "esphome",
+    "esp32",
+    "esp8266",
+    "home-assistant",
+    "iot",
+    "firmware"
+  ],
+  "variables": [
+    {
+      "name": "PORT_ESPHOME",
+      "label": "Dashboard port",
+      "description": "Host port for dashboard port",
+      "default": "6052",
+      "required": false
+    },
+    {
+      "name": "ESPHOME_USERNAME",
+      "label": "Dashboard username",
+      "description": "Leave both empty for no login (fine behind Authelia)",
+      "default": "",
+      "required": false
+    },
+    {
+      "name": "ESPHOME_PASSWORD",
+      "label": "Dashboard password",
+      "description": "Set together with the username",
+      "default": "",
+      "required": false,
+      "type": "password"
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+services:
+  beszel:
+    container_name: Beszel
+    image: henrygd/beszel:latest
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-UTC}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "${PORT_BESZEL:-8790}:8090"
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Beszel/data:/beszel_data
+    healthcheck:
+      test: ["CMD", "/beszel", "health", "--url", "http://localhost:8090"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s

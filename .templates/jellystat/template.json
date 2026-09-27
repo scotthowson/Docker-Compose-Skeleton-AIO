@@ -1,0 +1,41 @@
+{
+  "name": "jellystat",
+  "title": "Jellystat",
+  "description": "Jellystat is Tautulli for Jellyfin: watch history, most played, active streams and library statistics. After deploy, open it, create the admin account and paste your Jellyfin URL and API key (Jellyfin → Dashboard → API Keys).",
+  "category": "monitoring",
+  "target_stack": "media-services",
+  "icon": "📈",
+  "tags": [
+    "jellyfin",
+    "statistics",
+    "watch-history",
+    "analytics",
+    "jellystat",
+    "media"
+  ],
+  "variables": [
+    {
+      "name": "PORT_JELLYSTAT",
+      "label": "Web port",
+      "description": "Host port for web port",
+      "default": "3008",
+      "required": false
+    },
+    {
+      "name": "JELLYSTAT_DB_PASSWORD",
+      "label": "Database password",
+      "description": "Leave empty and DCS generates one on deploy",
+      "default": "",
+      "required": false,
+      "generate": "hex64"
+    },
+    {
+      "name": "JELLYSTAT_JWT_SECRET",
+      "label": "Session secret",
+      "description": "Leave empty and DCS generates one on deploy",
+      "default": "",
+      "required": false,
+      "generate": "hex64"
+    }
+  ]
+}

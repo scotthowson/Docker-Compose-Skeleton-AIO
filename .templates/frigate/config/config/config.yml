@@ -1,0 +1,38 @@
+# =============================================================================
+# Frigate — starter config written by the DCS template.
+# Add cameras below (or in Frigate: Settings → Configuration editor), then
+# restart the container. Docs: https://docs.frigate.video/configuration/
+# The first admin password is printed in the container logs on first start.
+# =============================================================================
+mqtt:
+  enabled: false
+  # host: Mosquitto
+  # user: mqtt
+  # password: '{FRIGATE_MQTT_PASSWORD}'
+
+# Hardware detector (much cheaper than CPU). Uncomment what you have:
+# detectors:
+#   coral:
+#     type: edgetpu
+#     device: usb
+# and add to the compose service:  devices: ["/dev/bus/usb:/dev/bus/usb"]
+
+cameras: {}
+# cameras:
+#   front_door:
+#     enabled: true
+#     ffmpeg:
+#       inputs:
+#         - path: rtsp://admin:{FRIGATE_RTSP_PASSWORD}@192.168.1.20:554/stream1
+#           roles:
+#             - detect
+#             - record
+#     detect:
+#       width: 1280
+#       height: 720
+#       fps: 5
+
+record:
+  enabled: false
+snapshots:
+  enabled: true

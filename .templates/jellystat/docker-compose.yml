@@ -1,0 +1,42 @@
+services:
+  jellystat:
+    container_name: Jellystat
+    image: cyfershepard/jellystat:latest
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-UTC}
+      - POSTGRES_USER=jellystat
+      - POSTGRES_PASSWORD=${JELLYSTAT_DB_PASSWORD}
+      - POSTGRES_IP=jellystat-db
+      - POSTGRES_PORT=5432
+      - JWT_SECRET=${JELLYSTAT_JWT_SECRET}
+    ports:
+      - "${PORT_JELLYSTAT:-3008}:3000"
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Jellystat/backup:/app/backend/backup-data
+    depends_on:
+      jellystat-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/ >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+
+  jellystat-db:
+    container_name: Jellystat-DB
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=jellystat
+      - POSTGRES_PASSWORD=${JELLYSTAT_DB_PASSWORD}
+      - POSTGRES_DB=jfstat
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Jellystat/db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U jellystat -d jfstat"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s

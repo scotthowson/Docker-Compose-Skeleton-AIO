@@ -1,0 +1,34 @@
+services:
+  valheim:
+    container_name: Valheim
+    image: lloesche/valheim-server:latest
+    restart: unless-stopped
+    stop_grace_period: 2m
+    cap_add:
+      - SYS_NICE
+    environment:
+      - TZ=${TZ:-UTC}
+      - SERVER_NAME=${VALHEIM_SERVER_NAME:-DCS Valheim}
+      - WORLD_NAME=${VALHEIM_WORLD:-Dedicated}
+      - SERVER_PASS=${VALHEIM_PASSWORD}
+      - SERVER_PUBLIC=${VALHEIM_PUBLIC:-false}
+      - SERVER_PORT=2456
+      - UPDATE_CRON=*/15 * * * *
+      - BACKUPS_CRON=0 * * * *
+      - BACKUPS_MAX_AGE=3
+      - STATUS_HTTP=true
+      - STATUS_HTTP_PORT=80
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+    ports:
+      - "${PORT_VALHEIM:-2456}:2456/udp"
+      - "${PORT_VALHEIM_QUERY:-2457}:2457/udp"
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Valheim/config:/config
+      - ${APP_DATA_DIR:-./App-Data}/Valheim/server:/opt/valheim
+    healthcheck:
+      test: ["CMD", "curl", "-fso", "/dev/null", "http://127.0.0.1:80/status.json"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 600s

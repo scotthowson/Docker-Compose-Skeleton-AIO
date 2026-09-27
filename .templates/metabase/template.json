@@ -1,0 +1,25 @@
+{
+  "name": "metabase",
+  "title": "Metabase",
+  "description": "Metabase builds dashboards and charts on top of your databases (PostgreSQL, MySQL, SQLite, and more) with a point-and-click query builder — business intelligence without a data team. The first visit runs the setup wizard; connect a database template from the same host by its container name.",
+  "category": "databases",
+  "target_stack": "development-tools",
+  "icon": "📊",
+  "tags": [
+    "bi",
+    "dashboards",
+    "analytics",
+    "sql",
+    "charts",
+    "metabase"
+  ],
+  "variables": [
+    {
+      "name": "PORT_METABASE",
+      "label": "Web port",
+      "description": "Host port for web port",
+      "default": "3014",
+      "required": false
+    }
+  ]
+}

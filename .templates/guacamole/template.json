@@ -1,0 +1,32 @@
+{
+  "name": "guacamole",
+  "title": "Apache Guacamole",
+  "description": "Guacamole is a clientless remote desktop gateway: RDP, VNC and SSH sessions in the browser, all in one image with its own database. First login guacadmin / guacadmin — change it, then add connections under Settings. Put it behind Traefik + Authelia for remote use.",
+  "category": "remote",
+  "target_stack": "miscellaneous-services",
+  "icon": "🖥️",
+  "tags": [
+    "remote-desktop",
+    "rdp",
+    "vnc",
+    "ssh",
+    "gateway",
+    "guacamole"
+  ],
+  "variables": [
+    {
+      "name": "PORT_GUACAMOLE",
+      "label": "Web port",
+      "description": "Host port for web port",
+      "default": "8660",
+      "required": false
+    },
+    {
+      "name": "GUACAMOLE_EXTENSIONS",
+      "label": "Extensions",
+      "description": "Optional comma-separated list, e.g. auth-totp for two-factor logins",
+      "default": "",
+      "required": false
+    }
+  ]
+}

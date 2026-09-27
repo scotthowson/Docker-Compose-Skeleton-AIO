@@ -1,0 +1,20 @@
+services:
+  meilisearch:
+    container_name: Meilisearch
+    image: getmeili/meilisearch:latest
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-UTC}
+      - MEILI_MASTER_KEY=${MEILISEARCH_MASTER_KEY}
+      - MEILI_ENV=production
+      - MEILI_NO_ANALYTICS=true
+    ports:
+      - "${PORT_MEILISEARCH:-7700}:7700"
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Meilisearch/data:/meili_data
+    healthcheck:
+      test: ["CMD", "curl", "-fso", "/dev/null", "http://127.0.0.1:7700/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s

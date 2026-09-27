@@ -1,0 +1,62 @@
+{
+  "name": "valheim",
+  "title": "Valheim Server",
+  "description": "A dedicated Valheim server that installs and updates itself from Steam, with automatic world backups. Friends join with the server name and password; forward UDP 2456-2457 on your router for players outside the LAN. The first start downloads the server (a few minutes).",
+  "category": "gaming",
+  "target_stack": "entertainment-personal",
+  "icon": "🪓",
+  "tags": [
+    "valheim",
+    "game-server",
+    "steam",
+    "gaming"
+  ],
+  "route_skip": [
+    "valheim"
+  ],
+  "variables": [
+    {
+      "name": "PORT_VALHEIM",
+      "label": "Game port",
+      "description": "UDP; the query port is always this + 1",
+      "default": "2456",
+      "required": false
+    },
+    {
+      "name": "VALHEIM_SERVER_NAME",
+      "label": "Server name",
+      "default": "DCS Valheim",
+      "required": false
+    },
+    {
+      "name": "VALHEIM_WORLD",
+      "label": "World name",
+      "default": "Dedicated",
+      "required": false
+    },
+    {
+      "name": "VALHEIM_PASSWORD",
+      "label": "Server password",
+      "description": "At least 5 characters and not part of the server name",
+      "default": "",
+      "required": true,
+      "type": "password"
+    },
+    {
+      "name": "VALHEIM_PUBLIC",
+      "label": "List in the server browser",
+      "default": "false",
+      "required": false,
+      "options": [
+        {
+          "value": "false",
+          "label": "No — private"
+        },
+        {
+          "value": "true",
+          "label": "Yes — public"
+        }
+      ]
+    }
+  ]
+}

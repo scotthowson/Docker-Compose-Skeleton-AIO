@@ -1,0 +1,24 @@
+services:
+  sftpgo:
+    container_name: SFTPGo
+    image: drakkan/sftpgo:v2-alpine
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-UTC}
+      - SFTPGO_DATA_PROVIDER__CREATE_DEFAULT_ADMIN=true
+      - SFTPGO_DEFAULT_ADMIN_USERNAME=${SFTPGO_ADMIN_USER:-admin}
+      - SFTPGO_DEFAULT_ADMIN_PASSWORD=${SFTPGO_ADMIN_PASSWORD}
+      - SFTPGO_HTTPD__BINDINGS__0__PORT=8080
+      - SFTPGO_SFTPD__BINDINGS__0__PORT=2022
+    ports:
+      - "${PORT_SFTPGO_WEB:-8590}:8080"
+      - "${PORT_SFTPGO_SFTP:-2022}:2022"
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/SFTPGo/data:/srv/sftpgo
+      - ${APP_DATA_DIR:-./App-Data}/SFTPGo/home:/var/lib/sftpgo
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/healthz >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s

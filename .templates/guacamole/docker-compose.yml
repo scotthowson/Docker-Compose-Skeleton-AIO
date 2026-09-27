@@ -1,0 +1,18 @@
+services:
+  guacamole:
+    container_name: Guacamole
+    image: flcontainers/guacamole:latest
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-UTC}
+      - EXTENSIONS=${GUACAMOLE_EXTENSIONS:-}
+    ports:
+      - "${PORT_GUACAMOLE:-8660}:8080"
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Guacamole/config:/config
+    healthcheck:
+      test: ["CMD", "curl", "-fso", "/dev/null", "http://127.0.0.1:8080/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 90s

@@ -1,0 +1,49 @@
+services:
+  romm:
+    container_name: RomM
+    image: rommapp/romm:latest
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-UTC}
+      - DB_HOST=romm-db
+      - DB_NAME=romm
+      - DB_USER=romm
+      - DB_PASSWD=${ROMM_DB_PASSWORD}
+      - ROMM_AUTH_SECRET_KEY=${ROMM_AUTH_SECRET_KEY}
+      - IGDB_CLIENT_ID=${ROMM_IGDB_CLIENT_ID:-}
+      - IGDB_CLIENT_SECRET=${ROMM_IGDB_CLIENT_TOKEN:-}
+    ports:
+      - "${PORT_ROMM:-8495}:8080"
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/RomM/resources:/romm/resources
+      - ${APP_DATA_DIR:-./App-Data}/RomM/assets:/romm/assets
+      - ${APP_DATA_DIR:-./App-Data}/RomM/config:/romm/config
+      - ${APP_DATA_DIR:-./App-Data}/RomM/redis:/redis-data
+      - ${ROMM_LIBRARY_PATH:-/srv/media/roms}:/romm/library
+    depends_on:
+      romm-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fso", "/dev/null", "http://127.0.0.1:8080/api/heartbeat"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 90s
+
+  romm-db:
+    container_name: RomM-DB
+    image: mariadb:11
+    restart: unless-stopped
+    environment:
+      - MARIADB_DATABASE=romm
+      - MARIADB_USER=romm
+      - MARIADB_PASSWORD=${ROMM_DB_PASSWORD}
+      - MARIADB_ROOT_PASSWORD=${ROMM_DB_ROOT_PASSWORD}
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/RomM/db:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s

@@ -1,0 +1,30 @@
+services:
+  minecraft:
+    container_name: Minecraft
+    image: itzg/minecraft-server:latest
+    restart: unless-stopped
+    tty: true
+    stdin_open: true
+    stop_grace_period: 1m
+    environment:
+      - TZ=${TZ:-UTC}
+      - EULA=${MINECRAFT_EULA:-TRUE}
+      - TYPE=${MINECRAFT_TYPE:-PAPER}
+      - VERSION=${MINECRAFT_VERSION:-LATEST}
+      - MEMORY=${MINECRAFT_MEMORY:-2G}
+      - MOTD=${MINECRAFT_MOTD:-A DCS Minecraft server}
+      - DIFFICULTY=${MINECRAFT_DIFFICULTY:-normal}
+      - OPS=${MINECRAFT_OPS:-}
+      - ONLINE_MODE=${MINECRAFT_ONLINE_MODE:-true}
+      - UID=${PUID:-1000}
+      - GID=${PGID:-1000}
+    ports:
+      - "${PORT_MINECRAFT:-25565}:25565"
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Minecraft/data:/data
+    healthcheck:
+      test: ["CMD", "mc-health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s

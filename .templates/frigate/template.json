@@ -1,0 +1,66 @@
+{
+  "name": "frigate",
+  "title": "Frigate NVR",
+  "description": "Frigate, the open-source NVR with real-time object detection for IP cameras. Deploys with a starter config and no cameras: add them in Frigate (Settings → Configuration editor) or in App-Data/Frigate/config/config.yml, restart, and read the first admin password from the container logs. A Coral TPU or GPU makes detection cheap; see the config comments.",
+  "category": "automation",
+  "target_stack": "miscellaneous-services",
+  "icon": "📹",
+  "tags": [
+    "nvr",
+    "cameras",
+    "cctv",
+    "object-detection",
+    "home-assistant",
+    "security",
+    "frigate"
+  ],
+  "config_path": "Frigate",
+  "route_skip": [
+    "frigate-rtsp"
+  ],
+  "variables": [
+    {
+      "name": "PORT_FRIGATE",
+      "label": "Web UI port",
+      "description": "Authenticated web UI",
+      "default": "8971",
+      "required": false
+    },
+    {
+      "name": "PORT_FRIGATE_RTSP",
+      "label": "RTSP restream port",
+      "description": "Frigate restreams cameras on this port",
+      "default": "8554",
+      "required": false
+    },
+    {
+      "name": "PORT_FRIGATE_WEBRTC",
+      "label": "WebRTC port",
+      "description": "TCP and UDP, for live view in the browser",
+      "default": "8555",
+      "required": false
+    },
+    {
+      "name": "FRIGATE_MEDIA_PATH",
+      "label": "Recordings path",
+      "description": "Host directory for recordings and snapshots (grows fast — use a big disk)",
+      "default": "/srv/media/frigate",
+      "required": false
+    },
+    {
+      "name": "FRIGATE_RTSP_PASSWORD",
+      "label": "Camera password",
+      "description": "Available in config.yml as {FRIGATE_RTSP_PASSWORD} so camera passwords never sit in the file",
+      "default": "",
+      "required": false,
+      "type": "password"
+    },
+    {
+      "name": "FRIGATE_SHM_SIZE",
+      "label": "Shared memory",
+      "description": "Roughly 30 MB + 10 MB per camera at 720p; raise for many or 4K cameras",
+      "default": "256mb",
+      "required": false
+    }
+  ]
+}

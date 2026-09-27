@@ -1,0 +1,23 @@
+services:
+  jupyter:
+    container_name: Jupyter
+    image: quay.io/jupyter/minimal-notebook:latest
+    restart: unless-stopped
+    user: root
+    environment:
+      - TZ=${TZ:-UTC}
+      - JUPYTER_TOKEN=${JUPYTER_TOKEN}
+      - NB_UID=${PUID:-1000}
+      - NB_GID=${PGID:-1000}
+      - CHOWN_HOME=yes
+      - DOCKER_STACKS_JUPYTER_CMD=lab
+    ports:
+      - "${PORT_JUPYTER:-8889}:8888"
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Jupyter/work:/home/jovyan/work
+    healthcheck:
+      test: ["CMD", "curl", "-fso", "/dev/null", "http://127.0.0.1:8888/api"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s

@@ -1,0 +1,25 @@
+{
+  "name": "beszel",
+  "title": "Beszel",
+  "description": "Beszel is a lightweight server monitor: CPU, memory, disk, network and per-container stats with history and alerts, in a few MB of RAM. This is the hub; deploy the Beszel Agent template on every host you want to watch (this one included) and add each in the hub with the key it shows.",
+  "category": "monitoring",
+  "target_stack": "monitoring-management",
+  "icon": "📊",
+  "tags": [
+    "monitoring",
+    "metrics",
+    "alerts",
+    "lightweight",
+    "beszel",
+    "docker"
+  ],
+  "variables": [
+    {
+      "name": "PORT_BESZEL",
+      "label": "Web port",
+      "description": "Host port for web port",
+      "default": "8790",
+      "required": false
+    }
+  ]
+}

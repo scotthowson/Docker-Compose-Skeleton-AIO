@@ -1,0 +1,41 @@
+{
+  "name": "umami",
+  "title": "Umami",
+  "description": "Umami is privacy-friendly web analytics (no cookies, GDPR-clean) for your own sites. First login admin / umami — change it right away, then add a website and paste its tracking snippet into your pages.",
+  "category": "web",
+  "target_stack": "web-applications",
+  "icon": "📉",
+  "tags": [
+    "analytics",
+    "privacy",
+    "website",
+    "statistics",
+    "umami",
+    "google-analytics"
+  ],
+  "variables": [
+    {
+      "name": "PORT_UMAMI",
+      "label": "Web port",
+      "description": "Host port for web port",
+      "default": "3013",
+      "required": false
+    },
+    {
+      "name": "UMAMI_DB_PASSWORD",
+      "label": "Database password",
+      "description": "Leave empty and DCS generates one on deploy",
+      "default": "",
+      "required": false,
+      "generate": "hex64"
+    },
+    {
+      "name": "UMAMI_APP_SECRET",
+      "label": "App secret",
+      "description": "Leave empty and DCS generates one on deploy",
+      "default": "",
+      "required": false,
+      "generate": "hex64"
+    }
+  ]
+}

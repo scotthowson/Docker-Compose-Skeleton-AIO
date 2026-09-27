@@ -1,0 +1,32 @@
+{
+  "name": "libretranslate",
+  "title": "LibreTranslate",
+  "description": "LibreTranslate is a translation API and web page that runs entirely on your server (Argos models, no Google). Pick the languages to load — every one adds a model download on first start (models live in a Docker volume); Nextcloud, Immich and many apps can use it as their translation backend.",
+  "category": "ai",
+  "target_stack": "development-tools",
+  "icon": "🌐",
+  "tags": [
+    "translation",
+    "ai",
+    "api",
+    "languages",
+    "privacy",
+    "libretranslate"
+  ],
+  "variables": [
+    {
+      "name": "PORT_LIBRETRANSLATE",
+      "label": "Web port",
+      "description": "Host port for web port",
+      "default": "5100",
+      "required": false
+    },
+    {
+      "name": "LIBRETRANSLATE_LANGUAGES",
+      "label": "Languages to load",
+      "description": "Comma-separated ISO codes; fewer languages = faster start and less RAM",
+      "default": "en,fr,es,de",
+      "required": false
+    }
+  ]
+}

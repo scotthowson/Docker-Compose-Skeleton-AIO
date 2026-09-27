@@ -1,0 +1,32 @@
+{
+  "name": "wikijs",
+  "title": "Wiki.js",
+  "description": "Wiki.js is a modern wiki with Markdown and visual editors, page history, search, permissions and many login providers, backed by PostgreSQL. The first visit runs the setup wizard where you create the admin account.",
+  "category": "knowledge",
+  "target_stack": "communication-collaboration",
+  "icon": "📖",
+  "tags": [
+    "wiki",
+    "documentation",
+    "markdown",
+    "knowledge-base",
+    "wikijs"
+  ],
+  "variables": [
+    {
+      "name": "PORT_WIKIJS",
+      "label": "Web port",
+      "description": "Host port for web port",
+      "default": "3012",
+      "required": false
+    },
+    {
+      "name": "WIKIJS_DB_PASSWORD",
+      "label": "Database password",
+      "description": "Leave empty and DCS generates one on deploy",
+      "default": "",
+      "required": false,
+      "generate": "hex64"
+    }
+  ]
+}

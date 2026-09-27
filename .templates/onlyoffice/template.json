@@ -1,0 +1,34 @@
+{
+  "name": "onlyoffice",
+  "title": "ONLYOFFICE Docs",
+  "description": "ONLYOFFICE Document Server edits Word, Excel and PowerPoint files in the browser, with live co-editing. Made for Nextcloud: install the ONLYOFFICE app there, set the Document Server address to this container's URL and the secret key from the stack .env (ONLYOFFICE_JWT_SECRET). Heavy image (≈2 GB), first start takes a minute.",
+  "category": "documents",
+  "target_stack": "communication-collaboration",
+  "icon": "📝",
+  "tags": [
+    "office",
+    "documents",
+    "nextcloud",
+    "collaboration",
+    "onlyoffice",
+    "word",
+    "excel"
+  ],
+  "variables": [
+    {
+      "name": "PORT_ONLYOFFICE",
+      "label": "Web port",
+      "description": "Host port for web port",
+      "default": "8300",
+      "required": false
+    },
+    {
+      "name": "ONLYOFFICE_JWT_SECRET",
+      "label": "JWT secret",
+      "description": "Shared with Nextcloud so only it may open documents; leave empty and DCS generates one",
+      "default": "",
+      "required": false,
+      "generate": "hex64"
+    }
+  ]
+}

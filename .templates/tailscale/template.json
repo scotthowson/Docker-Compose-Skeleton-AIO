@@ -1,0 +1,47 @@
+{
+  "name": "tailscale",
+  "title": "Tailscale",
+  "description": "Joins this host to your Tailscale network (or a Headscale one) so you reach it from anywhere without opening ports. Make an auth key at https://login.tailscale.com/admin/settings/keys (or headscale preauthkeys create); optionally advertise the LAN as a subnet route or the host as an exit node.",
+  "category": "vpn",
+  "target_stack": "networking-security",
+  "icon": "🔗",
+  "tags": [
+    "vpn",
+    "tailscale",
+    "wireguard",
+    "mesh",
+    "remote-access",
+    "headscale"
+  ],
+  "variables": [
+    {
+      "name": "TAILSCALE_AUTHKEY",
+      "label": "Auth key",
+      "description": "tskey-auth-… from the admin console, or a Headscale pre-auth key",
+      "default": "",
+      "required": true,
+      "type": "password"
+    },
+    {
+      "name": "TAILSCALE_HOSTNAME",
+      "label": "Machine name",
+      "description": "Name shown in the Tailscale admin console",
+      "default": "dcs",
+      "required": false
+    },
+    {
+      "name": "TAILSCALE_ROUTES",
+      "label": "Subnet routes",
+      "description": "Advertise your LAN, e.g. 192.168.1.0/24 (approve it in the admin console afterwards); leave empty for none",
+      "default": "",
+      "required": false
+    },
+    {
+      "name": "TAILSCALE_EXTRA_ARGS",
+      "label": "Extra tailscale up flags",
+      "description": "For example --advertise-exit-node, or --login-server=https://headscale.example.com for Headscale",
+      "default": "",
+      "required": false
+    }
+  ]
+}

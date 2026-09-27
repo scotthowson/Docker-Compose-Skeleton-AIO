@@ -1,0 +1,53 @@
+{
+  "name": "mosquitto",
+  "title": "Mosquitto MQTT",
+  "description": "Eclipse Mosquitto, the MQTT broker Home Assistant, Zigbee2MQTT, ESPHome, Frigate and most smart-home services talk to. Deploys with a working config (MQTT on 1883, WebSockets on 9001, anonymous clients allowed); to require logins, follow the comments in App-Data/Mosquitto/config/mosquitto.conf and restart.",
+  "category": "automation",
+  "target_stack": "miscellaneous-services",
+  "icon": "📡",
+  "tags": [
+    "mqtt",
+    "broker",
+    "home-automation",
+    "smart-home",
+    "iot",
+    "mosquitto"
+  ],
+  "config_path": "Mosquitto",
+  "route_skip": [
+    "mosquitto"
+  ],
+  "variables": [
+    {
+      "name": "PORT_MQTT",
+      "label": "MQTT port",
+      "description": "Host port clients connect to (mqtt://host:1883)",
+      "default": "1883",
+      "required": false
+    },
+    {
+      "name": "PORT_MQTT_WS",
+      "label": "WebSockets port",
+      "description": "Host port for MQTT over WebSockets (browser clients)",
+      "default": "9002",
+      "required": false
+    },
+    {
+      "name": "MQTT_ALLOW_ANONYMOUS",
+      "label": "Allow anonymous clients",
+      "description": "true lets any client on your network connect without a login (fine on a LAN); false requires a password file, see the config comments",
+      "default": "true",
+      "required": false,
+      "options": [
+        {
+          "value": "true",
+          "label": "Yes — no login needed (LAN only)"
+        },
+        {
+          "value": "false",
+          "label": "No — require a password file"
+        }
+      ]
+    }
+  ]
+}

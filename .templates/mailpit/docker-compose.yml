@@ -1,0 +1,22 @@
+services:
+  mailpit:
+    container_name: Mailpit
+    image: axllent/mailpit:latest
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-UTC}
+      - MP_MAX_MESSAGES=5000
+      - MP_DATABASE=/data/mailpit.db
+      - MP_SMTP_AUTH_ACCEPT_ANY=1
+      - MP_SMTP_AUTH_ALLOW_INSECURE=1
+    ports:
+      - "${PORT_MAILPIT:-8025}:8025"
+      - "${PORT_MAILPIT_SMTP:-1025}:1025"
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Mailpit/data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8025/livez >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

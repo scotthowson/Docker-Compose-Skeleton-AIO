@@ -1,7 +1,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/bash-4.0+-4EAA25?style=flat-square&logo=gnubash&logoColor=white" alt="Bash 4+" />
   <img src="https://img.shields.io/badge/docker-compose_v2-2496ED?style=flat-square&logo=docker&logoColor=white" alt="Docker Compose v2" />
-  <img src="https://img.shields.io/badge/templates-106-34d399?style=flat-square" alt="106 templates" />
+  <img src="https://img.shields.io/badge/templates-151-34d399?style=flat-square" alt="151 templates" />
   <img src="https://img.shields.io/badge/API_endpoints-210-06b6d4?style=flat-square" alt="210 API endpoints" />
   <a href="https://github.com/scotthowson/Docker-Compose-Skeleton-AIO/actions/workflows/ci.yml"><img src="https://github.com/scotthowson/Docker-Compose-Skeleton-AIO/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
   <img src="https://img.shields.io/badge/license-MIT-f472b6?style=flat-square" alt="MIT" />
@@ -41,7 +41,7 @@ Browser ──► DCS-UI (container, :3000) ──/api/──► api-server.sh (
   `core-infrastructure → networking-security → monitoring-management → development-tools →
   media-services → web-applications → storage-backup → communication-collaboration →
   entertainment-personal → miscellaneous-services`.
-- **106 templates** — deploy Jellyfin, Nextcloud, Grafana, Vaultwarden, Immich and 101 more into any
+- **151 templates** — deploy Jellyfin, Nextcloud, Grafana, Vaultwarden, Immich and 146 more into any
   stack. Each deployment is security-scanned, port-checked, merged into the stack's compose file,
   given a Traefik route and a Cloudflare CNAME, connected to the proxy network and started.
   Undeploy reverses every step.
@@ -108,28 +108,30 @@ install missing ones through `apt`, `dnf`, `yum`, `pacman`, `zypper` or `xbps`.
 ## Templates
 
 <details>
-<summary><strong>All 106 templates by category</strong></summary>
+<summary><strong>All 151 templates by category</strong></summary>
 
 | Category | Templates |
 |----------|-----------|
-| **Reverse proxies & web** | Traefik, Caddy, Nginx Proxy Manager, Nginx, Cloudflare Tunnel, Cloudflare Dynamic DNS, Docker Socket Proxy |
+| **Reverse proxies & web** | Traefik, Caddy, Nginx Proxy Manager, Nginx, Cloudflare Tunnel, Cloudflare Dynamic DNS, Docker Socket Proxy, WordPress, Shlink, Umami |
 | **Dashboards & management** | Homarr, Homepage, Dashy, dash., Yacht, Komodo, Portainer CE |
-| **Media** | Jellyfin, Plex, Sonarr, Radarr, Lidarr, Readarr, Prowlarr, Bazarr, Tautulli, Seerr, Jellyseerr, Wizarr, Kavita, Calibre-Web, Audiobookshelf, FlareSolverr, qBittorrent, Transmission, SABnzbd |
-| **Monitoring** | Grafana, Prometheus, Loki, Uptime Kuma, Netdata, InfluxDB, SpeedTest Tracker, Dozzle, Diun, Healthchecks, Changedetection.io, Watchtower |
-| **Storage, photos & backup** | Nextcloud, Nextcloud All-in-One, MinIO, Syncthing, Duplicati, File Browser, Immich |
-| **Databases** | PostgreSQL 16, MySQL, MariaDB, MongoDB 7, Redis 7, RedisInsight, Adminer, pgAdmin 4, phpMyAdmin |
-| **Productivity & notes** | Memos, Trilium Notes, BookStack, Mealie, Tandoor Recipes, Actual Budget, Firefly III, Vikunja, Planka, Karakeep, Linkwarden, Paperless-ngx, Reactive Resume |
-| **Development & automation** | Gitea, Code Server, n8n, Semaphore UI, Home Assistant |
-| **Security & network** | Authelia, Vaultwarden, CrowdSec, WireGuard Easy, AdGuard Home, Pi-hole |
-| **Communication & publishing** | ntfy, Gotify, FreshRSS, SearXNG, PrivateBin, Flarum, Ghost |
-| **Entertainment & gaming** | EmulatorJS, MonkeyType, Your Spotify, Pelican Panel + Wings, RustDesk Server |
-| **AI** | Ollama, Open WebUI + Ollama |
-| **Tools** | BentoPDF, Excalidraw, IT-Tools, Stirling-PDF, Sablier |
+| **Media** | Jellyfin, Plex, Sonarr, Radarr, Lidarr, Readarr, Prowlarr, Bazarr, Tautulli, Jellystat, Seerr, Jellyseerr, Wizarr, Kavita, Komga, Calibre-Web, Audiobookshelf, Navidrome, FlareSolverr, qBittorrent, Transmission, SABnzbd, MeTube |
+| **Home automation** | Home Assistant, Mosquitto MQTT, Zigbee2MQTT, Node-RED, ESPHome, Frigate NVR |
+| **Monitoring** | Grafana, Prometheus, Prometheus exporters (Node Exporter + cAdvisor), Loki, Uptime Kuma, Gatus, Netdata, Beszel + Beszel Agent, Scrutiny, InfluxDB, SpeedTest Tracker, Dozzle, Diun, Healthchecks, Changedetection.io, Watchtower |
+| **Storage, photos & backup** | Nextcloud, Nextcloud All-in-One, MinIO, Syncthing, Duplicati, Kopia, File Browser, SFTPGo, PairDrop, Immich, PhotoPrism |
+| **Databases & data** | PostgreSQL 16, MySQL, MariaDB, MongoDB 7, Redis 7, RedisInsight, Adminer, pgAdmin 4, phpMyAdmin, NocoDB, Metabase, Meilisearch |
+| **Productivity & notes** | Memos, Trilium Notes, BookStack, Wiki.js, Obsidian LiveSync, Mealie, Tandoor Recipes, Grocy, Homebox, Actual Budget, Firefly III, Vikunja, Planka, Karakeep, Linkwarden, Paperless-ngx, Reactive Resume, draw.io, ONLYOFFICE Docs, Baïkal |
+| **Development & automation** | Gitea, Code Server, Docker Registry, JupyterLab, Mailpit, n8n, Semaphore UI |
+| **Security & network** | Authelia, Vaultwarden, CrowdSec, WireGuard Easy, Tailscale, Headscale, AdGuard Home, Pi-hole, Unbound |
+| **Communication & publishing** | ntfy, Gotify, FreshRSS, SearXNG, PrivateBin, Flarum, Ghost, Mattermost, Mumble |
+| **Entertainment & gaming** | EmulatorJS, RomM, Minecraft Server, Valheim Server, MonkeyType, Your Spotify, Pelican Panel + Wings |
+| **Remote access** | RustDesk Server, Apache Guacamole, Webtop |
+| **AI** | Ollama, Open WebUI + Ollama, LibreTranslate |
+| **Tools** | BentoPDF, Excalidraw, IT-Tools, Stirling-PDF, Sablier, DCS Discord Bot |
 
 </details>
 
 Every template is a directory under `.templates/` with a `docker-compose.yml`, a `template.json`
-(variables, ports, category, Traefik settings) and optional config scaffolding. Deploy from the UI,
+and, when the app needs files before its first start, a `config/` directory. Deploy from the UI,
 or from the API:
 
 ```bash
@@ -137,6 +139,28 @@ curl -s -H "Authorization: Bearer $TOKEN" -X POST http://localhost:9876/template
      -H 'Content-Type: application/json' \
      -d '{"target_stack":"media-services","auto_start":true,"variables":{"MEDIA_PATH":"/srv/media"}}'
 ```
+
+<details>
+<summary><strong>template.json reference</strong> — what a template can declare</summary>
+
+| Field | Meaning |
+|-------|---------|
+| `name`, `title`, `description`, `icon`, `tags` | Identity shown in the gallery; the description should say what to do after the first start (default logins, where to click). |
+| `category` | `media`, `monitoring`, `web`, `databases`, `development`, `tools`, `productivity`, `automation`, `security`, `network`, `storage`, `download`, `entertainment`… (the UI groups aliases such as `notes`, `photos`, `vpn`, `backup`). |
+| `target_stack` | Stack the template lands in by default (`media-services`, `networking-security`, `monitoring-management`, `development-tools`, `communication-collaboration`, `storage-backup`, `entertainment-personal`, `web-applications`, `core-infrastructure`, `miscellaneous-services`). |
+| `variables[]` | Inputs asked at deploy time: `name`, `label`, `description`, `default`, `required`; `type: "password"` hides the value; `options: [{value,label}]` renders a picker; `show_if: {OTHER_VAR: "value"}` hides a field until another one matches; `generate: "hex64"` (or a name ending in `_KEY`/containing `SECRET`) makes DCS fill an empty value with 64 random hex characters. |
+| `config_path` | Directory under the stack's `App-Data/` that receives the template's `config/` files before the first start (never overwriting files that exist); `${VAR:-default}` placeholders in `.yml`, `.yaml`, `.conf` and `.env` files are filled from the deploy variables. |
+| `route_skip` | Services that must not get a Traefik route, DNS record or proxy network — game, voice, MQTT and DNS ports (`["minecraft"]`). Services without a published port, or bound to `127.0.0.1`, are skipped anyway. |
+| `route_override` | `{subdomain, port, protocol, use_host_ip, container}` for apps whose routable service is not in the compose file (Nextcloud AIO). |
+| `singleton` | `true` when only one copy may exist on a host (Traefik, Portainer, Watchtower…). |
+| `optional_services` | `[{service, label, description, default_enabled}]` — services the deploy dialog can leave out (`exclude_services` in the API body). |
+
+Compose files use `${APP_DATA_DIR:-./App-Data}/<Name>/…` bind mounts (so **Nuke & reinstall**,
+backups and the file editor find the data), `${PUID}`/`${PGID}`/`${TZ}` from the root `.env`, and a
+`healthcheck` wherever the image has a tool to run one. `tests/lint.sh` validates every template's
+compose file with its own defaults.
+
+</details>
 
 ---
 

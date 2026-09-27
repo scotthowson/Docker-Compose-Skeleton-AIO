@@ -1,0 +1,20 @@
+services:
+  homebox:
+    container_name: Homebox
+    image: ghcr.io/sysadminsmedia/homebox:latest
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-UTC}
+      - HBOX_LOG_LEVEL=info
+      - HBOX_LOG_FORMAT=text
+      - HBOX_OPTIONS_ALLOW_REGISTRATION=${HOMEBOX_ALLOW_REGISTRATION:-true}
+    ports:
+      - "${PORT_HOMEBOX:-7745}:7745"
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Homebox/data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:7745/api/v1/status >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s

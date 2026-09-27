@@ -1,0 +1,33 @@
+{
+  "name": "mailpit",
+  "title": "Mailpit",
+  "description": "Mailpit catches every e-mail your apps send (SMTP on port 1025, any login accepted) and shows it in a web inbox with HTML, source and spam-score views — the safe way to test mail from Nextcloud, Gitea, n8n or your own code.",
+  "category": "development",
+  "target_stack": "development-tools",
+  "icon": "📬",
+  "tags": [
+    "email",
+    "smtp",
+    "testing",
+    "development",
+    "mailpit",
+    "mailhog"
+  ],
+  "route_skip": [],
+  "variables": [
+    {
+      "name": "PORT_MAILPIT",
+      "label": "Web port",
+      "description": "Host port for web port",
+      "default": "8025",
+      "required": false
+    },
+    {
+      "name": "PORT_MAILPIT_SMTP",
+      "label": "SMTP port",
+      "description": "Point your apps' SMTP settings at this port",
+      "default": "1025",
+      "required": false
+    }
+  ]
+}

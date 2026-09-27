@@ -1,0 +1,65 @@
+services:
+  photoprism:
+    container_name: PhotoPrism
+    image: photoprism/photoprism:latest
+    restart: unless-stopped
+    stop_grace_period: 15s
+    security_opt:
+      - seccomp:unconfined
+      - apparmor:unconfined
+    working_dir: /photoprism
+    environment:
+      - TZ=${TZ:-UTC}
+      - PHOTOPRISM_ADMIN_USER=admin
+      - PHOTOPRISM_ADMIN_PASSWORD=${PHOTOPRISM_ADMIN_PASSWORD}
+      - PHOTOPRISM_AUTH_MODE=password
+      - PHOTOPRISM_SITE_URL=${PHOTOPRISM_SITE_URL:-http://localhost:2342/}
+      - PHOTOPRISM_DISABLE_TLS=true
+      - PHOTOPRISM_DEFAULT_TLS=false
+      - PHOTOPRISM_ORIGINALS_LIMIT=5000
+      - PHOTOPRISM_HTTP_COMPRESSION=gzip
+      - PHOTOPRISM_DATABASE_DRIVER=mysql
+      - PHOTOPRISM_DATABASE_SERVER=photoprism-db:3306
+      - PHOTOPRISM_DATABASE_NAME=photoprism
+      - PHOTOPRISM_DATABASE_USER=photoprism
+      - PHOTOPRISM_DATABASE_PASSWORD=${PHOTOPRISM_DB_PASSWORD}
+      - PHOTOPRISM_UID=${PUID:-1000}
+      - PHOTOPRISM_GID=${PGID:-1000}
+    ports:
+      - "${PORT_PHOTOPRISM:-2342}:2342"
+    volumes:
+      - ${PHOTOPRISM_ORIGINALS_PATH:-/srv/media/photos}:/photoprism/originals
+      - ${APP_DATA_DIR:-./App-Data}/PhotoPrism/storage:/photoprism/storage
+    depends_on:
+      photoprism-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "photoprism", "status"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
+
+  photoprism-db:
+    container_name: PhotoPrism-DB
+    image: mariadb:11
+    restart: unless-stopped
+    security_opt:
+      - seccomp:unconfined
+      - apparmor:unconfined
+    command: --innodb-buffer-pool-size=256M --transaction-isolation=READ-COMMITTED --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci --max-connections=512 --innodb-rollback-on-timeout=OFF --innodb-lock-wait-timeout=120
+    environment:
+      - MARIADB_AUTO_UPGRADE=1
+      - MARIADB_INITDB_SKIP_TZINFO=1
+      - MARIADB_DATABASE=photoprism
+      - MARIADB_USER=photoprism
+      - MARIADB_PASSWORD=${PHOTOPRISM_DB_PASSWORD}
+      - MARIADB_ROOT_PASSWORD=${PHOTOPRISM_DB_ROOT_PASSWORD}
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/PhotoPrism/db:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s

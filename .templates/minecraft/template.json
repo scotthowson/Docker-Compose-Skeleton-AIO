@@ -1,0 +1,141 @@
+{
+  "name": "minecraft",
+  "title": "Minecraft Server",
+  "description": "A Minecraft Java server (Paper by default, or Vanilla, Fabric, Forge, Purpur) from the itzg image: pick the version, memory and difficulty, add your player name as operator, and it downloads and runs. World and settings live in App-Data/Minecraft/data; the console is the container log.",
+  "category": "gaming",
+  "target_stack": "entertainment-personal",
+  "icon": "⛏️",
+  "tags": [
+    "minecraft",
+    "game-server",
+    "paper",
+    "fabric",
+    "forge",
+    "gaming"
+  ],
+  "route_skip": [
+    "minecraft"
+  ],
+  "variables": [
+    {
+      "name": "PORT_MINECRAFT",
+      "label": "Game port",
+      "description": "Forward this TCP port on your router for friends outside the LAN",
+      "default": "25565",
+      "required": false
+    },
+    {
+      "name": "MINECRAFT_EULA",
+      "label": "Accept the Minecraft EULA",
+      "description": "https://www.minecraft.net/eula — the server will not start otherwise",
+      "default": "TRUE",
+      "required": true,
+      "options": [
+        {
+          "value": "TRUE",
+          "label": "I accept the EULA"
+        },
+        {
+          "value": "FALSE",
+          "label": "Not accepted (server stays off)"
+        }
+      ]
+    },
+    {
+      "name": "MINECRAFT_TYPE",
+      "label": "Server type",
+      "default": "PAPER",
+      "required": false,
+      "options": [
+        {
+          "value": "PAPER",
+          "label": "Paper — fast, plugins"
+        },
+        {
+          "value": "VANILLA",
+          "label": "Vanilla"
+        },
+        {
+          "value": "FABRIC",
+          "label": "Fabric — mods"
+        },
+        {
+          "value": "FORGE",
+          "label": "Forge — mods"
+        },
+        {
+          "value": "PURPUR",
+          "label": "Purpur — Paper fork"
+        }
+      ]
+    },
+    {
+      "name": "MINECRAFT_VERSION",
+      "label": "Version",
+      "description": "LATEST, or a release like 1.21.4",
+      "default": "LATEST",
+      "required": false
+    },
+    {
+      "name": "MINECRAFT_MEMORY",
+      "label": "Memory",
+      "description": "Java heap, e.g. 2G, 4G, 8G",
+      "default": "2G",
+      "required": false
+    },
+    {
+      "name": "MINECRAFT_MOTD",
+      "label": "Server message",
+      "default": "A DCS Minecraft server",
+      "required": false
+    },
+    {
+      "name": "MINECRAFT_DIFFICULTY",
+      "label": "Difficulty",
+      "default": "normal",
+      "required": false,
+      "options": [
+        {
+          "value": "peaceful",
+          "label": "Peaceful"
+        },
+        {
+          "value": "easy",
+          "label": "Easy"
+        },
+        {
+          "value": "normal",
+          "label": "Normal"
+        },
+        {
+          "value": "hard",
+          "label": "Hard"
+        }
+      ]
+    },
+    {
+      "name": "MINECRAFT_OPS",
+      "label": "Operators",
+      "description": "Player names to make ops, comma-separated",
+      "default": "",
+      "required": false
+    },
+    {
+      "name": "MINECRAFT_ONLINE_MODE",
+      "label": "Online mode",
+      "description": "true checks accounts with Mojang (recommended); false allows offline/cracked clients",
+      "default": "true",
+      "required": false,
+      "options": [
+        {
+          "value": "true",
+          "label": "On — Mojang accounts"
+        },
+        {
+          "value": "false",
+          "label": "Off"
+        }
+      ]
+    }
+  ]
+}

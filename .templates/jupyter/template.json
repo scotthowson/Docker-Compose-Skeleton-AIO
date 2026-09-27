@@ -1,0 +1,32 @@
+{
+  "name": "jupyter",
+  "title": "JupyterLab",
+  "description": "JupyterLab notebooks (Python, with pip and conda available) served from your own server. Sign in with the token you set here; notebooks are kept in App-Data/Jupyter/work.",
+  "category": "development",
+  "target_stack": "development-tools",
+  "icon": "🪐",
+  "tags": [
+    "jupyter",
+    "python",
+    "notebooks",
+    "data-science",
+    "development"
+  ],
+  "variables": [
+    {
+      "name": "PORT_JUPYTER",
+      "label": "Web port",
+      "description": "Host port for web port",
+      "default": "8889",
+      "required": false
+    },
+    {
+      "name": "JUPYTER_TOKEN",
+      "label": "Login token",
+      "description": "Paste it on the login page (any string; keep it secret)",
+      "default": "",
+      "required": true,
+      "type": "password"
+    }
+  ]
+}

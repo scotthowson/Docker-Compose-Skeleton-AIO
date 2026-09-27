@@ -1,0 +1,56 @@
+{
+  "name": "mumble",
+  "title": "Mumble Server",
+  "description": "Mumble is low-latency, encrypted voice chat for gaming and teams, with channels and permissions. Connect with the Mumble client to <host>:64738; log in as SuperUser with the password below to administer channels.",
+  "category": "communication",
+  "target_stack": "communication-collaboration",
+  "icon": "🎙️",
+  "tags": [
+    "voice",
+    "chat",
+    "gaming",
+    "teamspeak",
+    "murmur",
+    "mumble"
+  ],
+  "route_skip": [
+    "mumble"
+  ],
+  "variables": [
+    {
+      "name": "PORT_MUMBLE",
+      "label": "Server port",
+      "description": "TCP and UDP",
+      "default": "64738",
+      "required": false
+    },
+    {
+      "name": "MUMBLE_SUPERUSER_PASSWORD",
+      "label": "SuperUser password",
+      "description": "Administrator login inside Mumble",
+      "default": "",
+      "required": true,
+      "type": "password"
+    },
+    {
+      "name": "MUMBLE_PASSWORD",
+      "label": "Server password",
+      "description": "Optional password everyone needs to connect",
+      "default": "",
+      "required": false
+    },
+    {
+      "name": "MUMBLE_WELCOME",
+      "label": "Welcome text",
+      "description": "Shown to users when they connect",
+      "default": "Welcome to Mumble",
+      "required": false
+    },
+    {
+      "name": "MUMBLE_MAX_USERS",
+      "label": "Maximum users",
+      "default": "100",
+      "required": false
+    }
+  ]
+}

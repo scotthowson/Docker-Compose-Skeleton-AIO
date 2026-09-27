@@ -1,0 +1,63 @@
+{
+  "name": "photoprism",
+  "title": "PhotoPrism",
+  "description": "PhotoPrism indexes your photo library with face recognition, maps and automatic tagging, all on your own hardware. Point it at the folder with your originals; the admin login is the one you set here.",
+  "category": "photos",
+  "target_stack": "storage-backup",
+  "icon": "🌄",
+  "tags": [
+    "photos",
+    "gallery",
+    "ai",
+    "face-recognition",
+    "photoprism",
+    "media"
+  ],
+  "variables": [
+    {
+      "name": "PORT_PHOTOPRISM",
+      "label": "Web port",
+      "description": "Host port for web port",
+      "default": "2342",
+      "required": false
+    },
+    {
+      "name": "PHOTOPRISM_ADMIN_PASSWORD",
+      "label": "Admin password",
+      "description": "For the admin account; at least 8 characters",
+      "default": "",
+      "required": true,
+      "type": "password"
+    },
+    {
+      "name": "PHOTOPRISM_ORIGINALS_PATH",
+      "label": "Originals folder",
+      "description": "Host directory with your photos and videos",
+      "default": "/srv/media/photos",
+      "required": true
+    },
+    {
+      "name": "PHOTOPRISM_SITE_URL",
+      "label": "Public URL",
+      "description": "The URL you open PhotoPrism at (used in links and sharing)",
+      "default": "http://localhost:2342/",
+      "required": false
+    },
+    {
+      "name": "PHOTOPRISM_DB_PASSWORD",
+      "label": "Database password",
+      "description": "Leave empty and DCS generates one on deploy",
+      "default": "",
+      "required": false,
+      "generate": "hex64"
+    },
+    {
+      "name": "PHOTOPRISM_DB_ROOT_PASSWORD",
+      "label": "Database root password",
+      "description": "Leave empty and DCS generates one on deploy",
+      "default": "",
+      "required": false,
+      "generate": "hex64"
+    }
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "name": "grocy",
+  "title": "Grocy",
+  "description": "Grocy is the household ERP: stock and expiry tracking with barcodes, shopping lists, chores, meal planning, recipes and batteries. Default login admin / admin — change it after the first sign-in.",
+  "category": "lifestyle",
+  "target_stack": "entertainment-personal",
+  "icon": "🥕",
+  "tags": [
+    "groceries",
+    "household",
+    "inventory",
+    "chores",
+    "recipes",
+    "grocy"
+  ],
+  "variables": [
+    {
+      "name": "PORT_GROCY",
+      "label": "Web port",
+      "description": "Host port for web port",
+      "default": "9283",
+      "required": false
+    }
+  ]
+}

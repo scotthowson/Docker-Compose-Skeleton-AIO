@@ -1,0 +1,71 @@
+{
+  "name": "romm",
+  "title": "RomM",
+  "description": "RomM is a ROM manager and web player for your retro game library: scans the folder per platform, fetches covers and metadata (IGDB or ScreenScraper credentials optional), and plays many systems in the browser through EmulatorJS. Put ROMs under <library>/roms/<platform>/, create the admin account on the first visit.",
+  "category": "gaming",
+  "target_stack": "entertainment-personal",
+  "icon": "🕹️",
+  "tags": [
+    "roms",
+    "retro",
+    "emulation",
+    "library",
+    "igdb",
+    "romm",
+    "gaming"
+  ],
+  "variables": [
+    {
+      "name": "PORT_ROMM",
+      "label": "Web port",
+      "description": "Host port for web port",
+      "default": "8495",
+      "required": false
+    },
+    {
+      "name": "ROMM_LIBRARY_PATH",
+      "label": "Library folder",
+      "description": "Host directory holding roms/<platform>/ folders",
+      "default": "/srv/media/roms",
+      "required": true
+    },
+    {
+      "name": "ROMM_IGDB_CLIENT_ID",
+      "label": "IGDB client ID",
+      "description": "Optional: a Twitch developer app (https://api-docs.igdb.com) for covers and metadata",
+      "default": "",
+      "required": false
+    },
+    {
+      "name": "ROMM_IGDB_CLIENT_TOKEN",
+      "label": "IGDB client secret",
+      "description": "The client secret of that app",
+      "default": "",
+      "required": false
+    },
+    {
+      "name": "ROMM_AUTH_SECRET_KEY",
+      "label": "Session secret",
+      "description": "Leave empty and DCS generates one on deploy",
+      "default": "",
+      "required": false,
+      "generate": "hex64"
+    },
+    {
+      "name": "ROMM_DB_PASSWORD",
+      "label": "Database password",
+      "description": "Leave empty and DCS generates one on deploy",
+      "default": "",
+      "required": false,
+      "generate": "hex64"
+    },
+    {
+      "name": "ROMM_DB_ROOT_PASSWORD",
+      "label": "Database root password",
+      "description": "Leave empty and DCS generates one on deploy",
+      "default": "",
+      "required": false,
+      "generate": "hex64"
+    }
+  ]
+}
