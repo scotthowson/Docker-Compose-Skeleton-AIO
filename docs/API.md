@@ -417,7 +417,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | POST | `/fleet/join-tokens` | admin | Mint a join code {ttl_hours?: 24}: a VM runs ./setup.sh with DCS_HUB_URL and DCS_JOIN_TOKEN (or ./setup.sh --join) and becomes a member |
 | POST | `/fleet/join-hub` | admin | Make this server a member of a hub {hub_url, token, name?, url?} or {pending: true} for the join setup.sh saved: creates the account dcs-hub here and registers with the hub |
 | POST | `/fleet/discover` | admin | Scan the guests for DCS installs: Proxmox gives each running guest's addresses (guest agent / container interfaces) and the API port is probed; found installs come back with the guest already matched (30 s cache; POST forces a new scan and accepts Proxmox values to try before they are saved) |
-| POST | `/fleet/provision` | admin | Build one VM per stack: {node, storage, image_storage, bridge, cidr, gateway, dns, ip_start, vms: [{stack, source, cores, memory_mb, disk_gb, ip}]}; the hub's Stacks/<source> (default: the stack name) moves into the VM and starts there |
+| POST | `/fleet/provision` | admin | Build one VM per stack: {node, storage, image_storage, bridge, cidr, gateway, dns, ip_start, image\|image_url\|image_file\|iso, vms: [{stack, source, cores, memory_mb, disk_gb, ip, image\|image_url\|image_file\|iso}]}; a cloud image builds unattended, an ISO is installed by hand and joined; the hub's Stacks/<source> moves into the VM |
 | POST | `/fleet/provision/defaults` | admin | Suggested values for creating VMs: node, storages, bridge, an address range next to the hub, the cloud image, the admin name (admin) |
 | POST | `/proxmox/capabilities` | admin | What the API token may do on /: the privileges that creating VMs needs, and which are missing (POST with {url, token_id, token_secret, verify_tls} before the link is saved) |
 | POST | `/proxmox/storage` | admin | The node's storages with content types and free space (import_ready: can hold a cloud image) |
@@ -436,7 +436,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | PUT | `/fleet/members/*` | admin | Change a member's name, address, account or the guest it is mapped to {name?, url?, username?, password?, vmid?, node?, type?, insecure?} |
 | DELETE | `/fleet/members/*/api/*` | admin | Forward the call (GET, POST, PUT or DELETE) to that member with the hub's account; the caller's own role is checked against the inner path as if it were local (streams and auth are not forwarded) |
 | DELETE | `/fleet/members/*` | admin | Forget a member (its dcs-hub account is removed there when it answers) |
-| DELETE | `/fleet/jobs/*` | admin | Forget a finished or failed job; ?destroy=true also destroys the VM a failed build left behind (a finished job's VM belongs to its member) |
+| DELETE | `/fleet/jobs/*` | admin | Forget a finished or failed job; ?destroy=true also destroys the VM a failed build (or a by-hand install that never joined) left behind |
 | DELETE | `/fleet/join-tokens/*` | admin | Revoke a join code |
 | DELETE | `/fleet/hub` | admin | Leave the hub: forget it and remove its dcs-hub account here (the hub drops this member when it next fails to answer, or when removed there) |
 | DELETE | `/crowdsec/decisions/*` | admin | Remove every decision for an address (unban) |

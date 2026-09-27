@@ -415,7 +415,9 @@ never `App-Data`) moves into the VM and starts there — the VM is born as the s
 the VMs page or the Proxmox page builds one more. A stack counts as the hub's own when it is in
 `DOCKER_STACKS` or running there — the `Stacks/` folders the repository ships never get in the
 way of a VM. On a hub the Stacks page is the **VMs** page: open a VM for the containers running
-in it, their controls, the compose editor and the VM's power.
+in it, their controls, the compose editor and the VM's power. VMs are built from Debian (the
+default), Ubuntu, Fedora or AlmaLinux cloud images, a cloud image already on Proxmox or from a
+URL — or from an installer ISO on Proxmox, installed by hand and joined with one line.
 
 The hub's **API is the fleet API**: `GET /stacks` lists every VM's stack next to its own with a
 *VM* chip, and stacks, containers and template deploys that live in a VM are forwarded to that

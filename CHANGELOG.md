@@ -86,6 +86,20 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (compose, `.env`, config files — never `App-Data`, data or backups) is copied into the VM over
   ssh and started through the member's API; a row renamed in the wizard keeps the folder it came
   from (`source`). Nothing to copy: the VM starts empty and takes templates.
+- **The operating system is a choice.** The VM settings offer a catalogue (Debian 13, Debian 12,
+  Ubuntu Server 26.04/24.04/22.04 LTS, Fedora Cloud, AlmaLinux 9), whatever Proxmox already
+  holds (imported cloud images, installer ISOs from *ISO Images*) and a URL; `.config/fleet-
+  images.json` replaces the catalogue. A cloud image builds unattended; an ISO build creates the
+  VM with the installer attached, shows the one-line join and closes by itself when the VM joins
+  (or is dismissed with its VM). The bootstrap covers apt and dnf systems and opens the API port
+  in firewalld. The build cards carry an overall bar with the time left and a *Clear finished*
+  button; a VM's capsule sits under the status on the stack card; the hub's sidebar badge counts
+  VMs.
+- **The hub never starts a VM's stack itself.** `start.sh`/the boot service and the batch actions
+  skip stacks that a member runs (their folder on the hub is a leftover), whatever `DOCKER_STACKS`
+  says; a VM's stack in a batch is acted on through its VM. After a build moves a stack in, the
+  hub's own containers of it are retired (removed; App-Data stays), and the build step says
+  exactly what the hub saw — a still-running hub copy fails the step for a *Retry*.
 - **The VMs page.** On a hub the Stacks page reads *VMs* (sidebar too): VMs first, each one a
   stack, then the hub's own stacks; a VM opens on the containers running in it with
   start/stop/restart per row, the compose editor and logs, and its power (start, reboot, shut

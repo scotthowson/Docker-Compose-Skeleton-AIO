@@ -844,6 +844,12 @@ _fleet_stop_listeners() { for d in "$WORK" "$MWORK" "$VMWORK"; do [[ -f "$d/.dat
 trap '_fleet_stop_listeners; rm -rf "$WORK" "$MWORK" "$PWORK" "$VMWORK"' EXIT
 check "provision: defaults answer"      true "$(auth_request GET /fleet/provision/defaults | body_of | jq -r '.proxmox_linked' 2>/dev/null)"
 check "provision: default disk storage" local-lvm "$(auth_request GET /fleet/provision/defaults | body_of | jq -r '.storage' 2>/dev/null)"
+check "images: catalogue offered"       yes "$(auth_request GET /fleet/provision/defaults | body_of | jq -e '.images.catalogue | length >= 6' >/dev/null 2>&1 && echo yes || echo no)"
+check "images: the default first"       debian-13 "$(auth_request GET /fleet/provision/defaults | body_of | jq -r '.images.catalogue[0].id' 2>/dev/null)"
+check "images: Ubuntu 26.04 in the list" yes "$(auth_request GET /fleet/provision/defaults | body_of | jq -e '.images.catalogue[] | select(.id == "ubuntu-26.04")' >/dev/null 2>&1 && echo yes || echo no)"
+check "images: ISOs read from Proxmox"  local:iso/tiny-installer.iso "$(auth_request GET /fleet/provision/defaults | body_of | jq -r '.images.on_proxmox.isos[0].volid' 2>/dev/null)"
+check "provision: unknown image refused" 400 "$(auth_request POST /fleet/provision '{"node":"pve","storage":"local-lvm","gateway":"192.0.2.1","ip_start":"192.0.2.70","image":"windows-95","vms":[{"stack":"nope"}]}' | status_of)"
+check "provision: bad iso refused"      400 "$(auth_request POST /fleet/provision '{"node":"pve","storage":"local-lvm","gateway":"192.0.2.1","ip_start":"192.0.2.70","iso":"../etc/passwd","vms":[{"stack":"nope"}]}' | status_of)"
 check "provision: token may create VMs" true "$(auth_request GET /proxmox/capabilities | body_of | jq -r '.can_provision' 2>/dev/null)"
 check "provision: storages listed"      yes "$(auth_request GET /proxmox/storage | body_of | jq -e '.storages | map(.storage) | index("local") != null' >/dev/null 2>&1 && echo yes || echo no)"
 check "provision: viewer denied"        403 "$(viewer_request GET /fleet/jobs | status_of)"
@@ -860,7 +866,7 @@ check "hub stack: unknown name"         1 "$(_lib _fleet_stack_is_hub nowhere; e
 # the hub has a Stacks/smoke-photos folder (not in DOCKER_STACKS): the build moves it into the VM and starts it there
 # (the hub and the stand-in share this machine's Docker, so the hub's folder carries another name: a renamed row, source ≠ stack)
 mkdir -p "$WORK/Stacks/smoke-photos-src" && printf 'services:\n  x:\n    image: alpine:3\n    command: ["sleep","infinity"]\n' > "$WORK/Stacks/smoke-photos-src/docker-compose.yml" && printf 'SMOKE_PHOTOS=1\n' > "$WORK/Stacks/smoke-photos-src/.env"
-_PROV_BODY="{\"node\":\"pve\",\"storage\":\"local-lvm\",\"image_storage\":\"local\",\"bridge\":\"vmbr0\",\"cidr\":24,\"gateway\":\"192.0.2.1\",\"dns\":\"192.0.2.1\",\"vms\":[{\"stack\":\"smoke-photos\",\"source\":\"smoke-photos-src\",\"cores\":2,\"memory_mb\":2048,\"disk_gb\":16,\"ip\":\"127.0.0.1\"}]}"
+_PROV_BODY="{\"node\":\"pve\",\"storage\":\"local-lvm\",\"image_storage\":\"local\",\"bridge\":\"vmbr0\",\"cidr\":24,\"gateway\":\"192.0.2.1\",\"dns\":\"192.0.2.1\",\"image\":\"ubuntu-24.04\",\"vms\":[{\"stack\":\"smoke-photos\",\"source\":\"smoke-photos-src\",\"cores\":2,\"memory_mb\":2048,\"disk_gb\":16,\"ip\":\"127.0.0.1\"}]}"
 PROV=$(auth_request POST /fleet/provision "$_PROV_BODY")
 check "provision: job queued"           true "$(body_of <<< "$PROV" | jq -r '.success' 2>/dev/null)"
 JOB=$(body_of <<< "$PROV" | jq -r '.jobs[0].id' 2>/dev/null)
@@ -870,6 +876,8 @@ _JST=""; for _i in $(seq 1 150); do _JST=$(auth_request GET "/fleet/jobs/$JOB" |
 check "provision: job finished"         "done" "$_JST"
 [[ "$_JST" == "done" ]] || { echo "  --- job log ---"; auth_request GET "/fleet/jobs/$JOB" | body_of | jq -r '.error, (.steps[] | "\(.id): \(.state) \(.detail)"), (.log[-25:][] | .text)' 2>/dev/null | sed 's/^/  /'; echo "  --- runner log ---"; tail -5 "$WORK/logs/fleet-jobs.log" 2>/dev/null | sed 's/^/  /'; }
 check "provision: every step done"      9 "$(auth_request GET "/fleet/jobs/$JOB" | body_of | jq -r '[.steps[] | select(.state == "done")] | length' 2>/dev/null)"
+check "provision: the chosen image"     ubuntu-24.04-server-cloudimg-amd64.qcow2 "$(auth_request GET "/fleet/jobs/$JOB" | body_of | jq -r '.image_file' 2>/dev/null)"
+check "provision: image family"         apt "$(auth_request GET "/fleet/jobs/$JOB" | body_of | jq -r '.family' 2>/dev/null)"
 check "provision: image imported"       yes "$(auth_request GET "/fleet/jobs/$JOB" | body_of | jq -r '.log[].text' 2>/dev/null | grep -q 'image ready on local' && echo yes || echo no)"
 check "provision: VM created"           smoke-photos "$(auth_request GET /proxmox/vms | body_of | jq -r '.vms[] | select(.vmid == 105) | .name' 2>/dev/null)"
 check "provision: cloud-init address"   yes "$(auth_request GET /proxmox/vms/pve/qemu/105 | body_of | jq -r '.config.ipconfig0 // ""' 2>/dev/null | grep -q '127.0.0.1/24' && echo yes || echo no)"
@@ -880,6 +888,10 @@ check "provision: stack moved into the VM" yes "$(auth_request GET "/fleet/jobs/
 check "provision: source folder named"  yes "$(auth_request GET "/fleet/jobs/$JOB" | body_of | jq -r '.log[].text' 2>/dev/null | grep -q 'Stacks/smoke-photos-src from the hub copied into the VM as smoke-photos' && echo yes || echo no)"
 check "provision: VM has the compose"   yes "$(auth_request GET /stacks/smoke-photos/compose | body_of | jq -r '.content // .compose // ""' 2>/dev/null | grep -q 'sleep' && echo yes || echo no)"
 check "provision: stack running in VM"  running "$(auth_request GET /stacks/smoke-photos | body_of | jq -r '.status' 2>/dev/null | cut -d: -f1)"
+# the hub's own start.sh never starts a folder that lives in a VM, whatever DOCKER_STACKS says
+_owned() { ( COMPOSE_DIR="$WORK/Stacks"; eval "$(sed -n '/^_fleet_owned_stack()/,/^}/p' "$ROOT/.scripts/run.sh")"; _fleet_owned_stack "$1"; echo $? ); }
+check "start.sh: a VM's stack is not the hub's to start" 0 "$(_owned smoke-photos)"
+check "start.sh: the hub's own stack is"    1 "$(_owned demo)"
 check "provision: member marked built"  true "$(auth_request GET /fleet/members | body_of | jq -r '.members[] | select(.name == "smoke-photos") | .provisioned' 2>/dev/null)"
 check "provision: admin password kept"  yes "$(_lib secrets_exists FLEET_MEMBER_SMOKE_PHOTOS_ADMIN_PASSWORD && echo yes || echo no)"
 check "provision: audited"              yes "$(grep -q 'fleet_vm_ready' "$WORK/.data/audit.jsonl" 2>/dev/null && echo yes || echo no)"
@@ -905,6 +917,17 @@ check "destroy: member and VM removed"  true "$(auth_request DELETE '/fleet/memb
 check "destroy: VM gone from Proxmox"   "" "$(auth_request GET /proxmox/vms | body_of | jq -r '.vms[] | select(.vmid == 105) | .name' 2>/dev/null)"
 check "destroy: audited"                yes "$(grep -q 'fleet_vm_destroyed' "$WORK/.data/audit.jsonl" 2>/dev/null && echo yes || echo no)"
 check "jobs: delete"                    200 "$(auth_request DELETE "/fleet/jobs/$JOB" | status_of)"
+# an ISO from Proxmox: the hub builds the VM with the installer attached and stops there — the install is by hand
+ISOJ=$(auth_request POST /fleet/provision '{"node":"pve","storage":"local-lvm","gateway":"192.0.2.1","ip_start":"192.0.2.80","iso":"local:iso/tiny-installer.iso","vms":[{"stack":"by-hand-box","cores":1,"memory_mb":1024,"disk_gb":12}]}')
+check "iso build: queued"               true "$(body_of <<< "$ISOJ" | jq -r '.success' 2>/dev/null)"
+IJOB=$(body_of <<< "$ISOJ" | jq -r '.jobs[0].id' 2>/dev/null)
+_IST=""; for _i in $(seq 1 60); do _IST=$(auth_request GET "/fleet/jobs/$IJOB" | body_of | jq -r '.status' 2>/dev/null); [[ "$_IST" == "done" || "$_IST" == "failed" ]] && break; sleep 2; done
+check "iso build: done at the boot"     "done" "$_IST"
+check "iso build: by hand from here"    true "$(auth_request GET "/fleet/jobs/$IJOB" | body_of | jq -r '.manual' 2>/dev/null)"
+_IVM=$(auth_request GET "/fleet/jobs/$IJOB" | body_of | jq -r '.vmid' 2>/dev/null)
+check "iso build: VM has the ISO"       yes "$(auth_request GET "/proxmox/vms/pve/qemu/$_IVM" | body_of | jq -r '.config.ide2 // ""' 2>/dev/null | grep -q 'tiny-installer.iso' && echo yes || echo no)"
+check "iso build: join line in the log" yes "$(auth_request GET "/fleet/jobs/$IJOB" | body_of | jq -r '.log[].text' 2>/dev/null | grep -q 'DCS_JOIN_TOKEN=' && echo yes || echo no)"
+check "iso build: dismiss destroys it"  true "$(auth_request DELETE "/fleet/jobs/$IJOB?destroy=true" | body_of | jq -r '.vm_destroyed' 2>/dev/null)"
 (cd "$VMWORK" && "$VMWORK/.scripts/api-server.sh" --stop >/dev/null 2>&1)
 (cd "$VMWORK/Stacks/smoke-photos" 2>/dev/null && docker compose -p smoke-photos down --remove-orphans >/dev/null 2>&1) || true
 # --stop trusts the pid file only for this installation's own server (a copied .data/ must never stop another one)

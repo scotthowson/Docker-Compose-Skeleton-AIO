@@ -54,6 +54,14 @@ else
     )
 fi
 
+# A stack that lives in a VM of this hub's fleet is that VM's: the folder here is a leftover and is
+# never started by this server, whatever DOCKER_STACKS says (.data/fleet.json remembers the placements).
+_fleet_owned_stack() {
+    local f="${COMPOSE_DIR%/*}/.data/fleet.json"
+    [[ -s "$f" ]] && command -v jq >/dev/null 2>&1 || return 1
+    jq -e --arg n "$1" '[.members[]? | .stacks[]?] | index($n) != null' "$f" >/dev/null 2>&1
+}
+
 # Stacks that should trigger a push notification on successful start.
 # Configurable via NOTIFICATION_STACKS in .env (space-separated).
 if [[ -n "${NOTIFICATION_STACKS:-}" ]]; then
@@ -227,6 +235,11 @@ start_docker_compose_services() {
 
     local stack_index=0
     for service in "${services_to_start[@]}"; do
+        if _fleet_owned_stack "$service"; then
+            log_info "Stack '$service' runs in its own VM (fleet) — the folder here is a leftover, not started"
+            skipped_services+=("$service")
+            continue
+        fi
         (( stack_index++ )) || true
 
         if [[ -d "$COMPOSE_DIR/$service" && -f "$COMPOSE_DIR/$service/docker-compose.yml" ]]; then

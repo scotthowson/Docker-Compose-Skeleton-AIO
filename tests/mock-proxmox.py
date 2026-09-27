@@ -66,6 +66,7 @@ class H(http.server.BaseHTTPRequestHandler):
         if path.startswith('/api2/json/nodes/pve/storage/') and path.endswith('/content'):
             st = path.split('/')[6]; want = q.get('content', [''])[0]
             items = [{'volid': v, 'content': 'import', 'size': 400000000, 'format': 'qcow2'} for v in IMPORTS.get(st, [])]
+            if st == 'local': items.append({'volid': 'local:iso/tiny-installer.iso', 'content': 'iso', 'size': 68157440, 'format': 'iso'})
             return self._send(200, {'data': [i for i in items if not want or i['content'] == want]})
         if path.startswith('/api2/json/nodes/pve/tasks/') and path.endswith('/status'):
             return self._send(200, {'data': {'status': 'stopped', 'exitstatus': 'OK', 'upid': urllib.parse.unquote(path.split('/')[6])}})

@@ -16,7 +16,7 @@ export DEBIAN_FRONTEND=noninteractive
 DIR="$HOME/.Docker-Compose-Skeleton-AIO"
 have() { command -v "$1" >/dev/null 2>&1; }
 
-APT_OPTS=(-o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 -o Acquire::Retries=2 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold)
+APT_OPTS=(-o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 -o Acquire::Retries=2 -o DPkg::Lock::Timeout=600 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold)
 pkg_install() {   # best effort, bounded in time, quiet; the caller checks what it needed
     if have apt-get; then
         [[ "${APT_UPDATED:-}" == 1 ]] || { sudo -n timeout 600 apt-get -qq "${APT_OPTS[@]}" update >/dev/null 2>&1 || true; APT_UPDATED=1; }
@@ -60,6 +60,11 @@ fi
 sg docker -c "docker compose version" >/dev/null 2>&1 || die "Docker Compose is not available (docker compose version fails)"
 say "Docker: $(docker --version 2>/dev/null | head -1) · $(sg docker -c 'docker compose version' 2>/dev/null | head -1)"
 
+# a host firewall (Fedora, AlmaLinux and friends): the hub must reach the API port
+if command -v firewall-cmd >/dev/null 2>&1 && sudo -n systemctl is-active --quiet firewalld 2>/dev/null; then
+    sudo -n firewall-cmd --permanent --add-port="${DCS_API_PORT:-9876}/tcp" >/dev/null 2>&1 && sudo -n firewall-cmd --reload >/dev/null 2>&1 \
+        && say "firewalld: port ${DCS_API_PORT:-9876}/tcp open for the hub" || say "firewalld is on but the port could not be opened — open ${DCS_API_PORT:-9876}/tcp by hand"
+fi
 say "Fetching DCS from the hub…"
 rm -rf "$DIR" && mkdir -p "$DIR"
 curl -fsSL "$DCS_BUNDLE_URL" | tar -xz -C "$DIR" || die "could not fetch the DCS bundle from the hub ($DCS_HUB_URL)"

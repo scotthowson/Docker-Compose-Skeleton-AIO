@@ -252,6 +252,25 @@ Permissions → Add), or the privileges `VM.Allocate`, `VM.Config.*`, `Datastore
 free address range, and internet from the VMs (the install log says at once when there is
 none).
 
+### The operating system
+
+Every VM is built from a **cloud image**: a system that takes its user, key, address, Docker
+and DCS from cloud-init and the bootstrap, so the build needs no hand on it. The VM settings
+(the wizard's Stacks step, *New VM*) offer:
+
+| Choice | What happens |
+|--------|--------------|
+| **Catalogue** — Debian 13 (the default, smallest), Debian 12, Ubuntu Server 26.04 / 24.04 / 22.04 LTS, Fedora Cloud, AlmaLinux 9 | Proxmox downloads the image once into the import storage (or the hub fetches and uploads it), every VM built from it imports that file. |
+| **On Proxmox already** — a cloud image in the import storage | Used as is: put images there yourself (Datacenter → Storage → *local* → *Import*) and they show up. |
+| **On Proxmox already** — an installer ISO from *ISO Images* | The hub creates the VM with the ISO attached and stops there: install the system in the VM's Proxmox console (the card says which address to give it), then run the one-line join the card shows. The build closes by itself when the VM joins. Anything Proxmox can boot works this way. |
+| **A URL** | Any cloud image (`.qcow2`, `.img`, `.raw`) with cloud-init and apt or dnf inside. |
+
+Debian and Ubuntu (apt) and Fedora and AlmaLinux (dnf) are covered by the bootstrap; on
+dnf systems it opens the API port in firewalld and leaves SELinux enforcing (add `:z` to a
+volume Docker must write). A `.config/fleet-images.json` on the hub (an array of
+`{id, label, url, file, family}`) replaces the catalogue. The choice applies to every VM of a
+build; *New VM* can pick a different one per VM.
+
 ### VMs you made yourself
 
 Any VM with DCS in it can join the same fleet, and the hub then treats it like a built one:
@@ -299,6 +318,10 @@ guest*, and the member menu's *Test* re-matches.
   per stack, and a stack placed in a VM leaves its folder behind on the hub — so the VM's stack is
   the one listed, forwarded and deployed to. To move a stack that runs on the hub into a VM, stop
   it and take it out of `DOCKER_STACKS` first (the wizard's Stacks step does that for you).
+- **The hub never starts a VM's stack itself**: `start.sh` (and the boot service), *Start All*
+  and the batch actions skip every stack that a member runs — its folder on the hub is a
+  leftover — whatever `DOCKER_STACKS` says; the log line says so. Actions on such a stack go to
+  the VM instead.
 - **One name, one guest**: building a VM for a stack whose name already exists as a guest on
   Proxmox is refused — link that guest from the Proxmox page (*Link VMs*) or rename it there. A
   failed build's VM can go with its job (*Dismiss* asks; `DELETE /fleet/jobs/{id}?destroy=true`).
