@@ -69,7 +69,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | GET | `/metrics/trends` | user | Metrics samples for a range (range=1h\|6h\|24h\|7d\|30d\|90d\|1y\|all), downsampled, with min/max for rolled-up points |
 | GET | `/metrics/history` | user | Metrics samples for a range (range=1h\|6h\|24h\|7d\|30d\|90d\|1y\|all); same data as /metrics/trends under "data" |
 | GET | `/metrics/summary` | user | Min, max and average CPU, memory and disk over a range (range=1h\|6h\|24h\|7d\|30d\|90d\|1y\|all) |
-| GET | `/health/score` | user | System health score (0-100) with its factors |
+| GET | `/health/score` | user | # GET /health/score?fleet=1 on a hub: the members' scores folded in — containers and images add up across the fleet, the score is |
 | GET | `/health/score/history` | user | Recorded health scores over a range |
 | GET | `/config/schema` | user | Return contents of .config/schema.json |
 | GET | `/health/score/{stack}` | user | Compute health score for a specific stack |

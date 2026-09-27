@@ -800,6 +800,8 @@ check "fleet: health lists both DCS"      2 "$(auth_request GET '/health?fleet=1
 check "fleet: health names the member"    "$MID" "$(auth_request GET '/health?fleet=1' | body_of | jq -r '.members[1].id' 2>/dev/null)"
 check "fleet: health summary adds up"     yes "$(auth_request GET '/health?fleet=1' | body_of | jq -e '.summary.total == (.containers | length)' >/dev/null 2>&1 && echo yes || echo no)"
 check "fleet: /health plain unchanged"    null "$(auth_request GET /health | body_of | jq -r '.fleet' 2>/dev/null)"
+check "fleet: score folds the members in" 2 "$(auth_request GET '/health/score?fleet=1' | body_of | jq -r '.members | length' 2>/dev/null)"
+check "fleet: score counts every container" yes "$(auth_request GET '/health/score?fleet=1' | body_of | jq -e '.factors.stacks.total >= 1 and (.score | type == "number") and (.grade | test("^[A-F]$"))' >/dev/null 2>&1 && echo yes || echo no)"
 check "fleet: /images?fleet=1 merges"     2 "$(auth_request GET '/images?fleet=1' | body_of | jq -r '.members | length' 2>/dev/null)"
 check "fleet: images total adds up"       yes "$(auth_request GET '/images?fleet=1' | body_of | jq -e '.total == (.images | length) and .total == ([.members[].count] | add)' >/dev/null 2>&1 && echo yes || echo no)"
 check "fleet: image rows say where"       yes "$(auth_request GET '/images?fleet=1' | body_of | jq -e --arg m "$MID" '([.images[] | select(.member == $m)] | length) == .members[1].count' >/dev/null 2>&1 && echo yes || echo no)"
