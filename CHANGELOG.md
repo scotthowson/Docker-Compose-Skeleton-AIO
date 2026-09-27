@@ -56,6 +56,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - A member takes code only from its own hub (`POST /fleet/self-update` refuses other hosts).
 - The smoke's fleet score check no longer assumes containers exist (the CI runner has none).
 
+### Fixed
+
+- **A Fedora (SELinux enforcing) member did not come back after a reboot that followed an
+  update round**: the bundle replaced `api-server.sh`, the new file took the home directory's
+  label and systemd refused to execute it (`203/EXEC`). Both update paths now put the
+  installer's `bin_t` label back (`restorecon`, else `chcon`), hub-built Fedora VMs get
+  `policycoreutils-python-utils` so the rule is persistent, and the audit says
+  `selinux_relabel` when it had to.
+
 ### Security
 
 Hardening of the hub↔member protocol after an audit. A member is another machine, and everything

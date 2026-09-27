@@ -42,6 +42,8 @@ if have curl && have git && have jq && have socat && have openssl && have python
 else
     say "Installing curl, git, jq, socat, openssl, python3 and the QEMU guest agent…"
     pkg_install curl git jq socat openssl python3 ca-certificates gnupg qemu-guest-agent
+    # SELinux systems: semanage lets the installer keep the entry scripts executable for systemd across updates
+    have dnf && pkg_install policycoreutils-python-utils
 fi
 for t in curl git jq socat openssl python3; do have "$t" || die "$t did not install — no internet from the VM, or the package manager is broken (check the VM's console)"; done
 sudo -n systemctl enable --now qemu-guest-agent >/dev/null 2>&1 && say "QEMU guest agent running" || say "QEMU guest agent not started (Proxmox still works; the agent gives it the VM's address)"

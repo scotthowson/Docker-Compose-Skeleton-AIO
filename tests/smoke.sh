@@ -1413,6 +1413,7 @@ check "engine: fleet update needs members"   409 "$(fake_request POST /fleet/doc
 check "fleet domain: from the proxy stack"   smoke.test "$(_lib _fleet_domain)"
 check "domain: hostname accepted"            0 "$(_lib _domain_valid home.example.org; echo $?)"
 check "domain: garbage refused"              1 "$(_lib _domain_valid 'bad domain'; echo $?)"
+check "selinux relabel: harmless everywhere" 0 "$(_lib _selinux_relabel_code; echo $?)"
 check "domain hand-off: no hub here"         409 "$(auth_request POST /fleet/hub/domain '{"domain":"x.example.org"}' | status_of)"
 # Cloudflare + DDNS against the stand-in: a CNAME for a routed service, then the dynamic A records following the public address
 _CFP=$(( 20000 + RANDOM % 20000 )); _CFS="$WORK/.data/cf-mock.json"
