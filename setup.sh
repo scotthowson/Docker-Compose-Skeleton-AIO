@@ -87,6 +87,17 @@ OPTIONS:
   --help, -h      Show this help message and exit
   --dry-run       Show what would be done without making changes
   --verbose, -v   Show extra detail during setup
+  --join HUB_URL CODE [NAME]
+                  Make an installed DCS a member of the hub at HUB_URL (CODE is
+                  a join code from the hub's Proxmox page); nothing else runs
+
+FLEET (Proxmox): a hub is the DCS that is linked to Proxmox; the DCS in each
+Docker VM joins it. Setup asks which one this machine is; unattended installs
+answer with environment variables:
+  DCS_FLEET_ROLE=hub|member|standalone
+  DCS_HUB_URL=http://<hub>:9876 DCS_JOIN_TOKEN=<code> [DCS_MEMBER_NAME=<name>]
+  DCS_PROXMOX_URL=https://pve:8006 DCS_PROXMOX_TOKEN_ID=user@realm!name
+  DCS_PROXMOX_TOKEN_SECRET=<secret>            (links the hub to Proxmox)
 
 WHAT IT DOES:
   1. Copies .env.example -> .env (if .env does not exist)
@@ -108,12 +119,17 @@ EOF
 
 DRY_RUN=false
 VERBOSE=false
+JOIN_ONLY_HUB=""; JOIN_ONLY_CODE=""; JOIN_ONLY_NAME=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --help|-h)   show_help ;;
         --dry-run)   DRY_RUN=true; shift ;;
         --verbose|-v) VERBOSE=true; shift ;;
+        --join)
+            [[ -n "${2:-}" && -n "${3:-}" ]] || { echo "Usage: ./setup.sh --join HUB_URL CODE [NAME]"; exit 1; }
+            JOIN_ONLY_HUB="$2"; JOIN_ONLY_CODE="$3"; shift 3
+            if [[ $# -gt 0 && "$1" != --* ]]; then JOIN_ONLY_NAME="$1"; shift; fi ;;
         *)
             echo "Unknown option: $1"
             echo "Run './setup.sh --help' for usage."
@@ -151,6 +167,16 @@ _info "Stacks directory: $COMPOSE_DIR"
 _info "App-Data target : $APP_DATA_DIR"
 _info "Running as user : ${CURRENT_USER}:${CURRENT_GROUP}"
 
+# ./setup.sh --join: only make this (installed) DCS a member of a hub
+if [[ -n "$JOIN_ONLY_HUB" ]]; then
+    [[ -x "$BASE_DIR/.scripts/api-server.sh" ]] || { _fail "No API server here — run ./setup.sh first"; exit 1; }
+    echo ""
+    "$BASE_DIR/.scripts/api-server.sh" --join-hub "$JOIN_ONLY_HUB" "$JOIN_ONLY_CODE" ${JOIN_ONLY_NAME:+"$JOIN_ONLY_NAME"}
+    rc=$?
+    [[ $rc -eq 0 ]] && _info "The hub's Proxmox page now shows this server's stacks under its VM."
+    exit $rc
+fi
+
 # -----------------------------------------------------------------------------
 # What kind of machine this is: the OS, bare metal or a guest (a QEMU/KVM guest
 # is most likely a Proxmox VM, an LXC container most likely lives on a Proxmox
@@ -184,6 +210,43 @@ _info "Machine         : $ENV_MACHINE"
 if [[ "$ENV_PVE_HOST" == "true" ]]; then
     _warn "This is the Proxmox host itself. DCS runs best in a small LXC or VM on it (docs/PROXMOX.md); continuing anyway."
 fi
+
+# -----------------------------------------------------------------------------
+# Fleet role. A hub is the DCS linked to Proxmox: it shows and drives the DCS
+# in the other VMs (members) from one dashboard. Asked once, on the first run;
+# unattended installs answer with DCS_FLEET_ROLE / DCS_HUB_URL + DCS_JOIN_TOKEN.
+# -----------------------------------------------------------------------------
+FLEET_ROLE="${DCS_FLEET_ROLE:-}"
+FLEET_HUB_URL="${DCS_HUB_URL:-}"; FLEET_JOIN_CODE="${DCS_JOIN_TOKEN:-}"; FLEET_MEMBER_NAME="${DCS_MEMBER_NAME:-}"
+[[ -n "$FLEET_HUB_URL" && -n "$FLEET_JOIN_CODE" ]] && FLEET_ROLE="member"
+case "$FLEET_ROLE" in hub|member|standalone|"") ;; *) _warn "DCS_FLEET_ROLE=$FLEET_ROLE is not hub, member or standalone — ignored"; FLEET_ROLE="" ;; esac
+if [[ -z "$FLEET_ROLE" && -t 0 && ! -f "$BASE_DIR/.api-auth/.setup-complete" ]]; then
+    echo ""
+    _info "How will this DCS be used?"
+    echo "    1) Standalone — manage the Docker stacks on this machine (default)"
+    echo "    2) Hub        — link Proxmox here and manage the DCS in the other VMs from this dashboard"
+    echo "    3) Member     — this VM runs stacks under a hub (you need the hub's address and a join code)"
+    read -r -p "  Choice [1/2/3]: " _role_choice
+    case "${_role_choice:-1}" in
+        2|hub|Hub) FLEET_ROLE="hub" ;;
+        3|member|Member)
+            FLEET_ROLE="member"
+            read -r -p "  Hub address [http://<hub-ip>:9876]: " FLEET_HUB_URL
+            read -r -p "  Join code (Proxmox page → Members on the hub): " FLEET_JOIN_CODE
+            read -r -p "  Name for this server on the hub [$(hostname)]: " FLEET_MEMBER_NAME
+            FLEET_HUB_URL="${FLEET_HUB_URL%/}"
+            if [[ -z "$FLEET_HUB_URL" || -z "$FLEET_JOIN_CODE" ]]; then
+                _warn "Hub address or join code missing — the join can be done later: ./setup.sh --join <hub-url> <code>"
+                FLEET_ROLE="standalone"
+            fi ;;
+        *) FLEET_ROLE="standalone" ;;
+    esac
+fi
+[[ -n "$FLEET_ROLE" ]] || FLEET_ROLE="standalone"
+case "$FLEET_ROLE" in
+    hub)    _ok "Role: hub — Proxmox is linked here and the other VMs join this DCS" ;;
+    member) _ok "Role: member of ${FLEET_HUB_URL} — the join runs when the API is up" ;;
+esac
 
 # Running setup through sudo would leave .env, logs/ and every App-Data
 # directory owned by root and start the API server as root.
@@ -264,16 +327,27 @@ _env_set() {   # _env_set KEY VALUE — set or add one plain KEY=VALUE line in .
     fi
 }
 PVE_LINKED=false
-if [[ "$ENV_PVE_GUEST" == "true" && -t 0 && -f "$BASE_DIR/.env" ]] && ! grep -qE '^PROXMOX_URL=.+' "$BASE_DIR/.env" 2>/dev/null; then
-    echo ""
-    _info "DCS can show and power the VMs and containers of this Proxmox host."
-    _info "You need an API token: Datacenter → Permissions → API Tokens (docs/PROXMOX.md)."
-    read -r -p "  Link DCS to this Proxmox now? [y/N] " _pve_yn
-    if [[ "${_pve_yn,,}" == "y" || "${_pve_yn,,}" == "yes" ]]; then
-        read -r -p "  Proxmox URL [${ENV_PVE_HINT:-https://pve.example.com:8006}]: " _pve_url
-        _pve_url="${_pve_url:-${ENV_PVE_HINT:-}}"; _pve_url="${_pve_url%/}"
-        read -r -p "  API token ID (user@realm!name): " _pve_tid
-        read -r -s -p "  Token secret: " _pve_sec; echo ""
+_pve_url=""; _pve_tid=""; _pve_sec=""; _pve_ask=false
+if [[ -f "$BASE_DIR/.env" ]] && ! grep -qE '^PROXMOX_URL=.+' "$BASE_DIR/.env" 2>/dev/null; then
+    if [[ -n "${DCS_PROXMOX_URL:-}" && -n "${DCS_PROXMOX_TOKEN_ID:-}" && -n "${DCS_PROXMOX_TOKEN_SECRET:-}" ]]; then
+        _pve_url="${DCS_PROXMOX_URL%/}"; _pve_tid="$DCS_PROXMOX_TOKEN_ID"; _pve_sec="$DCS_PROXMOX_TOKEN_SECRET"; _pve_ask=true
+        _info "Linking Proxmox from DCS_PROXMOX_URL…"
+    elif [[ -t 0 && ( "$FLEET_ROLE" == "hub" || ( "$FLEET_ROLE" == "standalone" && "$ENV_PVE_GUEST" == "true" && -z "${DCS_FLEET_ROLE:-}" ) ) ]]; then
+        echo ""
+        _info "DCS can show and power the VMs and containers of this Proxmox host."
+        _info "You need an API token: Datacenter → Permissions → API Tokens (docs/PROXMOX.md)."
+        _pve_default_yn="y/N"; [[ "$FLEET_ROLE" == "hub" ]] && _pve_default_yn="Y/n"
+        read -r -p "  Link DCS to this Proxmox now? [$_pve_default_yn] " _pve_yn
+        [[ -z "$_pve_yn" && "$FLEET_ROLE" == "hub" ]] && _pve_yn="y"
+        if [[ "${_pve_yn,,}" == "y" || "${_pve_yn,,}" == "yes" ]]; then
+            read -r -p "  Proxmox URL [${ENV_PVE_HINT:-https://pve.example.com:8006}]: " _pve_url
+            _pve_url="${_pve_url:-${ENV_PVE_HINT:-}}"; _pve_url="${_pve_url%/}"
+            read -r -p "  API token ID (user@realm!name): " _pve_tid
+            read -r -s -p "  Token secret: " _pve_sec; echo ""
+            _pve_ask=true
+        fi
+    fi
+    if [[ "$_pve_ask" == "true" ]]; then
         if [[ -n "$_pve_url" && -n "$_pve_tid" && -n "$_pve_sec" ]]; then
             _pve_verify=true
             _pve_code=$(curl -s -o /dev/null --max-time 8 -w '%{http_code}' -H "Authorization: PVEAPIToken=${_pve_tid}=${_pve_sec}" "$_pve_url/api2/json/version" 2>/dev/null)
@@ -760,6 +834,33 @@ _ensure_core_infra_running || {
 }
 
 _print_url_banner
+
+# Fleet: a member joins now (or as soon as the wizard has made the first admin);
+# a hub prints the join code the other VMs use.
+_fleet_closing() {
+    local api="$BASE_DIR/.scripts/api-server.sh" line tok url
+    case "$FLEET_ROLE" in
+        member)
+            echo ""
+            _info "Joining the hub at $FLEET_HUB_URL…"
+            if "$api" --join-hub "$FLEET_HUB_URL" "$FLEET_JOIN_CODE" ${FLEET_MEMBER_NAME:+"$FLEET_MEMBER_NAME"} 2>&1 | sed 's/^/        /'; then
+                _info "The hub's Proxmox page lists this server's stacks under its VM once the join is complete."
+            else
+                _warn "The join did not go through — fix the cause, then run: ./setup.sh --join $FLEET_HUB_URL <code>"
+            fi ;;
+        hub)
+            line=$("$api" --join-token-quiet 2>/dev/null) || line=""
+            tok="${line%%$'\t'*}"; url="${line#*$'\t'}"; url="${url%%$'\t'*}"
+            [[ -n "$tok" && -n "$url" ]] || return 0
+            echo ""
+            _info "This DCS is the hub. On each Docker VM (join code valid 24 h, more on the Proxmox page):"
+            echo -e "      ${C_BOLD}git clone https://github.com/scotthowson/Docker-Compose-Skeleton-AIO.git ~/.Docker-Compose-Skeleton-AIO${C_RESET}"
+            echo -e "      ${C_BOLD}cd ~/.Docker-Compose-Skeleton-AIO && DCS_HUB_URL=$url DCS_JOIN_TOKEN=$tok ./setup.sh${C_RESET}"
+            _info "A VM that already runs DCS:  ./setup.sh --join $url $tok"
+            _info "The wizard's Proxmox step scans the VMs for DCS installs and links them too." ;;
+    esac
+}
+_fleet_closing
 
 if [[ "$ENV_PVE_GUEST" == "true" || "$ENV_PVE_HOST" == "true" ]]; then
     echo ""

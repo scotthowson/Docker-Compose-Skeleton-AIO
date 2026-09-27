@@ -687,6 +687,129 @@ check "proxmox: bad token hint"         yes "$(auth_request POST /proxmox/test "
 check "proxmox: viewer may look"        200 "$(viewer_request GET /proxmox/status | status_of)"
 check "proxmox: viewer may not power"   403 "$(viewer_request POST /proxmox/vms/pve/lxc/200/stop '{}' | status_of)"
 check "proxmox: bot may power"          0 "$(_lib _api_bot_allowed POST /proxmox/vms/pve/lxc/200/stop; echo $?)"
+
+echo "Fleet: a hub and a member (two real listeners on loopback)"
+# The hub is this WORK copy, also started as a listener; the member is a second copy. Both
+# run with auth on so the hub really logs in. Stopped with --stop at the end (and on exit).
+HUB_PORT=$(( 20000 + RANDOM % 20000 )); FLEET_PORT=$(( 20000 + RANDOM % 20000 ))
+[[ "$FLEET_PORT" == "$HUB_PORT" ]] && FLEET_PORT=$(( FLEET_PORT + 1 ))
+MWORK="$WORK-member"; PWORK="$WORK-pending"
+rm -rf "$MWORK" "$PWORK"; cp -r "$WORK" "$MWORK"
+_fleet_stop_listeners() { for d in "$WORK" "$MWORK"; do [[ -f "$d/.data/api-server.pid" ]] && (cd "$d" && "$d/.scripts/api-server.sh" --stop >/dev/null 2>&1); done; return 0; }
+trap '_fleet_stop_listeners; rm -rf "$WORK" "$MWORK" "$PWORK"' EXIT
+_menvset() { sed -i "/^${1}=/d" "$MWORK/.env"; printf '%s=%s\n' "$1" "$2" >> "$MWORK/.env"; }
+_mlib() { local -a _c=("$@"); ( set --; cd "$MWORK" && source "$MWORK/.scripts/api-server.sh" >/dev/null 2>&1; "${_c[@]}" ) 2>/dev/null; }
+_envset API_AUTH_ENABLED true; _envset FLEET_SCAN_PORTS "$FLEET_PORT"
+_menvset API_AUTH_ENABLED true; _menvset API_PORT "$FLEET_PORT"; _menvset SERVER_NAME "Media VM"
+sed -i '/^PROXMOX_/d;/^FLEET_SCAN_PORTS=/d' "$MWORK/.env"
+rm -f "$MWORK/.data/fleet.json" "$MWORK/.data/api-server.pid" "$WORK/.data/fleet.json"
+(cd "$WORK"  && setsid nohup "$API" --bind 127.0.0.1 --port "$HUB_PORT" > "$WORK/logs/hub-listener.log" 2>&1 < /dev/null &)
+(cd "$MWORK" && FLEET_IDENTITY_UUID=11111111-2222-3333-4444-555555555555 setsid nohup "$MWORK/.scripts/api-server.sh" --bind 127.0.0.1 --port "$FLEET_PORT" > "$MWORK/logs/member-listener.log" 2>&1 < /dev/null &)
+timeout 30 bash -c "until curl -s -m 1 http://127.0.0.1:$HUB_PORT/ping | grep -q '\"ok\"' && curl -s -m 1 http://127.0.0.1:$FLEET_PORT/ping | grep -q '\"ok\"'; do sleep 0.3; done" 2>/dev/null
+check "fleet: hub listener up"          yes "$(curl -s -m 2 http://127.0.0.1:$HUB_PORT/ping | jq -r '.ok' 2>/dev/null | sed 's/true/yes/')"
+check "fleet: member listener up"       yes "$(curl -s -m 2 http://127.0.0.1:$FLEET_PORT/ping | jq -r '.ok' 2>/dev/null | sed 's/true/yes/')"
+MTOKEN=$(curl -s -m 5 -X POST "http://127.0.0.1:$FLEET_PORT/auth/login" -H 'Content-Type: application/json' -d '{"username":"admin","password":"correct horse battery"}' | jq -r '.token // empty' 2>/dev/null)
+member_request() { local m="$1" p="$2" b="${3:-}"; curl -s -m 20 -X "$m" "http://127.0.0.1:$FLEET_PORT$p" -H "Authorization: Bearer $MTOKEN" -H 'Content-Type: application/json' ${b:+-d "$b"}; }
+check "fleet: member login"             yes "$([[ ${#MTOKEN} -ge 32 ]] && echo yes || echo no)"
+check "fleet: standalone at first"      standalone "$(auth_request GET /fleet/status | body_of | jq -r '.role' 2>/dev/null)"
+check "fleet: identity has ips"         true "$(member_request GET /fleet/identity | jq -r '.ips | type == "array"' 2>/dev/null)"
+JT=$(auth_request POST /fleet/join-tokens '{"ttl_hours":1}' | body_of | jq -r '.token // empty' 2>/dev/null)
+check "fleet: join code minted"         yes "$([[ "$JT" =~ ^[A-Z2-9]{4}-[A-Z2-9]{4}-[A-Z2-9]{4}$ ]] && echo yes || echo no)"
+check "fleet: code lists"               1 "$(auth_request GET /fleet/join-tokens | body_of | jq -r '.tokens | length' 2>/dev/null)"
+check "fleet: role hub with a code"     hub "$(auth_request GET /fleet/status | body_of | jq -r '.role' 2>/dev/null)"
+check "fleet: viewer cannot see codes"  403 "$(viewer_request GET /fleet/join-tokens | status_of)"
+check "fleet: bad code refused"         403 "$(request POST /fleet/join '{"token":"NOPE-NOPE-NOPE","url":"http://127.0.0.1:1","username":"admin","password":"x"}' "${AUTH[@]}" | status_of)"
+JOIN_OUT=$(cd "$MWORK" && FLEET_IDENTITY_UUID=11111111-2222-3333-4444-555555555555 DCS_MEMBER_URL="http://127.0.0.1:$FLEET_PORT" "$MWORK/.scripts/api-server.sh" --join-hub "http://127.0.0.1:$HUB_PORT" "$JT" media-vm 2>&1)
+check "fleet: member joined via CLI"    yes "$(grep -q '^✓ Joined' <<< "$JOIN_OUT" && echo yes || { echo no; echo "$JOIN_OUT" | tail -3 >&2; })"
+check "fleet: one member"               1 "$(auth_request GET /fleet/members | body_of | jq -r '.total' 2>/dev/null)"
+MID=$(auth_request GET /fleet/members | body_of | jq -r '.members[0].id' 2>/dev/null)
+check "fleet: member id from name"      media-vm "$MID"
+check "fleet: matched by SMBIOS uuid"   uuid "$(auth_request GET /fleet/members | body_of | jq -r '.members[0].matched_by' 2>/dev/null)"
+check "fleet: mapped to VM 100"         100 "$(auth_request GET /fleet/members | body_of | jq -r '.members[0].vmid' 2>/dev/null)"
+check "fleet: hub account is dcs-hub"   dcs-hub "$(auth_request GET /fleet/members | body_of | jq -r '.members[0].username' 2>/dev/null)"
+check "fleet: password in secret store" yes "$(_lib secrets_exists FLEET_MEMBER_MEDIA_VM_PASSWORD && echo yes || echo no)"
+check "fleet: member knows its hub"     member "$(member_request GET /fleet/status | jq -r '.role' 2>/dev/null)"
+check "fleet: member records vmid"      100 "$(member_request GET /fleet/status | jq -r '.hub.vmid' 2>/dev/null)"
+check "fleet: dcs-hub is a service acct" true "$(jq -r '[.[] | select(.username == "dcs-hub")] | .[0].service' "$MWORK/.api-auth/users.json" 2>/dev/null)"
+check "fleet: join audited on hub"      yes "$(grep -q 'fleet_member_joined' "$WORK/.data/audit.jsonl" 2>/dev/null && echo yes || echo no)"
+check "fleet: join audited on member"   yes "$(grep -q 'fleet_joined_hub' "$MWORK/.data/audit.jsonl" 2>/dev/null && echo yes || echo no)"
+check "fleet: proxy lists stacks"       demo "$(auth_request GET "/fleet/members/$MID/api/stacks" | body_of | jq -r '.stacks[0].name' 2>/dev/null)"
+check "fleet: proxy passes status"      404 "$(auth_request GET "/fleet/members/$MID/api/stacks/nope-none" | status_of)"
+check "fleet: proxy keeps query"        yes "$(auth_request GET "/fleet/members/$MID/api/templates?category=media" | body_of | jq -e '.templates | type == "array"' >/dev/null 2>&1 && echo yes || echo no)"
+check "fleet: proxy blocks auth"        400 "$(auth_request GET "/fleet/members/$MID/api/auth/users" | status_of)"
+check "fleet: proxy unknown member"     404 "$(auth_request GET "/fleet/members/nobody/api/stacks" | status_of)"
+check "fleet: viewer may read proxy"    200 "$(viewer_request GET "/fleet/members/$MID/api/stacks" | status_of)"
+check "fleet: viewer proxy inner denied" 403 "$(viewer_request GET "/fleet/members/$MID/api/secrets" | status_of)"
+check "fleet: viewer cannot post proxy" 403 "$(viewer_request POST "/fleet/members/$MID/api/stacks/demo/restart" '{}' | status_of)"
+check "fleet: bot may drive members"    0 "$(_lib _api_bot_allowed POST "/fleet/members/$MID/api/stacks/demo/start"; echo $?)"
+check "fleet: overview reaches member"  true "$(auth_request GET /fleet/overview | body_of | jq -r '.members[0].reachable' 2>/dev/null)"
+check "fleet: overview counts stacks"   yes "$([[ "$(auth_request GET /fleet/overview | body_of | jq -r '.totals.stacks' 2>/dev/null)" -ge 1 ]] && echo yes || echo no)"
+check "fleet: overview names member"    media-vm "$(auth_request GET /fleet/overview | body_of | jq -r '.members[0].name' 2>/dev/null)"
+check "fleet: scan finds the member"    "http://127.0.0.1:$FLEET_PORT" "$(auth_request GET /fleet/discover | body_of | jq -r '.guests[] | select(.vmid == 100) | .dcs.url' 2>/dev/null)"
+check "fleet: scan links the guest"     "$MID" "$(auth_request GET /fleet/discover | body_of | jq -r '.guests[] | select(.vmid == 100) | .member.id' 2>/dev/null)"
+check "fleet: scan skips agentless VM"  null "$(auth_request GET /fleet/discover | body_of | jq -r '.guests[] | select(.vmid == 101) | .dcs' 2>/dev/null)"
+_envdel PROXMOX_URL
+check "fleet: scan without proxmox"     400 "$(auth_request GET /fleet/discover | status_of)"
+_envset PROXMOX_URL "http://127.0.0.1:$_PVE_PORT"
+check "fleet: scan with values (wizard)" 1 "$(auth_request POST /fleet/discover "{\"url\":\"http://127.0.0.1:$_PVE_PORT\",\"token_id\":\"dcs@pve!smoke\",\"token_secret\":\"smoke-secret\"}" | body_of | jq -r '.found' 2>/dev/null)"
+check "fleet: viewer cannot scan"       403 "$(viewer_request GET /fleet/discover | status_of)"
+check "fleet: test reports reachable"   true "$(auth_request POST "/fleet/members/$MID/test" '{}' | body_of | jq -r '.reachable' 2>/dev/null)"
+check "fleet: test rematches guest"     100 "$(auth_request POST "/fleet/members/$MID/test" '{}' | body_of | jq -r '.match.vmid' 2>/dev/null)"
+check "fleet: rename member"            "Media VM" "$(auth_request PUT "/fleet/members/$MID" '{"name":"Media VM"}' | body_of | jq -r '.member.name' 2>/dev/null)"
+check "fleet: remap by hand"            manual "$(auth_request PUT "/fleet/members/$MID" '{"vmid":101,"node":"pve","type":"qemu"}' | body_of | jq -r '.member.matched_by' 2>/dev/null)"
+check "fleet: bad password refused"     502 "$(auth_request PUT "/fleet/members/$MID" '{"password":"wrong-wrong"}' | status_of)"
+check "fleet: unknown member 404"       404 "$(auth_request PUT "/fleet/members/nobody" '{"name":"x"}' | status_of)"
+# the member's routes ride along in the hub's Traefik feed
+_MROUTES=$(_mlib _find_traefik_routes_dir); [[ -n "$_MROUTES" ]] || _MROUTES="$MWORK/.data/routes"; mkdir -p "$_MROUTES"
+printf 'http:\n  routers:\n    fleetwho:\n      rule: "Host(`fleetwho.example.com`)"\n      service: fleetwho\n  services:\n    fleetwho:\n      loadBalancer:\n        servers:\n          - url: "http://10.9.9.9:8080"\n' > "$_MROUTES/fleetwho.yml"
+check "fleet: member feed lists route"  yes "$(member_request GET /fleet/feed | jq -e '.http.routers | has("fleetwho-dcs")' >/dev/null 2>&1 && echo yes || echo no)"
+_envset TRAEFIK_FEED_ENABLED true; _envset TRAEFIK_FEED_TOKEN fleet-feed-token
+check "fleet: hub feed merges member"   yes "$(request GET '/traefik/dynamic?token=fleet-feed-token' '' "${AUTH[@]}" | body_of | jq -e --arg k "${MID}-fleetwho-dcs" '.http.routers | has($k)' >/dev/null 2>&1 && echo yes || echo no)"
+check "fleet: merged service renamed"   "${MID}-fleetwho-dcs" "$(request GET '/traefik/dynamic?token=fleet-feed-token' '' "${AUTH[@]}" | body_of | jq -r --arg k "${MID}-fleetwho-dcs" '.http.routers[$k].service' 2>/dev/null)"
+check "fleet: feed status counts them"  yes "$([[ "$(auth_request GET /traefik/feed/status | body_of | jq -r '.member_routes' 2>/dev/null)" -ge 1 ]] && echo yes || echo no)"
+_envdel TRAEFIK_FEED_ENABLED; _envdel TRAEFIK_FEED_TOKEN; rm -f "$_MROUTES/fleetwho.yml"
+# the watcher: a member that stops answering, then comes back
+(cd "$MWORK" && "$MWORK/.scripts/api-server.sh" --stop >/dev/null 2>&1)
+timeout 10 bash -c "while curl -s -m 1 http://127.0.0.1:$FLEET_PORT/ping >/dev/null 2>&1; do sleep 0.3; done" 2>/dev/null
+touch -d '-2 minutes' "$WORK/.data/fleet-watch.stamp" 2>/dev/null
+FLEET_WATCH_STAMP="$WORK/.data/fleet-watch.stamp" _lib _fleet_watch
+check "fleet: member down noticed"      yes "$(grep -q 'fleet_member_down' "$WORK/.data/audit.jsonl" 2>/dev/null && echo yes || echo no)"
+check "fleet: member marked unreachable" false "$(auth_request GET /fleet/members | body_of | jq -r '.members[0].reachable' 2>/dev/null)"
+check "fleet: overview says no answer"  false "$(auth_request GET /fleet/overview | body_of | jq -r '.members[0].reachable' 2>/dev/null)"
+(cd "$MWORK" && FLEET_IDENTITY_UUID=11111111-2222-3333-4444-555555555555 setsid nohup "$MWORK/.scripts/api-server.sh" --bind 127.0.0.1 --port "$FLEET_PORT" >> "$MWORK/logs/member-listener.log" 2>&1 < /dev/null &)
+timeout 30 bash -c "until curl -s -m 1 http://127.0.0.1:$FLEET_PORT/ping | grep -q '\"ok\"'; do sleep 0.3; done" 2>/dev/null
+touch -d '-2 minutes' "$WORK/.data/fleet-watch.stamp" 2>/dev/null
+FLEET_WATCH_STAMP="$WORK/.data/fleet-watch.stamp" _lib _fleet_watch
+check "fleet: member back noticed"      yes "$(grep -q 'fleet_member_up' "$WORK/.data/audit.jsonl" 2>/dev/null && echo yes || echo no)"
+check "event style: member down"        "Member stopped answering" "$(_lib _discord_event_style fleet_member_down | cut -d'|' -f3)"
+check "notify wording: member joined"   "{member} joined the hub" "$(_lib eval '_notify_default_templates fleet_member_joined; printf %s "$NT_TITLE"')"
+# the member leaves; the hub forgets it; a manual add with the member's own account
+MTOKEN=$(curl -s -m 5 -X POST "http://127.0.0.1:$FLEET_PORT/auth/login" -H 'Content-Type: application/json' -d '{"username":"admin","password":"correct horse battery"}' | jq -r '.token // empty' 2>/dev/null)
+check "fleet: member leaves hub"        true "$(member_request DELETE /fleet/hub | jq -r '.success' 2>/dev/null)"
+check "fleet: dcs-hub account removed"  0 "$(jq -r '[.[] | select(.username == "dcs-hub")] | length' "$MWORK/.api-auth/users.json" 2>/dev/null)"
+check "fleet: member standalone again"  standalone "$(member_request GET /fleet/status | jq -r '.role' 2>/dev/null)"
+check "fleet: hub forgets member"       true "$(auth_request DELETE "/fleet/members/$MID" | body_of | jq -r '.success' 2>/dev/null)"
+check "fleet: secret gone"              no "$(_lib secrets_exists FLEET_MEMBER_MEDIA_VM_PASSWORD && echo yes || echo no)"
+check "fleet: manual add by account"    manual-vm "$(auth_request POST /fleet/members "{\"name\":\"manual vm\",\"url\":\"http://127.0.0.1:$FLEET_PORT\",\"username\":\"admin\",\"password\":\"correct horse battery\"}" | body_of | jq -r '.member.id' 2>/dev/null)"
+check "fleet: manual add wrong password" 502 "$(auth_request POST /fleet/members "{\"url\":\"http://127.0.0.1:$FLEET_PORT\",\"username\":\"admin\",\"password\":\"nope-nope\"}" | status_of)"
+check "fleet: refuses itself"           502 "$(auth_request POST /fleet/members "{\"url\":\"http://127.0.0.1:9876\",\"username\":\"admin\",\"password\":\"correct horse battery\"}" | status_of)"
+check "fleet: manual add proxies"       demo "$(auth_request GET /fleet/members/manual-vm/api/stacks | body_of | jq -r '.stacks[0].name' 2>/dev/null)"
+auth_request DELETE /fleet/members/manual-vm >/dev/null
+# join saved for later when the member has no admin yet (setup.sh before the wizard)
+mkdir -p "$PWORK/.scripts" "$PWORK/.lib" "$PWORK/.config" "$PWORK/.data" "$PWORK/.api-auth" "$PWORK/logs"
+cp "$API" "$PWORK/.scripts/"; cp -r "$WORK/.lib/." "$PWORK/.lib/"; cp -r "$WORK/.config/." "$PWORK/.config/"; cp "$WORK/.env" "$PWORK/.env"; printf '[]' > "$PWORK/.api-auth/users.json"
+PJ_OUT=$(cd "$PWORK" && "$PWORK/.scripts/api-server.sh" --join-hub "http://127.0.0.1:$HUB_PORT" "$JT" 2>&1)
+check "fleet: join deferred w/o admin"  yes "$(grep -q 'Join saved' <<< "$PJ_OUT" && echo yes || echo no)"
+check "fleet: pending join recorded"    "http://127.0.0.1:$HUB_PORT" "$(jq -r '.hub_url' "$PWORK/.data/fleet-join-pending.json" 2>/dev/null)"
+check "fleet: CLI join code"            yes "$(cd "$WORK" && "$API" --join-token 2 2>/dev/null | grep -q '^Join code: [A-Z2-9]\{4\}-' && echo yes || echo no)"
+check "fleet: CLI status is JSON"       true "$(cd "$WORK" && "$API" --fleet-status 2>/dev/null | jq -e 'has("members")' 2>/dev/null)"
+check "fleet: revoke code"              200 "$(auth_request DELETE "/fleet/join-tokens/$JT" | status_of)"
+check "fleet: revoked code gone"        no "$(auth_request GET /fleet/join-tokens | body_of | jq -e --arg t "$JT" '.tokens[] | select(.token == $t)' >/dev/null 2>&1 && echo yes || echo no)"
+_fleet_stop_listeners
+_envdel API_AUTH_ENABLED; _envdel FLEET_SCAN_PORTS
+rm -f "$WORK/.data/fleet.json" "$WORK/.data/fleet-watch.stamp"; rm -rf "$WORK/.data/fleet-sessions"
+trap 'rm -rf "$WORK" "$MWORK" "$PWORK"' EXIT
+
 check "proxmox: watcher silent first"   0 "$(PROXMOX_STATE_FILE="$WORK/.data/pve-state.json" _lib _pve_watch; grep -c 'proxmox_vm_stopped' "$WORK/.data/audit.jsonl" 2>/dev/null)"
 auth_request POST /proxmox/vms/pve/qemu/100/stop '{}' >/dev/null   # DCS asked: never an alert
 _lib _api_jq_update_file "$WORK/.data/intended.json" 'del(."pve:100")' >/dev/null 2>&1 || true

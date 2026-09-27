@@ -114,7 +114,7 @@ APP_DATA_DIR="${APP_DATA_DIR:-$BASE_DIR/App-Data}"
 # process agrees on the bind address, port and authentication policy.
 API_PORT="${DCS_API_EFFECTIVE_PORT:-${API_PORT:-9876}}"
 API_BIND="${DCS_API_EFFECTIVE_BIND:-${API_BIND:-127.0.0.1}}"
-API_VERSION="1.10.0"
+API_VERSION="1.11.0"
 DCS_VERSION="$(cat "${BASE_DIR}/VERSION" 2>/dev/null || echo "unknown")"
 
 # Plugin system
@@ -244,6 +244,7 @@ export DOCKER_COMPOSE_CMD
 DAEMON_MODE=false
 STOP_SERVER=false
 HANDLE_REQUEST=false
+FLEET_CLI=""
 
 # Only when executed: a script that sources this file for its functions
 # (tests, tooling) must not have its own arguments parsed as server options.
@@ -259,6 +260,13 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
             --setup-mode) SETUP_MODE=true; shift ;;
             --self-update) SELF_UPDATE_JOB=true; shift ;;
             --images)  SELF_UPDATE_IMAGES=true; shift ;;
+            --join-hub)
+                FLEET_CLI="join"; FLEET_CLI_HUB="${2:-}"; FLEET_CLI_TOKEN="${3:-}"
+                shift 3 2>/dev/null || shift $#
+                if [[ $# -gt 0 && "${1:-}" != --* ]]; then FLEET_CLI_NAME="$1"; shift; fi ;;
+            --join-token) FLEET_CLI="token"; shift; if [[ $# -gt 0 && "${1:-}" =~ ^[0-9]+$ ]]; then FLEET_CLI_TTL="$1"; shift; fi ;;
+            --join-token-quiet) FLEET_CLI="token"; FLEET_CLI_QUIET=true; shift ;;
+            --fleet-status) FLEET_CLI="status"; shift ;;
             --help|-h)
                 cat <<EOF
 Docker Compose Skeleton — REST API Server v${API_VERSION}
@@ -270,6 +278,12 @@ Options:
   --bind ADDR     Bind address (default: ${API_BIND})
   --daemon        Run in background (daemonize)
   --stop          Stop a running daemon
+  --join-hub URL CODE [NAME]
+                  Make this server a member of the DCS hub at URL (CODE is a
+                  join code from the hub's Proxmox page or --join-token)
+  --join-token [HOURS]
+                  Mint a join code on this hub (valid 24 h by default)
+  --fleet-status  Print the hub, members and join codes this server knows
   --help, -h      Show this help message
 
 The API provides JSON endpoints for managing Docker Compose stacks,
@@ -945,6 +959,11 @@ _api_get_user() {
 
 # Add a user record (always v2 hash)
 # The role of an account, "user" when unknown
+# Service accounts (a hub's dcs-hub account on a member) are exempt from the single-session rule
+_api_user_is_service() {
+    _api_read_auth_file "users.json" | jq -r --arg u "$1" '[.[] | select(.username == $u)] | .[0].service // false' 2>/dev/null
+}
+
 _api_user_role() {
     _api_read_auth_file "users.json" | jq -r --arg u "$1" '[.[] | select(.username == $u) | .role // "user"] | first // "user"' 2>/dev/null
 }
@@ -990,7 +1009,7 @@ _api_store_token() {
 
         # Single-session enforcement: revoke all existing tokens for this user
         # (bot accounts keep theirs: a bot may sign in from several places)
-        if [[ "${API_SINGLE_SESSION:-true}" == "true" && "$(_api_user_role "$username")" != "bot" ]]; then
+        if [[ "${API_SINGLE_SESSION:-true}" == "true" && "$(_api_user_role "$username")" != "bot" && "$(_api_user_is_service "$username")" != "true" ]]; then
             _api_revoke_user_tokens "$username"
         fi
 
@@ -1237,8 +1256,10 @@ _api_check_admin() {
 # Bot accounts (role "bot") drive day-to-day operations from chat: they read
 # what a user can plus the audit log, backups and update checks, and may start,
 # stop, restart and update stacks and containers, deploy templates, run backups
-# and schedules, prune, and lift CrowdSec bans. Accounts, secrets, files, the
-# host, the network and DCS itself stay with admins. Bots keep several sessions.
+# and schedules, prune, and lift CrowdSec bans — on this server and, through
+# the hub's proxy, on fleet members (the same list applies to the inner path).
+# Accounts, secrets, files, the host, the network and DCS itself stay with
+# admins. Bots keep several sessions.
 _api_bot_allowed() {
     local m="$1" p="$2"
     case "$m" in
@@ -1246,7 +1267,8 @@ _api_bot_allowed() {
             case "$p" in
                 /env|/stacks/*/env|/secrets|/secrets/*|/terminal/*|/containers/*/files|/containers/*/files/*|\
                 /export/*|/auth/users|/auth/invites|/auth/sessions|/recovery|/recovery/*|/snapshots/*/download|\
-                /system/crontab|/system/crontab/*|/dns/records|/plugins/*/hooks|/plugins/*/hooks/*|/containers/*/reset|/traefik/feed/*)
+                /system/crontab|/system/crontab/*|/dns/records|/plugins/*/hooks|/plugins/*/hooks/*|/containers/*/reset|/traefik/feed/*|\
+                /fleet/join-tokens|/fleet/discover)
                     return 1 ;;
             esac
             return 0 ;;
@@ -1258,13 +1280,13 @@ _api_bot_allowed() {
                 /images/check-updates|/images/*/update|/templates/*/dry-run|/templates/*/deploy|\
                 /backups/trigger|/maintenance/prune|/maintenance/image-prune|/sablier/repair|\
                 /schedules/*/run|/automations/*/run|/crowdsec/unban-me|/routes/reconcile|\
-                /power/sample|/metrics/snapshot|/notifications/test|/homarr/register|/proxmox/vms/*)
+                /power/sample|/metrics/snapshot|/notifications/test|/homarr/register|/proxmox/vms/*|/fleet/members/*/api/*)
                     return 0 ;;
             esac
             return 1 ;;
         DELETE)
             case "$p" in
-                /crowdsec/decisions/*) return 0 ;;
+                /crowdsec/decisions/*|/fleet/members/*/api/*) return 0 ;;
             esac
             return 1 ;;
     esac
@@ -1292,7 +1314,7 @@ _api_route_allowed() {
                 /recovery|/recovery/*|\
                 /plugins/*/hooks|/plugins/*/hooks/*|/plugins/*/logs|/plugins/*/cards/*/source|\
                 /containers/*/files|/containers/*/files/*|/containers/*/reset|/export/config|\
-                /auth/users|/auth/invites|/auth/sessions|/templates/deploy-history|/traefik/feed/*)
+                /auth/users|/auth/invites|/auth/sessions|/templates/deploy-history|/traefik/feed/*|/fleet/join-tokens|/fleet/discover)
                     return 1 ;;
             esac
             return 0 ;;
@@ -1991,7 +2013,7 @@ handle_root() {
     # Endpoint catalogue — generated by .scripts/api-docs.sh (do not edit by hand)
     local endpoints
     read -r -d '' endpoints <<'DCS_ENDPOINTS' || true
-[{"method":"GET","path":"/traefik/dynamic","access":"public","description":"Dynamic configuration for a Traefik on another machine (its HTTP provider); needs ?token= or a Bearer token equal to TRAEFIK_FEED_TOKEN"},{"method":"GET","path":"/ping","access":"public","description":"Liveness probe: no auth, no Docker call, a tiny body. The dashboard's heartbeat uses it, so the latency it shows is the round trip alone."},{"method":"GET","path":"/","access":"public","description":"API name, version, authentication mode and the endpoint list"},{"method":"GET","path":"/auth/verify","access":"public","description":"Verify a token is valid"},{"method":"GET","path":"/setup/status","access":"public","description":"Always available, no auth. Reports whether server needs setup."},{"method":"GET","path":"/setup/defaults","access":"public","description":"Defaults and detected system values for the setup wizard (anonymous until setup is complete, admin afterwards)"},{"method":"GET","path":"/auth/users","access":"admin","description":"List all users (admin only)"},{"method":"GET","path":"/auth/invites","access":"admin","description":"List active invite codes (admin only)"},{"method":"GET","path":"/auth/sessions","access":"admin","description":"List active sessions (admin only)"},{"method":"GET","path":"/status","access":"user","description":"Host and Docker overview: containers, images, stacks, load, memory, disk, GPU"},{"method":"GET","path":"/health","access":"user","description":"Health report for every container (running, unhealthy, stopped, restart loops)"},{"method":"GET","path":"/stacks","access":"user","description":"All stacks with running-container counts"},{"method":"GET","path":"/images","access":"user","description":"Images with age, size and staleness (/images/stale lists only stale ones)"},{"method":"GET","path":"/images/stale","access":"user","description":"Images with age, size and staleness (/images/stale lists only stale ones)"},{"method":"GET","path":"/containers","access":"user","description":"All containers with state, health, ports and cached CPU/memory usage"},{"method":"GET","path":"/config","access":"user","description":"Effective configuration (secrets masked)"},{"method":"GET","path":"/system","access":"user","description":"Host resources: CPU, memory, uptime, kernel"},{"method":"GET","path":"/disks","access":"user","description":"Mounted filesystems and their usage"},{"method":"GET","path":"/networks","access":"user","description":"Docker networks with connected containers"},{"method":"GET","path":"/volumes","access":"user","description":"Docker volumes"},{"method":"GET","path":"/logs","access":"user","description":"Tail of the framework log"},{"method":"GET","path":"/logs/stats","access":"user","description":"Log file size and per-level counts"},{"method":"GET","path":"/logs/archives","access":"user","description":"Rotated log archives"},{"method":"GET","path":"/events","access":"user","description":"Recent Docker events"},{"method":"GET","path":"/version","access":"user","description":"API, framework, Docker and Compose versions"},{"method":"GET","path":"/maintenance/report","access":"user","description":"Docker disk usage report"},{"method":"GET","path":"/maintenance/orphans","access":"user","description":"Containers, volumes and networks no stack references"},{"method":"GET","path":"/maintenance/disk","access":"user","description":"Per-stack App-Data sizes, Docker disk usage and volume sizes"},{"method":"GET","path":"/env","access":"admin","description":"The root .env file, raw and parsed"},{"method":"GET","path":"/backups","access":"admin","description":"Backup archives in BACKUP_DEST_DIR"},{"method":"GET","path":"/backups/status","access":"admin","description":"Progress of the running backup or the last result"},{"method":"GET","path":"/backups/config","access":"admin","description":"Backup source, destination and retention"},{"method":"GET","path":"/terminal/history","access":"admin","description":"Recent terminal commands from the audit log"},{"method":"GET","path":"/system/metrics","access":"user","description":"CPU load, memory and per-mount disk usage"},{"method":"GET","path":"/system/update/check","access":"admin","description":"Newer DCS release on the channel? Version, release notes, local edits and how the API can restart"},{"method":"GET","path":"/system/update/history","access":"admin","description":"Outcomes of unattended self-updates (last 30) and whether a job runs now"},{"method":"GET","path":"/power","access":"user","description":"UPS status: mains or battery, charge, runtime, load, and whether the watch loop runs"},{"method":"GET","path":"/recovery","access":"admin","description":"Recovery bundles on this box and how they are made (destination, off-box copy, retention, passphrase set?)"},{"method":"GET","path":"/system/os-update/status","access":"admin","description":"Poll background OS update progress"},{"method":"GET","path":"/ddns/status","access":"admin","description":"Check DDNS status and current IP"},{"method":"GET","path":"/alerts/config","access":"user","description":"Read alert thresholds"},{"method":"GET","path":"/system/crontab","access":"admin","description":"User crontab entries"},{"method":"GET","path":"/system/crontab/system","access":"admin","description":"System-level cron entries"},{"method":"GET","path":"/metrics/trends","access":"user","description":"Metrics samples for a range (range=1h|6h|24h|7d|30d|90d|1y|all), downsampled, with min/max for rolled-up points"},{"method":"GET","path":"/images/check-updates","access":"user","description":"Image staleness from age plus the cached registry check"},{"method":"GET","path":"/notifications/rules","access":"user","description":"NTFY notification rules"},{"method":"GET","path":"/notifications/history","access":"user","description":"Recently sent notifications"},{"method":"GET","path":"/snapshots","access":"admin","description":"Configuration snapshots"},{"method":"GET","path":"/templates","access":"user","description":"Available templates"},{"method":"GET","path":"/templates/deploy-history","access":"admin","description":"Template deploy and undeploy events"},{"method":"GET","path":"/automations","access":"user","description":"Automation rules"},{"method":"GET","path":"/crowdsec/status","access":"user","description":"CrowdSec presence, whitelist state and active decisions"},{"method":"GET","path":"/routes/health","access":"user","description":"Probe every custom route through Traefik (no changes made)"},{"method":"GET","path":"/crowdsec/decisions","access":"user","description":"Active CrowdSec decisions (bans)"},{"method":"GET","path":"/topology","access":"user","description":"Container and network topology graph"},{"method":"GET","path":"/traefik/status","access":"user","description":"Traefik status"},{"method":"GET","path":"/routes","access":"user","description":"Traefik routes: subdomain, service, stack and target"},{"method":"GET","path":"/routes/certificates","access":"user","description":"Reverse-proxy health: domain, ACME challenge and account, certificates held, a live probe of every route through Traefik, the last Traefik errors, and hints"},{"method":"GET","path":"/routes/check","access":"user","description":"Check if a subdomain is available"},{"method":"GET","path":"/dns/status","access":"user","description":"Cloudflare integration: where the token comes from, whether it is valid, the zone"},{"method":"GET","path":"/proxmox/status","access":"user","description":"The Proxmox link: configured, reachable, version, node and VM counts, and what to fix when it is not"},{"method":"GET","path":"/proxmox/nodes","access":"user","description":"Every Proxmox node with CPU, memory, disk and uptime"},{"method":"GET","path":"/proxmox/vms","access":"user","description":"Every VM and LXC container with status, CPU, memory, disk, uptime and tags"},{"method":"GET","path":"/proxmox/tasks","access":"user","description":"Recent Proxmox tasks (starts, stops, backups, migrations): who ran them and how they ended"},{"method":"GET","path":"/proxmox/vms/*/*/*","access":"user","description":"One VM or container: live status and its configuration (cores, memory, OS, boot, description)"},{"method":"GET","path":"/traefik/feed/status","access":"admin","description":"The Traefik feed: on or off, token, target host, what it serves and skips, when it was last pulled, and the provider snippet to paste"},{"method":"GET","path":"/dns/zones","access":"admin","description":"Zones the Cloudflare token can manage"},{"method":"GET","path":"/dns/records","access":"admin","description":"DNS records of the zone (all types) with their DCS route links"},{"method":"GET","path":"/homarr/status","access":"user","description":"Check if Homarr is deployed and has an API key configured"},{"method":"GET","path":"/metrics/history","access":"user","description":"Metrics samples for a range (range=1h|6h|24h|7d|30d|90d|1y|all); same data as /metrics/trends under \"data\""},{"method":"GET","path":"/metrics/summary","access":"user","description":"Min, max and average CPU, memory and disk over a range (range=1h|6h|24h|7d|30d|90d|1y|all)"},{"method":"GET","path":"/health/score","access":"user","description":"System health score (0-100) with its factors"},{"method":"GET","path":"/health/score/history","access":"user","description":"Recorded health scores over a range"},{"method":"GET","path":"/settings/dashboard","access":"user","description":"Fetch user's dashboard layout"},{"method":"GET","path":"/settings/profile","access":"user","description":"Fetch user's profile settings"},{"method":"GET","path":"/secrets","access":"admin","description":"List secret key names (never values)"},{"method":"GET","path":"/schedules","access":"user","description":"Return schedules.json content"},{"method":"GET","path":"/plugins","access":"user","description":"Scan .plugins/ directory, return plugin manifest data"},{"method":"GET","path":"/plugins/cards","access":"user","description":"List all available plugin cards across all enabled plugins"},{"method":"GET","path":"/plugins/catalog","access":"user","description":"Plugins available to install, with their manifest and installed state"},{"method":"GET","path":"/plugins/{plugin}/cards/*/source","access":"admin","description":"The card's manifest and raw HTML, for editing"},{"method":"GET","path":"/plugins/{plugin}/cards/{card}","access":"user","description":"Return card HTML content as JSON"},{"method":"GET","path":"/plugins/{plugin}/hooks/{hook}","access":"admin","description":"Read hook script content"},{"method":"GET","path":"/plugins/{plugin}/hooks","access":"admin","description":"List all hooks with metadata"},{"method":"GET","path":"/plugins/{plugin}/logs","access":"admin","description":"Execution history"},{"method":"GET","path":"/config/schema","access":"user","description":"Return contents of .config/schema.json"},{"method":"GET","path":"/stream","access":"user","description":"SSE endpoint: docker events + periodic metrics"},{"method":"GET","path":"/rollback/{stack}/snapshots/{snapshot}","access":"user","description":"Content of a rollback snapshot"},{"method":"GET","path":"/rollback/{stack}/snapshots","access":"user","description":"Rollback snapshots of a stack"},{"method":"GET","path":"/rollback/{stack}/diff/{snapshot}","access":"user","description":"Diff between a snapshot and the current stack files"},{"method":"GET","path":"/secrets/{key}/exists","access":"admin","description":"Check if a secret exists (boolean)"},{"method":"GET","path":"/secrets/{key}/references","access":"admin","description":"Stacks and env files that reference a secret"},{"method":"GET","path":"/health/score/{stack}","access":"user","description":"Compute health score for a specific stack"},{"method":"GET","path":"/schedules/{id}/history","access":"user","description":"Return execution history filtered by schedule id"},{"method":"GET","path":"/templates/gallery","access":"user","description":"List templates from gallery catalog"},{"method":"GET","path":"/templates/{template}","access":"user","description":"Template metadata, compose file and .env"},{"method":"GET","path":"/images/search","access":"user","description":"Search Docker Hub for images"},{"method":"GET","path":"/export/{health|system|config}","access":"user","description":"Export data"},{"method":"GET","path":"/audit","access":"admin","description":"Get audit log entries"},{"method":"GET","path":"/webhooks","access":"user","description":"List webhooks"},{"method":"GET","path":"/recovery/*/download","access":"admin","description":"Download a recovery bundle"},{"method":"GET","path":"/snapshots/{snapshot}/download","access":"admin","description":"Download a snapshot archive"},{"method":"GET","path":"/stacks/{stack}/compose/history/{version}","access":"user","description":"View a specific compose version's content"},{"method":"GET","path":"/stacks/{stack}/compose/history","access":"user","description":"Saved versions of a stack's compose file"},{"method":"GET","path":"/automations/{id}/history","access":"user","description":"Run history of an automation"},{"method":"GET","path":"/containers/{container}/files","access":"admin","description":"List directory contents inside a container"},{"method":"GET","path":"/containers/{container}/files/content","access":"admin","description":"Read file contents inside a container"},{"method":"GET","path":"/containers/{container}/logs/live","access":"user","description":"Fetch recent logs for polling"},{"method":"GET","path":"/logs/live","access":"user","description":"Stream DCS application log"},{"method":"GET","path":"/stacks/{stack}/activity","access":"user","description":"Progress of the action running (or last run) on a stack: phase, per-service state, compose output"},{"method":"GET","path":"/stacks/{stack}/services","access":"user","description":"Services of a stack with container state, health and image"},{"method":"GET","path":"/stacks/{stack}/containers","access":"user","description":"Containers of one stack"},{"method":"GET","path":"/stacks/{stack}/logs","access":"user","description":"Recent log lines of a stack"},{"method":"GET","path":"/stacks/{stack}/compose","access":"user","description":"The stack's docker-compose.yml"},{"method":"GET","path":"/stacks/{stack}/env","access":"admin","description":"The stack's .env file"},{"method":"GET","path":"/stacks/{stack}","access":"user","description":"Stack detail: services, containers and images"},{"method":"GET","path":"/containers/{container}/stats","access":"user","description":"Live CPU, memory, network and block I/O of a container"},{"method":"GET","path":"/containers/{container}/logs","access":"user","description":"Recent log lines of a container"},{"method":"GET","path":"/containers/{container}/processes","access":"user","description":"Process list inside a container"},{"method":"GET","path":"/containers/{container}/reset","access":"admin","description":"Preview a nuke & reinstall: stack, service, image, App-Data folders that would be emptied (with sizes), named volumes, and folders kept because another container shares them"},{"method":"GET","path":"/networks/{network}","access":"user","description":"Network detail with its members"},{"method":"GET","path":"/containers/{container}","access":"user","description":"Container detail"},{"method":"POST","path":"/auth/setup","access":"public","description":"Create the first admin account (only when no users exist)"},{"method":"POST","path":"/auth/login","access":"public","description":"Authenticate and get a session token"},{"method":"POST","path":"/auth/register","access":"public","description":"Register a new account with an invite code"},{"method":"POST","path":"/auth/totp/validate","access":"public","description":"Validate TOTP code during login (second step)"},{"method":"POST","path":"/setup/restore","access":"public","description":"First-run only: restore a recovery bundle sent by the setup wizard {content_b64, passphrase}"},{"method":"POST","path":"/setup/configure","access":"user","description":"Apply the setup wizard's settings and stack list"},{"method":"POST","path":"/setup/complete","access":"user","description":"Mark first-run setup as finished"},{"method":"POST","path":"/auth/logout","access":"user","description":"Invalidate the current session token"},{"method":"POST","path":"/auth/refresh","access":"user","description":"Refresh the current session token"},{"method":"POST","path":"/auth/totp/setup","access":"user","description":"Generate TOTP secret and return QR URI (not yet enabled)"},{"method":"POST","path":"/auth/totp/verify","access":"user","description":"Verify a TOTP code and enable 2FA"},{"method":"POST","path":"/auth/totp/disable","access":"user","description":"Disable 2FA (requires password confirmation)"},{"method":"POST","path":"/auth/invite","access":"admin","description":"Generate an invite code (admin only)"},{"method":"POST","path":"/auth/users","access":"admin","description":"Create a user account directly {username, password, role} (admin; for bots and family)"},{"method":"POST","path":"/auth/users/*/role","access":"admin","description":"Change an account's role {role: admin|user|bot} (admin; the last admin cannot be demoted; the account's sessions are signed out)"},{"method":"POST","path":"/proxmox/test","access":"admin","description":"Try a Proxmox connection with the given url, token_id, token_secret and verify_tls without saving them"},{"method":"POST","path":"/proxmox/vms/*/*/*/*","access":"admin","description":"Power action on a VM or container: start, shutdown, stop, reboot, reset (VMs only), suspend, resume — audited and sent to the webhooks"},{"method":"POST","path":"/traefik/feed/token","access":"admin","description":"Mint a new feed token (paste the new one into the remote Traefik)"},{"method":"POST","path":"/auth/revoke","access":"admin","description":"Revoke a user's access (admin only)"},{"method":"POST","path":"/auth/logout-all","access":"admin","description":"Invalidate all sessions for a user (admin only)"},{"method":"POST","path":"/auth/factory-reset","access":"admin","description":"Wipe auth state and return server to first-run mode"},{"method":"POST","path":"/stacks/rename","access":"admin","description":"Rename a stack directory"},{"method":"POST","path":"/stacks/reorder","access":"admin","description":"Set stack startup order"},{"method":"POST","path":"/terminal/exec","access":"admin","description":"Run a shell command on the host (terminal session required, 60 s limit)"},{"method":"POST","path":"/terminal/auth","access":"admin","description":"Authenticate with Linux credentials"},{"method":"POST","path":"/terminal/auth/verify","access":"admin","description":"Verify a terminal session token"},{"method":"POST","path":"/terminal/auth/logout","access":"admin","description":"Invalidate a terminal session"},{"method":"POST","path":"/alerts/config","access":"admin","description":"Update alert thresholds"},{"method":"POST","path":"/system/crontab","access":"admin","description":"Update user crontab"},{"method":"POST","path":"/system/restart","access":"admin","description":"Restart the API listener without root: it re-executes itself (older listeners under systemd are relaunched by the unit)"},{"method":"POST","path":"/power/sample","access":"admin","description":"Read the UPS right now (also refreshes what GET /power shows)"},{"method":"POST","path":"/sablier/repair","access":"admin","description":"Recreate on-demand containers that a prune removed (created, not started, so Sablier can wake them)"},{"method":"POST","path":"/homarr/register","access":"admin","description":"Put an app on the Homarr dashboard now {name, url, icon, description}"},{"method":"POST","path":"/recovery/bundle","access":"admin","description":"Write an encrypted recovery bundle now {passphrase?, include_app_data: [stacks], copy_remote}"},{"method":"POST","path":"/recovery/restore","access":"admin","description":"Restore a bundle from this box {file, passphrase, confirm, restart}; a pre-restore snapshot is kept"},{"method":"POST","path":"/recovery/upload","access":"admin","description":"Store a bundle sent by the browser {filename, content_b64}"},{"method":"POST","path":"/system/update/apply","access":"admin","description":"Update to the channel's release {confirm, replace_local, restart}; user files are kept, a backup tag allows rollback"},{"method":"POST","path":"/system/ui-update/apply","access":"admin","description":"Pull latest DCS-UI image and recreate container"},{"method":"POST","path":"/system/update/rollback","access":"admin","description":"Return to a backup tag {backup_tag, restart}; user files are kept, edited framework files backed up"},{"method":"POST","path":"/system/os-update/check","access":"admin","description":"List available OS package updates (terminal session required)"},{"method":"POST","path":"/system/os-update/apply","access":"admin","description":"Apply OS package updates in the background (terminal session required)"},{"method":"POST","path":"/stacks","access":"admin","description":"Create an empty stack directory"},{"method":"POST","path":"/stacks/{stack}/delete","access":"admin","description":"Delete a stopped stack directory"},{"method":"POST","path":"/config","access":"admin","description":"Update allow-listed .env settings"},{"method":"POST","path":"/containers/{container}/start","access":"admin","description":"Start, stop, restart, recreate (Compose-managed only) or remove a container"},{"method":"POST","path":"/containers/{container}/stop","access":"admin","description":"Start, stop, restart, recreate (Compose-managed only) or remove a container"},{"method":"POST","path":"/containers/{container}/restart","access":"admin","description":"Start, stop, restart, recreate (Compose-managed only) or remove a container"},{"method":"POST","path":"/containers/{container}/recreate","access":"admin","description":"Start, stop, restart, recreate (Compose-managed only) or remove a container"},{"method":"POST","path":"/containers/{container}/remove","access":"admin","description":"Start, stop, restart, recreate (Compose-managed only) or remove a container"},{"method":"POST","path":"/containers/{container}/reset","access":"admin","description":"Nuke & reinstall {confirm: \"<container>\", wipe_app_data: true, wipe_volumes: false, pull: true}: remove the container, move its App-Data folders to App-Data/.trash, drop its own named volumes when asked, pull and create it again from the compose file"},{"method":"POST","path":"/containers/{container}/exec","access":"admin","description":"Run a command inside a container (30 s limit)"},{"method":"POST","path":"/containers/{container}/sablier","access":"admin","description":"Start this container on demand through Sablier (enabled: true) or serve it normally again; writes or removes the Traefik middleware on its route"},{"method":"POST","path":"/containers/{container}/env","access":"admin","description":"Change a Compose-managed container's environment in its stack {set{}, unset[], recreate}"},{"method":"POST","path":"/containers/{container}/rename","access":"admin","description":"Rename a container"},{"method":"POST","path":"/networks","access":"admin","description":"Create a Docker network {name, driver, subnet, gateway, ip_range, internal, attachable, ipv6, labels}"},{"method":"POST","path":"/networks/{network}/delete","access":"admin","description":"Remove a Docker network"},{"method":"POST","path":"/networks/{network}/connect","access":"admin","description":"Connect a container to a network"},{"method":"POST","path":"/networks/{network}/disconnect","access":"admin","description":"Disconnect a container from a network"},{"method":"POST","path":"/networks/{network}/recreate","access":"admin","description":"Rebuild a network with new settings and reconnect its containers"},{"method":"POST","path":"/images/{image}/delete","access":"admin","description":"Remove an image"},{"method":"POST","path":"/volumes/{volume}/delete","access":"admin","description":"Remove a Docker volume"},{"method":"POST","path":"/maintenance/prune","access":"admin","description":"Maintenance prune"},{"method":"POST","path":"/maintenance/image-prune","access":"admin","description":"Prune unused images"},{"method":"POST","path":"/maintenance/deep-prune","access":"admin","description":"Prune everything unused, volumes included (confirmation required)"},{"method":"POST","path":"/maintenance/log-rotate","access":"admin","description":"Rotate and archive the framework log"},{"method":"POST","path":"/batch/stacks","access":"admin","description":"Start, stop or restart several stacks in dependency order"},{"method":"POST","path":"/batch/update","access":"admin","description":"Pull images for several stacks and recreate what changed"},{"method":"POST","path":"/env","access":"admin","description":"Save the root .env file (validated as plain KEY=value data)"},{"method":"POST","path":"/env/validate","access":"user","description":"Validate .env content without saving it"},{"method":"POST","path":"/backups/trigger","access":"admin","description":"Start a backup in the background (optionally one stack)"},{"method":"POST","path":"/backups/cancel","access":"admin","description":"Kill a running backup"},{"method":"POST","path":"/backups/restore","access":"admin","description":"Restore a backup archive (confirmation required)"},{"method":"POST","path":"/stacks/{stack}/compose/validate","access":"user","description":"Validate compose content for a stack without saving it"},{"method":"POST","path":"/stacks/{stack}/compose","access":"admin","description":"Save the stack's docker-compose.yml (policy-scanned, previous version kept)"},{"method":"POST","path":"/stacks/{stack}/env","access":"admin","description":"Save the stack's .env file"},{"method":"POST","path":"/stacks/{stack}/compose/rollback","access":"admin","description":"Restore a saved compose version"},{"method":"POST","path":"/settings/dashboard","access":"user","description":"Save user's dashboard layout"},{"method":"POST","path":"/settings/profile","access":"user","description":"Save user's profile settings"},{"method":"POST","path":"/metrics/snapshot","access":"admin","description":"Record a metrics sample now"},{"method":"POST","path":"/dns/records","access":"admin","description":"Create a record {type, name, content, ttl, proxied, priority, comment, zone}"},{"method":"POST","path":"/dns/records/sync","access":"admin","description":"Create the proxied CNAME records that DCS routes are missing"},{"method":"POST","path":"/images/check-updates","access":"admin","description":"Compare local image digests with their registries (slow)"},{"method":"POST","path":"/images/update","access":"admin","description":"Pull an image and recreate the Compose services that use it"},{"method":"POST","path":"/images/{image}/update","access":"admin","description":"Pull an image and recreate the Compose services that use it"},{"method":"POST","path":"/notifications/rules","access":"admin","description":"Create or update a notification rule"},{"method":"POST","path":"/notifications/test","access":"admin","description":"Send a test notification to every configured channel (NTFY, Discord)"},{"method":"POST","path":"/snapshots/create","access":"admin","description":"Create a configuration snapshot (compose files, .env files, templates)"},{"method":"POST","path":"/snapshots/{snapshot}/restore","access":"admin","description":"Restore a snapshot (confirmation required, policy-scanned)"},{"method":"POST","path":"/templates/{template}/deploy","access":"admin","description":"Deploy a template into a stack (merge, routes, DNS, optional start)"},{"method":"POST","path":"/templates/{template}/undeploy","access":"admin","description":"Remove a template's services from a stack with their containers (remove_containers=false keeps them; optionally data, images, routes)"},{"method":"POST","path":"/templates/{template}/dry-run","access":"user","description":"Preview a deployment: conflicts, ports, variables and policy findings"},{"method":"POST","path":"/templates/import","access":"admin","description":"Import a template from compose content"},{"method":"POST","path":"/templates/fetch-url","access":"admin","description":"Fetch compose content from URL without saving"},{"method":"POST","path":"/templates/import-url","access":"admin","description":"Import a template from a URL"},{"method":"POST","path":"/stacks/{stack}/clone","access":"admin","description":"Clone a stack"},{"method":"POST","path":"/compose/validate","access":"user","description":"Validate a compose file"},{"method":"POST","path":"/webhooks","access":"admin","description":"Create a webhook"},{"method":"POST","path":"/webhooks/{id}/test","access":"admin","description":"Test a webhook"},{"method":"POST","path":"/templates/{template}/update","access":"admin","description":"Update an existing template's compose, metadata, and .env"},{"method":"POST","path":"/routes/reconcile","access":"admin","description":"Probe the routes and restart Traefik once if they are dead"},{"method":"POST","path":"/crowdsec/trust","access":"admin","description":"Add an address to the whitelist (body {ip}; defaults to the home public address and the caller)"},{"method":"POST","path":"/crowdsec/unban-me","access":"user","description":"Unban the caller: its client address and the home public address"},{"method":"POST","path":"/crowdsec/notifications","access":"admin","description":"Send CrowdSec's alerts to Discord {webhook?, test?}: renders the template with the webhook (default: the server's), restarts CrowdSec, and optionally posts a test alert"},{"method":"POST","path":"/automations","access":"admin","description":"Create an automation rule"},{"method":"POST","path":"/automations/{id}/update","access":"admin","description":"Update an automation rule"},{"method":"POST","path":"/automations/{id}/run","access":"admin","description":"Run an automation now"},{"method":"POST","path":"/stacks/{stack}/start","access":"admin","description":"Start, stop, restart or update (pull + recreate) a stack"},{"method":"POST","path":"/stacks/{stack}/stop","access":"admin","description":"Start, stop, restart or update (pull + recreate) a stack"},{"method":"POST","path":"/stacks/{stack}/restart","access":"admin","description":"Start, stop, restart or update (pull + recreate) a stack"},{"method":"POST","path":"/stacks/{stack}/update","access":"admin","description":"Start, stop, restart or update (pull + recreate) a stack"},{"method":"POST","path":"/secrets","access":"admin","description":"Store an encrypted secret (also POST /secrets/{key})"},{"method":"POST","path":"/secrets/{key}","access":"admin","description":"Store an encrypted secret (also POST /secrets/{key})"},{"method":"POST","path":"/schedules","access":"admin","description":"Create a scheduled task"},{"method":"POST","path":"/plugins/install","access":"admin","description":"Install a plugin from a git URL (installed disabled)"},{"method":"POST","path":"/plugins/scaffold","access":"admin","description":"Create a plugin from an inline manifest, hooks and cards"},{"method":"POST","path":"/rollback/{stack}/restore","access":"admin","description":"Restore a stack from a rollback snapshot (policy-scanned)"},{"method":"POST","path":"/schedules/{id}/update","access":"admin","description":"Update a scheduled task"},{"method":"POST","path":"/schedules/{id}/toggle","access":"admin","description":"Enable/disable a schedule"},{"method":"POST","path":"/schedules/{id}/run","access":"admin","description":"Execute a schedule immediately"},{"method":"POST","path":"/plugins/catalog/*/install","access":"admin","description":"Install a catalogue plugin (copied into .plugins, disabled)"},{"method":"POST","path":"/plugins/{plugin}/cards/{card}","access":"admin","description":"Create or replace a dashboard card in a plugin {meta{}, html}"},{"method":"POST","path":"/plugins/{plugin}/toggle","access":"admin","description":"Enable/disable by writing to plugin.json"},{"method":"POST","path":"/plugins/{plugin}/hooks/{hook}/test","access":"admin","description":"Dry-run a hook"},{"method":"POST","path":"/plugins/{plugin}/hooks/{hook}/update","access":"admin","description":"Update hook script"},{"method":"POST","path":"/plugins/{plugin}/config","access":"admin","description":"Update plugin configuration"},{"method":"PUT","path":"/dns/records/*","access":"admin","description":"Change a record's type, name, content, TTL, proxy status, priority or comment"},{"method":"PUT","path":"/routes/{stack}/{service}","access":"admin","description":"Update a route file's subdomain"},{"method":"DELETE","path":"/auth/sessions/{token-prefix}","access":"admin","description":"Revoke a specific session by token prefix (admin only)"},{"method":"DELETE","path":"/auth/invite/{code}","access":"admin","description":"Delete an invite code (admin only)"},{"method":"DELETE","path":"/notifications/rules/{id}","access":"admin","description":"Delete a notification rule"},{"method":"DELETE","path":"/snapshots/{snapshot}","access":"admin","description":"Delete a snapshot"},{"method":"DELETE","path":"/webhooks/{id}","access":"admin","description":"Delete a webhook"},{"method":"DELETE","path":"/templates/{template}","access":"admin","description":"Delete a template"},{"method":"DELETE","path":"/crowdsec/decisions/*","access":"admin","description":"Remove every decision for an address (unban)"},{"method":"DELETE","path":"/crowdsec/trust/*","access":"admin","description":"Remove an address from the whitelist"},{"method":"DELETE","path":"/automations/{id}","access":"admin","description":"Delete an automation rule"},{"method":"DELETE","path":"/secrets/{key}","access":"admin","description":"Securely delete a secret"},{"method":"DELETE","path":"/schedules/{id}","access":"admin","description":"Remove a schedule"},{"method":"DELETE","path":"/plugins/{plugin}/cards/{card}","access":"admin","description":"Remove a dashboard card from a plugin"},{"method":"DELETE","path":"/plugins/{plugin}","access":"admin","description":"Remove plugin directory"},{"method":"DELETE","path":"/dns/records/*","access":"admin","description":"Delete a record (the zone apex and names DCS routes use need force=true)"},{"method":"DELETE","path":"/routes/{stack}/{service}","access":"admin","description":"Delete a route file and optionally clean up DNS"}]
+[{"method":"GET","path":"/traefik/dynamic","access":"public","description":"Dynamic configuration for a Traefik on another machine (its HTTP provider); needs ?token= or a Bearer token equal to TRAEFIK_FEED_TOKEN"},{"method":"GET","path":"/ping","access":"public","description":"Liveness probe: no auth, no Docker call, a tiny body. The dashboard's heartbeat uses it, so the latency it shows is the round trip alone."},{"method":"GET","path":"/","access":"public","description":"API name, version, authentication mode and the endpoint list"},{"method":"GET","path":"/auth/verify","access":"public","description":"Verify a token is valid"},{"method":"GET","path":"/setup/status","access":"public","description":"Always available, no auth. Reports whether server needs setup."},{"method":"GET","path":"/setup/defaults","access":"public","description":"Defaults and detected system values for the setup wizard (anonymous until setup is complete, admin afterwards)"},{"method":"GET","path":"/auth/users","access":"admin","description":"List all users (admin only)"},{"method":"GET","path":"/auth/invites","access":"admin","description":"List active invite codes (admin only)"},{"method":"GET","path":"/auth/sessions","access":"admin","description":"List active sessions (admin only)"},{"method":"GET","path":"/status","access":"user","description":"Host and Docker overview: containers, images, stacks, load, memory, disk, GPU"},{"method":"GET","path":"/health","access":"user","description":"Health report for every container (running, unhealthy, stopped, restart loops)"},{"method":"GET","path":"/stacks","access":"user","description":"All stacks with running-container counts"},{"method":"GET","path":"/images","access":"user","description":"Images with age, size and staleness (/images/stale lists only stale ones)"},{"method":"GET","path":"/images/stale","access":"user","description":"Images with age, size and staleness (/images/stale lists only stale ones)"},{"method":"GET","path":"/containers","access":"user","description":"All containers with state, health, ports and cached CPU/memory usage"},{"method":"GET","path":"/config","access":"user","description":"Effective configuration (secrets masked)"},{"method":"GET","path":"/system","access":"user","description":"Host resources: CPU, memory, uptime, kernel"},{"method":"GET","path":"/disks","access":"user","description":"Mounted filesystems and their usage"},{"method":"GET","path":"/networks","access":"user","description":"Docker networks with connected containers"},{"method":"GET","path":"/volumes","access":"user","description":"Docker volumes"},{"method":"GET","path":"/logs","access":"user","description":"Tail of the framework log"},{"method":"GET","path":"/logs/stats","access":"user","description":"Log file size and per-level counts"},{"method":"GET","path":"/logs/archives","access":"user","description":"Rotated log archives"},{"method":"GET","path":"/events","access":"user","description":"Recent Docker events"},{"method":"GET","path":"/version","access":"user","description":"API, framework, Docker and Compose versions"},{"method":"GET","path":"/maintenance/report","access":"user","description":"Docker disk usage report"},{"method":"GET","path":"/maintenance/orphans","access":"user","description":"Containers, volumes and networks no stack references"},{"method":"GET","path":"/maintenance/disk","access":"user","description":"Per-stack App-Data sizes, Docker disk usage and volume sizes"},{"method":"GET","path":"/env","access":"admin","description":"The root .env file, raw and parsed"},{"method":"GET","path":"/backups","access":"admin","description":"Backup archives in BACKUP_DEST_DIR"},{"method":"GET","path":"/backups/status","access":"admin","description":"Progress of the running backup or the last result"},{"method":"GET","path":"/backups/config","access":"admin","description":"Backup source, destination and retention"},{"method":"GET","path":"/terminal/history","access":"admin","description":"Recent terminal commands from the audit log"},{"method":"GET","path":"/system/metrics","access":"user","description":"CPU load, memory and per-mount disk usage"},{"method":"GET","path":"/system/update/check","access":"admin","description":"Newer DCS release on the channel? Version, release notes, local edits and how the API can restart"},{"method":"GET","path":"/system/update/history","access":"admin","description":"Outcomes of unattended self-updates (last 30) and whether a job runs now"},{"method":"GET","path":"/power","access":"user","description":"UPS status: mains or battery, charge, runtime, load, and whether the watch loop runs"},{"method":"GET","path":"/recovery","access":"admin","description":"Recovery bundles on this box and how they are made (destination, off-box copy, retention, passphrase set?)"},{"method":"GET","path":"/system/os-update/status","access":"admin","description":"Poll background OS update progress"},{"method":"GET","path":"/ddns/status","access":"admin","description":"Check DDNS status and current IP"},{"method":"GET","path":"/alerts/config","access":"user","description":"Read alert thresholds"},{"method":"GET","path":"/system/crontab","access":"admin","description":"User crontab entries"},{"method":"GET","path":"/system/crontab/system","access":"admin","description":"System-level cron entries"},{"method":"GET","path":"/metrics/trends","access":"user","description":"Metrics samples for a range (range=1h|6h|24h|7d|30d|90d|1y|all), downsampled, with min/max for rolled-up points"},{"method":"GET","path":"/images/check-updates","access":"user","description":"Image staleness from age plus the cached registry check"},{"method":"GET","path":"/notifications/rules","access":"user","description":"NTFY notification rules"},{"method":"GET","path":"/notifications/history","access":"user","description":"Recently sent notifications"},{"method":"GET","path":"/snapshots","access":"admin","description":"Configuration snapshots"},{"method":"GET","path":"/templates","access":"user","description":"Available templates"},{"method":"GET","path":"/templates/deploy-history","access":"admin","description":"Template deploy and undeploy events"},{"method":"GET","path":"/automations","access":"user","description":"Automation rules"},{"method":"GET","path":"/crowdsec/status","access":"user","description":"CrowdSec presence, whitelist state and active decisions"},{"method":"GET","path":"/routes/health","access":"user","description":"Probe every custom route through Traefik (no changes made)"},{"method":"GET","path":"/crowdsec/decisions","access":"user","description":"Active CrowdSec decisions (bans)"},{"method":"GET","path":"/topology","access":"user","description":"Container and network topology graph"},{"method":"GET","path":"/traefik/status","access":"user","description":"Traefik status"},{"method":"GET","path":"/routes","access":"user","description":"Traefik routes: subdomain, service, stack and target"},{"method":"GET","path":"/routes/certificates","access":"user","description":"Reverse-proxy health: domain, ACME challenge and account, certificates held, a live probe of every route through Traefik, the last Traefik errors, and hints"},{"method":"GET","path":"/routes/check","access":"user","description":"Check if a subdomain is available"},{"method":"GET","path":"/dns/status","access":"user","description":"Cloudflare integration: where the token comes from, whether it is valid, the zone"},{"method":"GET","path":"/proxmox/status","access":"user","description":"The Proxmox link: configured, reachable, version, node and VM counts, and what to fix when it is not"},{"method":"GET","path":"/proxmox/nodes","access":"user","description":"Every Proxmox node with CPU, memory, disk and uptime"},{"method":"GET","path":"/proxmox/vms","access":"user","description":"Every VM and LXC container with status, CPU, memory, disk, uptime and tags"},{"method":"GET","path":"/proxmox/tasks","access":"user","description":"Recent Proxmox tasks (starts, stops, backups, migrations): who ran them and how they ended"},{"method":"GET","path":"/proxmox/vms/*/*/*","access":"user","description":"One VM or container: live status and its configuration (cores, memory, OS, boot, description)"},{"method":"GET","path":"/traefik/feed/status","access":"admin","description":"The Traefik feed: on or off, token, target host, what it serves and skips, when it was last pulled, and the provider snippet to paste"},{"method":"GET","path":"/fleet/status","access":"user","description":"What this server is in the fleet: a hub (members, join codes), a member (its hub), or standalone; plus a pending join and how others reach this API"},{"method":"GET","path":"/fleet/members","access":"user","description":"The members this hub manages, with the guest each one runs in and when it last answered"},{"method":"GET","path":"/fleet/overview","access":"user","description":"Every member with its stacks and container counts, fetched from the members in parallel (10 s cache)"},{"method":"GET","path":"/fleet/discover","access":"admin","description":"Scan the guests for DCS installs: Proxmox gives each running guest's addresses (guest agent / container interfaces) and the API port is probed; found installs come back with the guest already matched (30 s cache; POST forces a new scan and accepts Proxmox values to try before they are saved)"},{"method":"GET","path":"/fleet/join-tokens","access":"admin","description":"The join codes that are still valid (admin)"},{"method":"GET","path":"/fleet/identity","access":"user","description":"What a hub needs to match this server to a guest: hostname, SMBIOS uuid, addresses, API port, version"},{"method":"GET","path":"/fleet/feed","access":"user","description":"This server's routes in Traefik feed form, for the hub to merge into its own feed (needs no feed token; the routes point at this host's published ports)"},{"method":"GET","path":"/fleet/members/*/api/*","access":"user","description":"Forward the call (GET, POST, PUT or DELETE) to that member with the hub's account; the caller's own role is checked against the inner path as if it were local (streams and auth are not forwarded)"},{"method":"GET","path":"/fleet/members/*","access":"user","description":"One member, with a live check that it answers"},{"method":"GET","path":"/dns/zones","access":"admin","description":"Zones the Cloudflare token can manage"},{"method":"GET","path":"/dns/records","access":"admin","description":"DNS records of the zone (all types) with their DCS route links"},{"method":"GET","path":"/homarr/status","access":"user","description":"Check if Homarr is deployed and has an API key configured"},{"method":"GET","path":"/metrics/history","access":"user","description":"Metrics samples for a range (range=1h|6h|24h|7d|30d|90d|1y|all); same data as /metrics/trends under \"data\""},{"method":"GET","path":"/metrics/summary","access":"user","description":"Min, max and average CPU, memory and disk over a range (range=1h|6h|24h|7d|30d|90d|1y|all)"},{"method":"GET","path":"/health/score","access":"user","description":"System health score (0-100) with its factors"},{"method":"GET","path":"/health/score/history","access":"user","description":"Recorded health scores over a range"},{"method":"GET","path":"/settings/dashboard","access":"user","description":"Fetch user's dashboard layout"},{"method":"GET","path":"/settings/profile","access":"user","description":"Fetch user's profile settings"},{"method":"GET","path":"/secrets","access":"admin","description":"List secret key names (never values)"},{"method":"GET","path":"/schedules","access":"user","description":"Return schedules.json content"},{"method":"GET","path":"/plugins","access":"user","description":"Scan .plugins/ directory, return plugin manifest data"},{"method":"GET","path":"/plugins/cards","access":"user","description":"List all available plugin cards across all enabled plugins"},{"method":"GET","path":"/plugins/catalog","access":"user","description":"Plugins available to install, with their manifest and installed state"},{"method":"GET","path":"/plugins/{plugin}/cards/*/source","access":"admin","description":"The card's manifest and raw HTML, for editing"},{"method":"GET","path":"/plugins/{plugin}/cards/{card}","access":"user","description":"Return card HTML content as JSON"},{"method":"GET","path":"/plugins/{plugin}/hooks/{hook}","access":"admin","description":"Read hook script content"},{"method":"GET","path":"/plugins/{plugin}/hooks","access":"admin","description":"List all hooks with metadata"},{"method":"GET","path":"/plugins/{plugin}/logs","access":"admin","description":"Execution history"},{"method":"GET","path":"/config/schema","access":"user","description":"Return contents of .config/schema.json"},{"method":"GET","path":"/stream","access":"user","description":"SSE endpoint: docker events + periodic metrics"},{"method":"GET","path":"/rollback/{stack}/snapshots/{snapshot}","access":"user","description":"Content of a rollback snapshot"},{"method":"GET","path":"/rollback/{stack}/snapshots","access":"user","description":"Rollback snapshots of a stack"},{"method":"GET","path":"/rollback/{stack}/diff/{snapshot}","access":"user","description":"Diff between a snapshot and the current stack files"},{"method":"GET","path":"/secrets/{key}/exists","access":"admin","description":"Check if a secret exists (boolean)"},{"method":"GET","path":"/secrets/{key}/references","access":"admin","description":"Stacks and env files that reference a secret"},{"method":"GET","path":"/health/score/{stack}","access":"user","description":"Compute health score for a specific stack"},{"method":"GET","path":"/schedules/{id}/history","access":"user","description":"Return execution history filtered by schedule id"},{"method":"GET","path":"/templates/gallery","access":"user","description":"List templates from gallery catalog"},{"method":"GET","path":"/templates/{template}","access":"user","description":"Template metadata, compose file and .env"},{"method":"GET","path":"/images/search","access":"user","description":"Search Docker Hub for images"},{"method":"GET","path":"/export/{health|system|config}","access":"user","description":"Export data"},{"method":"GET","path":"/audit","access":"admin","description":"Get audit log entries"},{"method":"GET","path":"/webhooks","access":"user","description":"List webhooks"},{"method":"GET","path":"/recovery/*/download","access":"admin","description":"Download a recovery bundle"},{"method":"GET","path":"/snapshots/{snapshot}/download","access":"admin","description":"Download a snapshot archive"},{"method":"GET","path":"/stacks/{stack}/compose/history/{version}","access":"user","description":"View a specific compose version's content"},{"method":"GET","path":"/stacks/{stack}/compose/history","access":"user","description":"Saved versions of a stack's compose file"},{"method":"GET","path":"/automations/{id}/history","access":"user","description":"Run history of an automation"},{"method":"GET","path":"/containers/{container}/files","access":"admin","description":"List directory contents inside a container"},{"method":"GET","path":"/containers/{container}/files/content","access":"admin","description":"Read file contents inside a container"},{"method":"GET","path":"/containers/{container}/logs/live","access":"user","description":"Fetch recent logs for polling"},{"method":"GET","path":"/logs/live","access":"user","description":"Stream DCS application log"},{"method":"GET","path":"/stacks/{stack}/activity","access":"user","description":"Progress of the action running (or last run) on a stack: phase, per-service state, compose output"},{"method":"GET","path":"/stacks/{stack}/services","access":"user","description":"Services of a stack with container state, health and image"},{"method":"GET","path":"/stacks/{stack}/containers","access":"user","description":"Containers of one stack"},{"method":"GET","path":"/stacks/{stack}/logs","access":"user","description":"Recent log lines of a stack"},{"method":"GET","path":"/stacks/{stack}/compose","access":"user","description":"The stack's docker-compose.yml"},{"method":"GET","path":"/stacks/{stack}/env","access":"admin","description":"The stack's .env file"},{"method":"GET","path":"/stacks/{stack}","access":"user","description":"Stack detail: services, containers and images"},{"method":"GET","path":"/containers/{container}/stats","access":"user","description":"Live CPU, memory, network and block I/O of a container"},{"method":"GET","path":"/containers/{container}/logs","access":"user","description":"Recent log lines of a container"},{"method":"GET","path":"/containers/{container}/processes","access":"user","description":"Process list inside a container"},{"method":"GET","path":"/containers/{container}/reset","access":"admin","description":"Preview a nuke & reinstall: stack, service, image, App-Data folders that would be emptied (with sizes), named volumes, and folders kept because another container shares them"},{"method":"GET","path":"/networks/{network}","access":"user","description":"Network detail with its members"},{"method":"GET","path":"/containers/{container}","access":"user","description":"Container detail"},{"method":"POST","path":"/auth/setup","access":"public","description":"Create the first admin account (only when no users exist)"},{"method":"POST","path":"/auth/login","access":"public","description":"Authenticate and get a session token"},{"method":"POST","path":"/auth/register","access":"public","description":"Register a new account with an invite code"},{"method":"POST","path":"/auth/totp/validate","access":"public","description":"Validate TOTP code during login (second step)"},{"method":"POST","path":"/setup/restore","access":"public","description":"First-run only: restore a recovery bundle sent by the setup wizard {content_b64, passphrase}"},{"method":"POST","path":"/fleet/join","access":"public","description":"A member registers itself with a join code {token, name, url, username, password, identity?, vmid?, node?, type?}: the hub logs in to it, matches it to a guest and keeps it (no session; rate-limited like a login)"},{"method":"POST","path":"/setup/configure","access":"user","description":"Apply the setup wizard's settings and stack list"},{"method":"POST","path":"/setup/complete","access":"user","description":"Mark first-run setup as finished"},{"method":"POST","path":"/auth/logout","access":"user","description":"Invalidate the current session token"},{"method":"POST","path":"/auth/refresh","access":"user","description":"Refresh the current session token"},{"method":"POST","path":"/auth/totp/setup","access":"user","description":"Generate TOTP secret and return QR URI (not yet enabled)"},{"method":"POST","path":"/auth/totp/verify","access":"user","description":"Verify a TOTP code and enable 2FA"},{"method":"POST","path":"/auth/totp/disable","access":"user","description":"Disable 2FA (requires password confirmation)"},{"method":"POST","path":"/auth/invite","access":"admin","description":"Generate an invite code (admin only)"},{"method":"POST","path":"/auth/users","access":"admin","description":"Create a user account directly {username, password, role} (admin; for bots and family)"},{"method":"POST","path":"/auth/users/*/role","access":"admin","description":"Change an account's role {role: admin|user|bot} (admin; the last admin cannot be demoted; the account's sessions are signed out)"},{"method":"POST","path":"/proxmox/test","access":"admin","description":"Try a Proxmox connection with the given url, token_id, token_secret and verify_tls without saving them"},{"method":"POST","path":"/proxmox/vms/*/*/*/*","access":"admin","description":"Power action on a VM or container: start, shutdown, stop, reboot, reset (VMs only), suspend, resume — audited and sent to the webhooks"},{"method":"POST","path":"/traefik/feed/token","access":"admin","description":"Mint a new feed token (paste the new one into the remote Traefik)"},{"method":"POST","path":"/fleet/members","access":"admin","description":"Add a member by address and an account on it {url, username, password, name?, vmid?, node?, type?, insecure?}; the hub logs in, learns who it is and matches it to a guest"},{"method":"POST","path":"/fleet/join-tokens","access":"admin","description":"Mint a join code {ttl_hours?: 24}: a VM runs ./setup.sh with DCS_HUB_URL and DCS_JOIN_TOKEN (or ./setup.sh --join) and becomes a member"},{"method":"POST","path":"/fleet/join-hub","access":"admin","description":"Make this server a member of a hub {hub_url, token, name?, url?} or {pending: true} for the join setup.sh saved: creates the account dcs-hub here and registers with the hub"},{"method":"POST","path":"/fleet/discover","access":"admin","description":"Scan the guests for DCS installs: Proxmox gives each running guest's addresses (guest agent / container interfaces) and the API port is probed; found installs come back with the guest already matched (30 s cache; POST forces a new scan and accepts Proxmox values to try before they are saved)"},{"method":"POST","path":"/fleet/members/*/test","access":"admin","description":"Log in to the member afresh, read its identity and version, and say which guest it matches"},{"method":"POST","path":"/fleet/members/*/api/*","access":"admin","description":"Forward the call (GET, POST, PUT or DELETE) to that member with the hub's account; the caller's own role is checked against the inner path as if it were local (streams and auth are not forwarded)"},{"method":"POST","path":"/auth/revoke","access":"admin","description":"Revoke a user's access (admin only)"},{"method":"POST","path":"/auth/logout-all","access":"admin","description":"Invalidate all sessions for a user (admin only)"},{"method":"POST","path":"/auth/factory-reset","access":"admin","description":"Wipe auth state and return server to first-run mode"},{"method":"POST","path":"/stacks/rename","access":"admin","description":"Rename a stack directory"},{"method":"POST","path":"/stacks/reorder","access":"admin","description":"Set stack startup order"},{"method":"POST","path":"/terminal/exec","access":"admin","description":"Run a shell command on the host (terminal session required, 60 s limit)"},{"method":"POST","path":"/terminal/auth","access":"admin","description":"Authenticate with Linux credentials"},{"method":"POST","path":"/terminal/auth/verify","access":"admin","description":"Verify a terminal session token"},{"method":"POST","path":"/terminal/auth/logout","access":"admin","description":"Invalidate a terminal session"},{"method":"POST","path":"/alerts/config","access":"admin","description":"Update alert thresholds"},{"method":"POST","path":"/system/crontab","access":"admin","description":"Update user crontab"},{"method":"POST","path":"/system/restart","access":"admin","description":"Restart the API listener without root: it re-executes itself (older listeners under systemd are relaunched by the unit)"},{"method":"POST","path":"/power/sample","access":"admin","description":"Read the UPS right now (also refreshes what GET /power shows)"},{"method":"POST","path":"/sablier/repair","access":"admin","description":"Recreate on-demand containers that a prune removed (created, not started, so Sablier can wake them)"},{"method":"POST","path":"/homarr/register","access":"admin","description":"Put an app on the Homarr dashboard now {name, url, icon, description}"},{"method":"POST","path":"/recovery/bundle","access":"admin","description":"Write an encrypted recovery bundle now {passphrase?, include_app_data: [stacks], copy_remote}"},{"method":"POST","path":"/recovery/restore","access":"admin","description":"Restore a bundle from this box {file, passphrase, confirm, restart}; a pre-restore snapshot is kept"},{"method":"POST","path":"/recovery/upload","access":"admin","description":"Store a bundle sent by the browser {filename, content_b64}"},{"method":"POST","path":"/system/update/apply","access":"admin","description":"Update to the channel's release {confirm, replace_local, restart}; user files are kept, a backup tag allows rollback"},{"method":"POST","path":"/system/ui-update/apply","access":"admin","description":"Pull latest DCS-UI image and recreate container"},{"method":"POST","path":"/system/update/rollback","access":"admin","description":"Return to a backup tag {backup_tag, restart}; user files are kept, edited framework files backed up"},{"method":"POST","path":"/system/os-update/check","access":"admin","description":"List available OS package updates (terminal session required)"},{"method":"POST","path":"/system/os-update/apply","access":"admin","description":"Apply OS package updates in the background (terminal session required)"},{"method":"POST","path":"/stacks","access":"admin","description":"Create an empty stack directory"},{"method":"POST","path":"/stacks/{stack}/delete","access":"admin","description":"Delete a stopped stack directory"},{"method":"POST","path":"/config","access":"admin","description":"Update allow-listed .env settings"},{"method":"POST","path":"/containers/{container}/start","access":"admin","description":"Start, stop, restart, recreate (Compose-managed only) or remove a container"},{"method":"POST","path":"/containers/{container}/stop","access":"admin","description":"Start, stop, restart, recreate (Compose-managed only) or remove a container"},{"method":"POST","path":"/containers/{container}/restart","access":"admin","description":"Start, stop, restart, recreate (Compose-managed only) or remove a container"},{"method":"POST","path":"/containers/{container}/recreate","access":"admin","description":"Start, stop, restart, recreate (Compose-managed only) or remove a container"},{"method":"POST","path":"/containers/{container}/remove","access":"admin","description":"Start, stop, restart, recreate (Compose-managed only) or remove a container"},{"method":"POST","path":"/containers/{container}/reset","access":"admin","description":"Nuke & reinstall {confirm: \"<container>\", wipe_app_data: true, wipe_volumes: false, pull: true}: remove the container, move its App-Data folders to App-Data/.trash, drop its own named volumes when asked, pull and create it again from the compose file"},{"method":"POST","path":"/containers/{container}/exec","access":"admin","description":"Run a command inside a container (30 s limit)"},{"method":"POST","path":"/containers/{container}/sablier","access":"admin","description":"Start this container on demand through Sablier (enabled: true) or serve it normally again; writes or removes the Traefik middleware on its route"},{"method":"POST","path":"/containers/{container}/env","access":"admin","description":"Change a Compose-managed container's environment in its stack {set{}, unset[], recreate}"},{"method":"POST","path":"/containers/{container}/rename","access":"admin","description":"Rename a container"},{"method":"POST","path":"/networks","access":"admin","description":"Create a Docker network {name, driver, subnet, gateway, ip_range, internal, attachable, ipv6, labels}"},{"method":"POST","path":"/networks/{network}/delete","access":"admin","description":"Remove a Docker network"},{"method":"POST","path":"/networks/{network}/connect","access":"admin","description":"Connect a container to a network"},{"method":"POST","path":"/networks/{network}/disconnect","access":"admin","description":"Disconnect a container from a network"},{"method":"POST","path":"/networks/{network}/recreate","access":"admin","description":"Rebuild a network with new settings and reconnect its containers"},{"method":"POST","path":"/images/{image}/delete","access":"admin","description":"Remove an image"},{"method":"POST","path":"/volumes/{volume}/delete","access":"admin","description":"Remove a Docker volume"},{"method":"POST","path":"/maintenance/prune","access":"admin","description":"Maintenance prune"},{"method":"POST","path":"/maintenance/image-prune","access":"admin","description":"Prune unused images"},{"method":"POST","path":"/maintenance/deep-prune","access":"admin","description":"Prune everything unused, volumes included (confirmation required)"},{"method":"POST","path":"/maintenance/log-rotate","access":"admin","description":"Rotate and archive the framework log"},{"method":"POST","path":"/batch/stacks","access":"admin","description":"Start, stop or restart several stacks in dependency order"},{"method":"POST","path":"/batch/update","access":"admin","description":"Pull images for several stacks and recreate what changed"},{"method":"POST","path":"/env","access":"admin","description":"Save the root .env file (validated as plain KEY=value data)"},{"method":"POST","path":"/env/validate","access":"user","description":"Validate .env content without saving it"},{"method":"POST","path":"/backups/trigger","access":"admin","description":"Start a backup in the background (optionally one stack)"},{"method":"POST","path":"/backups/cancel","access":"admin","description":"Kill a running backup"},{"method":"POST","path":"/backups/restore","access":"admin","description":"Restore a backup archive (confirmation required)"},{"method":"POST","path":"/stacks/{stack}/compose/validate","access":"user","description":"Validate compose content for a stack without saving it"},{"method":"POST","path":"/stacks/{stack}/compose","access":"admin","description":"Save the stack's docker-compose.yml (policy-scanned, previous version kept)"},{"method":"POST","path":"/stacks/{stack}/env","access":"admin","description":"Save the stack's .env file"},{"method":"POST","path":"/stacks/{stack}/compose/rollback","access":"admin","description":"Restore a saved compose version"},{"method":"POST","path":"/settings/dashboard","access":"user","description":"Save user's dashboard layout"},{"method":"POST","path":"/settings/profile","access":"user","description":"Save user's profile settings"},{"method":"POST","path":"/metrics/snapshot","access":"admin","description":"Record a metrics sample now"},{"method":"POST","path":"/dns/records","access":"admin","description":"Create a record {type, name, content, ttl, proxied, priority, comment, zone}"},{"method":"POST","path":"/dns/records/sync","access":"admin","description":"Create the proxied CNAME records that DCS routes are missing"},{"method":"POST","path":"/images/check-updates","access":"admin","description":"Compare local image digests with their registries (slow)"},{"method":"POST","path":"/images/update","access":"admin","description":"Pull an image and recreate the Compose services that use it"},{"method":"POST","path":"/images/{image}/update","access":"admin","description":"Pull an image and recreate the Compose services that use it"},{"method":"POST","path":"/notifications/rules","access":"admin","description":"Create or update a notification rule"},{"method":"POST","path":"/notifications/test","access":"admin","description":"Send a test notification to every configured channel (NTFY, Discord)"},{"method":"POST","path":"/snapshots/create","access":"admin","description":"Create a configuration snapshot (compose files, .env files, templates)"},{"method":"POST","path":"/snapshots/{snapshot}/restore","access":"admin","description":"Restore a snapshot (confirmation required, policy-scanned)"},{"method":"POST","path":"/templates/{template}/deploy","access":"admin","description":"Deploy a template into a stack (merge, routes, DNS, optional start)"},{"method":"POST","path":"/templates/{template}/undeploy","access":"admin","description":"Remove a template's services from a stack with their containers (remove_containers=false keeps them; optionally data, images, routes)"},{"method":"POST","path":"/templates/{template}/dry-run","access":"user","description":"Preview a deployment: conflicts, ports, variables and policy findings"},{"method":"POST","path":"/templates/import","access":"admin","description":"Import a template from compose content"},{"method":"POST","path":"/templates/fetch-url","access":"admin","description":"Fetch compose content from URL without saving"},{"method":"POST","path":"/templates/import-url","access":"admin","description":"Import a template from a URL"},{"method":"POST","path":"/stacks/{stack}/clone","access":"admin","description":"Clone a stack"},{"method":"POST","path":"/compose/validate","access":"user","description":"Validate a compose file"},{"method":"POST","path":"/webhooks","access":"admin","description":"Create a webhook"},{"method":"POST","path":"/webhooks/{id}/test","access":"admin","description":"Test a webhook"},{"method":"POST","path":"/templates/{template}/update","access":"admin","description":"Update an existing template's compose, metadata, and .env"},{"method":"POST","path":"/routes/reconcile","access":"admin","description":"Probe the routes and restart Traefik once if they are dead"},{"method":"POST","path":"/crowdsec/trust","access":"admin","description":"Add an address to the whitelist (body {ip}; defaults to the home public address and the caller)"},{"method":"POST","path":"/crowdsec/unban-me","access":"user","description":"Unban the caller: its client address and the home public address"},{"method":"POST","path":"/crowdsec/notifications","access":"admin","description":"Send CrowdSec's alerts to Discord {webhook?, test?}: renders the template with the webhook (default: the server's), restarts CrowdSec, and optionally posts a test alert"},{"method":"POST","path":"/automations","access":"admin","description":"Create an automation rule"},{"method":"POST","path":"/automations/{id}/update","access":"admin","description":"Update an automation rule"},{"method":"POST","path":"/automations/{id}/run","access":"admin","description":"Run an automation now"},{"method":"POST","path":"/stacks/{stack}/start","access":"admin","description":"Start, stop, restart or update (pull + recreate) a stack"},{"method":"POST","path":"/stacks/{stack}/stop","access":"admin","description":"Start, stop, restart or update (pull + recreate) a stack"},{"method":"POST","path":"/stacks/{stack}/restart","access":"admin","description":"Start, stop, restart or update (pull + recreate) a stack"},{"method":"POST","path":"/stacks/{stack}/update","access":"admin","description":"Start, stop, restart or update (pull + recreate) a stack"},{"method":"POST","path":"/secrets","access":"admin","description":"Store an encrypted secret (also POST /secrets/{key})"},{"method":"POST","path":"/secrets/{key}","access":"admin","description":"Store an encrypted secret (also POST /secrets/{key})"},{"method":"POST","path":"/schedules","access":"admin","description":"Create a scheduled task"},{"method":"POST","path":"/plugins/install","access":"admin","description":"Install a plugin from a git URL (installed disabled)"},{"method":"POST","path":"/plugins/scaffold","access":"admin","description":"Create a plugin from an inline manifest, hooks and cards"},{"method":"POST","path":"/rollback/{stack}/restore","access":"admin","description":"Restore a stack from a rollback snapshot (policy-scanned)"},{"method":"POST","path":"/schedules/{id}/update","access":"admin","description":"Update a scheduled task"},{"method":"POST","path":"/schedules/{id}/toggle","access":"admin","description":"Enable/disable a schedule"},{"method":"POST","path":"/schedules/{id}/run","access":"admin","description":"Execute a schedule immediately"},{"method":"POST","path":"/plugins/catalog/*/install","access":"admin","description":"Install a catalogue plugin (copied into .plugins, disabled)"},{"method":"POST","path":"/plugins/{plugin}/cards/{card}","access":"admin","description":"Create or replace a dashboard card in a plugin {meta{}, html}"},{"method":"POST","path":"/plugins/{plugin}/toggle","access":"admin","description":"Enable/disable by writing to plugin.json"},{"method":"POST","path":"/plugins/{plugin}/hooks/{hook}/test","access":"admin","description":"Dry-run a hook"},{"method":"POST","path":"/plugins/{plugin}/hooks/{hook}/update","access":"admin","description":"Update hook script"},{"method":"POST","path":"/plugins/{plugin}/config","access":"admin","description":"Update plugin configuration"},{"method":"PUT","path":"/fleet/members/*/api/*","access":"admin","description":"Forward the call (GET, POST, PUT or DELETE) to that member with the hub's account; the caller's own role is checked against the inner path as if it were local (streams and auth are not forwarded)"},{"method":"PUT","path":"/fleet/members/*","access":"admin","description":"Change a member's name, address, account or the guest it is mapped to {name?, url?, username?, password?, vmid?, node?, type?, insecure?}"},{"method":"PUT","path":"/dns/records/*","access":"admin","description":"Change a record's type, name, content, TTL, proxy status, priority or comment"},{"method":"PUT","path":"/routes/{stack}/{service}","access":"admin","description":"Update a route file's subdomain"},{"method":"DELETE","path":"/fleet/members/*/api/*","access":"admin","description":"Forward the call (GET, POST, PUT or DELETE) to that member with the hub's account; the caller's own role is checked against the inner path as if it were local (streams and auth are not forwarded)"},{"method":"DELETE","path":"/fleet/members/*","access":"admin","description":"Forget a member (its dcs-hub account is removed there when it answers)"},{"method":"DELETE","path":"/fleet/join-tokens/*","access":"admin","description":"Revoke a join code"},{"method":"DELETE","path":"/fleet/hub","access":"admin","description":"Leave the hub: forget it and remove its dcs-hub account here (the hub drops this member when it next fails to answer, or when removed there)"},{"method":"DELETE","path":"/auth/sessions/{token-prefix}","access":"admin","description":"Revoke a specific session by token prefix (admin only)"},{"method":"DELETE","path":"/auth/invite/{code}","access":"admin","description":"Delete an invite code (admin only)"},{"method":"DELETE","path":"/notifications/rules/{id}","access":"admin","description":"Delete a notification rule"},{"method":"DELETE","path":"/snapshots/{snapshot}","access":"admin","description":"Delete a snapshot"},{"method":"DELETE","path":"/webhooks/{id}","access":"admin","description":"Delete a webhook"},{"method":"DELETE","path":"/templates/{template}","access":"admin","description":"Delete a template"},{"method":"DELETE","path":"/crowdsec/decisions/*","access":"admin","description":"Remove every decision for an address (unban)"},{"method":"DELETE","path":"/crowdsec/trust/*","access":"admin","description":"Remove an address from the whitelist"},{"method":"DELETE","path":"/automations/{id}","access":"admin","description":"Delete an automation rule"},{"method":"DELETE","path":"/secrets/{key}","access":"admin","description":"Securely delete a secret"},{"method":"DELETE","path":"/schedules/{id}","access":"admin","description":"Remove a schedule"},{"method":"DELETE","path":"/plugins/{plugin}/cards/{card}","access":"admin","description":"Remove a dashboard card from a plugin"},{"method":"DELETE","path":"/plugins/{plugin}","access":"admin","description":"Remove plugin directory"},{"method":"DELETE","path":"/dns/records/*","access":"admin","description":"Delete a record (the zone apex and names DCS routes use need force=true)"},{"method":"DELETE","path":"/routes/{stack}/{service}","access":"admin","description":"Delete a route file and optionally clean up DNS"}]
 DCS_ENDPOINTS
 
     _api_success "{\"name\": \"Docker Compose Skeleton API\", \"version\": \"$API_VERSION\", \"auth_enabled\": $API_AUTH_ENABLED, \"endpoints\": $endpoints}"
@@ -10595,6 +10617,9 @@ _notify_default_templates() {
         automation_run)        NT_TITLE="Automation {automation} ran"; NT_MESSAGE="{message}" ;;
         backup_complete)       NT_TITLE="Backup finished"; NT_MESSAGE="{message}" ;;
         backup_failed)         NT_TITLE="Backup failed"; NT_MESSAGE="{message}" ;;
+        fleet_member_joined)   NT_TITLE="{member} joined the hub"; NT_MESSAGE="{message}" ;;
+        fleet_member_down)     NT_TITLE="Member {member} stopped answering"; NT_MESSAGE="{message}" ;;
+        fleet_member_up)       NT_TITLE="Member {member} answers again"; NT_MESSAGE="{message}" ;;
         proxmox_vm_stopped)    NT_TITLE="VM {vm} stopped"; NT_MESSAGE="{message}" ;;
         proxmox_vm_started)    NT_TITLE="VM {vm} is running"; NT_MESSAGE="{message}" ;;
         proxmox_vm_*)          NT_TITLE="VM {vm}: {status}"; NT_MESSAGE="{message}" ;;
@@ -11888,8 +11913,9 @@ _find_traefik_routes_dir() {
     _dir=$(find "$BASE_DIR" -maxdepth 6 -type d -name "custom_routes" -path "*/Traefik/*" 2>/dev/null | head -1)
     if [[ -n "$_dir" ]]; then printf '%s' "$_dir"; return; fi
 
-    # 4. No Traefik here, but a remote one pulls the feed: routes live in .data/routes
-    if [[ "${TRAEFIK_FEED_ENABLED:-false}" == "true" ]]; then
+    # 4. No Traefik here, but a remote one pulls the feed (or a hub merges this
+    #    server's routes into its feed): routes live in .data/routes
+    if [[ "${TRAEFIK_FEED_ENABLED:-false}" == "true" ]] || _fleet_is_member; then
         mkdir -p "$TRAEFIK_FEED_DIR" 2>/dev/null
         printf '%s' "$TRAEFIK_FEED_DIR"
     fi
@@ -13475,8 +13501,8 @@ handle_template_deploy() {
             fi
         fi
     done
-    # No Traefik on this host but a remote one pulls the feed: keep the route files in .data/routes
-    if [[ -z "$traefik_routes_dir" && "${TRAEFIK_FEED_ENABLED:-false}" == "true" ]]; then
+    # No Traefik on this host but a remote one pulls the feed (or a hub publishes this member's routes): keep the route files in .data/routes
+    if [[ -z "$traefik_routes_dir" ]] && { [[ "${TRAEFIK_FEED_ENABLED:-false}" == "true" ]] || _fleet_is_member; }; then
         traefik_routes_dir="$TRAEFIK_FEED_DIR"; mkdir -p "$traefik_routes_dir" 2>/dev/null
     fi
     # Domain: check .env files, then request variables, then root .env PROXY_DOMAIN
@@ -16500,6 +16526,10 @@ _discord_event_style() {
         api_restart)           emoji="♻️"; color=$DISCORD_COLOR_INFO;   label="API restarted" ;;
         user_create)           emoji="👤"; color=$DISCORD_COLOR_INFO;   label="User created" ;;
         container_reset|auth.container_reset) emoji="💣"; color=$DISCORD_COLOR_WARN; label="Nuked and reinstalled" ;;
+        fleet_member_joined)   emoji="🛰️"; color=$DISCORD_COLOR_OK;     label="Member joined the hub" ;;
+        fleet_member_down)     emoji="🛰️"; color=$DISCORD_COLOR_BAD;    label="Member stopped answering" ;;
+        fleet_member_up)       emoji="🛰️"; color=$DISCORD_COLOR_OK;     label="Member answers again" ;;
+        fleet_member_added|fleet_member_updated|fleet_member_removed|fleet_joined_hub|fleet_left_hub|fleet_join_token|fleet_proxy) emoji="🛰️"; color=$DISCORD_COLOR_INFO; label="Fleet" ;;
         proxmox_vm_stopped)    emoji="🖥️"; color=$DISCORD_COLOR_BAD;    label="VM stopped on its own" ;;
         proxmox_vm_started)    emoji="🖥️"; color=$DISCORD_COLOR_OK;     label="VM started" ;;
         proxmox_vm_start|proxmox_vm_resume) emoji="🖥️"; color=$DISCORD_COLOR_OK; label="VM started" ;;
@@ -17624,7 +17654,8 @@ _feed_build() {
 
 # GET /traefik/dynamic — Dynamic configuration for a Traefik on another machine (its HTTP provider); needs ?token= or a Bearer token equal to TRAEFIK_FEED_TOKEN
 handle_traefik_dynamic() {
-    _api_success "$(_feed_build)"
+    local b; b=$(_feed_build)
+    _api_success "$(_fleet_merge_feeds "$b")"
 }
 
 # GET /traefik/feed/status — The Traefik feed: on or off, token, target host, what it serves and skips, when it was last pulled, and the provider snippet to paste
@@ -17635,6 +17666,11 @@ handle_traefik_feed_status() {
         _api_env_write TRAEFIK_FEED_TOKEN "$TRAEFIK_FEED_TOKEN" || TRAEFIK_FEED_TOKEN=""
     fi
     body=$(_feed_build); n=$(jq -r '.http.routers | length' <<< "$body" 2>/dev/null || echo 0)
+    local mr=0 mc=0
+    if _fleet_has_members; then
+        mc=$(_fleet_load | jq -r '.members | length')
+        mr=$(FLEET_FEED_TIMEOUT=3 _fleet_merge_feeds '{"http":{"routers":{},"services":{}}}' | jq -r '.http.routers | length' 2>/dev/null || echo 0)
+    fi
     st=$(jq -c . "$TRAEFIK_FEED_STATE" 2>/dev/null || echo '{}'); [[ "$st" == \{* ]] || st='{}'
     host=$(_feed_target_host); port="${DCS_API_EFFECTIVE_PORT:-${API_PORT:-9876}}"
     ep_url="http://${host}:${port}/traefik/dynamic"
@@ -17648,8 +17684,8 @@ handle_traefik_feed_status() {
         --arg ep "${TRAEFIK_FEED_ENTRYPOINT:-websecure}" --arg mws "${TRAEFIK_FEED_MIDDLEWARES:-}" \
         --argjson tls "$([[ "${TRAEFIK_FEED_TLS:-true}" == "false" ]] && echo false || echo true)" \
         --arg res "${TRAEFIK_FEED_CERT_RESOLVER:-}" --argjson n "$n" --argjson skipped "${FEED_SKIPPED:-[]}" \
-        --argjson st "$st" --arg url "$ep_url" --arg snippet "$snippet" --arg dir "$dir" --argjson local "$local_traefik" \
-        '{enabled: $on, ready: $ready, token: $token, target_host: $host, detected_host: $det, entrypoint: $ep, middlewares: $mws, tls: $tls, cert_resolver: $res, routes: $n, skipped: $skipped, routes_dir: $dir, local_traefik: $local, last_poll: ($st.last_poll // 0), last_client: ($st.last_client // ""), endpoint_url: $url, snippet: $snippet}')"
+        --argjson st "$st" --arg url "$ep_url" --arg snippet "$snippet" --arg dir "$dir" --argjson local "$local_traefik" --argjson mr "$mr" --argjson mc "$mc" \
+        '{enabled: $on, ready: $ready, token: $token, target_host: $host, detected_host: $det, entrypoint: $ep, middlewares: $mws, tls: $tls, cert_resolver: $res, routes: $n, member_routes: $mr, members: $mc, skipped: $skipped, routes_dir: $dir, local_traefik: $local, last_poll: ($st.last_poll // 0), last_client: ($st.last_client // ""), endpoint_url: $url, snippet: $snippet}')"
 }
 
 # POST /traefik/feed/token — Mint a new feed token (paste the new one into the remote Traefik)
@@ -17662,6 +17698,767 @@ handle_traefik_feed_token() {
     _api_cache_clear
     _api_success "$(jq -nc --arg t "$t" '{success: true, token: $t}')"
 }
+
+# =============================================================================
+# FLEET — one DCS (the hub) and the DCS installs in the other VMs (members)
+# =============================================================================
+# Every VM keeps its own complete DCS: its stacks, its Docker, its API. The hub
+# is the one linked to Proxmox; it holds an account on every member and shows
+# their stacks under the VM they run in, deploys templates there, and merges
+# their routes into the Traefik feed. Nothing is scheduled or moved between
+# machines — this is a control plane over independent compose hosts.
+#
+#   member ──POST /fleet/join──▶ hub      (a join code minted on the hub; the
+#                                          member creates the account "dcs-hub"
+#                                          and hands it over once)
+#   hub ──POST /fleet/members──▶ member   (or the hub adds a member by address
+#                                          and an account that exists there)
+#   hub ──/fleet/members/{id}/api/…──▶ member (every later call, with the
+#                                          caller's role checked as if local)
+#
+# State: .data/fleet.json (members, join codes, the hub this server joined);
+# member passwords in the secret store as FLEET_MEMBER_<ID>_PASSWORD; the
+# hub's session on each member in .data/fleet-sessions/<id>.token.
+FLEET_FILE="${FLEET_FILE:-$BASE_DIR/.data/fleet.json}"
+FLEET_SESSION_DIR="${FLEET_SESSION_DIR:-$BASE_DIR/.data/fleet-sessions}"
+FLEET_PENDING_JOIN="${FLEET_PENDING_JOIN:-$BASE_DIR/.data/fleet-join-pending.json}"
+FLEET_WATCH_STAMP="${FLEET_WATCH_STAMP:-$BASE_DIR/.data/fleet-watch.stamp}"
+FLEET_HUB_ACCOUNT="dcs-hub"
+_FLEET_HTTP=0
+_FLEET_ERR=""
+FLEET_TOKEN=""
+FLEET_REG_OUT=""
+FLEET_REG_ERR=""
+FLEET_JOIN_OUT=""
+FLEET_JOIN_ERR=""
+
+_fleet_load() {
+    local j=""
+    [[ -s "$FLEET_FILE" ]] && j=$(jq -c . "$FLEET_FILE" 2>/dev/null)
+    [[ "$j" == \{* ]] || j='{}'
+    jq -c '{members: (.members // []), join_tokens: (.join_tokens // []), hub: (.hub // null)}' <<< "$j"
+}
+_fleet_save() {
+    mkdir -p "$(dirname "$FLEET_FILE")" 2>/dev/null
+    (umask 077; printf '%s\n' "$1" > "$FLEET_FILE.tmp") && mv -f "$FLEET_FILE.tmp" "$FLEET_FILE"
+}
+_fleet_members() { _fleet_load | jq -c '.members'; }
+_fleet_member() { _fleet_load | jq -c --arg id "$1" '[.members[] | select(.id == $id)] | .[0] // empty' 2>/dev/null; }
+_fleet_is_member() { [[ -s "$FLEET_FILE" ]] && jq -e '.hub != null' "$FLEET_FILE" >/dev/null 2>&1; }
+_fleet_has_members() { [[ -s "$FLEET_FILE" ]] && jq -e '(.members // []) | length > 0' "$FLEET_FILE" >/dev/null 2>&1; }
+_fleet_slug() {
+    local s
+    s=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9-' '-' | sed -E 's/-+/-/g; s/^-//; s/-$//')
+    s="${s:0:40}"; s="${s%-}"
+    [[ -n "$s" ]] || s="member"
+    printf '%s' "$s"
+}
+_fleet_unique_id() {
+    local base="$1" id="$1" n=2
+    while [[ -n "$(_fleet_member "$id")" ]]; do id="${base}-${n}"; n=$((n + 1)); done
+    printf '%s' "$id"
+}
+_fleet_secret_name() { printf 'FLEET_MEMBER_%s_PASSWORD' "$(printf '%s' "$1" | tr '[:lower:]-' '[:upper:]_')"; }
+_fleet_password() { secrets_get "$(_fleet_secret_name "$1")" 2>/dev/null; }
+_fleet_new_token() {
+    local t
+    t=$(LC_ALL=C tr -dc 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789' < /dev/urandom 2>/dev/null | head -c 12)
+    [[ ${#t} -eq 12 ]] || t=$(openssl rand -hex 6 | tr '[:lower:]' '[:upper:]')
+    printf '%s-%s-%s' "${t:0:4}" "${t:4:4}" "${t:8:4}"
+}
+# How other machines reach this API (FLEET_SELF_URL overrides the detection)
+_fleet_self_url() {
+    if [[ -n "${FLEET_SELF_URL:-}" ]]; then printf '%s' "${FLEET_SELF_URL%/}"; return; fi
+    printf 'http://%s:%s' "$(_feed_detected_host)" "${DCS_API_EFFECTIVE_PORT:-${API_PORT:-9876}}"
+}
+_fleet_urlencode() { jq -rn --arg s "$1" '$s | @uri'; }
+
+# _fleet_http VAR METHOD URL [BODY] [TOKEN] [TIMEOUT] [INSECURE] — the answer
+# lands in VAR and the status in _FLEET_HTTP (0 = no answer), in the caller's
+# own shell.
+_fleet_http() {
+    local __var="$1" method="$2" url="$3" body="${4:-}" token="${5:-}" timeout="${6:-${FLEET_TIMEOUT:-20}}" insecure="${7:-false}"
+    local -a opts=(-sS --max-time "$timeout" -w $'\n%{http_code}' -X "$method" -H 'Accept: application/json')
+    [[ "$insecure" == "true" ]] && opts+=(-k)
+    [[ -n "$token" ]] && opts+=(-H "Authorization: Bearer $token")
+    [[ -n "$body" ]] && opts+=(-H 'Content-Type: application/json' --data-binary "$body")
+    local raw code
+    raw=$(curl "${opts[@]}" "$url" 2>/dev/null) || true
+    [[ "$raw" =~ $'\n'[0-9]{3}$ ]] || raw+=$'\n000'
+    code="${raw##*$'\n'}"
+    _FLEET_HTTP=$((10#$code))
+    printf -v "$__var" '%s' "${raw%$'\n'*}"
+}
+# CODE BODY URL → one sentence on what went wrong
+_fleet_explain() {
+    local code="$1" body="$2" url="$3" msg=""
+    [[ "$body" == \{* ]] && msg=$(jq -r '.message // empty' <<< "$body" 2>/dev/null)
+    case "$code" in
+        0)   printf '%s did not answer (is the DCS API running there, and can this machine reach it?)' "$url" ;;
+        401) printf 'the member refused the account: %s' "${msg:-invalid username or password}" ;;
+        403) printf 'the account on the member is not allowed to do that: %s' "${msg:-forbidden}" ;;
+        404) printf 'the member has no such endpoint (%s) — update DCS there' "${msg:-404}" ;;
+        429) printf 'the member is rate-limiting logins right now — try again in a few minutes' ;;
+        *)   printf 'HTTP %s from %s%s' "$code" "$url" "${msg:+: $msg}" ;;
+    esac
+}
+
+# _fleet_login ID — a fresh session on the member; FLEET_TOKEN or _FLEET_ERR
+_fleet_login() {
+    local id="$1" m url user pass res tok
+    FLEET_TOKEN=""; _FLEET_ERR=""
+    m=$(_fleet_member "$id"); [[ -n "$m" ]] || { _FLEET_ERR="unknown member $id"; return 1; }
+    url=$(jq -r '.url' <<< "$m"); user=$(jq -r '.username' <<< "$m"); pass=$(_fleet_password "$id")
+    [[ -n "$pass" ]] || { _FLEET_ERR="the hub holds no password for $id — edit the member and enter it again"; return 1; }
+    _fleet_http res POST "$url/auth/login" "$(jq -nc --arg u "$user" --arg p "$pass" '{username: $u, password: $p}')" "" 10 "$(jq -r '.insecure // false' <<< "$m")"
+    tok=""; [[ "$res" == \{* ]] && tok=$(jq -r '.token // empty' <<< "$res" 2>/dev/null)
+    if [[ "$_FLEET_HTTP" == 200 && -n "$tok" ]]; then
+        mkdir -p "$FLEET_SESSION_DIR" 2>/dev/null; chmod 700 "$FLEET_SESSION_DIR" 2>/dev/null
+        (umask 077; printf '%s' "$tok" > "$FLEET_SESSION_DIR/$id.token")
+        FLEET_TOKEN="$tok"; return 0
+    fi
+    _FLEET_ERR=$(_fleet_explain "$_FLEET_HTTP" "$res" "$url")
+    return 1
+}
+# _fleet_call VAR ID METHOD PATH [BODY] [TIMEOUT] — a call on a member with the
+# hub's session (renewed once on a 401). Status in _FLEET_HTTP.
+_fleet_call() {
+    local __var="$1" id="$2" method="$3" path="$4" body="${5:-}" timeout="${6:-${FLEET_TIMEOUT:-20}}"
+    local m url tok _fc insecure
+    printf -v "$__var" ''
+    m=$(_fleet_member "$id"); [[ -n "$m" ]] || { _FLEET_HTTP=0; _FLEET_ERR="unknown member $id"; return 1; }
+    url=$(jq -r '.url' <<< "$m"); insecure=$(jq -r '.insecure // false' <<< "$m")
+    tok=$(cat "$FLEET_SESSION_DIR/$id.token" 2>/dev/null)
+    if [[ -z "$tok" ]]; then _fleet_login "$id" || { _FLEET_HTTP=0; return 1; }; tok="$FLEET_TOKEN"; fi
+    _fleet_http _fc "$method" "$url$path" "$body" "$tok" "$timeout" "$insecure"
+    if [[ "$_FLEET_HTTP" == 401 ]]; then
+        _fleet_login "$id" || { _FLEET_HTTP=401; printf -v "$__var" '%s' "$_fc"; return 1; }
+        _fleet_http _fc "$method" "$url$path" "$body" "$FLEET_TOKEN" "$timeout" "$insecure"
+    fi
+    [[ "$_FLEET_HTTP" == 0 ]] && _FLEET_ERR=$(_fleet_explain 0 "" "$url")
+    printf -v "$__var" '%s' "$_fc"
+    [[ "$_FLEET_HTTP" -ge 200 && "$_FLEET_HTTP" -lt 300 ]]
+}
+
+# What this server tells a hub about itself (the hub matches it to a guest)
+_fleet_identity_json() {
+    local host uuid mid ips port
+    host=$(hostname 2>/dev/null || echo "")
+    mid=$(cut -c1-32 /etc/machine-id 2>/dev/null || echo "")
+    uuid="${FLEET_IDENTITY_UUID:-}"
+    [[ -n "$uuid" ]] || uuid=$(cat /sys/class/dmi/id/product_uuid 2>/dev/null || echo "")
+    ips=$(ip -4 -o addr show scope global 2>/dev/null | awk '$2 !~ /^(docker|br-|veth|virbr|lo)/ {split($4, a, "/"); print a[1]}' | head -8 | jq -R . | jq -sc .)
+    [[ "$ips" == \[* ]] || ips='[]'
+    port="${DCS_API_EFFECTIVE_PORT:-${API_PORT:-9876}}"
+    jq -nc --arg h "$host" --arg u "${uuid,,}" --arg m "$mid" --argjson ips "$ips" --arg p "$port" --arg v "$DCS_VERSION" \
+        --arg n "${SERVER_NAME:-}" --arg os "$(. /etc/os-release 2>/dev/null; printf '%s' "${PRETTY_NAME:-}")" --arg virt "$(systemd-detect-virt 2>/dev/null || true)" \
+        '{hostname: $h, product_uuid: $u, machine_id: $m, ips: $ips, api_port: (($p | tonumber?) // 9876), version: $v, server_name: $n, os: $os, virt: $virt}'
+}
+
+# node type vmid → JSON array of the guest's IPv4 addresses ([] without an agent)
+_fleet_guest_ips() {
+    local node="$1" type="$2" vmid="$3" res out
+    if [[ "$type" == "qemu" ]]; then
+        PVE_TIMEOUT=6 _pve_call res GET "/nodes/$node/qemu/$vmid/agent/network-get-interfaces"
+        [[ "$_PVE_HTTP" == 200 ]] || { printf '[]'; return 0; }
+        out=$(jq -c '[.data.result[]? | select(.name != "lo" and ((.name // "") | test("^(docker|br-|veth|virbr)") | not)) | (.["ip-addresses"] // [])[] | select(.["ip-address-type"] == "ipv4") | .["ip-address"]] | unique' <<< "$res" 2>/dev/null)
+    else
+        PVE_TIMEOUT=6 _pve_call res GET "/nodes/$node/lxc/$vmid/interfaces"
+        [[ "$_PVE_HTTP" == 200 ]] || { printf '[]'; return 0; }
+        out=$(jq -c '[.data[]? | select(.name != "lo" and ((.name // "") | test("^(docker|br-|veth|virbr)") | not)) | (.inet // "") | select(. != "") | split("/")[0]] | unique' <<< "$res" 2>/dev/null)
+    fi
+    [[ "$out" == \[* ]] && printf '%s' "$out" || printf '[]'
+}
+# IDENTITY_JSON → {node, type, vmid, name, matched_by} of the guest this member
+# runs in: the VM's SMBIOS uuid, then a shared address, then the guest's name.
+_fleet_match_vm() {
+    local ident="$1" res vms uuid ips host node type vmid name cfg vuuid gips out
+    _pve_configured || return 1
+    PVE_TIMEOUT=10 _pve_call res GET /cluster/resources type=vm
+    _pve_explain "$res" || return 1
+    vms=$(jq -c '[.data[] | select(.template != 1) | {node, type, vmid, name: (.name // ""), status}]' <<< "$res")
+    uuid=$(jq -r '.product_uuid // ""' <<< "$ident" | tr '[:upper:]' '[:lower:]')
+    host=$(jq -r '.hostname // ""' <<< "$ident" | tr '[:upper:]' '[:lower:]')
+    if [[ "$uuid" =~ ^[0-9a-f-]{36}$ ]]; then
+        while IFS=$'\t' read -r node type vmid name; do
+            PVE_TIMEOUT=6 _pve_call cfg GET "/nodes/$node/qemu/$vmid/config"
+            vuuid=$(jq -r '.data.smbios1 // ""' <<< "$cfg" 2>/dev/null | grep -oE 'uuid=[0-9a-fA-F-]{36}' | cut -d= -f2 | tr '[:upper:]' '[:lower:]')
+            if [[ -n "$vuuid" && "$vuuid" == "$uuid" ]]; then
+                jq -nc --arg n "$node" --arg t "$type" --argjson v "$vmid" --arg nm "$name" '{node: $n, type: $t, vmid: $v, name: $nm, matched_by: "uuid"}'; return 0
+            fi
+        done < <(jq -r '.[] | select(.type == "qemu") | [.node, .type, .vmid, .name] | @tsv' <<< "$vms")
+    fi
+    ips=$(jq -c '.ips // []' <<< "$ident")
+    if [[ "$(jq 'length' <<< "$ips" 2>/dev/null || echo 0)" -gt 0 ]]; then
+        while IFS=$'\t' read -r node type vmid name; do
+            gips=$(_fleet_guest_ips "$node" "$type" "$vmid")
+            if jq -e --argjson a "$ips" 'any(.[]; . as $x | ($a | index($x)) != null)' <<< "$gips" >/dev/null 2>&1; then
+                jq -nc --arg n "$node" --arg t "$type" --argjson v "$vmid" --arg nm "$name" '{node: $n, type: $t, vmid: $v, name: $nm, matched_by: "ip"}'; return 0
+            fi
+        done < <(jq -r '.[] | select(.status == "running") | [.node, .type, .vmid, .name] | @tsv' <<< "$vms")
+    fi
+    if [[ -n "$host" ]]; then
+        out=$(jq -c --arg h "$host" '[.[] | select((.name | ascii_downcase) == $h or (.name | ascii_downcase) == ($h | split(".")[0]))] | .[0] // empty' <<< "$vms")
+        [[ -n "$out" ]] && { jq -c '. + {matched_by: "name"}' <<< "$out"; return 0; }
+    fi
+    return 1
+}
+
+# The scan: every running guest's addresses, probed for a DCS API. Prints
+# {scanned, found, guests: [{node, type, vmid, name, status, ips, dcs, member}]}
+_fleet_discover_json() {
+    local res vms tmp ports members node type vmid name status
+    ports="${FLEET_SCAN_PORTS:-9876}"
+    PVE_TIMEOUT=10 _pve_call res GET /cluster/resources type=vm
+    _pve_explain "$res" || { jq -nc --arg e "$PVE_ERR" '{error: $e, scanned: 0, found: 0, guests: []}'; return 1; }
+    vms=$(jq -c '[.data[] | select(.template != 1) | {node, type, vmid, name: (.name // ""), status}]' <<< "$res")
+    members=$(_fleet_members)
+    tmp=$(mktemp -d "${TMPDIR:-/tmp}/dcs-scan-XXXXXX") || { echo '{"scanned":0,"found":0,"guests":[]}'; return 1; }
+    while IFS=$'\t' read -r node type vmid name status; do
+        [[ -n "$vmid" ]] || continue
+        (
+            ips='[]'; found='null'
+            if [[ "$status" == "running" ]]; then
+                ips=$(_fleet_guest_ips "$node" "$type" "$vmid")
+                for ip in $(jq -r '.[]' <<< "$ips" 2>/dev/null); do
+                    for p in ${ports//,/ }; do
+                        body=$(curl -sS --max-time "${FLEET_SCAN_TIMEOUT:-2}" "http://$ip:$p/ping" 2>/dev/null) || continue
+                        [[ "$body" == \{* ]] || continue
+                        ver=$(jq -r 'select(.ok == true) | .version // empty' <<< "$body" 2>/dev/null)
+                        [[ -n "$ver" ]] || continue
+                        found=$(jq -nc --arg ip "$ip" --argjson p "$p" --arg v "$ver" --arg u "http://$ip:$p" '{ip: $ip, port: $p, version: $v, url: $u}')
+                        break 2
+                    done
+                done
+            fi
+            jq -nc --arg n "$node" --arg t "$type" --argjson v "$vmid" --arg nm "$name" --arg st "$status" --argjson ips "$ips" --argjson dcs "$found" \
+                '{node: $n, type: $t, vmid: $v, name: $nm, status: $st, ips: $ips, dcs: $dcs}' > "$tmp/$vmid.json"
+        ) &
+    done < <(jq -r '.[] | [.node, .type, .vmid, .name, .status] | @tsv' <<< "$vms")
+    wait
+    jq -sc --argjson m "$members" '
+        map(. as $g | . + {member: ([$m[] | select(.vmid == $g.vmid or (((.url | capture("://(?<h>[^:/]+)") | .h) // "") as $h | ($g.ips | index($h)) != null))] | .[0] // null | if . then {id, name, url} else null end)})
+        | sort_by(.node, .vmid)
+        | {scanned: length, found: (map(select(.dcs != null)) | length), guests: .}' "$tmp"/*.json 2>/dev/null || echo '{"scanned":0,"found":0,"guests":[]}'
+    rm -rf "$tmp"
+}
+
+# Create or reset a local account for a hub (kept out of the single-session rule)
+_fleet_local_account() {
+    local name="$1" pass="$2" role="${3:-admin}" r salt hash
+    _api_init_auth_dir
+    r=$(_api_create_user "$name" "$pass" "$role") || true
+    case "$r" in
+        created) ;;
+        exists)
+            salt=$(_api_generate_salt); hash=$(_api_hash_password_v2 "$salt" "$pass")
+            _api_jq_update_file "$API_AUTH_DIR/users.json" --arg u "$name" --arg h "$hash" --arg s "$salt" --arg r "$role" \
+                'map(if .username == $u then .password_hash = $h | .salt = $s | .hash_version = 2 | .role = $r else . end)' || return 1
+            _api_revoke_user_tokens "$name" 2>/dev/null || true ;;
+        *) return 1 ;;
+    esac
+    _api_jq_update_file "$API_AUTH_DIR/users.json" --arg u "$name" 'map(if .username == $u then .service = true else . end)' || true
+    return 0
+}
+_fleet_remove_local_account() {
+    local name="$1"
+    [[ -f "$API_AUTH_DIR/users.json" ]] || return 0
+    _api_revoke_user_tokens "$name" 2>/dev/null || true
+    _api_jq_update_file "$API_AUTH_DIR/users.json" --arg u "$name" 'map(select(.username != $u))' || true
+}
+
+# _fleet_register NAME URL USERNAME PASSWORD SOURCE [VMID] [NODE] [TYPE] [INSECURE] [IDENTITY]
+# Logs in to the member, learns who it is, matches it to a guest, stores it.
+# FLEET_REG_OUT holds the member, FLEET_REG_ERR the reason it failed.
+_fleet_register() {
+    local name="$1" url="$2" user="$3" pass="$4" source="$5" vmid="${6:-}" node="${7:-}" type="${8:-}" insecure="${9:-false}" ident="${10:-}"
+    FLEET_REG_OUT=""; FLEET_REG_ERR=""
+    url="${url%/}"
+    [[ "$url" =~ ^https?://[^/[:space:]]+$ ]] || { FLEET_REG_ERR="the address must look like http://192.168.1.50:9876"; return 1; }
+    [[ "$user" =~ ^[a-zA-Z0-9_-]{3,32}$ && -n "$pass" ]] || { FLEET_REG_ERR="a username and a password on the member are needed"; return 1; }
+    [[ "$insecure" == "true" ]] || insecure=false
+    if [[ -n "$vmid" ]]; then [[ "$vmid" =~ ^[0-9]{1,9}$ ]] || { FLEET_REG_ERR="vmid must be a number"; return 1; }; fi
+    [[ -z "$node" || "$node" =~ ^[A-Za-z0-9._-]{1,64}$ ]] || { FLEET_REG_ERR="invalid node name"; return 1; }
+    [[ -z "$type" || "$type" == "qemu" || "$type" == "lxc" ]] || { FLEET_REG_ERR="type must be qemu or lxc"; return 1; }
+    local self; self=$(_fleet_self_url)
+    [[ "$url" == "$self" || "$url" == "http://127.0.0.1:${DCS_API_EFFECTIVE_PORT:-${API_PORT:-9876}}" ]] && { FLEET_REG_ERR="that is this server — a hub does not add itself"; return 1; }
+    local res tok role ping ver
+    _fleet_http res POST "$url/auth/login" "$(jq -nc --arg u "$user" --arg p "$pass" '{username: $u, password: $p}')" "" 12 "$insecure"
+    tok=""; [[ "$res" == \{* ]] && tok=$(jq -r '.token // empty' <<< "$res" 2>/dev/null)
+    [[ "$_FLEET_HTTP" == 200 && -n "$tok" ]] || { FLEET_REG_ERR=$(_fleet_explain "$_FLEET_HTTP" "$res" "$url"); return 1; }
+    role=$(jq -r '.role // ""' <<< "$res" 2>/dev/null)
+    _fleet_http ping GET "$url/ping" "" "" 5 "$insecure"
+    ver=""; [[ "$ping" == \{* ]] && ver=$(jq -r '.version // ""' <<< "$ping" 2>/dev/null)
+    if [[ -z "$ident" || "$ident" == "{}" || "$ident" == "null" ]]; then
+        _fleet_http ident GET "$url/fleet/identity" "" "$tok" 8 "$insecure"
+        [[ "$_FLEET_HTTP" == 200 && "$ident" == \{* ]] || ident='{}'
+    fi
+    [[ "$ident" == \{* ]] || ident='{}'
+    ident=$(jq -c 'del(.machine_id)' <<< "$ident" 2>/dev/null || echo '{}')
+    [[ -n "$name" ]] || name=$(jq -r '.server_name // .hostname // empty' <<< "$ident" 2>/dev/null)
+    if [[ -z "$name" || "$name" == "Docker Server" ]]; then name="${url#*://}"; name="${name%%:*}"; fi
+    local match="" mb=""
+    if [[ -n "$vmid" ]]; then
+        mb="manual"
+    elif _pve_configured; then
+        match=$(_fleet_match_vm "$ident" 2>/dev/null) || match=""
+        if [[ "$match" == \{* ]]; then
+            vmid=$(jq -r '.vmid' <<< "$match"); node=$(jq -r '.node' <<< "$match"); type=$(jq -r '.type' <<< "$match"); mb=$(jq -r '.matched_by' <<< "$match")
+        fi
+    fi
+    local id existing
+    existing=$(_fleet_load | jq -r --arg u "$url" '[.members[] | select(.url == $u)] | .[0].id // empty')
+    if [[ -n "$existing" ]]; then id="$existing"; else id=$(_fleet_unique_id "$(_fleet_slug "$name")"); fi
+    secrets_set "$(_fleet_secret_name "$id")" "$pass" >/dev/null 2>&1 || { FLEET_REG_ERR="the member's password could not be stored in the secret store (is openssl installed?)"; return 1; }
+    mkdir -p "$FLEET_SESSION_DIR" 2>/dev/null; chmod 700 "$FLEET_SESSION_DIR" 2>/dev/null
+    (umask 077; printf '%s' "$tok" > "$FLEET_SESSION_DIR/$id.token")
+    local now member j
+    now=$(date +%s)
+    member=$(jq -nc --arg id "$id" --arg name "$name" --arg url "$url" --arg user "$user" --arg role "$role" --arg src "$source" \
+        --arg by "${AUTH_USERNAME:-setup}" --argjson now "$now" --arg vmid "$vmid" --arg node "$node" --arg type "$type" --arg mb "$mb" \
+        --argjson ins "$insecure" --argjson ident "$ident" --arg ver "$ver" \
+        '{id: $id, name: $name, url: $url, username: $user, role: $role, source: $src, added_by: $by, added_at: $now,
+          vmid: (if $vmid == "" then null else ($vmid | tonumber) end), node: (if $node == "" then null else $node end),
+          type: (if $type == "" then null else $type end), matched_by: (if $mb == "" then null else $mb end),
+          insecure: $ins, identity: $ident, version: $ver, last_seen: $now, reachable: true, last_error: ""}')
+    j=$(_fleet_load | jq -c --argjson m "$member" '.members = ([.members[] | select(.id != $m.id) | . ] + [$m]) | .members |= sort_by(.name)')
+    _fleet_save "$j"
+    _api_cache_clear
+    FLEET_REG_OUT="$member"
+    return 0
+}
+
+# _fleet_join_hub HUB_URL CODE [NAME] [SELF_URL] — this server joins a hub:
+# the account dcs-hub is created here and handed to the hub once.
+# FLEET_JOIN_OUT holds the hub's answer, FLEET_JOIN_ERR the failure.
+_fleet_join_hub() {
+    local hub="${1%/}" tok="$2" name="${3:-}" self="${4:-}" pass res ident j
+    FLEET_JOIN_OUT=""; FLEET_JOIN_ERR=""
+    [[ "$hub" =~ ^https?://[^/[:space:]]+$ ]] || { FLEET_JOIN_ERR="the hub address must look like http://192.168.1.10:9876"; return 1; }
+    tok=$(printf '%s' "$tok" | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]')
+    [[ -n "$tok" ]] || { FLEET_JOIN_ERR="the join code is missing"; return 1; }
+    [[ -n "$self" ]] || self=$(_fleet_self_url)
+    [[ "$self" == "$hub" ]] && { FLEET_JOIN_ERR="the hub address is this server"; return 1; }
+    pass=$(openssl rand -base64 45 2>/dev/null | tr -dc 'A-Za-z0-9' | head -c 40)
+    [[ ${#pass} -ge 32 ]] || pass=$(head -c 60 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 40)
+    _fleet_local_account "$FLEET_HUB_ACCOUNT" "$pass" admin || { FLEET_JOIN_ERR="the hub's account could not be created on this server"; return 1; }
+    ident=$(_fleet_identity_json)
+    [[ -n "$name" ]] || name=$(jq -r 'if (.server_name // "") != "" and .server_name != "Docker Server" then .server_name else .hostname end' <<< "$ident")
+    _fleet_http res POST "$hub/fleet/join" "$(jq -nc --arg t "$tok" --arg n "$name" --arg u "$self" --arg a "$FLEET_HUB_ACCOUNT" --arg p "$pass" --argjson i "$ident" \
+        '{token: $t, name: $n, url: $u, username: $a, password: $p, identity: $i}')" "" 45 "${FLEET_HUB_INSECURE:-false}"
+    if [[ "$_FLEET_HTTP" != 200 ]]; then
+        FLEET_JOIN_ERR=""; [[ "$res" == \{* ]] && FLEET_JOIN_ERR=$(jq -r '.message // empty' <<< "$res" 2>/dev/null)
+        [[ -n "$FLEET_JOIN_ERR" ]] || FLEET_JOIN_ERR=$(_fleet_explain "$_FLEET_HTTP" "$res" "$hub")
+        [[ "$_FLEET_HTTP" == 0 ]] && FLEET_JOIN_ERR="the hub at $hub did not answer (is DCS running there, and can this VM reach it?)"
+        return 1
+    fi
+    j=$(_fleet_load | jq -c --argjson r "$res" --arg hub "$hub" --arg a "$FLEET_HUB_ACCOUNT" --argjson now "$(date +%s)" \
+        '.hub = {url: $hub, name: ($r.hub.name // ""), version: ($r.hub.version // ""), member_id: ($r.member.id // ""), member_name: ($r.member.name // ""),
+                 vmid: ($r.member.vmid // null), node: ($r.member.node // null), matched_by: ($r.member.matched_by // null), username: $a, joined_at: $now}')
+    _fleet_save "$j"
+    rm -f "$FLEET_PENDING_JOIN" 2>/dev/null
+    _audit_log "fleet_joined_hub" "this server joined the hub at $hub as member $(jq -r '.member.name // "?"' <<< "$res")$(jq -r 'if .member.vmid then " (guest " + (.member.vmid|tostring) + ")" else "" end' <<< "$res")"
+    _api_cache_clear
+    FLEET_JOIN_OUT=$(jq -c '. + {success: true}' <<< "$res")
+    return 0
+}
+
+# Once a minute from the metrics loop: members that stop answering (or come
+# back) become fleet_member_down / fleet_member_up.
+_fleet_watch() {
+    _fleet_has_members || return 0
+    local now last; now=$(date +%s)
+    last=$(stat -c %Y "$FLEET_WATCH_STAMP" 2>/dev/null || echo 0)
+    (( now - last >= 55 )) || return 0
+    touch "$FLEET_WATCH_STAMP" 2>/dev/null
+    local j id url ins was name res ver ok updates='{}'
+    j=$(_fleet_load)
+    while IFS=$'\t' read -r id url ins was name; do
+        [[ -n "$id" ]] || continue
+        _fleet_http res GET "$url/ping" "" "" 5 "$ins"
+        ver=""; [[ "$res" == \{* ]] && ver=$(jq -r '.version // ""' <<< "$res" 2>/dev/null)
+        if [[ "$_FLEET_HTTP" == 200 ]]; then ok=true; else ok=false; fi
+        updates=$(jq -c --arg id "$id" --argjson ok "$ok" --arg v "$ver" --argjson now "$now" '.[$id] = {reachable: $ok, version: $v, now: $now}' <<< "$updates")
+        if [[ "$was" == "true" && "$ok" == "false" ]]; then
+            _audit_log "fleet_member_down" "member $name ($url) stopped answering the hub"
+            _fire_notifications "fleet_member_down" "member=$name" "url=$url" "message=DCS on $name ($url) stopped answering the hub" 2>/dev/null
+        elif [[ "$was" == "false" && "$ok" == "true" ]]; then
+            _audit_log "fleet_member_up" "member $name ($url) answers the hub again"
+            _fire_notifications "fleet_member_up" "member=$name" "url=$url" "message=DCS on $name ($url) answers the hub again" 2>/dev/null
+        fi
+    done < <(jq -r '.members[] | [.id, .url, ((.insecure // false) | tostring), ((.reachable // true) | tostring), .name] | @tsv' <<< "$j")
+    j=$(_fleet_load | jq -c --argjson u "$updates" '.members = [.members[] | . as $m | ($u[$m.id] // null) as $x
+        | if $x == null then . else .reachable = $x.reachable | (if $x.reachable then .last_seen = $x.now | .last_error = "" | .version = (if $x.version != "" then $x.version else .version end) else .last_error = "no answer" end) end]')
+    _fleet_save "$j"
+    return 0
+}
+
+# Every member's routes, for the hub's Traefik feed (names prefixed by the member id)
+_fleet_merge_feeds() {
+    local body="$1" j tmp id extra
+    _fleet_has_members || { printf '%s' "$body"; return 0; }
+    j=$(_fleet_load)
+    tmp=$(mktemp -d "${TMPDIR:-/tmp}/dcs-feed-XXXXXX") || { printf '%s' "$body"; return 0; }
+    for id in $(jq -r '.members[].id' <<< "$j"); do
+        (
+            f=""
+            if _fleet_call f "$id" GET /fleet/feed "" "${FLEET_FEED_TIMEOUT:-6}" && [[ "$f" == \{* ]]; then
+                jq -c --arg id "$id" '{routers: ((.http.routers // {}) | with_entries(.key = $id + "-" + .key | .value.service = $id + "-" + .value.service)),
+                                       services: ((.http.services // {}) | with_entries(.key = $id + "-" + .key))}' <<< "$f" > "$tmp/$id.json" 2>/dev/null
+            fi
+        ) &
+    done
+    wait
+    extra=$(jq -sc 'reduce .[] as $x ({routers: {}, services: {}}; .routers += ($x.routers // {}) | .services += ($x.services // {}))' "$tmp"/*.json 2>/dev/null)
+    rm -rf "$tmp"
+    [[ "$extra" == \{* ]] || { printf '%s' "$body"; return 0; }
+    jq -c --argjson e "$extra" '.http.routers += $e.routers | .http.services += $e.services' <<< "$body"
+}
+
+_fleet_member_public() { jq -c 'del(.identity.machine_id)' <<< "$1"; }
+
+# GET /fleet/status — What this server is in the fleet: a hub (members, join codes), a member (its hub), or standalone; plus a pending join and how others reach this API
+handle_fleet_status() {
+    local j n hub role tokens pending now
+    j=$(_fleet_load); now=$(date +%s)
+    n=$(jq -r '.members | length' <<< "$j"); hub=$(jq -c '.hub' <<< "$j")
+    tokens=$(jq -r --argjson now "$now" '[.join_tokens[] | select(.expires_at > $now)] | length' <<< "$j")
+    role=standalone
+    (( n > 0 || tokens > 0 )) && role=hub
+    [[ "$hub" != "null" ]] && role=member
+    pending=null
+    [[ -s "$FLEET_PENDING_JOIN" ]] && pending=$(jq -c '{hub_url, name}' "$FLEET_PENDING_JOIN" 2>/dev/null)
+    [[ "$pending" == \{* ]] || pending=null
+    _api_success "$(jq -nc --arg role "$role" --argjson n "$n" --argjson hub "$hub" --argjson t "$tokens" --argjson pending "$pending" \
+        --arg url "$(_fleet_self_url)" --arg ports "${FLEET_SCAN_PORTS:-9876}" --argjson pve "$(_pve_configured && echo true || echo false)" \
+        --arg host "$(hostname 2>/dev/null)" --arg name "${SERVER_NAME:-}" --arg v "$DCS_VERSION" --arg acct "$FLEET_HUB_ACCOUNT" \
+        '{role: $role, members: $n, hub: $hub, join_tokens: $t, pending_join: $pending, self_url: $url, scan_ports: $ports, proxmox_linked: $pve,
+          hostname: $host, server_name: $name, version: $v, hub_account: $acct}')"
+}
+
+# GET /fleet/members — The members this hub manages, with the guest each one runs in and when it last answered
+handle_fleet_members() {
+    _api_success "$(_fleet_load | jq -c '{total: (.members | length), members: [.members[] | del(.identity.machine_id)]}')"
+}
+
+# GET /fleet/members/{id} — One member, with a live check that it answers
+handle_fleet_member_detail() {
+    local id="$1" m url ins res ok=false ver=""
+    m=$(_fleet_member "$id"); [[ -n "$m" ]] || { _api_error 404 "Unknown member: $id"; return; }
+    url=$(jq -r '.url' <<< "$m"); ins=$(jq -r '.insecure // false' <<< "$m")
+    _fleet_http res GET "$url/ping" "" "" 5 "$ins"
+    if [[ "$_FLEET_HTTP" == 200 && "$res" == \{* ]]; then ok=true; ver=$(jq -r '.version // ""' <<< "$res"); fi
+    _api_success "$(jq -c --argjson ok "$ok" --arg v "$ver" 'del(.identity.machine_id) | .reachable = $ok | (if $v != "" then .version = $v else . end)' <<< "$m")"
+}
+
+# POST /fleet/members — Add a member by address and an account on it {url, username, password, name?, vmid?, node?, type?, insecure?}; the hub logs in, learns who it is and matches it to a guest
+handle_fleet_member_add() {
+    local body="$1" name url user pass vmid node type ins
+    [[ "$body" == \{* ]] || { _api_error 400 "A JSON body is required"; return; }
+    name=$(jq -r '.name // ""' <<< "$body"); url=$(jq -r '.url // ""' <<< "$body"); user=$(jq -r '.username // ""' <<< "$body"); pass=$(jq -r '.password // ""' <<< "$body")
+    vmid=$(jq -r '.vmid // "" | tostring' <<< "$body"); node=$(jq -r '.node // ""' <<< "$body"); type=$(jq -r '.type // ""' <<< "$body")
+    ins=$(jq -r 'if .insecure == true or .insecure == "true" then "true" else "false" end' <<< "$body")
+    [[ "$vmid" == "null" ]] && vmid=""
+    if ! _fleet_register "$name" "$url" "$user" "$pass" manual "$vmid" "$node" "$type" "$ins" ""; then
+        _api_error 502 "Could not add the member: $FLEET_REG_ERR"; return
+    fi
+    local m; m="$FLEET_REG_OUT"
+    _audit_log "fleet_member_added" "member $(jq -r .name <<< "$m") ($(jq -r .url <<< "$m")) added by ${AUTH_USERNAME:-?}$(jq -r 'if .vmid then " — guest " + (.vmid|tostring) + " (" + (.matched_by // "") + ")" else "" end' <<< "$m")"
+    _api_success "$(jq -c '{success: true, member: del(.identity.machine_id)}' <<< "$m")"
+}
+
+# PUT /fleet/members/{id} — Change a member's name, address, account or the guest it is mapped to {name?, url?, username?, password?, vmid?, node?, type?, insecure?}
+handle_fleet_member_update() {
+    local id="$1" body="$2" m j name url user pass vmid node type ins res tok
+    m=$(_fleet_member "$id"); [[ -n "$m" ]] || { _api_error 404 "Unknown member: $id"; return; }
+    [[ "$body" == \{* ]] || { _api_error 400 "A JSON body is required"; return; }
+    name=$(jq -r '.name // ""' <<< "$body"); url=$(jq -r '.url // "" | rtrimstr("/")' <<< "$body"); user=$(jq -r '.username // ""' <<< "$body"); pass=$(jq -r '.password // ""' <<< "$body")
+    ins=$(jq -r 'if has("insecure") then (if .insecure == true or .insecure == "true" then "true" else "false" end) else "" end' <<< "$body")
+    [[ -n "$url" ]] || url=$(jq -r '.url' <<< "$m"); [[ -n "$user" ]] || user=$(jq -r '.username' <<< "$m"); [[ -n "$ins" ]] || ins=$(jq -r '.insecure // false' <<< "$m")
+    [[ "$url" =~ ^https?://[^/[:space:]]+$ ]] || { _api_error 400 "url must look like http://192.168.1.50:9876"; return; }
+    [[ "$user" =~ ^[a-zA-Z0-9_-]{3,32}$ ]] || { _api_error 400 "Invalid username"; return; }
+    if jq -e 'has("vmid")' <<< "$body" >/dev/null; then
+        vmid=$(jq -r '.vmid // "" | tostring' <<< "$body"); [[ "$vmid" == "null" ]] && vmid=""
+        [[ -z "$vmid" || "$vmid" =~ ^[0-9]{1,9}$ ]] || { _api_error 400 "vmid must be a number"; return; }
+        node=$(jq -r '.node // ""' <<< "$body"); type=$(jq -r '.type // ""' <<< "$body")
+        [[ -z "$type" || "$type" == "qemu" || "$type" == "lxc" ]] || { _api_error 400 "type must be qemu or lxc"; return; }
+        m=$(jq -c --arg v "$vmid" --arg n "$node" --arg t "$type" '.vmid = (if $v == "" then null else ($v|tonumber) end) | .node = (if $n == "" then null else $n end) | .type = (if $t == "" then null else $t end) | .matched_by = (if $v == "" then null else "manual" end)' <<< "$m")
+    fi
+    # a new address, account or password is tried before it is kept
+    if [[ -n "$pass" || "$url" != "$(jq -r .url <<< "$m")" || "$user" != "$(jq -r .username <<< "$m")" || "$ins" != "$(jq -r '.insecure // false' <<< "$m")" ]]; then
+        [[ -n "$pass" ]] || pass=$(_fleet_password "$id")
+        [[ -n "$pass" ]] || { _api_error 400 "Enter the password of $user on the member"; return; }
+        _fleet_http res POST "$url/auth/login" "$(jq -nc --arg u "$user" --arg p "$pass" '{username: $u, password: $p}')" "" 12 "$ins"
+        tok=""; [[ "$res" == \{* ]] && tok=$(jq -r '.token // empty' <<< "$res")
+        [[ "$_FLEET_HTTP" == 200 && -n "$tok" ]] || { _api_error 502 "The member did not accept that: $(_fleet_explain "$_FLEET_HTTP" "$res" "$url")"; return; }
+        secrets_set "$(_fleet_secret_name "$id")" "$pass" >/dev/null 2>&1 || { _api_error 500 "The password could not be stored in the secret store"; return; }
+        (umask 077; printf '%s' "$tok" > "$FLEET_SESSION_DIR/$id.token") 2>/dev/null
+        m=$(jq -c --arg u "$url" --arg a "$user" --argjson i "$ins" --arg r "$(jq -r '.role // ""' <<< "$res")" '.url = $u | .username = $a | .insecure = $i | .role = $r | .reachable = true | .last_error = ""' <<< "$m")
+    fi
+    [[ -n "$name" ]] && m=$(jq -c --arg n "$name" '.name = $n' <<< "$m")
+    j=$(_fleet_load | jq -c --argjson m "$m" '.members = [.members[] | if .id == $m.id then $m else . end]')
+    _fleet_save "$j"; _api_cache_clear
+    _audit_log "fleet_member_updated" "member $(jq -r .name <<< "$m") updated by ${AUTH_USERNAME:-?}"
+    _api_success "$(jq -c '{success: true, member: del(.identity.machine_id)}' <<< "$m")"
+}
+
+# DELETE /fleet/members/{id} — Forget a member (its dcs-hub account is removed there when it answers)
+handle_fleet_member_delete() {
+    local id="$1" m j res
+    m=$(_fleet_member "$id"); [[ -n "$m" ]] || { _api_error 404 "Unknown member: $id"; return; }
+    if [[ "$(jq -r '.username' <<< "$m")" == "$FLEET_HUB_ACCOUNT" ]]; then
+        _fleet_call res "$id" DELETE /fleet/hub "" 8 >/dev/null 2>&1 || true
+    fi
+    j=$(_fleet_load | jq -c --arg id "$id" '.members = [.members[] | select(.id != $id)]')
+    _fleet_save "$j"
+    secrets_delete "$(_fleet_secret_name "$id")" >/dev/null 2>&1 || true
+    rm -f "$FLEET_SESSION_DIR/$id.token" 2>/dev/null
+    _api_cache_clear
+    _audit_log "fleet_member_removed" "member $(jq -r .name <<< "$m") ($(jq -r .url <<< "$m")) removed by ${AUTH_USERNAME:-?}"
+    _api_success "$(jq -nc --arg id "$id" '{success: true, id: $id}')"
+}
+
+# POST /fleet/members/{id}/test — Log in to the member afresh, read its identity and version, and say which guest it matches
+handle_fleet_member_test() {
+    local id="$1" m ident ver match='null' ok=false err=""
+    m=$(_fleet_member "$id"); [[ -n "$m" ]] || { _api_error 404 "Unknown member: $id"; return; }
+    rm -f "$FLEET_SESSION_DIR/$id.token" 2>/dev/null
+    if _fleet_login "$id"; then
+        ok=true
+        _fleet_call ident "$id" GET /fleet/identity "" 8 || ident='{}'
+        [[ "$ident" == \{* ]] || ident='{}'
+        ident=$(jq -c 'del(.machine_id)' <<< "$ident" 2>/dev/null || echo '{}')
+        ver=$(jq -r '.version // ""' <<< "$ident")
+        if _pve_configured; then match=$(_fleet_match_vm "$ident" 2>/dev/null) || match='null'; [[ "$match" == \{* ]] || match='null'; fi
+        local j; j=$(_fleet_load | jq -c --arg id "$id" --argjson i "$ident" --arg v "$ver" --argjson now "$(date +%s)" \
+            '.members = [.members[] | if .id == $id then .identity = (if ($i | length) > 0 then $i else .identity end) | .version = (if $v != "" then $v else .version end) | .reachable = true | .last_seen = $now | .last_error = "" else . end]')
+        _fleet_save "$j"
+    else
+        err="$_FLEET_ERR"
+    fi
+    _api_success "$(jq -nc --argjson ok "$ok" --arg e "$err" --argjson i "${ident:-{\}}" --argjson match "$match" --arg v "${ver:-}" \
+        '{reachable: $ok, error: $e, identity: $i, version: $v, match: $match}')"
+}
+
+# GET /fleet/members/{id}/api/{path} — Forward the call (GET, POST, PUT or DELETE) to that member with the hub's account; the caller's own role is checked against the inner path as if it were local (streams and auth are not forwarded)
+handle_fleet_proxy() {
+    local id="$1" inner="$2" body="$3" m qs="" k res code
+    m=$(_fleet_member "$id"); [[ -n "$m" ]] || { _api_error 404 "Unknown member: $id"; return; }
+    [[ "$inner" == /* ]] || inner="/$inner"
+    case "$inner" in
+        /auth/*|/fleet/*|/setup/*|/events/stream|/terminal|/terminal/*|/containers/*/logs/stream|/logs/stream|/stacks/*/logs/stream)
+            _api_error 400 "$inner is not available through the hub — open that member directly"; return ;;
+    esac
+    if [[ "${AUTH_ROLE:-}" != "admin" ]] && ! _api_route_allowed "$method" "$inner"; then
+        _api_error 403 "Your role may not call $method $inner on a member"; return
+    fi
+    for k in "${!QUERY_PARAMS[@]}"; do qs+="${qs:+&}$(_fleet_urlencode "$k")=$(_fleet_urlencode "${QUERY_PARAMS[$k]}")"; done
+    _fleet_call res "$id" "$method" "$inner${qs:+?$qs}" "$body" "${FLEET_PROXY_TIMEOUT:-180}" || true
+    code="$_FLEET_HTTP"
+    if [[ "$code" == 0 ]]; then _api_error 502 "${_FLEET_ERR:-the member did not answer}"; return; fi
+    [[ "$method" != "GET" ]] && _audit_log "fleet_proxy" "$method $inner on member $(jq -r .name <<< "$m") by ${AUTH_USERNAME:-?} (HTTP $code)"
+    [[ "$res" == \{* || "$res" == \[* ]] || res=$(jq -nc --arg r "$res" '{raw: $r}')
+    _api_response "$code" "$res"
+}
+
+# GET /fleet/overview — Every member with its stacks and container counts, fetched from the members in parallel (10 s cache)
+handle_fleet_overview() {
+    local j tmp id
+    j=$(_fleet_load)
+    tmp=$(mktemp -d "${TMPDIR:-/tmp}/dcs-fleet-XXXXXX") || { _api_error 500 "no temp dir"; return; }
+    # one session per member before the parallel fetch (a fresh login inside every job would race)
+    for id in $(jq -r '.members[].id' <<< "$j"); do
+        [[ -s "$FLEET_SESSION_DIR/$id.token" ]] || _fleet_login "$id" >/dev/null 2>&1 || true
+    done
+    for id in $(jq -r '.members[].id' <<< "$j"); do
+        (
+            st='{}'; cs='{}'; ok=true; err=""
+            if ! _fleet_call st "$id" GET /stacks "" "${FLEET_OVERVIEW_TIMEOUT:-8}"; then
+                ok=false; err="${_FLEET_ERR:-$(_fleet_explain "$_FLEET_HTTP" "$st" "$(jq -r '.url' <<< "$(_fleet_member "$id")")")}"; st='{}'
+            fi
+            [[ "$st" == \{* ]] || st='{}'
+            if [[ "$ok" == true ]]; then _fleet_call cs "$id" GET /containers "" "${FLEET_OVERVIEW_TIMEOUT:-8}" || cs='{}'; [[ "$cs" == \{* ]] || cs='{}'; fi
+            jq -nc --arg id "$id" --argjson ok "$ok" --arg err "$err" --argjson st "$st" --argjson cs "$cs" \
+                '{id: $id, reachable: $ok, error: $err, stacks: ($st.stacks // []), stacks_total: ($st.total // (($st.stacks // []) | length)),
+                  containers_running: ([($cs.containers // [])[] | select((.state // .status // "") | test("^running"))] | length),
+                  containers_total: (($cs.containers // []) | length)}' > "$tmp/$id.json" 2>/dev/null
+        ) &
+    done
+    wait
+    local live; live=$(jq -sc . "$tmp"/*.json 2>/dev/null); [[ "$live" == \[* ]] || live='[]'
+    rm -rf "$tmp"
+    _api_success "$(jq -nc --argjson j "$j" --argjson live "$live" --arg v "$DCS_VERSION" --arg n "${SERVER_NAME:-}" --arg host "$(hostname 2>/dev/null)" \
+        '{hub: {version: $v, name: $n, hostname: $host},
+          members: [$j.members[] | . as $m | (([$live[] | select(.id == $m.id)] | .[0]) // {reachable: false, error: "no answer", stacks: [], stacks_total: 0, containers_running: 0, containers_total: 0}) as $l | (del(.identity) + $l)],
+          totals: {members: ($j.members | length), reachable: ([$live[] | select(.reachable)] | length), stacks: ([$live[].stacks_total] | add // 0), containers_running: ([$live[].containers_running] | add // 0), containers_total: ([$live[].containers_total] | add // 0)}}')"
+}
+
+# GET /fleet/discover — Scan the guests for DCS installs: Proxmox gives each running guest's addresses (guest agent / container interfaces) and the API port is probed; found installs come back with the guest already matched (30 s cache; POST forces a new scan and accepts Proxmox values to try before they are saved)
+handle_fleet_discover() {
+    local body="${1:-}" u="" t="" s="" v="" out
+    if [[ "$body" == \{* ]]; then
+        u=$(jq -r '.url // empty' <<< "$body"); t=$(jq -r '.token_id // empty' <<< "$body"); s=$(jq -r '.token_secret // empty' <<< "$body")
+        v=$(jq -r 'if .verify_tls == false or .verify_tls == "false" then "false" else "true" end' <<< "$body")
+    fi
+    if [[ -n "$u" && -n "$t" ]]; then
+        [[ -n "$s" ]] || s=$(_pve_secret)
+        [[ -n "$s" ]] || { _api_error 400 "token_secret is needed (or must already be saved)"; return; }
+        out=$(PROXMOX_URL="$u" PROXMOX_TOKEN_ID="$t" PVE_TEST_SECRET="$s" PROXMOX_VERIFY_TLS="$v" _fleet_discover_json)
+        _api_success "$out"; return
+    fi
+    _pve_configured || { _api_error 400 "Link Proxmox first (Server Config → Proxmox): the scan asks Proxmox for the guests' addresses"; return; }
+    out=$(_fleet_discover_json)
+    _api_success "$out"
+}
+
+# GET /fleet/join-tokens — The join codes that are still valid (admin)
+handle_fleet_join_tokens() {
+    _api_success "$(_fleet_load | jq -c --argjson now "$(date +%s)" --arg url "$(_fleet_self_url)" '{hub_url: $url, tokens: [.join_tokens[] | select(.expires_at > $now)]}')"
+}
+
+# POST /fleet/join-tokens — Mint a join code {ttl_hours?: 24}: a VM runs ./setup.sh with DCS_HUB_URL and DCS_JOIN_TOKEN (or ./setup.sh --join) and becomes a member
+handle_fleet_join_token_create() {
+    local body="${1:-}" ttl=24 tok exp j now url
+    [[ "$body" == \{* ]] && ttl=$(jq -r '.ttl_hours // 24' <<< "$body")
+    [[ "$ttl" =~ ^[0-9]+$ ]] && (( ttl >= 1 && ttl <= 720 )) || ttl=24
+    now=$(date +%s); exp=$(( now + ttl * 3600 )); tok=$(_fleet_new_token); url=$(_fleet_self_url)
+    j=$(_fleet_load | jq -c --arg t "$tok" --argjson e "$exp" --arg by "${AUTH_USERNAME:-setup}" --argjson now "$now" \
+        '.join_tokens = ([.join_tokens[] | select(.expires_at > $now)] + [{token: $t, created_at: $now, expires_at: $e, created_by: $by, uses: 0}])')
+    _fleet_save "$j"
+    _audit_log "fleet_join_token" "join code minted by ${AUTH_USERNAME:-setup} (valid ${ttl}h)"
+    _api_success "$(jq -nc --arg t "$tok" --argjson e "$exp" --arg url "$url" --argjson ttl "$ttl" \
+        '{success: true, token: $t, expires_at: $e, ttl_hours: $ttl, hub_url: $url,
+          command: ("DCS_HUB_URL=" + $url + " DCS_JOIN_TOKEN=" + $t + " ./setup.sh"),
+          join_command: ("./setup.sh --join " + $url + " " + $t)}')"
+}
+
+# DELETE /fleet/join-tokens/{token} — Revoke a join code
+handle_fleet_join_token_delete() {
+    local tok="$1" j
+    j=$(_fleet_load | jq -c --arg t "$tok" '.join_tokens = [.join_tokens[] | select(.token != $t)]')
+    _fleet_save "$j"
+    _audit_log "fleet_join_token" "join code revoked by ${AUTH_USERNAME:-?}"
+    _api_success '{"success": true}'
+}
+
+# POST /fleet/join — A member registers itself with a join code {token, name, url, username, password, identity?, vmid?, node?, type?}: the hub logs in to it, matches it to a guest and keeps it (no session; rate-limited like a login)
+handle_fleet_join() {
+    local body="$1" tok j entry name url user pass ident vmid node type ins client_ip="${CLIENT_IP:-unknown}"
+    if ! _api_check_rate_limit "$client_ip"; then
+        _api_audit_log "$client_ip" "LOCKOUT" "" "Rate limit lockout on /fleet/join"
+        _api_error 429 "Too many attempts. Please try again later."; return
+    fi
+    [[ "$body" == \{* ]] || { _api_error 400 "A JSON body is required"; return; }
+    tok=$(jq -r '.token // ""' <<< "$body" | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]')
+    j=$(_fleet_load)
+    entry=""; [[ -n "$tok" ]] && entry=$(jq -c --arg t "$tok" --argjson now "$(date +%s)" '[.join_tokens[] | select(.token == $t and .expires_at > $now)] | .[0] // empty' <<< "$j")
+    if [[ -z "$entry" ]]; then
+        _api_record_failed_login "$client_ip"
+        _api_audit_log "$client_ip" "FLEET_JOIN_REFUSED" "" "wrong or expired join code"
+        _api_error 403 "The join code is wrong or has expired — mint a new one on the hub's Proxmox page"; return
+    fi
+    name=$(jq -r '.name // ""' <<< "$body"); url=$(jq -r '.url // ""' <<< "$body"); user=$(jq -r '.username // ""' <<< "$body"); pass=$(jq -r '.password // ""' <<< "$body")
+    ident=$(jq -c '.identity // {}' <<< "$body"); vmid=$(jq -r '.vmid // "" | tostring' <<< "$body"); [[ "$vmid" == "null" ]] && vmid=""
+    node=$(jq -r '.node // ""' <<< "$body"); type=$(jq -r '.type // ""' <<< "$body")
+    ins=$(jq -r 'if .insecure == true or .insecure == "true" then "true" else "false" end' <<< "$body")
+    if ! AUTH_USERNAME="join code" _fleet_register "$name" "$url" "$user" "$pass" join "$vmid" "$node" "$type" "$ins" "$ident"; then
+        _api_audit_log "$client_ip" "FLEET_JOIN_FAILED" "" "$url: $FLEET_REG_ERR"
+        _api_error 502 "The hub could not log in to $url: $FLEET_REG_ERR"; return
+    fi
+    local m; m="$FLEET_REG_OUT"
+    j=$(_fleet_load | jq -c --arg t "$tok" '.join_tokens = [.join_tokens[] | if .token == $t then .uses = ((.uses // 0) + 1) else . end]')
+    _fleet_save "$j"
+    local mname murl where
+    mname=$(jq -r .name <<< "$m"); murl=$(jq -r .url <<< "$m")
+    where=$(jq -r 'if .vmid then " — guest " + (.vmid|tostring) + " on " + (.node // "?") + " (" + (.matched_by // "") + ")" else " — no guest matched yet" end' <<< "$m")
+    _audit_log "fleet_member_joined" "member $mname ($murl) joined with a join code from $client_ip$where"
+    _fire_notifications "fleet_member_joined" "member=$mname" "url=$murl" "message=DCS on $mname ($murl) joined this hub$where" 2>/dev/null
+    _api_success "$(jq -nc --argjson m "$m" --arg hn "${SERVER_NAME:-$(hostname 2>/dev/null)}" --arg hv "$DCS_VERSION" --arg hu "$(_fleet_self_url)" \
+        '{success: true, member: ($m | del(.identity)), hub: {name: $hn, version: $hv, url: $hu}}')"
+}
+
+# GET /fleet/identity — What a hub needs to match this server to a guest: hostname, SMBIOS uuid, addresses, API port, version
+handle_fleet_identity() { _api_success "$(_fleet_identity_json)"; }
+
+# GET /fleet/feed — This server's routes in Traefik feed form, for the hub to merge into its own feed (needs no feed token; the routes point at this host's published ports)
+handle_fleet_feed() {
+    local b; b=$(_feed_build)
+    _api_success "$(jq -c --argjson s "${FEED_SKIPPED:-[]}" --arg h "$(_feed_target_host)" '. + {skipped: $s, host: $h}' <<< "$b")"
+}
+
+# POST /fleet/join-hub — Make this server a member of a hub {hub_url, token, name?, url?} or {pending: true} for the join setup.sh saved: creates the account dcs-hub here and registers with the hub
+handle_fleet_join_hub() {
+    local body="$1" hub tok name self pj
+    [[ "$body" == \{* ]] || { _api_error 400 "A JSON body is required"; return; }
+    hub=$(jq -r '.hub_url // ""' <<< "$body"); tok=$(jq -r '.token // ""' <<< "$body"); name=$(jq -r '.name // ""' <<< "$body"); self=$(jq -r '.url // ""' <<< "$body")
+    if [[ "$(jq -r '.pending // false' <<< "$body")" == "true" ]]; then
+        [[ -s "$FLEET_PENDING_JOIN" ]] || { _api_error 404 "setup.sh saved no join on this server"; return; }
+        pj=$(jq -c . "$FLEET_PENDING_JOIN" 2>/dev/null); [[ "$pj" == \{* ]] || pj='{}'
+        hub=$(jq -r '.hub_url // ""' <<< "$pj"); tok=$(jq -r '.token // ""' <<< "$pj")
+        [[ -n "$name" ]] || name=$(jq -r '.name // ""' <<< "$pj"); [[ -n "$self" ]] || self=$(jq -r '.url // ""' <<< "$pj")
+    fi
+    [[ -n "$hub" ]] || { _api_error 400 "hub_url is required"; return; }
+    [[ -n "$tok" ]] || { _api_error 400 "token (the join code shown on the hub) is required"; return; }
+    if _fleet_join_hub "$hub" "$tok" "$name" "$self"; then
+        _api_success "$FLEET_JOIN_OUT"
+    else
+        _api_error 502 "$FLEET_JOIN_ERR"
+    fi
+}
+
+# DELETE /fleet/hub — Leave the hub: forget it and remove its dcs-hub account here (the hub drops this member when it next fails to answer, or when removed there)
+handle_fleet_leave_hub() {
+    local j hub
+    j=$(_fleet_load); hub=$(jq -r '.hub.url // ""' <<< "$j")
+    [[ -n "$hub" ]] || { _api_error 404 "This server has not joined a hub"; return; }
+    _fleet_remove_local_account "$FLEET_HUB_ACCOUNT"
+    _fleet_save "$(jq -c '.hub = null' <<< "$j")"
+    rm -f "$FLEET_PENDING_JOIN" 2>/dev/null
+    _api_cache_clear
+    _audit_log "fleet_left_hub" "this server left the hub at $hub (by ${AUTH_USERNAME:-?})"
+    _api_success "$(jq -nc --arg h "$hub" '{success: true, hub_url: $h, hint: "Remove this server on the hub too (Proxmox page → members)"}')"
+}
+
+# Command line: --join-hub URL CODE [NAME], --join-token [HOURS], --fleet-status
+_fleet_cli() {
+    local mode="$1"
+    case "$mode" in
+        join)
+            local hub="${FLEET_CLI_HUB:-}" tok="${FLEET_CLI_TOKEN:-}" name="${FLEET_CLI_NAME:-}" self="${DCS_MEMBER_URL:-}"
+            [[ -n "$hub" && -n "$tok" ]] || { echo "Usage: $0 --join-hub HUB_URL JOIN_CODE [NAME]" >&2; return 2; }
+            if [[ "$(_api_user_count 2>/dev/null || echo 0)" -eq 0 && "${API_AUTH_ENABLED:-true}" == "true" ]]; then
+                mkdir -p "$(dirname "$FLEET_PENDING_JOIN")" 2>/dev/null
+                (umask 077; jq -nc --arg h "${hub%/}" --arg t "$tok" --arg n "$name" --arg u "$self" '{hub_url: $h, token: $t, name: $n, url: $u}' > "$FLEET_PENDING_JOIN")
+                echo "Join saved: this server joins ${hub%/} as soon as the setup wizard has made the first admin account."
+                return 0
+            fi
+            echo "→ Creating the hub's account ($FLEET_HUB_ACCOUNT) on this server…"
+            echo "→ Registering with ${hub%/}…"
+            if _fleet_join_hub "$hub" "$tok" "$name" "$self"; then
+                echo "✓ Joined: $(jq -r '"member \"" + (.member.name // "?") + "\"" + (if .member.vmid then " — guest " + (.member.vmid|tostring) + " (" + (.member.matched_by // "") + ")" else " — the hub could not tell which guest this is; pick it on the Proxmox page" end) + " on hub " + (.hub.name // .hub.url // "")' <<< "$FLEET_JOIN_OUT")"
+                return 0
+            fi
+            echo "✗ Join failed: $FLEET_JOIN_ERR" >&2
+            return 1 ;;
+        token)
+            local ttl="${FLEET_CLI_TTL:-24}" tok exp now url j
+            [[ "$ttl" =~ ^[0-9]+$ ]] && (( ttl >= 1 && ttl <= 720 )) || ttl=24
+            now=$(date +%s); exp=$(( now + ttl * 3600 )); tok=$(_fleet_new_token); url=$(_fleet_self_url)
+            j=$(_fleet_load | jq -c --arg t "$tok" --argjson e "$exp" --argjson now "$now" '.join_tokens = ([.join_tokens[] | select(.expires_at > $now)] + [{token: $t, created_at: $now, expires_at: $e, created_by: "setup", uses: 0}])')
+            _fleet_save "$j"
+            _audit_log "fleet_join_token" "join code minted from the command line (valid ${ttl}h)" 2>/dev/null || true
+            if [[ "${FLEET_CLI_QUIET:-false}" == "true" ]]; then printf '%s\t%s\t%s\n' "$tok" "$url" "$exp"; return 0; fi
+            echo "Join code: $tok  (valid ${ttl}h, hub: $url)"
+            echo "On each Docker VM:  DCS_HUB_URL=$url DCS_JOIN_TOKEN=$tok ./setup.sh"
+            echo "Already installed:  ./setup.sh --join $url $tok"
+            return 0 ;;
+        status)
+            _fleet_load | jq '{hub: (.hub // null | if . then {url, name, member_name, vmid} else null end), members: [.members[] | {id, name, url, vmid, node, reachable, version}], join_tokens: [.join_tokens[] | {token, expires_at, uses}]}'
+            return 0 ;;
+    esac
+    return 2
+}
+
 
 # GET /ping — Liveness probe: no auth, no Docker call, a tiny body. The dashboard's heartbeat uses it, so the latency it shows is the round trip alone.
 handle_ping() {
@@ -17955,7 +18752,17 @@ handle_setup_complete() {
     touch "$SETUP_COMPLETE_MARKER"
     # DDNS settings written by the wizard take effect now, not at the next API restart
     _ddns_ensure_running
-    _api_success '{"initialized": true, "message": "Setup complete"}'
+    # A join saved by setup.sh before the first admin existed happens now (unless the wizard did it already)
+    local _fj='null' _pj
+    if [[ -s "$FLEET_PENDING_JOIN" ]]; then
+        _pj=$(jq -c . "$FLEET_PENDING_JOIN" 2>/dev/null); [[ "$_pj" == \{* ]] || _pj='{}'
+        if _fleet_join_hub "$(jq -r '.hub_url // ""' <<< "$_pj")" "$(jq -r '.token // ""' <<< "$_pj")" "$(jq -r '.name // ""' <<< "$_pj")" "$(jq -r '.url // ""' <<< "$_pj")"; then
+            _fj=$(jq -c '{joined: true, member: .member, hub: .hub}' <<< "$FLEET_JOIN_OUT")
+        else
+            _fj=$(jq -nc --arg e "$FLEET_JOIN_ERR" --arg h "$(jq -r '.hub_url // ""' <<< "$_pj")" '{joined: false, hub_url: $h, error: $e}')
+        fi
+    fi
+    _api_success "$(jq -nc --argjson fj "$_fj" '{initialized: true, message: "Setup complete", fleet_join: $fj}')"
 }
 
 # =============================================================================
@@ -20681,6 +21488,22 @@ handle_request() {
                 _pve_validate_ref "$_pv_node" "$_pv_type" "$_pv_id" || return
                 _api_cached "proxmox-vm-${_pv_node}-${_pv_type}-${_pv_id}" 10 handle_proxmox_vm_detail "$_pv_node" "$_pv_type" "$_pv_id" ;;
             /traefik/feed/status)       handle_traefik_feed_status ;;
+            /fleet/status)              handle_fleet_status ;;
+            /fleet/members)             handle_fleet_members ;;
+            /fleet/overview)            _api_cached fleet-overview 10 handle_fleet_overview ;;
+            /fleet/discover)            _api_cached fleet-discover 30 handle_fleet_discover ;;
+            /fleet/join-tokens)         handle_fleet_join_tokens ;;
+            /fleet/identity)            handle_fleet_identity ;;
+            /fleet/feed)                handle_fleet_feed ;;
+            /fleet/members/*/api/*)
+                local _fm="${path#/fleet/members/}" _fm_id _fm_inner
+                _fm_id="${_fm%%/*}"; _fm_inner="${_fm#*/api}"
+                [[ "$_fm_id" =~ ^[a-z0-9-]{1,40}$ ]] || { _api_error 400 "Invalid member id"; return; }
+                handle_fleet_proxy "$_fm_id" "$_fm_inner" "" ;;
+            /fleet/members/*)
+                local _fm_id="${path#/fleet/members/}"
+                [[ "$_fm_id" =~ ^[a-z0-9-]{1,40}$ ]] || { _api_error 400 "Invalid member id"; return; }
+                handle_fleet_member_detail "$_fm_id" ;;
             /dns/zones)                 handle_dns_zones ;;
             /dns/records)               handle_dns_records ;;
             /homarr/status)             handle_homarr_status ;;
@@ -20944,6 +21767,7 @@ handle_request() {
             /auth/register)       handle_auth_register "$request_body"; return ;;
             /auth/totp/validate)  handle_totp_validate "$request_body"; return ;;
             /setup/restore)       handle_setup_restore "$request_body"; return ;;
+            /fleet/join)          handle_fleet_join "$request_body"; return ;;
         esac
 
         # All other POST endpoints require authentication
@@ -20987,6 +21811,19 @@ handle_request() {
                 _pve_validate_ref "$_pv_node" "$_pv_type" "$_pv_id" || return
                 handle_proxmox_vm_action "$_pv_node" "$_pv_type" "$_pv_id" "$_pv_action"; return ;;
             /traefik/feed/token)  handle_traefik_feed_token; return ;;
+            /fleet/members)       handle_fleet_member_add "$request_body"; return ;;
+            /fleet/join-tokens)   handle_fleet_join_token_create "$request_body"; return ;;
+            /fleet/join-hub)      handle_fleet_join_hub "$request_body"; return ;;
+            /fleet/discover)      _api_cache_clear; handle_fleet_discover "$request_body"; return ;;
+            /fleet/members/*/test)
+                local _fm_id="${path#/fleet/members/}"; _fm_id="${_fm_id%/test}"
+                [[ "$_fm_id" =~ ^[a-z0-9-]{1,40}$ ]] || { _api_error 400 "Invalid member id"; return; }
+                handle_fleet_member_test "$_fm_id"; return ;;
+            /fleet/members/*/api/*)
+                local _fm="${path#/fleet/members/}" _fm_id _fm_inner
+                _fm_id="${_fm%%/*}"; _fm_inner="${_fm#*/api}"
+                [[ "$_fm_id" =~ ^[a-z0-9-]{1,40}$ ]] || { _api_error 400 "Invalid member id"; return; }
+                handle_fleet_proxy "$_fm_id" "$_fm_inner" "$request_body"; return ;;
             /auth/revoke)         handle_auth_revoke "$request_body"; return ;;
             /auth/logout-all)     handle_auth_logout_all "$request_body"; return ;;
             /auth/factory-reset)  handle_auth_factory_reset "$request_body"; return ;;
@@ -21482,6 +22319,17 @@ handle_request() {
         _api_cache_clear
 
         case "$path" in
+            /fleet/members/*/api/*)
+                local _fm="${path#/fleet/members/}" _fm_id _fm_inner
+                _fm_id="${_fm%%/*}"; _fm_inner="${_fm#*/api}"
+                [[ "$_fm_id" =~ ^[a-z0-9-]{1,40}$ ]] || { _api_error 400 "Invalid member id"; return; }
+                handle_fleet_proxy "$_fm_id" "$_fm_inner" "$request_body"
+                ;;
+            /fleet/members/*)
+                local _fm_id="${path#/fleet/members/}"
+                [[ "$_fm_id" =~ ^[a-z0-9-]{1,40}$ ]] || { _api_error 400 "Invalid member id"; return; }
+                handle_fleet_member_update "$_fm_id" "$request_body"
+                ;;
             /dns/records/*)
                 local _rec_id="${path#/dns/records/}"
                 handle_dns_record_update "$_rec_id" "$request_body"
@@ -21517,6 +22365,25 @@ handle_request() {
         _api_cache_clear
 
         case "$path" in
+            /fleet/members/*/api/*)
+                local _fm="${path#/fleet/members/}" _fm_id _fm_inner
+                _fm_id="${_fm%%/*}"; _fm_inner="${_fm#*/api}"
+                [[ "$_fm_id" =~ ^[a-z0-9-]{1,40}$ ]] || { _api_error 400 "Invalid member id"; return; }
+                handle_fleet_proxy "$_fm_id" "$_fm_inner" "$request_body"
+                ;;
+            /fleet/members/*)
+                local _fm_id="${path#/fleet/members/}"
+                [[ "$_fm_id" =~ ^[a-z0-9-]{1,40}$ ]] || { _api_error 400 "Invalid member id"; return; }
+                handle_fleet_member_delete "$_fm_id"
+                ;;
+            /fleet/join-tokens/*)
+                local _jt="${path#/fleet/join-tokens/}"
+                [[ "$_jt" =~ ^[A-Za-z0-9-]{1,40}$ ]] || { _api_error 400 "Invalid join code"; return; }
+                handle_fleet_join_token_delete "$_jt"
+                ;;
+            /fleet/hub)
+                handle_fleet_leave_hub
+                ;;
             /auth/sessions/*)
                 local token_prefix="${path#/auth/sessions/}"
                 handle_auth_session_revoke "$token_prefix"
@@ -21752,6 +22619,8 @@ start_server() {
                 _alerts_evaluate >/dev/null 2>&1 || true
                 # Proxmox VMs that stopped or started on their own
                 _pve_watch >/dev/null 2>&1 || true
+                # Fleet members that stop answering the hub, or come back
+                _fleet_watch >/dev/null 2>&1 || true
                 # Once an hour: trim raw samples and rebuild the 5-minute and hourly tiers
                 if (( ep / 3600 != ${_last_rollup_hour:--1} )); then
                     _last_rollup_hour=$(( ep / 3600 ))
@@ -21870,6 +22739,13 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     if [[ "${SELF_UPDATE_JOB:-false}" == "true" ]]; then
         set +e
         _self_update_job
+        exit $?
+    fi
+
+    # Fleet commands used by setup.sh (and by hand): join a hub, mint a join code
+    if [[ -n "${FLEET_CLI:-}" ]]; then
+        set +e
+        _fleet_cli "$FLEET_CLI"
         exit $?
     fi
 

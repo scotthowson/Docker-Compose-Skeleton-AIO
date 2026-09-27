@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """A tiny Proxmox VE API stand-in for tests: /api2/json/version, /nodes, /cluster/resources,
-/cluster/tasks, /nodes/{n}/{qemu|lxc}/{id}/status/current, /config and POST status/{action}.
+/cluster/tasks, /nodes/{n}/{qemu|lxc}/{id}/status/current, /config, the guest-agent and
+container interfaces (for the fleet scan) and POST status/{action}.
 Checks the PVEAPIToken header. Usage: mock-pve.py PORT TOKEN_ID TOKEN_SECRET [statefile]"""
 import http.server, json, sys, time, urllib.parse, pathlib
 
@@ -13,6 +14,11 @@ VMS = {
     900: {'vmid': 900, 'name': 'template-debian', 'type': 'qemu', 'node': 'pve', 'status': 'stopped', 'template': 1, 'cpu': 0, 'maxcpu': 1, 'mem': 0, 'maxmem': 1073741824},
 }
 TASKS = []
+# what the guests answer when the hub scans them: VM 100 claims the loopback address (a DCS
+# listener on 127.0.0.1 is "found" there), 101 has no guest agent, the container is unroutable
+UUIDS = {100: '11111111-2222-3333-4444-555555555555', 101: '22222222-3333-4444-5555-666666666666'}
+AGENT_IPS = {100: ['127.0.0.1']}
+LXC_IPS = {200: '10.255.255.1'}
 if STATE and STATE.exists():
     try:
         for k, v in json.loads(STATE.read_text()).items(): VMS[int(k)]['status'] = v
@@ -42,7 +48,16 @@ class H(http.server.BaseHTTPRequestHandler):
             if parts[7] == 'status' and parts[8:9] == ['current']:
                 return self._send(200, {'data': dict(vm, qmpstatus=vm['status'], cpus=vm['maxcpu'], netin=1234, netout=5678, diskread=0, diskwrite=0, agent=1, ha={'managed': 0})})
             if parts[7] == 'config':
-                return self._send(200, {'data': {'name': vm['name'], 'cores': vm['maxcpu'], 'memory': vm['maxmem'] // 1048576, 'ostype': 'l26', 'onboot': 1, 'description': 'mock', 'net0': 'virtio=DE:AD:BE:EF:00:01,bridge=vmbr0', 'bootdisk': 'scsi0'}})
+                cfg = {'name': vm['name'], 'cores': vm['maxcpu'], 'memory': vm['maxmem'] // 1048576, 'ostype': 'l26', 'onboot': 1, 'description': 'mock', 'net0': 'virtio=DE:AD:BE:EF:00:01,bridge=vmbr0', 'bootdisk': 'scsi0'}
+                if vm['type'] == 'qemu': cfg['smbios1'] = f"uuid={UUIDS.get(vmid, '00000000-0000-0000-0000-000000000000')}"
+                return self._send(200, {'data': cfg})
+            # guest addresses, as the hub's scan asks for them
+            if parts[5] == 'qemu' and parts[7:10] == ['agent', 'network-get-interfaces']:
+                if vm['status'] != 'running' or vmid not in AGENT_IPS: return self._send(500, {'message': 'QEMU guest agent is not running', 'data': None})
+                return self._send(200, {'data': {'result': [{'name': 'lo', 'ip-addresses': [{'ip-address': '127.0.0.1', 'ip-address-type': 'ipv4'}]}] + [{'name': 'eth0', 'hardware-address': 'de:ad:be:ef:00:01', 'ip-addresses': [{'ip-address': ip, 'ip-address-type': 'ipv4'} for ip in AGENT_IPS[vmid]] + [{'ip-address': 'fe80::1', 'ip-address-type': 'ipv6'}]}]}})
+            if parts[5] == 'lxc' and parts[7] == 'interfaces':
+                if vm['status'] != 'running': return self._send(500, {'message': 'CT not running', 'data': None})
+                return self._send(200, {'data': [{'name': 'lo', 'inet': '127.0.0.1/8'}, {'name': 'eth0', 'hwaddr': 'BC:24:11:00:00:01', 'inet': f"{LXC_IPS.get(vmid, '10.255.255.1')}/24"}]})
         self._send(501, {'message': f'not mocked: {path}', 'data': None})
     def do_POST(self):
         if not self._auth(): return

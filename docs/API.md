@@ -4,7 +4,7 @@ Generated from the router in `.scripts/api-server.sh` by `.scripts/api-docs.sh` 
 Run `.scripts/api-docs.sh` after adding or changing a route; CI fails when this file is stale.
 
 The API listens on `API_BIND:API_PORT` (default `0.0.0.0:9876`) and answers JSON.
-Every endpoint below is `264` in total.
+Every endpoint below is `286` in total.
 
 ## Access levels
 
@@ -394,9 +394,25 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | GET | `/proxmox/vms` | user | Every VM and LXC container with status, CPU, memory, disk, uptime and tags |
 | GET | `/proxmox/tasks` | user | Recent Proxmox tasks (starts, stops, backups, migrations): who ran them and how they ended |
 | GET | `/proxmox/vms/*/*/*` | user | One VM or container: live status and its configuration (cores, memory, OS, boot, description) |
+| GET | `/fleet/status` | user | What this server is in the fleet: a hub (members, join codes), a member (its hub), or standalone; plus a pending join and how others reach this API |
+| GET | `/fleet/members` | user | The members this hub manages, with the guest each one runs in and when it last answered |
+| GET | `/fleet/overview` | user | Every member with its stacks and container counts, fetched from the members in parallel (10 s cache) |
+| GET | `/fleet/discover` | admin | Scan the guests for DCS installs: Proxmox gives each running guest's addresses (guest agent / container interfaces) and the API port is probed; found installs come back with the guest already matched (30 s cache; POST forces a new scan and accepts Proxmox values to try before they are saved) |
+| GET | `/fleet/join-tokens` | admin | The join codes that are still valid (admin) |
+| GET | `/fleet/identity` | user | What a hub needs to match this server to a guest: hostname, SMBIOS uuid, addresses, API port, version |
+| GET | `/fleet/feed` | user | This server's routes in Traefik feed form, for the hub to merge into its own feed (needs no feed token; the routes point at this host's published ports) |
+| GET | `/fleet/members/*/api/*` | user | Forward the call (GET, POST, PUT or DELETE) to that member with the hub's account; the caller's own role is checked against the inner path as if it were local (streams and auth are not forwarded) |
+| GET | `/fleet/members/*` | user | One member, with a live check that it answers |
 | GET | `/recovery/*/download` | admin | Download a recovery bundle |
+| POST | `/fleet/join` | public | A member registers itself with a join code {token, name, url, username, password, identity?, vmid?, node?, type?}: the hub logs in to it, matches it to a guest and keeps it (no session; rate-limited like a login) |
 | POST | `/proxmox/test` | admin | Try a Proxmox connection with the given url, token_id, token_secret and verify_tls without saving them |
 | POST | `/proxmox/vms/*/*/*/*` | admin | Power action on a VM or container: start, shutdown, stop, reboot, reset (VMs only), suspend, resume — audited and sent to the webhooks |
+| POST | `/fleet/members` | admin | Add a member by address and an account on it {url, username, password, name?, vmid?, node?, type?, insecure?}; the hub logs in, learns who it is and matches it to a guest |
+| POST | `/fleet/join-tokens` | admin | Mint a join code {ttl_hours?: 24}: a VM runs ./setup.sh with DCS_HUB_URL and DCS_JOIN_TOKEN (or ./setup.sh --join) and becomes a member |
+| POST | `/fleet/join-hub` | admin | Make this server a member of a hub {hub_url, token, name?, url?} or {pending: true} for the join setup.sh saved: creates the account dcs-hub here and registers with the hub |
+| POST | `/fleet/discover` | admin | Scan the guests for DCS installs: Proxmox gives each running guest's addresses (guest agent / container interfaces) and the API port is probed; found installs come back with the guest already matched (30 s cache; POST forces a new scan and accepts Proxmox values to try before they are saved) |
+| POST | `/fleet/members/*/test` | admin | Log in to the member afresh, read its identity and version, and say which guest it matches |
+| POST | `/fleet/members/*/api/*` | admin | Forward the call (GET, POST, PUT or DELETE) to that member with the hub's account; the caller's own role is checked against the inner path as if it were local (streams and auth are not forwarded) |
 | POST | `/power/sample` | admin | Read the UPS right now (also refreshes what GET /power shows) |
 | POST | `/sablier/repair` | admin | Recreate on-demand containers that a prune removed (created, not started, so Sablier can wake them) |
 | POST | `/recovery/bundle` | admin | Write an encrypted recovery bundle now {passphrase?, include_app_data: [stacks], copy_remote} |
@@ -405,6 +421,12 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | POST | `/crowdsec/trust` | admin | Add an address to the whitelist (body {ip}; defaults to the home public address and the caller) |
 | POST | `/crowdsec/unban-me` | user | Unban the caller: its client address and the home public address |
 | POST | `/crowdsec/notifications` | admin | Send CrowdSec's alerts to Discord {webhook?, test?}: renders the template with the webhook (default: the server's), restarts CrowdSec, and optionally posts a test alert |
+| PUT | `/fleet/members/*/api/*` | admin | Forward the call (GET, POST, PUT or DELETE) to that member with the hub's account; the caller's own role is checked against the inner path as if it were local (streams and auth are not forwarded) |
+| PUT | `/fleet/members/*` | admin | Change a member's name, address, account or the guest it is mapped to {name?, url?, username?, password?, vmid?, node?, type?, insecure?} |
+| DELETE | `/fleet/members/*/api/*` | admin | Forward the call (GET, POST, PUT or DELETE) to that member with the hub's account; the caller's own role is checked against the inner path as if it were local (streams and auth are not forwarded) |
+| DELETE | `/fleet/members/*` | admin | Forget a member (its dcs-hub account is removed there when it answers) |
+| DELETE | `/fleet/join-tokens/*` | admin | Revoke a join code |
+| DELETE | `/fleet/hub` | admin | Leave the hub: forget it and remove its dcs-hub account here (the hub drops this member when it next fails to answer, or when removed there) |
 | DELETE | `/crowdsec/decisions/*` | admin | Remove every decision for an address (unban) |
 | DELETE | `/crowdsec/trust/*` | admin | Remove an address from the whitelist |
 

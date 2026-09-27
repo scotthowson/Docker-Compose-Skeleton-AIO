@@ -160,6 +160,7 @@ Type `/` in the channel. Names autocomplete while you type. Every reply has butt
 | `/routes [check]` | Domains Traefik serves, optionally probed |
 | `/vms` | Every Proxmox node and guest: state, CPU, memory, uptime (needs the Proxmox link) |
 | `/vm <vm> <action>` | `info`, or `start`, `shutdown`, `stop`, `reboot`, `reset`, `suspend`, `resume` a VM or container — admins, with a confirmation for anything but start and resume |
+| `/fleet` | The hub's members: the VM each DCS runs in, its stacks, whether it answers (on a member: the hub it belongs to) |
 | `/power` | UPS state |
 | `/security` | CrowdSec bans and trusted addresses |
 | `/schedules` · `/audit [count]` · `/dcs` · `/help` | Schedules and automations · recent actions · DCS version and updates · this list |
@@ -233,6 +234,7 @@ text; anything else receives `{event, title, detail, timestamp, hostname, server
 | Backups & DCS | `backup_complete`, `backup_failed`, `recovery_bundle`, `recovery_restore`, `system_update`, `system_rollback`, `api_restart` |
 | Security & accounts | `login_fail`, `lockout`, `login_ok`, `user_create`, `user_role`, `crowdsec_unban` |
 | Proxmox | `proxmox_vm_stopped` (a guest stopped on its own), `proxmox_vm_started` (came back without DCS), `proxmox_vm_start`, `proxmox_vm_shutdown`, `proxmox_vm_stop`, `proxmox_vm_reboot`, `proxmox_vm_reset`, `proxmox_vm_suspend`, `proxmox_vm_resume` (by DCS) |
+| Fleet | `fleet_member_joined` (a VM joined the hub with a code), `fleet_member_down` (a member stopped answering the hub), `fleet_member_up` (it answers again), `fleet_member_added`, `fleet_member_updated`, `fleet_member_removed`, `fleet_join_token`, `fleet_joined_hub`, `fleet_left_hub`, `fleet_proxy` (an action on a member through the hub) |
 
 Stops and starts DCS performs itself (a stack stop, a deploy, a nuke, the UPS shutdown) are never
 reported as crashes or recoveries; only what happens on its own is. When more than five containers

@@ -3,6 +3,56 @@
 All notable changes to Docker Compose Skeleton AIO are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [3.9.0] - 2026-09-27
+
+### Added
+
+- **The fleet: a hub and its members.** One DCS (the hub, the one linked to Proxmox) holds an
+  account on the DCS of every other Docker VM (the members). The Proxmox page shows each VM with
+  the stacks its DCS runs, starts, stops and restarts them, deploys a template to the VM you pick
+  (*Deploy here*, and a *Deploy to* row in the deploy dialog), lists members the hub could not
+  place under a guest, and says which members answer. Every call the dashboard makes on a member
+  goes through the hub (`/fleet/members/{id}/api/…`) with the caller's own role checked against
+  the inner path; streams, auth and setup are never forwarded; non-GET calls are audited as
+  `fleet_proxy`. Members keep working on their own — nothing is scheduled or moved between VMs.
+- **Three ways to link a VM.** The wizard's link card (after *Test connection*): connect → token
+  → inventory → scan; the hub asks Proxmox for each running guest's addresses (QEMU guest agent,
+  container interfaces), probes DCS's API port and links what it finds with one click; VMs
+  without DCS get the join code. A **join code** (24 h, rate-limited like logins): on the VM
+  `DCS_HUB_URL=… DCS_JOIN_TOKEN=… ./setup.sh`, `./setup.sh --join <hub> <code>`, or *Join a DCS
+  hub* in its wizard or on its Proxmox page — the member creates the account `dcs-hub` for the
+  hub and hands it over once (`POST /fleet/join`); a join typed into `setup.sh` before the VM
+  has an admin is saved and runs in the wizard on the same progress card. Or **by address** on
+  the Proxmox page (*Add member*).
+- **Matching a member to its guest**: the VM's SMBIOS uuid from `smbios1`, then a shared address,
+  then the name; *Pick the guest* by hand, and *Test* re-matches. The member's password lives in
+  the hub's secret store (`FLEET_MEMBER_<ID>_PASSWORD`); `dcs-hub` is a service account that
+  keeps its session when someone else signs in on the member.
+- **One feed for the whole host**: the hub's `/traefik/dynamic` carries every member's routes
+  (`GET /fleet/feed` on the member; router and service names prefixed by the member id), and a
+  member keeps its route files in `.data/routes` even without a feed of its own.
+- **Watching**: once a minute the hub pings its members; `fleet_member_down` and
+  `fleet_member_up` are audited and notify (rule triggers and the Discord webhook group *Fleet*),
+  as does `fleet_member_joined`.
+- `setup.sh` asks the machine's role on the first run — standalone, hub (link Proxmox, print the
+  join code and the commands for the other VMs) or member (hub address + join code) — and takes
+  `DCS_FLEET_ROLE`, `DCS_HUB_URL`, `DCS_JOIN_TOKEN`, `DCS_MEMBER_NAME`, `DCS_PROXMOX_URL`,
+  `DCS_PROXMOX_TOKEN_ID` and `DCS_PROXMOX_TOKEN_SECRET` for unattended installs;
+  `.scripts/api-server.sh --join-hub`, `--join-token`, `--fleet-status`.
+- Endpoints: `/fleet/status`, `/fleet/members[/{id}]` (GET, POST, PUT, DELETE),
+  `/fleet/members/{id}/test`, `/fleet/members/{id}/api/*`, `/fleet/overview`, `/fleet/discover`
+  (GET cached 30 s; POST scans now and accepts Proxmox values before they are saved),
+  `/fleet/join-tokens[/{token}]`, `/fleet/join` (public), `/fleet/identity`, `/fleet/feed`,
+  `/fleet/join-hub`, `DELETE /fleet/hub`. `POST /setup/complete` reports `fleet_join`;
+  `GET /traefik/feed/status` reports `member_routes` and `members`. Settings `FLEET_SELF_URL`,
+  `FLEET_SCAN_PORTS`. The bot answers `/fleet`. docs/PROXMOX.md section 5 covers it all.
+
+### Fixed
+
+- `tests/mock-proxmox.py` serves the guest agent's interfaces, the container interfaces and
+  `smbios1`, so the smoke tests run the whole join, scan, proxy, feed and watcher against two
+  real listeners (519 checks).
+
 ## [3.8.0] - 2026-09-27
 
 ### Added

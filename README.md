@@ -2,7 +2,7 @@
   <img src="https://img.shields.io/badge/bash-4.0+-4EAA25?style=flat-square&logo=gnubash&logoColor=white" alt="Bash 4+" />
   <img src="https://img.shields.io/badge/docker-compose_v2-2496ED?style=flat-square&logo=docker&logoColor=white" alt="Docker Compose v2" />
   <img src="https://img.shields.io/badge/templates-151-34d399?style=flat-square" alt="151 templates" />
-  <img src="https://img.shields.io/badge/API_endpoints-264-06b6d4?style=flat-square" alt="264 API endpoints" />
+  <img src="https://img.shields.io/badge/API_endpoints-286-06b6d4?style=flat-square" alt="286 API endpoints" />
   <a href="https://github.com/scotthowson/Docker-Compose-Skeleton-AIO/actions/workflows/ci.yml"><img src="https://github.com/scotthowson/Docker-Compose-Skeleton-AIO/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
   <img src="https://img.shields.io/badge/license-MIT-f472b6?style=flat-square" alt="MIT" />
 </p>
@@ -52,13 +52,18 @@ Browser ──► DCS-UI (container, :3000) ──/api/──► api-server.sh (
 - **Proxmox** — link an API token and the Proxmox page shows every node, VM and LXC container with
   live load, starts, shuts down, reboots and resets them with a confirmation, and alerts when a
   guest stops on its own. The Discord bot gets `/vms` and `/vm`. See [docs/PROXMOX.md](docs/PROXMOX.md).
+- **A fleet of VMs** — one DCS is the hub, the DCS in every other Docker VM is a member: the
+  Proxmox page shows each VM with the stacks its DCS runs, starts and stops them, deploys a template
+  to the VM you pick, merges every member's routes into one feed, and alerts when a member stops
+  answering. A VM joins with a join code from `./setup.sh`, the wizard scans the VMs and links what
+  it finds. Every member keeps working on its own.
 - **A Traefik in another VM or machine** — publish every route as a feed that a Traefik elsewhere
   (the networking VM, a friend's proxy) pulls with its HTTP provider; nothing to install there, and
   a new deployment is routed within seconds.
 - **Wildcard HTTPS** — Traefik with a `*.yourdomain.com` certificate via the Cloudflare DNS
   challenge; every new service is reachable at `service.yourdomain.com` without touching a config.
 - **Authelia SSO** — optional single sign-on with 2FA, deployed and configured by the wizard.
-- **A real API** — 264 endpoints covering stacks, containers, images, networks, volumes, logs,
+- **A real API** — 286 endpoints covering stacks, containers, images, networks, volumes, logs,
   templates, routes, DNS, plugins, schedules, secrets, backups, snapshots, metrics, notifications,
   webhooks, automations, system updates and the web terminal. See [docs/API.md](docs/API.md).
 - **Security by default** — accounts are mandatory on any non-loopback bind, a fresh install only
@@ -204,7 +209,7 @@ JSON in and out, no runtime to install. It starts with `setup.sh`/`start.sh` or 
   daemon; any write or audited event clears it. `GET /ping` is the no-auth liveness probe the
   UI's heartbeat times. `API_RESPONSE_CACHE=false` turns the cache off, `API_CACHE_MAX_STALE`
   (120 s) caps how old a served answer may be.
-- **Reference** — [docs/API.md](docs/API.md) lists all 264 endpoints with their access level and
+- **Reference** — [docs/API.md](docs/API.md) lists all 286 endpoints with their access level and
   is generated from the router by `.scripts/api-docs.sh`; `GET /` serves the same catalogue.
 
 ---
@@ -394,11 +399,27 @@ Link an API token (Datacenter → Permissions → API Tokens, with `VM.Audit`, `
 `PROXMOX_URL`, `PROXMOX_TOKEN_ID`, `PROXMOX_TOKEN_SECRET` (or the secret of that name),
 `PROXMOX_VERIFY_TLS` and `PROXMOX_NODE` the settings.
 
-The recommended layout puts one DCS in a small LXC or VM as the **hub** and one DCS in each Docker
-VM, with the proxy in the networking VM pulling the hub's route feed (below). Members joining a
-hub — one dashboard for every VM's stacks, a deploy-to-VM picker, one merged feed — is the next
-phase and builds on exactly these pieces. [docs/PROXMOX.md](docs/PROXMOX.md) is the full guide,
-from the token to the troubleshooting table.
+### The fleet: a hub and its members
+
+Put one DCS in a small LXC or VM as the **hub** and one DCS in each Docker VM as a **member**;
+`./setup.sh` asks which one a machine is. The hub holds the Proxmox link and an account on every
+member (`dcs-hub`, kept in the secret store), and its Proxmox page shows each VM **with the
+stacks its DCS runs**: start, stop and restart them, *Deploy here* to send a template to that VM,
+and every member's routes ride along in the hub's Traefik feed so the proxy in the networking VM
+pulls one feed. A member that stops answering raises `fleet_member_down`; the bot answers
+`/fleet`.
+
+Three ways to link a VM, mixed freely: the **wizard's scan** (after *Test connection* the hub
+scans the guests for DCS installs on a progress card and links them with one click), a **join
+code** (`DCS_HUB_URL=http://<hub>:9876 DCS_JOIN_TOKEN=<code> ./setup.sh` on a fresh VM,
+`./setup.sh --join <hub> <code>` on an installed one — the member creates the hub's account and
+hands it over once; a join saved before the VM has an admin runs in its wizard), or **by
+address** on the Proxmox page. The hub matches a member to its guest by the VM's SMBIOS uuid, a
+shared address or the name, and *Members without a guest* lets you pick by hand. Every call the
+dashboard makes on a member goes through the hub with your own role, so viewers read and admins
+act. Nothing is scheduled or moved between VMs: this is a control plane over independent compose
+hosts, and a member that loses its hub keeps running. [docs/PROXMOX.md](docs/PROXMOX.md) is the
+full guide, from the token to the troubleshooting table.
 
 ### A Traefik in another VM or machine
 
