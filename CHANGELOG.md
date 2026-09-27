@@ -56,6 +56,57 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - A member takes code only from its own hub (`POST /fleet/self-update` refuses other hosts).
 - The smoke's fleet score check no longer assumes containers exist (the CI runner has none).
 
+### Security
+
+Hardening of the hub↔member protocol after an audit. A member is another machine, and everything
+it sends is data now.
+
+- A member could push any router into the hub's Traefik feed and its `fleet-members.yml` — the
+  hub's own hostnames included, a `priority` to win over them, servers pointing anywhere. Every
+  member router and service is now rebuilt from a whitelist; a route for one of the hub's own hosts
+  is refused, servers may point at the member's own address only, a hostname two members offer goes
+  to the first in the fleet list (the other is renamed `<sub>-<member-id>.<domain>`), and
+  `GET /traefik/feed/status` lists what was refused or renamed and why (`member_skipped`).
+- An update round handed every member a live join code (good for an hour) that could enrol any
+  machine. Each member now gets a bundle code of its own, tagged with its purpose and the member,
+  revoked the moment the member's call returns (and on the way out however the round ends); such a
+  code opens the bundle for that member and can never join. The member fetches the bundle from its
+  own record of the hub's address (`token`), which also fixes members joined by name, over HTTPS or
+  on another interface getting 403 on the bundle; `bundle_url` is still sent for 3.9.0 members.
+- A member could claim any stack (at join, or by listing it in its `/stacks` answer) and receive
+  the admin requests the hub forwards for it. Placements now come only from the build that moved
+  the stack in, from an admin (`PUT /fleet/members/{id}` with `stacks`), and at join only for names
+  the hub has no `Stacks/` folder for; the overview no longer writes what a member runs back as
+  placements (it shows `placements` next to `stacks`, and `GET /stacks` rows carry `placed`).
+- `POST /fleet/relay` was public, unthrottled, and let a member's context pose as the hub. It now
+  takes 30 events a minute per member (429 beyond), drops the keys the hub sets itself (`event`,
+  `timestamp`, `hostname`, `vm`, `vmid`, `member`, `relayed`) and the ones that steer a
+  notification's cooldown (`fingerprint`, `mount`, `automation`, `template`), and cuts values to
+  120 characters in the activity line.
+- A member could make the hub read an answer of any size. The hub stops at 8 MB ("answer larger
+  than 8 MB") and gives up on a connection after 2 s.
+- A member's answer of the wrong shape (`{"networks": "nope"}`, a string where an object was due)
+  could break a merged list, the fleet health and score, the images list, the engine card, or end
+  an update round. Every merged field is typed before it is counted, a malformed answer counts as
+  that member failing, an empty handler answer is a 500 (`empty answer`) instead of a blank 200,
+  and the response cache never keeps an empty body.
+- Two hubs that joined each other relayed every event back and forth without end. A relayed event
+  is marked (`relayed=1`) and never relayed again; a server refuses to join one of its own members
+  as hub, and a hub refuses its own hub as a member.
+- The hub's metrics loop waited on every member each tick, so a stalled member froze the samples.
+  The fleet work now runs in the background under a lock (`.data/fleet-loop.lock`, taken over after
+  ten minutes), and a member known to be down is probed with a 3 s `/ping` before any login.
+- A member's name went unchecked into audit lines, notifications and ntfy headers. Names are cleaned
+  when a member registers or is edited (control characters out, 64 printable characters at most, 400
+  otherwise), and ntfy header values never carry a line break.
+- The code snapshot a self-update keeps was world-readable next to the configuration snapshots. It
+  is written with `umask 077` into `.snapshots/code/` (the newest three kept), where `GET /snapshots`
+  never lists it.
+- `POST /fleet/update` held the request for the whole round and took unchecked ids. Ids are
+  validated, the round runs detached (`.data/fleet-update-last.json` reads `running`, then `done`),
+  and the answer is 202 `{running: true}` when the round outlasts 25 s — `GET /fleet/versions`
+  (`last_round`) follows it.
+
 ## [3.9.0] - 2026-09-27
 
 ### Added

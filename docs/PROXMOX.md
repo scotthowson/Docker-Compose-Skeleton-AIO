@@ -424,7 +424,9 @@ guest*, and the member menu's *Test* re-matches.
   audited on the hub as `fleet_proxy`.
 - **Join codes** live 24 h (48 h for a build), are rate-limited like logins, and can be revoked
   from the Proxmox page. The **code bundle** a VM fetches needs a valid join code and never
-  carries `.env`, accounts, secrets, data, stacks or logs.
+  carries `.env`, accounts, secrets, data, stacks or logs. An update round mints a *bundle code*
+  per member instead (tagged with the member, revoked the moment that member's call returns): it
+  opens the bundle for that member and can never join.
 - **Removing**: *Remove from the fleet* forgets a member (its `dcs-hub` account is removed when
   it answers); *Stop and destroy the VM on Proxmox* also stops and deletes the VM with its
   disks after you type the stack's name. *Leave* on a member removes the hub's account there.
@@ -445,13 +447,53 @@ guest*, and the member menu's *Test* re-matches.
   behind another address). `FLEET_SCAN_PORTS` changes the ports the scan probes,
   `FLEET_IMAGE_URL` the cloud image, `FLEET_VM_USER` the user cloud-init makes.
 
+### What a member can and cannot do to its hub
+
+A member is another machine, so the hub treats everything it sends as data:
+
+- **Routes**: a member's feed is never merged as sent. Every router and service is rebuilt from a
+  whitelist — a name of `[a-z0-9-]`, one `Host(…)` rule with an optional `PathPrefix`,
+  `entryPoints`, `tls` with a `certResolver` at most, `middlewares`; `priority` and every other
+  field are dropped. A service may point at the member's own address only (the address the hub
+  reaches it by, or what that name resolves to). A route for one of the hub's own hostnames (its
+  route files, `ui.` and `api.` under the proxy domain, `DASHBOARD_PUBLIC_URL`) is refused, and a
+  hostname two members offer goes to the first in the fleet list — the other is renamed
+  `<sub>-<member-id>.<domain>`. `GET /traefik/feed/status` lists what was refused or renamed and
+  why (`member_skipped`).
+- **Stacks**: a member cannot attract another stack's requests. The stacks the hub forwards to a
+  member (`/stacks/<name>/…`, template deploys) are its *placements*, given by the build that moved
+  the stack in or by an admin (`PUT /fleet/members/{id}` with `stacks`), and at join only for
+  names the hub has no `Stacks/` folder for. What a member says it runs is shown (`GET
+  /fleet/overview` → `stacks`, next to `placements`; the VM rows of `GET /stacks` carry `placed`)
+  but never becomes a placement.
+- **Events**: `POST /fleet/relay` takes 30 events a minute per member (429 beyond). The context a
+  member sends cannot pose as the hub (`hostname`, `timestamp`, `event`, `vm`, `vmid`, `member`
+  are the hub's own), cannot steer a notification's cooldown (only `stack` and `container` take
+  part), and is cut to 120 characters in the activity line. A relayed event is never relayed
+  again, and a server refuses to join one of its own members as hub (or to take its own hub as a
+  member), so two hubs cannot bounce events between them.
+- **Answers**: the hub reads at most 8 MB from a member, gives up on a connection after 2 s, probes
+  a member it knows to be down with a 3 s `/ping` before any login, and types every field of a
+  merged answer before it is counted — a member answering `{"networks": "nope"}` leaves
+  `/networks?fleet=1` a valid answer with the hub's own rows, and a malformed answer to an update
+  counts as that member failing, never as the round ending.
+- **Code**: the member fetches an update from its own record of the hub's address (the hub sends
+  the bundle code alone), so a hub reached by name, over HTTPS or on another interface serves it
+  too; the old code lands in `.snapshots/code/` (private, the newest three), out of the
+  configuration snapshots' list.
+- **Names**: a member's name is cleaned when it registers (control characters out, 64 characters at
+  most) and is the one the hub uses in activity lines and notifications; ntfy header values never
+  carry a line break.
+- **The hub's loop**: the fleet work (the watcher, relay tokens, the domain, the routes) runs in
+  the background under a lock, so a member that stalls never holds up the hub's own samples.
+
 ### The API
 
 | Method | Path | Access |
 |--------|------|--------|
 | GET | `/fleet/status` | user — hub, member or standalone; the hub this server joined; a pending join |
 | GET | `/fleet/members`, `/fleet/members/{id}` | user |
-| POST / PUT / DELETE | `/fleet/members`, `/fleet/members/{id}` (`?destroy=true` also destroys the VM) | admin |
+| POST / PUT / DELETE | `/fleet/members`, `/fleet/members/{id}` (`?destroy=true` also destroys the VM) | admin — `PUT` also takes `stacks`, the placements: the stacks this member answers for |
 | POST | `/fleet/members/{id}/test` | admin — sign in afresh, read the identity, re-match the guest |
 | ANY | `/fleet/members/{id}/api/{path}` | the caller's role on the inner path — the proxy |
 | GET | `/fleet/overview` | user — every member with its stacks, containers and counts (10 s cache) |
@@ -462,13 +504,13 @@ guest*, and the member menu's *Test* re-matches.
 | POST / DELETE | `/fleet/jobs/{id}/retry`, `/fleet/jobs/{id}` (`?destroy=true` also destroys a failed build's VM) | admin |
 | GET / POST / DELETE | `/fleet/templates`, `/fleet/templates/{vmid}` | admin — the baked DCS templates: list, bake one, remove one with its VM |
 | GET | `/fleet/versions` | admin — the hub's DCS version next to every member's (asked live), who is behind, the last update round |
-| POST | `/fleet/update` | admin — bring members to the hub's version `{members: ["id", …] or "all"}`: each fetches the hub's bundle and re-executes |
-| POST | `/fleet/self-update` | admin, on a member — install a code bundle over this install `{bundle_url}`; data, accounts, secrets, stacks and settings stay, the old code lands in `.snapshots` |
+| POST | `/fleet/update` | admin — bring members to the hub's version `{members: ["id", …] or "all"}`: each fetches the hub's bundle and re-executes; the round runs on its own — 202 `{running: true}` when it outlasts 25 s, `GET /fleet/versions` (`last_round`) follows it |
+| POST | `/fleet/self-update` | admin, on a member — install a code bundle over this install `{token}` (the hub's bundle code; the bundle is fetched from the member's own record of its hub) or `{bundle_url}` under the hub's address; data, accounts, secrets, stacks and settings stay, the old code lands in `.snapshots/code` (the newest three) |
 | GET | `/fleet/images` | user — every image on the hub and on each member, tagged with where it runs; the counts add up |
 | POST | `/fleet/images/check` | admin — the registry check on the hub and on every member at once |
 | GET | `/health`, `/images`, `/networks`, `/volumes`, `/events`, `/snapshots`, `/automations`, `/schedules`, `/secrets`, `/audit` with `?fleet=1` | as the plain endpoint — the members' rows merged in, tagged `member`, `member_name`, `vmid`; `members[]` per DCS |
 | POST | `/snapshots/create?fleet=1` | admin — one snapshot on the hub and one on every member; `results[]` per DCS |
-| POST | `/fleet/relay` | public with a relay token — a member's event for the hub `{token, event, context}`: noted as `fleet_event`, notified with the VM named |
+| POST | `/fleet/relay` | public with a relay token — a member's event for the hub `{token, event, context}`: noted as `fleet_event`, notified with the VM named; 30 events a minute per member (429 beyond) |
 | POST | `/fleet/hub/relay-token` | admin, on a member — the hub hands the member its relay token `{token}` |
 | POST | `/fleet/hub/domain` | admin, on a member — the hub hands the member the fleet's proxy domain `{domain, force}`; kept when the member has one of its own |
 | POST | `/fleet/routes` | admin, on a member that runs a Traefik — the hub hands it everyone else's routes for that Traefik (`fleet-members.yml`) |
@@ -479,7 +521,7 @@ guest*, and the member menu's *Test* re-matches.
 | GET / POST | `/proxmox/capabilities`, `/proxmox/storage` | admin — what the token may do, the storages |
 | GET / POST / DELETE | `/fleet/join-tokens`, `/fleet/join-tokens/{token}` | admin — join codes |
 | POST | `/fleet/join` | public — a member registers with a join code |
-| GET | `/fleet/bundle?token=` | public with a join code — the hub's code for a VM being built |
+| GET | `/fleet/bundle?token=` | public with a join code — the hub's code for a VM being built; or with an update round's bundle code, for the member it names |
 | GET | `/fleet/identity`, `/fleet/feed` | user — what a hub reads from a member |
 | POST / DELETE | `/fleet/join-hub`, `/fleet/hub` | admin — join a hub, leave it |
 

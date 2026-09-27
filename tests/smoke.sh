@@ -174,6 +174,7 @@ check "secret name rule enforced"       400 "$(auth_request POST /secrets '{"key
 check "secret stored"                   200 "$(auth_request POST /secrets '{"key":"DEMO_PASSWORD","value":"s3cret-value"}' | status_of)"
 check "secret listed by name"           DEMO_PASSWORD "$(auth_request GET /secrets | body_of | jq -r '.secrets[0].key' 2>/dev/null)"
 check "secret value never listed"       no "$(auth_request GET /secrets | body_of | grep -q 's3cret-value' && echo yes || echo no)"
+# shellcheck disable=SC2034  # BASE_DIR is read by the sourced library
 check "library decrypts the API's file" s3cret-value "$( (BASE_DIR="$WORK"; source "$WORK/.lib/secrets.sh"; secrets_get DEMO_PASSWORD) 2>/dev/null)"
 check "viewer cannot list secrets"      403 "$(viewer_request GET /secrets | status_of)"
 printf 'services:\n  x:\n    image: alpine\n    environment:\n      - A=${SECRETS_DEMO_PASSWORD}\n      - B=${SECRETS_MISSING_ONE}\n' > "$WORK/Stacks/demo/docker-compose.yml"
@@ -751,6 +752,35 @@ _RT=$(jq -r '.hub.relay_token' "$MWORK/.data/fleet.json" 2>/dev/null)
 check "relay: event accepted"           true "$(request POST /fleet/relay "{\"token\":\"$_RT\",\"event\":\"stack_stopped\",\"context\":{\"stack\":\"demo\",\"status\":\"stopped\"}}" | body_of | jq -r '.success' 2>/dev/null)"
 check "relay: hub activity names the VM" yes "$(grep 'fleet_event' "$WORK/.data/audit.jsonl" 2>/dev/null | tail -1 | grep -q 'from VM media-vm' && echo yes || echo no)"
 check "relay: odd event name refused"   400 "$(request POST /fleet/relay "{\"token\":\"$_RT\",\"event\":\"Not Valid\"}" | status_of)"
+# a member's context is data: the keys the hub sets itself never come through, and the audit line stays short
+check "relay: reserved keys dropped"    "stack=demo" "$(_lib _fleet_relay_args '{"context":{"hostname":"evil","member":"x","relayed":"0","fingerprint":"f","timestamp":"t","stack":"demo"}}' | tr '\n' ' ' | sed 's/ $//')"
+request POST /fleet/relay "{\"token\":\"$_RT\",\"event\":\"stack_stopped\",\"context\":{\"stack\":\"$(printf 'x%.0s' $(seq 1 300))\"}}" >/dev/null
+check "relay: long values cut in the audit line" yes "$([[ $(tail -1 "$WORK/.data/audit.jsonl" | jq -r '.detail' 2>/dev/null | wc -c) -lt 200 ]] && echo yes || echo no)"
+# the hub's own hostname stays on a notification whatever a context says (the notifier is stubbed to write its fields)
+[[ -f "$WORK/.api-auth/notifications.json" ]] && cp "$WORK/.api-auth/notifications.json" "$WORK/.api-auth/notifications.json.smoke"
+printf '{"rules":[{"id":"smoke-relay","enabled":true,"trigger":"stack_stopped","target":"*","cooldown_minutes":0,"title_template":"{stack} on {hostname}","message_template":"{message}"}],"history":[]}\n' > "$WORK/.api-auth/notifications.json"
+rm -f "$WORK/.data/smoke-fields.json"
+_lib eval "_ntfy_endpoint() { printf 'http://ntfy.invalid/smoke'; }; _notify_send() { printf '%s' \"\$6\" > '$WORK/.data/smoke-fields.json'; printf 200; }; _fire_notifications stack_stopped hostname=evil stack=demo; sleep 1"
+check "relay: hostname cannot be spoofed" "$(hostname)" "$(jq -r '.hostname' "$WORK/.data/smoke-fields.json" 2>/dev/null)"
+if [[ -f "$WORK/.api-auth/notifications.json.smoke" ]]; then mv -f "$WORK/.api-auth/notifications.json.smoke" "$WORK/.api-auth/notifications.json"; else rm -f "$WORK/.api-auth/notifications.json"; fi
+# an event that came through a relay is not relayed again (two hubs that joined each other would bounce it for ever)
+_EV0=$(grep -c '"action":"fleet_event"' "$WORK/.data/audit.jsonl" 2>/dev/null); _EV0=${_EV0:-0}
+_mlib eval '_fire_notifications stack_stopped relayed=1 stack=demo; sleep 1'
+check "relay: a relayed event stays put" "$_EV0" "$(grep -c '"action":"fleet_event"' "$WORK/.data/audit.jsonl" 2>/dev/null)"
+_mlib eval '_fire_notifications stack_stopped stack=demo; sleep 1'
+check "relay: a fresh event reaches the hub" $((_EV0 + 1)) "$(grep -c '"action":"fleet_event"' "$WORK/.data/audit.jsonl" 2>/dev/null)"
+# a member may post 30 events a minute; the 31st is refused
+rm -f "$WORK/.data/rates/relay-$MID"
+_RL_OK=0; _RL_LAST=""
+for _i in $(seq 1 31); do _RL_LAST=$(request POST /fleet/relay "{\"token\":\"$_RT\",\"event\":\"stack_stopped\",\"context\":{\"stack\":\"demo\"}}" | status_of); [[ "$_RL_LAST" == 200 ]] && _RL_OK=$((_RL_OK + 1)); done
+check "relay: 30 events a minute pass"  30 "$_RL_OK"
+check "relay: the 31st is refused"      429 "$_RL_LAST"
+rm -f "$WORK/.data/rates/relay-$MID"
+# a hub does not join its own member; a member does not take its own hub as a member
+check "join: a hub refuses its member as hub" yes "$(_lib eval "_fleet_join_hub http://127.0.0.1:$FLEET_PORT AAAA-AAAA-AAAA >/dev/null 2>&1; printf '%s' \"\$FLEET_JOIN_ERR\"" | grep -q 'member of this server' && echo yes || echo no)"
+jq '.join_tokens += [{"token":"SMOK-SMOK-SMOK","created_at":0,"expires_at":4102444800,"created_by":"smoke","uses":0}]' "$MWORK/.data/fleet.json" > "$MWORK/.data/fleet.json.tmp" && mv -f "$MWORK/.data/fleet.json.tmp" "$MWORK/.data/fleet.json"
+check "join: a member refuses its hub as member" 409 "$(_mlib handle_fleet_join "{\"token\":\"SMOK-SMOK-SMOK\",\"url\":\"http://127.0.0.1:$HUB_PORT\",\"username\":\"admin\",\"password\":\"x\"}" | status_of)"
+jq 'del(.join_tokens[] | select(.token == "SMOK-SMOK-SMOK"))' "$MWORK/.data/fleet.json" > "$MWORK/.data/fleet.json.tmp" && mv -f "$MWORK/.data/fleet.json.tmp" "$MWORK/.data/fleet.json"
 check "fleet: dcs-hub is a service acct" true "$(jq -r '[.[] | select(.username == "dcs-hub")] | .[0].service' "$MWORK/.api-auth/users.json" 2>/dev/null)"
 check "fleet: join audited on hub"      yes "$(grep -q 'fleet_member_joined' "$WORK/.data/audit.jsonl" 2>/dev/null && echo yes || echo no)"
 check "fleet: join audited on member"   yes "$(grep -q 'fleet_joined_hub' "$MWORK/.data/audit.jsonl" 2>/dev/null && echo yes || echo no)"
@@ -822,7 +852,8 @@ _FSNAP=$(auth_request POST '/snapshots/create?fleet=1' '{"label":"fleet-smoke"}'
 check "fleet: snapshot everywhere"        2 "$(jq -r '.taken' <<< "$_FSNAP" 2>/dev/null)"
 check "fleet: snapshot names the member"  "$MID" "$(jq -r '.results[1].id' <<< "$_FSNAP" 2>/dev/null)"
 check "fleet: snapshots listed together"  yes "$(auth_request GET '/snapshots?fleet=1' | body_of | jq -e --arg m "$MID" '[.snapshots[] | select(.member == $m)] | length >= 1' >/dev/null 2>&1 && echo yes || echo no)"
-check "update: member kept its old code"   yes "$(ls "$MWORK"/.snapshots/dcs-code-3.8.99-*.tar.gz >/dev/null 2>&1 && echo yes || echo no)"
+check "update: member kept its old code"   yes "$(ls "$MWORK"/.snapshots/code/dcs-code-3.8.99-*.tar.gz >/dev/null 2>&1 && echo yes || echo no)"
+check "update: old code kept private"      600 "$(stat -c %a "$MWORK"/.snapshots/code/dcs-code-3.8.99-*.tar.gz 2>/dev/null | head -1)"
 check "update: member kept its settings"   "Media VM" "$(grep '^SERVER_NAME=' "$MWORK/.env" | cut -d= -f2-)"
 check "update: member kept its accounts"   yes "$(jq -e '[.[] | select(.username == "dcs-hub")] | length == 1' "$MWORK/.api-auth/users.json" >/dev/null 2>&1 && echo yes || echo no)"
 check "update: member history entry"       updated "$(jq -r '.[-1] | select(.message == "from the hub'"'"'s bundle") | .result' "$MWORK/.api-auth/update-history.json" 2>/dev/null)"
@@ -835,10 +866,20 @@ MTOKEN=$(curl -s -m 5 -X POST "http://127.0.0.1:$FLEET_PORT/auth/login" -H 'Cont
 check "update: self-update wants a URL"    400 "$(curl -s -o /dev/null -w '%{http_code}' -m 5 -X POST "http://127.0.0.1:$FLEET_PORT/fleet/self-update" -H "Authorization: Bearer $MTOKEN" -H 'Content-Type: application/json' -d '{"bundle_url":"nope"}')"
 check "update: another host is refused"   403 "$(curl -s -o /dev/null -w '%{http_code}' -m 5 -X POST "http://127.0.0.1:$FLEET_PORT/fleet/self-update" -H "Authorization: Bearer $MTOKEN" -H 'Content-Type: application/json' -d '{"bundle_url":"http://127.0.0.1:1/fleet/bundle?token=x"}')"
 check "update: self-update wants a bundle" 400 "$(curl -s -o /dev/null -w '%{http_code}' -m 15 -X POST "http://127.0.0.1:$FLEET_PORT/fleet/self-update" -H "Authorization: Bearer $MTOKEN" -H 'Content-Type: application/json' -d "{\"bundle_url\":\"http://127.0.0.1:$HUB_PORT/ping\"}")"
+check "update: a bundle code alone is enough" 502 "$(curl -s -o /dev/null -w '%{http_code}' -m 15 -X POST "http://127.0.0.1:$FLEET_PORT/fleet/self-update" -H "Authorization: Bearer $MTOKEN" -H 'Content-Type: application/json' -d '{"token":"NOPE-NOPE-NOPE"}')"
+check "update: odd bundle code refused"    400 "$(curl -s -o /dev/null -w '%{http_code}' -m 5 -X POST "http://127.0.0.1:$FLEET_PORT/fleet/self-update" -H "Authorization: Bearer $MTOKEN" -H 'Content-Type: application/json' -d '{"token":"nope/../x"}')"
+check "update: old code is not a snapshot" 0 "$(member_request GET /snapshots | jq -r '[.snapshots[] | select(.filename | startswith("dcs-code"))] | length' 2>/dev/null)"
+check "update: no bundle code left behind" 0 "$(jq -r '[.join_tokens[] | select(.purpose == "bundle")] | length' "$WORK/.data/fleet.json" 2>/dev/null)"
+jq --arg m "$MID" '.join_tokens += [{"token":"BNDL-GOOD-CODE","created_at":0,"expires_at":4102444800,"created_by":"update","uses":0,"purpose":"bundle","member":$m},{"token":"BNDL-NOBO-DY00","created_at":0,"expires_at":4102444800,"created_by":"update","uses":0,"purpose":"bundle","member":"nobody"}]' "$WORK/.data/fleet.json" > "$WORK/.data/fleet.json.tmp" && mv -f "$WORK/.data/fleet.json.tmp" "$WORK/.data/fleet.json"
+check "update: a bundle code cannot join"  403 "$(request POST /fleet/join "{\"token\":\"BNDL-GOOD-CODE\",\"url\":\"http://127.0.0.1:1\",\"username\":\"admin\",\"password\":\"x\"}" "${AUTH[@]}" | status_of)"
+check "update: a bundle code opens the bundle" 200 "$(request GET '/fleet/bundle?token=BNDL-GOOD-CODE' '' "${AUTH[@]}" | status_of)"
+check "update: a bundle code for nobody"   403 "$(request GET '/fleet/bundle?token=BNDL-NOBO-DY00' '' "${AUTH[@]}" | status_of)"
+jq 'del(.join_tokens[] | select(.token | startswith("BNDL-")))' "$WORK/.data/fleet.json" > "$WORK/.data/fleet.json.tmp" && mv -f "$WORK/.data/fleet.json.tmp" "$WORK/.data/fleet.json"
 # the hub's own update takes the VMs along: {fleet: true} leaves a marker, and the round runs by itself when the hub's API is back on the new code
 (cd "$MWORK" && "$MWORK/.scripts/api-server.sh" --stop >/dev/null 2>&1)
 timeout 10 bash -c "while curl -s -m 1 http://127.0.0.1:$FLEET_PORT/ping >/dev/null 2>&1; do sleep 0.3; done" 2>/dev/null
 printf '3.8.98\n' > "$MWORK/VERSION"
+for _i in 1 2 3; do touch -d "-$_i hours" "$MWORK/.snapshots/code/dcs-code-0.0.$_i-2026010100000$_i.tar.gz"; done
 (cd "$MWORK" && FLEET_IDENTITY_UUID=11111111-2222-3333-4444-555555555555 setsid nohup "$MWORK/.scripts/api-server.sh" --bind 127.0.0.1 --port "$FLEET_PORT" >> "$MWORK/logs/member-listener.log" 2>&1 < /dev/null &)
 timeout 30 bash -c "until curl -s -m 1 http://127.0.0.1:$FLEET_PORT/ping | grep -q '\"3.8.98\"'; do sleep 0.5; done" 2>/dev/null
 check "queued: member behind again"        1 "$(auth_request GET /fleet/versions | body_of | jq -r '.behind' 2>/dev/null)"
@@ -854,15 +895,19 @@ check "queued: round ran at startup"       "$_VER" "$(curl -s -m 2 "http://127.0
 check "queued: marker consumed"            no "$([[ -f "$WORK/.data/fleet-update-pending" ]] && echo yes || echo no)"
 check "queued: nobody behind"              0 "$(auth_request GET /fleet/versions | body_of | jq -r '.behind' 2>/dev/null)"
 check "queued: round audited as startup"   yes "$(grep 'fleet_update' "$WORK/.data/audit.jsonl" 2>/dev/null | tail -1 | grep -q '(startup)' && echo yes || echo no)"
+check "queued: three code snapshots kept"  3 "$(ls "$MWORK"/.snapshots/code/dcs-code-*.tar.gz 2>/dev/null | wc -l)"
+check "queued: the oldest snapshot gone"   no "$([[ -f "$MWORK/.snapshots/code/dcs-code-0.0.3-20260101000003.tar.gz" ]] && echo yes || echo no)"
 sleep 3; timeout 20 bash -c "until curl -s -m 1 http://127.0.0.1:$FLEET_PORT/ping | grep -q '\"ok\"'; do sleep 0.3; done" 2>/dev/null   # the member re-executes once more
 _envdel FLEET_SELF_URL
 check "fleet: rename member"            "Media VM" "$(auth_request PUT "/fleet/members/$MID" '{"name":"Media VM"}' | body_of | jq -r '.member.name' 2>/dev/null)"
+check "fleet: name cleaned of control chars" "Media VM" "$(auth_request PUT "/fleet/members/$MID" '{"name":"Media\u0007 VM\n"}' | body_of | jq -r '.member.name' 2>/dev/null)"
+check "fleet: unprintable name refused" 400 "$(auth_request PUT "/fleet/members/$MID" '{"name":"\u0001\u0002"}' | status_of)"
 check "fleet: remap by hand"            manual "$(auth_request PUT "/fleet/members/$MID" '{"vmid":101,"node":"pve","type":"qemu"}' | body_of | jq -r '.member.matched_by' 2>/dev/null)"
 check "fleet: bad password refused"     502 "$(auth_request PUT "/fleet/members/$MID" '{"password":"wrong-wrong"}' | status_of)"
 check "fleet: unknown member 404"       404 "$(auth_request PUT "/fleet/members/nobody" '{"name":"x"}' | status_of)"
 # the member's routes ride along in the hub's Traefik feed
 _MROUTES=$(_mlib _find_traefik_routes_dir); [[ -n "$_MROUTES" ]] || _MROUTES="$MWORK/.data/routes"; mkdir -p "$_MROUTES"
-printf 'http:\n  routers:\n    fleetwho:\n      rule: "Host(`fleetwho.example.com`)"\n      service: fleetwho\n  services:\n    fleetwho:\n      loadBalancer:\n        servers:\n          - url: "http://10.9.9.9:8080"\n' > "$_MROUTES/fleetwho.yml"
+printf 'http:\n  routers:\n    fleetwho:\n      rule: "Host(`fleetwho.example.com`)"\n      service: fleetwho\n  services:\n    fleetwho:\n      loadBalancer:\n        servers:\n          - url: "http://127.0.0.1:8080"\n' > "$_MROUTES/fleetwho.yml"
 check "fleet: member feed lists route"  yes "$(member_request GET /fleet/feed | jq -e '.http.routers | has("fleetwho-dcs")' >/dev/null 2>&1 && echo yes || echo no)"
 _envset TRAEFIK_FEED_ENABLED true; _envset TRAEFIK_FEED_TOKEN fleet-feed-token
 check "fleet: hub feed merges member"   yes "$(request GET '/traefik/dynamic?token=fleet-feed-token' '' "${AUTH[@]}" | body_of | jq -e --arg k "${MID}-fleetwho-dcs" '.http.routers | has($k)' >/dev/null 2>&1 && echo yes || echo no)"
@@ -872,7 +917,7 @@ check "fleet: feed status counts them"  yes "$([[ "$(auth_request GET /traefik/f
 _lib _fleet_routes_write_local
 _HROUTES="$WORK/Stacks/zz-proxy/App-Data/Traefik/custom_routes"
 check "fleet: member routes written locally" yes "$(jq -e --arg k "${MID}-fleetwho-dcs" '.http.routers | has($k)' "$_HROUTES/fleet-members.yml" >/dev/null 2>&1 && echo yes || echo no)"
-check "fleet: local route points at the VM" yes "$(jq -r --arg k "${MID}-fleetwho-dcs" '.http.services[$k].loadBalancer.servers[0].url' "$_HROUTES/fleet-members.yml" 2>/dev/null | grep -q '10.9.9' && echo yes || echo no)"
+check "fleet: local route points at the VM" yes "$(jq -r --arg k "${MID}-fleetwho-dcs" '.http.services[$k].loadBalancer.servers[0].url' "$_HROUTES/fleet-members.yml" 2>/dev/null | grep -q '127.0.0.1:8080' && echo yes || echo no)"
 _MT1=$(stat -c %Y "$_HROUTES/fleet-members.yml" 2>/dev/null); sleep 1; _lib _fleet_routes_write_local
 check "fleet: unchanged routes not rewritten" "$_MT1" "$(stat -c %Y "$_HROUTES/fleet-members.yml" 2>/dev/null)"
 _envdel TRAEFIK_FEED_ENABLED; _envdel TRAEFIK_FEED_TOKEN; rm -f "$_MROUTES/fleetwho.yml"
@@ -905,6 +950,169 @@ check "fleet: manual add wrong password" 502 "$(auth_request POST /fleet/members
 check "fleet: refuses itself"           502 "$(auth_request POST /fleet/members "{\"url\":\"http://127.0.0.1:9876\",\"username\":\"admin\",\"password\":\"correct horse battery\"}" | status_of)"
 check "fleet: manual add proxies"       demo "$(auth_request GET /fleet/members/manual-vm/api/stacks | body_of | jq -r '.stacks[0].name' 2>/dev/null)"
 auth_request DELETE /fleet/members/manual-vm >/dev/null
+
+echo "Fleet: a hostile member (a stand-in that answers whatever it likes)"
+# A member is another machine, so everything it answers is data. The stand-in claims the hub's stacks and hostnames, sends
+# routers with fields of its own, answers the merged lists in the wrong shapes, and logs every request it receives.
+MOCK_PORT=$(( 20000 + RANDOM % 20000 )); [[ "$MOCK_PORT" == "$HUB_PORT" || "$MOCK_PORT" == "$FLEET_PORT" ]] && MOCK_PORT=$(( MOCK_PORT + 7 ))
+MOCK_LOG="$WORK/mock-member.log"; : > "$MOCK_LOG"
+cat > "$WORK/mock-member.py" <<'MOCK'
+#!/usr/bin/env python3
+import json, sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+PORT, LOG, VER = int(sys.argv[1]), sys.argv[2], sys.argv[3]
+FEED = {"http": {"routers": {
+    "good": {"rule": "Host(`Good.Example.test`)", "service": "good", "entryPoints": ["websecure", "x y"], "tls": {}, "priority": 9},
+    "twin": {"rule": "Host(`good.example.test`)", "service": "good"},
+    "hubhost": {"rule": "Host(`tools.example.test`)", "service": "good"},
+    "dash": {"rule": "Host(`dash.smoke.test`)", "service": "good"},
+    "foreign": {"rule": "Host(`foreign.example.test`)", "service": "foreign"},
+    "Bad Name!": {"rule": "Host(`bad.example.test`)", "service": "good"},
+    "regex": {"rule": "HostRegexp(`{any:.*}`)", "service": "good"},
+    "extra": {"rule": "Host(`extra.example.test`) && PathPrefix(`/api`)", "service": "good", "middlewares": ["auth@file", "x y"],
+              "tls": {"certResolver": "le", "domains": [{"main": "*.example.test"}]}, "priority": 10, "observability": {"metrics": True}},
+}, "services": {
+    "good": {"loadBalancer": {"servers": [{"url": "http://127.0.0.1:8080"}], "passHostHeader": False}},
+    "foreign": {"loadBalancer": {"servers": [{"url": "http://10.9.9.9:8080"}]}},
+}}}
+GET = {
+    "/ping": {"ok": True, "version": VER},
+    "/fleet/identity": {"hostname": "Hostile\u0007 Member\n", "ips": [], "api_port": PORT, "version": VER, "stacks": ["orphan", "demo", "nofolder", "../etc"]},
+    "/stacks": {"stacks": [{"name": "orphan", "status": "running", "running_containers": 1, "containers": 1}], "total": 1},
+    "/containers": {"containers": "nope"},
+    "/networks": {"networks": "nope", "total": "x"},
+    "/volumes": {"volumes": [1, "two", None, {"name": "v"}]},
+    "/events": {"events": "nope"}, "/snapshots": {"snapshots": 7}, "/automations": {"automations": None},
+    "/schedules": {"schedules": {"x": 1}}, "/secrets": {"secrets": "nope"}, "/audit": {"entries": "nope"},
+    "/health": {"status": 5, "summary": "nope", "containers": {"a": 1}},
+    "/health/score": {"score": "high", "grade": 1, "factors": "nope", "stacks": "nope"},
+    "/images": {"images": "nope", "total": "x"},
+    "/images/check-updates": {"images": {"a": 1}, "total": [], "updates_available": "3", "stale": None, "registry_checked_at": 12},
+    "/system/docker-engine": {"version": 5, "upgradable": "yes", "source": None, "last_update": "nope"},
+    "/fleet/feed": FEED,
+}
+POST = {
+    "/auth/login": {"token": "mock-session-" + "x" * 48, "role": "admin"},
+    "/images/check-updates": {"total": "x", "updates_available": None},
+    "/fleet/hub/relay-token": {"success": True}, "/fleet/hub/domain": {"success": True},
+    "/snapshots/create": {"success": True, "filename": 5},
+}
+class H(BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def _note(self):
+        with open(LOG, "a") as f: f.write(self.command + " " + self.path.split("?")[0] + "\n")
+    def _send(self, code, data):
+        self.send_response(code); self.send_header("Content-Type", "application/json"); self.send_header("Content-Length", str(len(data))); self.end_headers(); self.wfile.write(data)
+    def do_GET(self):
+        self._note(); p = self.path.split("?")[0]
+        if p == "/big":
+            self.send_response(200); self.send_header("Content-Length", str(9 * 1024 * 1024)); self.end_headers()
+            try:
+                for _ in range(9): self.wfile.write(b"x" * 1024 * 1024)
+            except OSError: pass
+            return
+        if p in GET: self._send(200, json.dumps(GET[p]).encode()); return
+        self._send(404, b'{"error": true, "message": "no such thing here"}')
+    def do_POST(self):
+        self._note(); p = self.path.split("?")[0]
+        self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        if p == "/fleet/self-update": self._send(200, b"{not json at all"); return
+        if p == "/fleet/routes": self._send(409, b'{"error": true, "message": "No Traefik runs here"}'); return
+        if p in POST: self._send(200, json.dumps(POST[p]).encode()); return
+        self._send(404, b'{"error": true}')
+    do_PUT = do_POST
+    do_DELETE = do_GET
+HTTPServer(("127.0.0.1", PORT), H).serve_forever()
+MOCK
+python3 "$WORK/mock-member.py" "$MOCK_PORT" "$MOCK_LOG" "$(tr -d '[:space:]' < "$ROOT/VERSION")" >/dev/null 2>&1 &
+_MOCK_PID=$!
+timeout 15 bash -c "until curl -s -m 1 http://127.0.0.1:$MOCK_PORT/ping | grep -q '\"ok\"'; do sleep 0.3; done" 2>/dev/null
+mkdir -p "$WORK/Stacks/orphan" && printf 'services:\n  x:\n    image: alpine\n' > "$WORK/Stacks/orphan/docker-compose.yml"
+_HM=$(auth_request POST /fleet/members "{\"url\":\"http://127.0.0.1:$MOCK_PORT\",\"username\":\"mock\",\"password\":\"mock-pass\"}" | body_of)
+check "hostile: added under its cleaned name" "Hostile Member" "$(jq -r '.member.name' <<< "$_HM" 2>/dev/null)"
+HMID=$(jq -r '.member.id' <<< "$_HM" 2>/dev/null)
+check "hostile: id from the name"           hostile-member "$HMID"
+check "hostile: claims for hub folders dropped" '["nofolder"]' "$(jq -c '.member.stacks' <<< "$_HM" 2>/dev/null)"
+# what a member says it runs is shown, never taken as a placement — so it never attracts another stack's requests
+check "hostile: overview shows what it runs" orphan "$(auth_request GET /fleet/overview | body_of | jq -r --arg m "$HMID" '.members[] | select(.id == $m) | .stacks[0].name' 2>/dev/null)"
+check "hostile: overview shows placements"  '["nofolder"]' "$(auth_request GET /fleet/overview | body_of | jq -c --arg m "$HMID" '.members[] | select(.id == $m) | .placements' 2>/dev/null)"
+check "hostile: placements not overwritten" '["nofolder"]' "$(jq -c --arg m "$HMID" '.members[] | select(.id == $m) | .stacks' "$WORK/.data/fleet.json" 2>/dev/null)"
+auth_request GET /stacks/orphan >/dev/null
+check "hostile: the hub's stack stays here" no "$(grep -q 'GET /stacks/orphan' "$MOCK_LOG" && echo yes || echo no)"
+auth_request GET /stacks/nofolder >/dev/null
+check "hostile: a placed stack is forwarded" yes "$(grep -q 'GET /stacks/nofolder' "$MOCK_LOG" && echo yes || echo no)"
+check "hostile: VM rows say whether placed" false "$(auth_request GET /stacks | body_of | jq -r '.stacks[] | select(.name == "orphan") | .placed' 2>/dev/null)"
+# an admin places a stack; a member cannot
+check "hostile: bad placement refused"      400 "$(auth_request PUT "/fleet/members/$HMID" '{"stacks":["ok-one","bad name"]}' | status_of)"
+check "hostile: a hub stack cannot be placed" 409 "$(auth_request PUT "/fleet/members/$HMID" '{"stacks":["demo"]}' | status_of)"
+check "hostile: admin placement kept"       '["nofolder","placed-one"]' "$(auth_request PUT "/fleet/members/$HMID" '{"stacks":["placed-one","nofolder"]}' | body_of | jq -c '.member.stacks' 2>/dev/null)"
+auth_request GET /stacks/placed-one >/dev/null
+check "hostile: the placed stack is forwarded" yes "$(grep -q 'GET /stacks/placed-one' "$MOCK_LOG" && echo yes || echo no)"
+# the merged lists: wrong shapes leave every list a valid answer with the hub's own rows
+check "hostile: /networks?fleet=1 still 200" 200 "$(auth_request GET '/networks?fleet=1' | status_of)"
+check "hostile: networks stay an array"     array "$(auth_request GET '/networks?fleet=1' | body_of | jq -r '.networks | type' 2>/dev/null)"
+check "hostile: its network count is 0"     0 "$(auth_request GET '/networks?fleet=1' | body_of | jq -r --arg m "$HMID" '.members[] | select(.id == $m) | .count' 2>/dev/null)"
+for _p in volumes events snapshots automations schedules secrets; do
+    check "hostile: /$_p?fleet=1 still 200"  200 "$(auth_request GET "/$_p?fleet=1" | status_of)"
+done
+check "hostile: /health?fleet=1 still 200"  200 "$(auth_request GET '/health?fleet=1' | status_of)"
+check "hostile: health summary numeric"     number "$(auth_request GET '/health?fleet=1' | body_of | jq -r '.summary.total | type' 2>/dev/null)"
+check "hostile: /health/score?fleet=1 200"  200 "$(auth_request GET '/health/score?fleet=1' | status_of)"
+check "hostile: score well formed"          yes "$(auth_request GET '/health/score?fleet=1' | body_of | jq -e '(.score | type == "number") and (.grade | test("^[A-F]$"))' >/dev/null 2>&1 && echo yes || echo no)"
+check "hostile: /images?fleet=1 still 200"  200 "$(auth_request GET '/images?fleet=1' | status_of)"
+check "hostile: /fleet/images still 200"    200 "$(auth_request GET /fleet/images | status_of)"
+check "hostile: fleet image total numeric"  number "$(auth_request GET /fleet/images | body_of | jq -r '.total | type' 2>/dev/null)"
+check "hostile: engine card still 200"      200 "$(auth_request GET '/system/docker-engine?fleet=1' | status_of)"
+check "hostile: engine version a string"    string "$(auth_request GET '/system/docker-engine?fleet=1' | body_of | jq -r --arg m "$HMID" '.members[] | select(.id == $m) | .version | type' 2>/dev/null)"
+# the feed: routers are rebuilt from a whitelist; the hub's own hosts and foreign addresses never get through
+_envset TRAEFIK_FEED_ENABLED true; _envset TRAEFIK_FEED_TOKEN mock-feed-token; _envset DASHBOARD_PUBLIC_URL https://dash.smoke.test
+_HF=$(request GET '/traefik/dynamic?token=mock-feed-token' '' "${AUTH[@]}" | body_of)
+check "hostile: a clean route passes"       'Host(`good.example.test`)' "$(jq -r --arg k "$HMID-good" '.http.routers[$k].rule' <<< "$_HF" 2>/dev/null)"
+check "hostile: its service renamed"        "$HMID-good" "$(jq -r --arg k "$HMID-good" '.http.routers[$k].service' <<< "$_HF" 2>/dev/null)"
+check "hostile: priority dropped"           no "$(grep -q priority <<< "$_HF" && echo yes || echo no)"
+check "hostile: the hub's host refused"     no "$(jq -e --arg k "$HMID-hubhost" '.http.routers | has($k)' <<< "$_HF" >/dev/null 2>&1 && echo yes || echo no)"
+check "hostile: the dashboard host refused" no "$(jq -e --arg k "$HMID-dash" '.http.routers | has($k)' <<< "$_HF" >/dev/null 2>&1 && echo yes || echo no)"
+check "hostile: a foreign address refused"  no "$(grep -q '10.9.9.9' <<< "$_HF" && echo yes || echo no)"
+check "hostile: a regexp rule refused"      no "$(grep -q 'HostRegexp' <<< "$_HF" && echo yes || echo no)"
+check "hostile: unknown fields dropped"     no "$(grep -q -E 'observability|domains|passHostHeader' <<< "$_HF" && echo yes || echo no)"
+check "hostile: PathPrefix kept"            'Host(`extra.example.test`) && PathPrefix(`/api`)' "$(jq -r --arg k "$HMID-extra" '.http.routers[$k].rule' <<< "$_HF" 2>/dev/null)"
+check "hostile: odd middlewares dropped"    '["auth@file"]' "$(jq -c --arg k "$HMID-extra" '.http.routers[$k].middlewares' <<< "$_HF" 2>/dev/null)"
+check "hostile: certResolver alone kept"    '{"certResolver":"le"}' "$(jq -c --arg k "$HMID-extra" '.http.routers[$k].tls' <<< "$_HF" 2>/dev/null)"
+check "hostile: a twin host renamed"        'Host(`good-hostile-member.example.test`)' "$(jq -r --arg k "$HMID-twin" '.http.routers[$k].rule' <<< "$_HF" 2>/dev/null)"
+_HS=$(auth_request GET /traefik/feed/status | body_of)
+check "hostile: refusals reported"          yes "$(jq -e --arg m "$HMID" '[.member_skipped[] | select(.member == $m)] | length >= 5' <<< "$_HS" >/dev/null 2>&1 && echo yes || echo no)"
+check "hostile: the hub host names the reason" yes "$(jq -r '.member_skipped[] | select(.service == "hubhost") | .reason' <<< "$_HS" 2>/dev/null | grep -q 'belongs to the hub' && echo yes || echo no)"
+check "hostile: the rename names the host"  good-hostile-member.example.test "$(jq -r '.member_skipped[] | select(.service == "twin") | .host' <<< "$_HS" 2>/dev/null)"
+_lib _fleet_routes_write_local
+check "hostile: local file has the clean route" yes "$(jq -e --arg k "$HMID-good" '.http.routers | has($k)' "$_HROUTES/fleet-members.yml" >/dev/null 2>&1 && echo yes || echo no)"
+check "hostile: local file free of the hub host" no "$(grep -q 'tools.example.test' "$_HROUTES/fleet-members.yml" 2>/dev/null && echo yes || echo no)"
+_envdel TRAEFIK_FEED_ENABLED; _envdel TRAEFIK_FEED_TOKEN; _envdel DASHBOARD_PUBLIC_URL
+# the loop's fleet tick runs in the background under a lock; a stale lock is taken over
+touch -d '-2 minutes' "$WORK/.data/fleet-watch.stamp"; mkdir -p "$WORK/.data/fleet-loop.lock"
+_lib _fleet_loop_tick; sleep 1
+check "tick: a live lock holds the tick"    yes "$([[ $(( $(date +%s) - $(stat -c %Y "$WORK/.data/fleet-watch.stamp") )) -gt 60 ]] && echo yes || echo no)"
+touch -d '-11 minutes' "$WORK/.data/fleet-loop.lock"
+_lib _fleet_loop_tick
+for _i in $(seq 1 30); do [[ -d "$WORK/.data/fleet-loop.lock" ]] || break; sleep 1; done
+check "tick: a stale lock is taken over"    yes "$([[ $(( $(date +%s) - $(stat -c %Y "$WORK/.data/fleet-watch.stamp") )) -lt 60 ]] && echo yes || echo no)"
+check "tick: the lock is released"          no "$([[ -d "$WORK/.data/fleet-loop.lock" ]] && echo yes || echo no)"
+# an update round runs on its own: a member whose answer is not JSON counts as failed and never ends the round, no bundle
+# code is left behind, and the answer is 202 when the round outlasts the wait
+check "hostile: odd member id refused"      400 "$(auth_request POST /fleet/update '{"members":["Bad Id"]}' | status_of)"
+_envset FLEET_UPDATE_WAIT 0
+_UR=$(auth_request POST /fleet/update "{\"members\":[\"$HMID\"]}")
+check "hostile: round answers 202"          202 "$(status_of <<< "$_UR")"
+check "hostile: the answer says running"    true "$(body_of <<< "$_UR" | jq -r '.running' 2>/dev/null)"
+_RS=""; for _i in $(seq 1 40); do _RS=$(auth_request GET /fleet/versions | body_of | jq -r '.last_round.status // ""' 2>/dev/null); [[ "$_RS" == "done" ]] && break; sleep 1; done
+check "hostile: round finished"             'done' "$_RS"
+check "hostile: malformed answer = failed"  1 "$(auth_request GET /fleet/versions | body_of | jq -r '.last_round.failed' 2>/dev/null)"
+check "hostile: the reason is named"        yes "$(auth_request GET /fleet/versions | body_of | jq -r '.last_round.results[0].message' 2>/dev/null | grep -q 'malformed' && echo yes || echo no)"
+check "hostile: no bundle code left behind" 0 "$(jq -r '[.join_tokens[] | select(.purpose == "bundle")] | length' "$WORK/.data/fleet.json" 2>/dev/null)"
+_envdel FLEET_UPDATE_WAIT
+check "hostile: an 8 MB answer is refused"  "0|answer larger than 8 MB" "$(_lib eval "_fleet_http _big GET http://127.0.0.1:$MOCK_PORT/big; printf '%s|%s' \"\$_FLEET_HTTP\" \"\$_FLEET_ERR\"")"
+auth_request DELETE "/fleet/members/$HMID" >/dev/null
+kill $_MOCK_PID 2>/dev/null; wait $_MOCK_PID 2>/dev/null
+rm -rf "$WORK/Stacks/orphan" "$WORK/mock-member.py" "$WORK/.data/fleet-loop.lock"
 # join saved for later when the member has no admin yet (setup.sh before the wizard)
 mkdir -p "$PWORK/.scripts" "$PWORK/.lib" "$PWORK/.config" "$PWORK/.data" "$PWORK/.api-auth" "$PWORK/logs"
 cp "$API" "$PWORK/.scripts/"; cp -r "$WORK/.lib/." "$PWORK/.lib/"; cp -r "$WORK/.config/." "$PWORK/.config/"; cp "$WORK/.env" "$PWORK/.env"; printf '[]' > "$PWORK/.api-auth/users.json"
@@ -1003,6 +1211,7 @@ check "provision: stack running in VM"  running "$(auth_request GET /stacks/smok
 check "provision: the stack's secret travelled" yes "$(auth_request GET /fleet/members/smoke-photos/api/secrets | body_of | jq -e '[.secrets[] | if type == "object" then .key else . end] | index("SMOKE_TRAVEL") != null' >/dev/null 2>&1 && echo yes || echo no)"
 check "provision: secret copy logged"   yes "$(auth_request GET "/fleet/jobs/$JOB" | body_of | jq -r '.log[].text' 2>/dev/null | grep -q 'secret(s) the stack uses copied' && echo yes || echo no)"
 # the hub's own start.sh never starts a folder that lives in a VM, whatever DOCKER_STACKS says
+# shellcheck disable=SC2034  # COMPOSE_DIR is read by the function pulled out of run.sh
 _owned() { ( COMPOSE_DIR="$WORK/Stacks"; eval "$(sed -n '/^_fleet_owned_stack()/,/^}/p' "$ROOT/.scripts/run.sh")"; _fleet_owned_stack "$1"; echo $? ); }
 check "start.sh: a VM's stack is not the hub's to start" 0 "$(_owned smoke-photos)"
 check "start.sh: the hub's own stack is"    1 "$(_owned demo)"

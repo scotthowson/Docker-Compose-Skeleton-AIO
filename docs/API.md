@@ -225,7 +225,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | GET | `/routes/certificates` | user | Reverse-proxy health: domain, ACME challenge and account, certificates held, a live probe of every route through Traefik, the last Traefik errors, and hints |
 | GET | `/routes/check` | user | Check if a subdomain is available |
 | GET | `/dns/status` | user | Cloudflare integration: where the token comes from, whether it is valid, the zone |
-| GET | `/traefik/feed/status` | admin | The Traefik feed: on or off, token, target host, what it serves and skips, when it was last pulled, and the provider snippet to paste |
+| GET | `/traefik/feed/status` | admin | The Traefik feed: on or off, token, target host, what it serves and skips, what the members offered and the hub refused or renamed (member_skipped), when it was last pulled, and the provider snippet to paste |
 | GET | `/dns/zones` | admin | Zones the Cloudflare token can manage |
 | GET | `/dns/records` | admin | DNS records of the zone (all types) with their DCS route links |
 | GET | `/homarr/status` | user | Check if Homarr is deployed and has an API key configured |
@@ -389,7 +389,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | Method | Path | Access | Description |
 |--------|------|--------|-------------|
 | GET | `/ping` | public | Liveness probe: no auth, no Docker call, a tiny body. The dashboard's heartbeat uses it, so the latency it shows is the round trip alone. |
-| GET | `/fleet/bundle` | public | The hub's own DCS code as a tar.gz for a VM being bootstrapped (needs ?token= — a valid join code); never includes data, accounts, secrets, stacks or logs |
+| GET | `/fleet/bundle` | public | The hub's own DCS code as a tar.gz for a VM being bootstrapped (needs ?token= — a valid join code, or the bundle code an update round minted for the member it names); never includes data, accounts, secrets, stacks or logs |
 | GET | `/power` | user | UPS status: mains or battery, charge, runtime, load, and whether the watch loop runs |
 | GET | `/recovery` | admin | Recovery bundles on this box and how they are made (destination, off-box copy, retention, passphrase set?) |
 | GET | `/fleet/images` | user | Every image on the hub and on each member in one list, each tagged with where it runs (member null = the hub); the counts add up across the fleet, registry_checked_at is the oldest check, last_update_at the newest pull |
@@ -418,7 +418,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | GET | `/fleet/members/*` | user | One member, with a live check that it answers |
 | GET | `/recovery/*/download` | admin | Download a recovery bundle |
 | POST | `/fleet/join` | public | A member registers itself with a join code {token, name, url, username, password, identity?, vmid?, node?, type?}: the hub logs in to it, matches it to a guest and keeps it (no session; rate-limited like a login) |
-| POST | `/fleet/relay` | public | A member's event for the hub {token, event, context}: the hub notes it in its activity (fleet_event) and fires its own notification rules with the VM named; public, the relay token says who |
+| POST | `/fleet/relay` | public | A member's event for the hub {token, event, context}: the hub notes it in its activity (fleet_event) and fires its own notification rules with the VM named; public, the relay token says who; at most 30 events a minute per member (429 beyond) |
 | POST | `/proxmox/test` | admin | Try a Proxmox connection with the given url, token_id, token_secret and verify_tls without saving them |
 | POST | `/proxmox/vms/*/*/*/*` | admin | Power action on a VM or container: start, shutdown, stop, reboot, reset (VMs only), balloon (VMs only: a memory balloon with half the memory as its floor, so Proxmox reports the guest's real usage and can reclaim idle memory; reboot afterwards), suspend, resume — audited and sent to the webhooks |
 | POST | `/fleet/members` | admin | Add a member by address and an account on it {url, username, password, name?, vmid?, node?, type?, insecure?}; the hub logs in, learns who it is and matches it to a guest |
@@ -430,8 +430,8 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | POST | `/proxmox/capabilities` | admin | What the API token may do on /: the privileges that creating VMs needs, and which are missing (POST with {url, token_id, token_secret, verify_tls} before the link is saved) |
 | POST | `/proxmox/storage` | admin | The node's storages with content types and free space (import_ready: can hold a cloud image) |
 | POST | `/fleet/templates` | admin | Bake a DCS template from a cloud image {node, storage, image_storage, bridge, cidr, gateway, dns, ip_start, image\|image_url\|image_file, cores?, memory_mb?, disk_gb?}: a build job of kind "bake" |
-| POST | `/fleet/update` | admin | Bring members to this hub's DCS version {members: ["id", …] or "all"}: each fetches the hub's code bundle, keeps its own files and re-executes; the answer lists what happened per member |
-| POST | `/fleet/self-update` | admin | Install a DCS code bundle over this server's own code {bundle_url, version?}: data, accounts, secrets, stacks and the settings in .config are kept, the old code is saved under .snapshots, then the API re-executes on the new code |
+| POST | `/fleet/update` | admin | Bring members to this hub's DCS version {members: ["id", …] or "all"}: each fetches the hub's code bundle, keeps its own files and re-executes; the round runs on its own — the answer lists what happened per member when it finished within 25 s, otherwise it is 202 {running: true} and GET /fleet/versions (last_round) follows it |
+| POST | `/fleet/self-update` | admin | Install a DCS code bundle over this server's own code {token, version?} (the hub's bundle code; the bundle is fetched from this member's own record of the hub's address) or {bundle_url} under the hub's address (what a 3.9.0 hub sends): data, accounts, secrets, stacks and the settings in .config are kept, the old code is saved under .snapshots/code (the newest three), then the API re-executes on the new code |
 | POST | `/fleet/hub/relay-token` | admin | The hub hands this member the token its events travel with {token} (admin: the hub's own account) |
 | POST | `/fleet/routes` | admin | The hub hands this DCS the other servers' routes for the Traefik that runs here {http: {routers, services}}; written as custom_routes/fleet-members.yml (admin: the hub's own account); 409 without a Traefik here |
 | POST | `/fleet/hub/domain` | admin | The hub hands this member the fleet's proxy domain {domain, force}: written as PROXY_DOMAIN when this DCS has none yet (or the example.com placeholder), so the routes it writes for its stacks carry the fleet's domain; a domain of its own (a Traefik here) is kept unless force is true |
@@ -449,7 +449,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | POST | `/crowdsec/unban-me` | user | Unban the caller: its client address and the home public address |
 | POST | `/crowdsec/notifications` | admin | Send CrowdSec's alerts to Discord {webhook?, test?}: renders the template with the webhook (default: the server's), restarts CrowdSec, and optionally posts a test alert |
 | PUT | `/fleet/members/*/api/*` | admin | Forward the call (GET, POST, PUT or DELETE) to that member with the hub's account; the caller's own role is checked against the inner path as if it were local (streams and auth are not forwarded) |
-| PUT | `/fleet/members/*` | admin | Change a member's name, address, account or the guest it is mapped to {name?, url?, username?, password?, vmid?, node?, type?, insecure?} |
+| PUT | `/fleet/members/*` | admin | Change a member's name, address, account, the guest it is mapped to, or the stacks it answers for {name?, url?, username?, password?, vmid?, node?, type?, insecure?, stacks?: ["name", …]} (a placement makes the hub forward that stack's requests to this member; a stack the hub runs itself cannot be placed) |
 | DELETE | `/fleet/members/*/api/*` | admin | Forward the call (GET, POST, PUT or DELETE) to that member with the hub's account; the caller's own role is checked against the inner path as if it were local (streams and auth are not forwarded) |
 | DELETE | `/fleet/members/*` | admin | Forget a member (its dcs-hub account is removed there when it answers) |
 | DELETE | `/fleet/templates/*` | admin | Forget a DCS template and destroy the template VM on Proxmox |
