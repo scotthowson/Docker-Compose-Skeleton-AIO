@@ -4,7 +4,7 @@ Generated from the router in `.scripts/api-server.sh` by `.scripts/api-docs.sh` 
 Run `.scripts/api-docs.sh` after adding or changing a route; CI fails when this file is stale.
 
 The API listens on `API_BIND:API_PORT` (default `0.0.0.0:9876`) and answers JSON.
-Every endpoint below is `306` in total.
+Every endpoint below is `308` in total.
 
 ## Access levels
 
@@ -60,7 +60,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 |--------|------|--------|-------------|
 | GET | `/` | public | API name, version, authentication mode and the endpoint list |
 | GET | `/status` | user | Host and Docker overview: containers, images, stacks, load, memory, disk, GPU |
-| GET | `/health` | user | Health report for every container (running, unhealthy, stopped, restart loops) |
+| GET | `/health` | user | # GET /health?fleet=1 on a hub: the members' containers ride along (member, member_name, vmid on each row), the summary and the status cover the fleet, members[] says how each DCS is doing |
 | GET | `/config` | user | Effective configuration (secrets masked) |
 | GET | `/system` | user | Host resources: CPU, memory, uptime, kernel |
 | GET | `/disks` | user | Mounted filesystems and their usage |
@@ -171,8 +171,8 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 
 | Method | Path | Access | Description |
 |--------|------|--------|-------------|
-| GET | `/images` | user | Images with age, size and staleness (/images/stale lists only stale ones) |
-| GET | `/images/stale` | user | Images with age, size and staleness (/images/stale lists only stale ones) |
+| GET | `/images` | user | # GET /images?fleet=1 on a hub: every member's images in the same list, each tagged member, member_name, vmid; members[] counts per DCS |
+| GET | `/images/stale` | user | Images with age, size and staleness (/images/stale lists only stale ones) On a hub, ?fleet=1 adds every member's images (member, member_name, vmid) and per-member counts |
 | GET | `/images/check-updates` | user | Images check updates get |
 | GET | `/images/search` | user | Search Docker Hub for images |
 | POST | `/images/{image}/delete` | admin | Remove an image |
@@ -184,8 +184,8 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 
 | Method | Path | Access | Description |
 |--------|------|--------|-------------|
-| GET | `/networks` | user | Docker networks with connected containers |
-| GET | `/volumes` | user | Docker volumes |
+| GET | `/networks` | user | Fleet merged |
+| GET | `/volumes` | user | Fleet merged |
 | GET | `/topology` | user | Container and network topology graph |
 | GET | `/networks/{network}` | user | Network detail with its members |
 | POST | `/networks` | admin | Create a Docker network {name, driver, subnet, gateway, ip_range, internal, attachable, ipv6, labels} |
@@ -246,9 +246,9 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | GET | `/logs` | user | Tail of the framework log |
 | GET | `/logs/stats` | user | Log file size and per-level counts |
 | GET | `/logs/archives` | user | Rotated log archives |
-| GET | `/events` | user | Recent Docker events |
+| GET | `/events` | user | Fleet merged |
 | GET | `/stream` | user | SSE endpoint: docker events + periodic metrics |
-| GET | `/audit` | admin | Get audit log entries |
+| GET | `/audit` | admin | Fleet merged |
 | GET | `/logs/live` | user | Stream DCS application log |
 
 ## Updates and maintenance
@@ -278,7 +278,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | GET | `/backups` | admin | Backup archives in BACKUP_DEST_DIR |
 | GET | `/backups/status` | admin | Progress of the running backup or the last result |
 | GET | `/backups/config` | admin | Backup source, destination and retention |
-| GET | `/snapshots` | admin | Configuration snapshots |
+| GET | `/snapshots` | admin | Fleet merged |
 | GET | `/rollback/{stack}/snapshots/{snapshot}` | user | Content of a rollback snapshot |
 | GET | `/rollback/{stack}/snapshots` | user | Rollback snapshots of a stack |
 | GET | `/rollback/{stack}/diff/{snapshot}` | user | Diff between a snapshot and the current stack files |
@@ -290,7 +290,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | POST | `/backups/trigger` | admin | Start a backup in the background (optionally one stack) |
 | POST | `/backups/cancel` | admin | Kill a running backup |
 | POST | `/backups/restore` | admin | Restore a backup archive (confirmation required) |
-| POST | `/snapshots/create` | admin | Create a configuration snapshot (compose files, .env files, templates) |
+| POST | `/snapshots/create` | admin | # POST /snapshots/create?fleet=1 on a hub: one snapshot here and one on every member at the same moment (each DCS keeps its own, listed together by GET /snapshots?fleet=1); the answer says what each DCS did |
 | POST | `/snapshots/{snapshot}/restore` | admin | Restore a snapshot (confirmation required, policy-scanned) |
 | POST | `/rollback/{stack}/restore` | admin | Restore a stack from a rollback snapshot (policy-scanned) |
 | DELETE | `/snapshots/{snapshot}` | admin | Delete a snapshot |
@@ -302,7 +302,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | GET | `/env` | admin | The root .env file, raw and parsed |
 | GET | `/settings/dashboard` | user | Fetch user's dashboard layout |
 | GET | `/settings/profile` | user | Fetch user's profile settings |
-| GET | `/secrets` | admin | List secret key names (never values) |
+| GET | `/secrets` | admin | Fleet merged |
 | GET | `/secrets/{key}/exists` | admin | Check if a secret exists (boolean) |
 | GET | `/secrets/{key}/references` | admin | Stacks and env files that reference a secret |
 | POST | `/env` | admin | Save the root .env file (validated as plain KEY=value data) |
@@ -333,8 +333,8 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 
 | Method | Path | Access | Description |
 |--------|------|--------|-------------|
-| GET | `/automations` | user | Automation rules |
-| GET | `/schedules` | user | Return schedules.json content |
+| GET | `/automations` | user | Fleet merged |
+| GET | `/schedules` | user | Fleet merged |
 | GET | `/schedules/{id}/history` | user | Return execution history filtered by schedule id |
 | GET | `/automations/{id}/history` | user | Run history of an automation |
 | POST | `/automations` | admin | Create an automation rule |
@@ -414,6 +414,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | GET | `/fleet/members/*` | user | One member, with a live check that it answers |
 | GET | `/recovery/*/download` | admin | Download a recovery bundle |
 | POST | `/fleet/join` | public | A member registers itself with a join code {token, name, url, username, password, identity?, vmid?, node?, type?}: the hub logs in to it, matches it to a guest and keeps it (no session; rate-limited like a login) |
+| POST | `/fleet/relay` | public | A member's event for the hub {token, event, context}: the hub notes it in its activity (fleet_event) and fires its own notification rules with the VM named; public, the relay token says who |
 | POST | `/proxmox/test` | admin | Try a Proxmox connection with the given url, token_id, token_secret and verify_tls without saving them |
 | POST | `/proxmox/vms/*/*/*/*` | admin | Power action on a VM or container: start, shutdown, stop, reboot, reset (VMs only), suspend, resume — audited and sent to the webhooks |
 | POST | `/fleet/members` | admin | Add a member by address and an account on it {url, username, password, name?, vmid?, node?, type?, insecure?}; the hub logs in, learns who it is and matches it to a guest |
@@ -427,6 +428,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | POST | `/fleet/templates` | admin | Bake a DCS template from a cloud image {node, storage, image_storage, bridge, cidr, gateway, dns, ip_start, image\|image_url\|image_file, cores?, memory_mb?, disk_gb?}: a build job of kind "bake" |
 | POST | `/fleet/update` | admin | Bring members to this hub's DCS version {members: ["id", …] or "all"}: each fetches the hub's code bundle, keeps its own files and re-executes; the answer lists what happened per member |
 | POST | `/fleet/self-update` | admin | Install a DCS code bundle over this server's own code {bundle_url, version?}: data, accounts, secrets, stacks and the settings in .config are kept, the old code is saved under .snapshots, then the API re-executes on the new code |
+| POST | `/fleet/hub/relay-token` | admin | The hub hands this member the token its events travel with {token} (admin: the hub's own account) |
 | POST | `/fleet/jobs/*/retry` | admin | Run a failed VM job again from the step that failed |
 | POST | `/fleet/members/*/test` | admin | Log in to the member afresh, read its identity and version, and say which guest it matches |
 | POST | `/fleet/members/*/api/*` | admin | Forward the call (GET, POST, PUT or DELETE) to that member with the hub's account; the caller's own role is checked against the inner path as if it were local (streams and auth are not forwarded) |

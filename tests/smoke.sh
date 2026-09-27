@@ -734,6 +734,16 @@ check "fleet: hub account is dcs-hub"   dcs-hub "$(auth_request GET /fleet/membe
 check "fleet: password in secret store" yes "$(_lib secrets_exists FLEET_MEMBER_MEDIA_VM_PASSWORD && echo yes || echo no)"
 check "fleet: member knows its hub"     member "$(member_request GET /fleet/status | jq -r '.role' 2>/dev/null)"
 check "fleet: member records vmid"      100 "$(member_request GET /fleet/status | jq -r '.hub.vmid' 2>/dev/null)"
+# events flow to the hub: the join handed the member a relay token, the hub keeps it apart from the member records
+check "relay: member holds a token"     yes "$(jq -e '.hub.relay_token | length >= 24' "$MWORK/.data/fleet.json" >/dev/null 2>&1 && echo yes || echo no)"
+check "relay: hub keeps it apart"       yes "$(jq -e --arg id "$MID" '.[$id] | length >= 24' "$WORK/.data/fleet-relay.json" >/dev/null 2>&1 && echo yes || echo no)"
+check "relay: status hides the token"   null "$(member_request GET /fleet/status | jq -r '.hub.relay_token' 2>/dev/null)"
+check "relay: members API hides it"     yes "$(auth_request GET /fleet/members | body_of | grep -q relay_token && echo no || echo yes)"
+check "relay: bad token refused"        403 "$(request POST /fleet/relay '{"token":"nope-nope-nope-nope-nope-nope","event":"stack_stopped"}' | status_of)"
+_RT=$(jq -r '.hub.relay_token' "$MWORK/.data/fleet.json" 2>/dev/null)
+check "relay: event accepted"           true "$(request POST /fleet/relay "{\"token\":\"$_RT\",\"event\":\"stack_stopped\",\"context\":{\"stack\":\"demo\",\"status\":\"stopped\"}}" | body_of | jq -r '.success' 2>/dev/null)"
+check "relay: hub activity names the VM" yes "$(grep 'fleet_event' "$WORK/.data/audit.jsonl" 2>/dev/null | tail -1 | grep -q 'from VM media-vm' && echo yes || echo no)"
+check "relay: odd event name refused"   400 "$(request POST /fleet/relay "{\"token\":\"$_RT\",\"event\":\"Not Valid\"}" | status_of)"
 check "fleet: dcs-hub is a service acct" true "$(jq -r '[.[] | select(.username == "dcs-hub")] | .[0].service' "$MWORK/.api-auth/users.json" 2>/dev/null)"
 check "fleet: join audited on hub"      yes "$(grep -q 'fleet_member_joined' "$WORK/.data/audit.jsonl" 2>/dev/null && echo yes || echo no)"
 check "fleet: join audited on member"   yes "$(grep -q 'fleet_joined_hub' "$MWORK/.data/audit.jsonl" 2>/dev/null && echo yes || echo no)"
@@ -785,6 +795,24 @@ check "images: fleet list has the hub"    yes "$(auth_request GET /fleet/images 
 check "images: per-DCS counts"            2 "$(auth_request GET /fleet/images | body_of | jq -r '.members | length' 2>/dev/null)"
 check "images: totals add up"             yes "$(auth_request GET /fleet/images | body_of | jq -e '.total == (.images | length) and .total == ([.members[].total] | add)' >/dev/null 2>&1 && echo yes || echo no)"
 check "images: viewer may read the list"  200 "$(viewer_request GET /fleet/images | status_of)"
+check "fleet: /health?fleet=1 merges"     true "$(auth_request GET '/health?fleet=1' | body_of | jq -r '.fleet' 2>/dev/null)"
+check "fleet: health lists both DCS"      2 "$(auth_request GET '/health?fleet=1' | body_of | jq -r '.members | length' 2>/dev/null)"
+check "fleet: health names the member"    "$MID" "$(auth_request GET '/health?fleet=1' | body_of | jq -r '.members[1].id' 2>/dev/null)"
+check "fleet: health summary adds up"     yes "$(auth_request GET '/health?fleet=1' | body_of | jq -e '.summary.total == (.containers | length)' >/dev/null 2>&1 && echo yes || echo no)"
+check "fleet: /health plain unchanged"    null "$(auth_request GET /health | body_of | jq -r '.fleet' 2>/dev/null)"
+check "fleet: /images?fleet=1 merges"     2 "$(auth_request GET '/images?fleet=1' | body_of | jq -r '.members | length' 2>/dev/null)"
+check "fleet: images total adds up"       yes "$(auth_request GET '/images?fleet=1' | body_of | jq -e '.total == (.images | length) and .total == ([.members[].count] | add)' >/dev/null 2>&1 && echo yes || echo no)"
+check "fleet: image rows say where"       yes "$(auth_request GET '/images?fleet=1' | body_of | jq -e --arg m "$MID" '([.images[] | select(.member == $m)] | length) == .members[1].count' >/dev/null 2>&1 && echo yes || echo no)"
+for _p in networks volumes events snapshots automations schedules; do
+    check "fleet: /$_p?fleet=1 lists both DCS" 2 "$(auth_request GET "/$_p?fleet=1" | body_of | jq -r '.members | length' 2>/dev/null)"
+done
+check "fleet: network rows say where"     yes "$(auth_request GET '/networks?fleet=1' | body_of | jq -e '[.networks[] | select(.member != null)] | length > 0' >/dev/null 2>&1 && echo yes || echo no)"
+check "fleet: /audit?fleet=1 merges"      true "$(auth_request GET '/audit?fleet=1' | body_of | jq -r '.fleet' 2>/dev/null)"
+check "fleet: /networks plain unchanged"  null "$(auth_request GET /networks | body_of | jq -r '.fleet' 2>/dev/null)"
+_FSNAP=$(auth_request POST '/snapshots/create?fleet=1' '{"label":"fleet-smoke"}' | body_of)
+check "fleet: snapshot everywhere"        2 "$(jq -r '.taken' <<< "$_FSNAP" 2>/dev/null)"
+check "fleet: snapshot names the member"  "$MID" "$(jq -r '.results[1].id' <<< "$_FSNAP" 2>/dev/null)"
+check "fleet: snapshots listed together"  yes "$(auth_request GET '/snapshots?fleet=1' | body_of | jq -e --arg m "$MID" '[.snapshots[] | select(.member == $m)] | length >= 1' >/dev/null 2>&1 && echo yes || echo no)"
 check "update: member kept its old code"   yes "$(ls "$MWORK"/.snapshots/dcs-code-3.8.99-*.tar.gz >/dev/null 2>&1 && echo yes || echo no)"
 check "update: member kept its settings"   "Media VM" "$(grep '^SERVER_NAME=' "$MWORK/.env" | cut -d= -f2-)"
 check "update: member kept its accounts"   yes "$(jq -e '[.[] | select(.username == "dcs-hub")] | length == 1' "$MWORK/.api-auth/users.json" >/dev/null 2>&1 && echo yes || echo no)"
@@ -929,7 +957,8 @@ check "hub stack: a folder alone is not" 1 "$(_lib _fleet_stack_is_hub leftover;
 check "hub stack: unknown name"         1 "$(_lib _fleet_stack_is_hub nowhere; echo $?)"
 # the hub has a Stacks/smoke-photos folder (not in DOCKER_STACKS): the build moves it into the VM and starts it there
 # (the hub and the stand-in share this machine's Docker, so the hub's folder carries another name: a renamed row, source ≠ stack)
-mkdir -p "$WORK/Stacks/smoke-photos-src" && printf 'services:\n  x:\n    image: alpine:3\n    command: ["sleep","infinity"]\n' > "$WORK/Stacks/smoke-photos-src/docker-compose.yml" && printf 'SMOKE_PHOTOS=1\n' > "$WORK/Stacks/smoke-photos-src/.env"
+mkdir -p "$WORK/Stacks/smoke-photos-src" && printf 'services:\n  x:\n    image: alpine:3\n    command: ["sleep","infinity"]\n' > "$WORK/Stacks/smoke-photos-src/docker-compose.yml" && printf 'SMOKE_PHOTOS=1\nSMOKE_TOKEN=${SECRETS_SMOKE_TRAVEL}\n' > "$WORK/Stacks/smoke-photos-src/.env"
+auth_request POST /secrets '{"key":"SMOKE_TRAVEL","value":"travels-with-the-stack"}' >/dev/null   # the stack refers to it: it must follow the stack into the VM
 _PROV_BODY="{\"node\":\"pve\",\"storage\":\"local-lvm\",\"image_storage\":\"local\",\"bridge\":\"vmbr0\",\"cidr\":24,\"gateway\":\"192.0.2.1\",\"dns\":\"192.0.2.1\",\"image\":\"ubuntu-24.04\",\"vms\":[{\"stack\":\"smoke-photos\",\"source\":\"smoke-photos-src\",\"cores\":2,\"memory_mb\":2048,\"disk_gb\":16,\"ip\":\"127.0.0.1\"}]}"
 PROV=$(auth_request POST /fleet/provision "$_PROV_BODY")
 check "provision: job queued"           true "$(body_of <<< "$PROV" | jq -r '.success' 2>/dev/null)"
@@ -952,6 +981,8 @@ check "provision: stack moved into the VM" yes "$(auth_request GET "/fleet/jobs/
 check "provision: source folder named"  yes "$(auth_request GET "/fleet/jobs/$JOB" | body_of | jq -r '.log[].text' 2>/dev/null | grep -q 'Stacks/smoke-photos-src from the hub copied into the VM as smoke-photos' && echo yes || echo no)"
 check "provision: VM has the compose"   yes "$(auth_request GET /stacks/smoke-photos/compose | body_of | jq -r '.content // .compose // ""' 2>/dev/null | grep -q 'sleep' && echo yes || echo no)"
 check "provision: stack running in VM"  running "$(auth_request GET /stacks/smoke-photos | body_of | jq -r '.status' 2>/dev/null | cut -d: -f1)"
+check "provision: the stack's secret travelled" yes "$(auth_request GET /fleet/members/smoke-photos/api/secrets | body_of | jq -e '[.secrets[] | if type == "object" then .key else . end] | index("SMOKE_TRAVEL") != null' >/dev/null 2>&1 && echo yes || echo no)"
+check "provision: secret copy logged"   yes "$(auth_request GET "/fleet/jobs/$JOB" | body_of | jq -r '.log[].text' 2>/dev/null | grep -q 'secret(s) the stack uses copied' && echo yes || echo no)"
 # the hub's own start.sh never starts a folder that lives in a VM, whatever DOCKER_STACKS says
 _owned() { ( COMPOSE_DIR="$WORK/Stacks"; eval "$(sed -n '/^_fleet_owned_stack()/,/^}/p' "$ROOT/.scripts/run.sh")"; _fleet_owned_stack "$1"; echo $? ); }
 check "start.sh: a VM's stack is not the hub's to start" 0 "$(_owned smoke-photos)"

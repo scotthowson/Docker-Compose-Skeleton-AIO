@@ -432,8 +432,11 @@ stops answering raises `fleet_member_down`; a finished build `fleet_vm_ready`. N
 scheduled or moved between VMs: a control plane over independent compose hosts, and a VM that
 loses its hub keeps running. The hub keeps the VMs on its own DCS version: the Updates page
 lists every VM's version, *Update all VMs* hands each one the hub's code (data, accounts and
-stacks stay; the API restarts in place), a hub update takes the VMs along, and the image list
-covers the hub and every VM at once, each pull going where the image runs.
+stacks stay; the API restarts in place), a hub update takes the VMs along, and every list page —
+health, images, networks, volumes, snapshots, automations, schedules, secrets, activity — opens
+on *Everywhere* with a capsule per row saying which VM it lives on. A VM's events reach the hub,
+which names the VM in its Discord and NTFY notifications, and one click snapshots the hub and
+every VM at once.
 [docs/PROXMOX.md](docs/PROXMOX.md) is the full guide, from the
 token roles (PVEVMAdmin, PVEDatastoreAdmin, PVESDNUser) to the troubleshooting table.
 

@@ -311,6 +311,60 @@ to one VM (the member proxy carries the calls, so nothing new is exposed). Witho
 nothing changes: a DCS without members shows neither the card nor the row, and a VM's own
 Updates page says *Updated by its hub* instead of looking for releases.
 
+### Everything from the hub
+
+The hub is the one place to look at and to run the whole server. Every page that lists things
+opens on **Everywhere** on a hub — the hub and every VM in one list, each row carrying a capsule
+that says where it lives (*Hub*, or *VM #103 · media-services*) — and the same row of chips
+narrows it to the hub alone or to one VM: Health, Images, Updates, Networks, Volumes, Snapshots,
+Automations, Scheduled Tasks, Secrets and the Activity timeline all share the one choice, and it
+is remembered. *Everywhere* is a view: to change something, pick the hub or the VM it lives on
+(clicking a row's capsule does that), and the change happens on that DCS through the hub. The API
+is the same: `?fleet=1` on `GET /health`, `/images`, `/networks`, `/volumes`, `/events`,
+`/snapshots`, `/automations`, `/schedules`, `/secrets` and `/audit` merges every member's rows
+(tagged `member`, `member_name`, `vmid`) with the hub's, and `members[]` says how each DCS did.
+
+Some things go further than a merged list:
+
+- **Events reach the hub.** A VM's DCS sends every event it raises (a container that stopped, a
+  stack that started, an update, a failed backup…) to its hub with a relay token the hub handed
+  it when it joined (`POST /fleet/relay`). The hub notes it in the Activity timeline as
+  `fleet_event` and fires its own notification rules with the VM named — a Discord embed or an
+  NTFY push from the hub reads *VM media-services · Container stopped* and carries the VM as a
+  field. The VMs need no Discord or NTFY settings of their own; the hub's rules and channels
+  cover the whole server. Members that joined before this get a token from the hub within a
+  minute.
+- **A snapshot of everything.** *Create snapshot* on Everywhere (`POST /snapshots/create?fleet=1`)
+  takes one snapshot on the hub and one on every VM at the same moment; each DCS keeps its own
+  archive (a VM's files stay in the VM), the list shows them together, and a restore goes to the
+  DCS the snapshot came from.
+- **Secrets travel with a stack.** When a build moves a stack into its VM, the secrets the stack
+  refers to (`${SECRETS_…}` in its compose or `.env`) are stored in the VM's own secret store
+  first, so the stack starts there as it did on the hub.
+- **One version everywhere.** The Updates page keeps every VM on the hub's DCS version (above).
+
+Without Proxmox and without members nothing of this shows: the pages are as they were, and a
+DCS with no fleet never asks anyone else.
+
+### The whole thing, step by step
+
+For a fresh Proxmox host, this is the entire path — no terminal on the VMs, no files to edit:
+
+1. Make one VM for the hub (any Debian or Ubuntu, 2 cores, 4 GB, 20 GB) and install DCS in it
+   with the one-line installer from the README. The setup wizard opens in the browser.
+2. In the wizard's **Proxmox** step, paste the host's address and an API token (section 1 above
+   shows the two clicks that make one) and press *Test*. Green means the hub can see the host.
+3. In the **Stacks** step, every stack you ticked shows a *Hub / VM* switch. Leave them on *VM*:
+   each becomes its own VM, named like the stack. Sizes and the operating system are prefilled;
+   change them if you like.
+4. Press **Complete setup**. The hub bakes a DCS template once, then clones a VM per stack; each
+   card on the screen shows the build step by step. A VM takes about 25 seconds from a template.
+5. When the cards are green, the dashboard opens: the Stacks page lists every VM as a stack, the
+   Containers page every container with its VM, and the Updates, Health, Images and the other
+   pages show *Everywhere*.
+6. Later: *New stack → In its own VM* adds one more; *Update all VMs* on the Updates page keeps
+   them current; Discord or NTFY on the hub's Notifications page covers every VM.
+
 ### VMs you made yourself
 
 Any VM with DCS in it can join the same fleet, and the hub then treats it like a built one:
@@ -391,6 +445,10 @@ guest*, and the member menu's *Test* re-matches.
 | POST | `/fleet/self-update` | admin, on a member — install a code bundle over this install `{bundle_url}`; data, accounts, secrets, stacks and settings stay, the old code lands in `.snapshots` |
 | GET | `/fleet/images` | user — every image on the hub and on each member, tagged with where it runs; the counts add up |
 | POST | `/fleet/images/check` | admin — the registry check on the hub and on every member at once |
+| GET | `/health`, `/images`, `/networks`, `/volumes`, `/events`, `/snapshots`, `/automations`, `/schedules`, `/secrets`, `/audit` with `?fleet=1` | as the plain endpoint — the members' rows merged in, tagged `member`, `member_name`, `vmid`; `members[]` per DCS |
+| POST | `/snapshots/create?fleet=1` | admin — one snapshot on the hub and one on every member; `results[]` per DCS |
+| POST | `/fleet/relay` | public with a relay token — a member's event for the hub `{token, event, context}`: noted as `fleet_event`, notified with the VM named |
+| POST | `/fleet/hub/relay-token` | admin, on a member — the hub hands the member its relay token `{token}` |
 | GET / POST | `/proxmox/capabilities`, `/proxmox/storage` | admin — what the token may do, the storages |
 | GET / POST / DELETE | `/fleet/join-tokens`, `/fleet/join-tokens/{token}` | admin — join codes |
 | POST | `/fleet/join` | public — a member registers with a join code |
@@ -452,6 +510,7 @@ Command line, on any DCS: `.scripts/api-server.sh --join-hub URL CODE [NAME]`, `
 | The scan finds nothing | The scan needs each guest's addresses from the QEMU guest agent (or container interfaces) and DCS answering on port 9876 there (`FLEET_SCAN_PORTS` for others). A VM without the agent shows *address unknown*. |
 | A member's stacks are missing from the Proxmox page | *Members answering* in the page header says whether the hub reached it; the member menu's *Test* explains a refusal (a changed password on the member: edit the member and enter it again). |
 | An update round says *the bundle could not be unpacked: … Function not implemented* | The member's `dcs-api.service` still carries `RestrictSUIDSGID=true` from an older installer; under it systemd answers tar's `openat2()` with ENOSYS on Fedora 44 (systemd 259). Run `sudo .scripts/install-service.sh` once on that VM and restart the service — every later round refreshes the unit by itself when the installer changes. |
+| A VM's events do not show on the hub's Activity page or in its Discord/NTFY | The member has no relay token yet: the hub hands one out within a minute of the member answering (`.data/fleet-relay.json` on the hub); a member older than 3.9.0 gets it after an update round. Events raised while the hub was unreachable are not queued. |
 | A VM's own Updates page says *Updated by its hub* | By design: a VM built by the hub has no git checkout, its code comes from the hub's Updates page (*Update all VMs*). |
 | Detection says nothing about Proxmox | Detection reads `systemd-detect-virt` and the DMI vendor; a VM without the guest agent still shows as *QEMU/KVM*, which is treated as a probable Proxmox VM. The probe looks for port 8006 on the default gateway and on `pve`, `proxmox`, `pve.local`, `proxmox.local`; if your host has another name, just type the URL. |
 

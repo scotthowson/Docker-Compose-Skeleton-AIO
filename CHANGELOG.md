@@ -35,6 +35,18 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   to date or not, checked when, last changed when); a VM's own page says *Updated by its hub*,
   a copy without git *Installed without git*, and a failed check shows the reason with a retry
   instead of an endless skeleton. Without members nothing changes.
+- **Everything from the hub.** Every list page of a hub opens on *Everywhere* — the hub and every
+  VM in one list, each row with a capsule saying where it lives — with chips for the hub alone or
+  one VM, one choice shared by Health, Images, Updates, Networks, Volumes, Snapshots, Automations,
+  Scheduled Tasks, Secrets and Activity (`?fleet=1` on the list endpoints merges the members' rows,
+  tagged `member`, `member_name`, `vmid`). Changes happen on the hub or on one VM through the hub.
+  A VM's events reach the hub with a relay token handed out at join (`POST /fleet/relay`): the hub
+  notes them as `fleet_event` and its Discord/NTFY rules fire with the VM named, so the VMs need no
+  channels of their own. *Create snapshot* on Everywhere snapshots the hub and every VM at once
+  (`POST /snapshots/create?fleet=1`). The secrets a stack refers to travel with it into its VM.
+  The Stacks entry reads *Stacks* again (the VMs are the stacks), with a calmer header (New stack
+  → in its own VM or on the hub, a pill for builds in flight, the rest under *More*); builds and
+  the baked DCS templates live on the Proxmox page.
 - The service unit no longer sets `RestrictSUIDSGID`: under it systemd 259 (Fedora 44) answers
   tar's `openat2()` with ENOSYS, which broke code updates unpacked by the API.
 - **The hub's API is the fleet API.** `GET /stacks` on a hub lists the members' stacks next to
