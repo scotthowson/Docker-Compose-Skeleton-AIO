@@ -16,7 +16,7 @@ Nothing in this picture is required: a single-host install is the same DCS with 
 |---|---|---|
 | **DCS inside a VM or LXC** | The normal install. `./setup.sh` notices it runs on a QEMU/KVM guest or in an LXC container and offers to link Proxmox right away. | Any Docker VM or container on the host |
 | **Linked to the Proxmox API** | The Proxmox page lists nodes, VMs and LXC containers with live CPU, memory and uptime, starts, shuts down, stops, reboots and resets them, and alerts when a guest stops on its own. The Discord bot gets `/vms` and `/vm`. | Any DCS, single-host or hub |
-| **Hub and members** | One DCS in its own small LXC or VM (the **hub**) holds the Proxmox link and an account on the DCS of every Docker VM (the **members**): the Proxmox page shows each VM with the stacks its DCS runs, starts and stops them, deploys templates to the VM you pick, merges every member's routes into one feed for the proxy, and alerts when a member stops answering. Members keep working on their own. | The hub in its own LXC/VM (see *Recommended layout*) |
+| **The fleet: the VM is the stack** | One DCS in its own small LXC or VM (the **hub**) keeps the dashboard, the Proxmox link and `core-infrastructure`. Every other stack is a VM the hub **builds** (cloud image, Docker, DCS, joined) and that runs exactly that stack: `media-services` is a VM named media-services. The hub's own API answers for all of them, so the Stacks, Containers and Templates pages, the bot and the API work across the whole host as if it were one machine. | The hub in its own LXC/VM (see *Recommended layout*) |
 
 All three ship. Section 5 sets up the hub and its members; nothing about it changes how a
 single-host DCS works.
@@ -187,65 +187,113 @@ one stops working at once.
 
 ---
 
-## 5. The fleet: a hub and its members
+## 5. The fleet: the VM is the stack
 
-Every Docker VM keeps a complete DCS of its own: its stacks, its Docker, its API, its dashboard.
-The **hub** is the DCS that is linked to Proxmox. It holds an account on every **member** and,
-from one dashboard:
+Every stack you would have run in a directory on one Docker host runs in its own Proxmox VM
+instead, and the hub — the DCS linked to Proxmox — makes that invisible:
 
-- shows each VM on the Proxmox page **with the stacks its DCS runs** (running or stopped, how
-  many containers), next to the VM's own CPU, memory and power buttons;
-- **starts, stops and restarts** those stacks, and **deploys any template to the VM you pick**
-  (*Deploy here* on the VM card, or the *Deploy to* row in the deploy dialog);
-- **merges every member's routes** into its Traefik feed, so the proxy in the networking VM
-  pulls one feed for the whole host (section 4);
-- **watches the members** once a minute and raises `fleet_member_down` / `fleet_member_up`;
-- answers `/fleet` in Discord and shows the fleet on the dashboard's Proxmox card.
+- `media-services`, `networking-security`, `development-tools`… are **VMs named like the
+  stack**, each with Docker and an API-only DCS that carries that one stack (`DOCKER_STACKS=
+  media-services`). The hub keeps `core-infrastructure` (the dashboard, the bot, ntfy, uptime).
+- The hub's **API is the fleet API**: `GET /stacks` lists the members' stacks next to its own
+  (each with `placement: "vm"`, the member and the VMID), and `/stacks/{name}/…`,
+  `/containers/{name}/…` and a template deploy whose target stack lives in a VM are **forwarded
+  to that VM's DCS** with your own role checked on the hub. The Stacks page shows a *VM* chip,
+  the Containers page lists every VM's containers with a *VM* chip, the deploy dialog's stack
+  list says which stacks are VMs, and the bot's `/stacks` and `/fleet` follow. Nothing is
+  scheduled or moved between VMs: this is a control plane over independent compose hosts, and
+  a VM that loses the hub keeps running its stack.
+- **Proxmox and DCS agree**: starting or stopping a VM in the Proxmox UI is the stack going up
+  or down (the VM starts at boot and DCS's boot services start the stack); the Proxmox page
+  shows each VM with its stack, containers and power buttons.
 
-It is a control plane over independent compose hosts, not a cluster: nothing is scheduled or
-moved between VMs, and a member that loses the hub keeps running exactly as before.
+### Building the VMs
 
-### Linking the VMs
+The wizard's **Stacks** step, once Proxmox is linked and the token may create VMs, shows a
+*Hub / VM* switch per stack (VM for every stack but `core-infrastructure`), cores, RAM and disk
+per VM, and a **VM settings** panel prefilled from Proxmox and the hub's network: node, disk
+storage, image storage, bridge, the first address to hand out, the prefix, gateway and DNS.
+*Complete setup* creates the hub's own stacks, then hands the VM plan to the hub, which builds
+the VMs one after another in the background. The success screen and the Proxmox page follow
+each build on a **progress card**; later, **New VM stack** on the Proxmox page builds one more.
 
-There are three ways, and they mix freely:
+Each build job walks these steps (idempotent, so *Retry* on a failed job resumes where it
+stopped):
+
+| Step | What the hub does |
+|------|-------------------|
+| **Image** | Switches the *import* content type on the image storage if needed, then asks Proxmox to download the Debian cloud image (`FLEET_IMAGE_URL`) into it once. A token without `Sys.AccessNetwork` cannot make Proxmox download, so the hub downloads the image itself and uploads it. |
+| **Create** | `POST /nodes/{node}/qemu` with the next free VMID: the image imported as the boot disk (`import-from`), a cloud-init drive, virtio network on the bridge, the guest agent enabled, `onboot`, tags `dcs;<stack>`, then the disk grown to the size you chose. |
+| **Cloud-init** | User `dcs` (`FLEET_VM_USER`) with the hub's own ssh key (made once in `.data/fleet-ssh`), the static address, gateway and DNS. |
+| **Boot** | Starts the VM and waits for the Proxmox task. |
+| **SSH** | Waits for the VM to answer ssh (first boot runs cloud-init). |
+| **Install** | Pipes `.scripts/fleet-bootstrap.sh` into the VM: a network check, curl/git/jq/socat/openssl/python3 and the QEMU guest agent, Docker (get.docker.com, with fallbacks) and Compose, then the hub's **own code** as a bundle (`GET /fleet/bundle?token=<join code>`, never data, accounts, secrets or stacks), then an **unattended member setup** that creates the admin (your username on the hub, a generated password kept in the hub's secret store as `FLEET_MEMBER_<STACK>_ADMIN_PASSWORD`), writes the configuration, creates the stack, starts the API without a dashboard and joins the hub, and finally the boot services (`dcs-api`, `dcs-stacks`). Every line lands in the job log. |
+| **Join** | Waits for the VM's join, then maps the member to the VMID and marks it *provisioned*. |
+| **Ready** | Asks the member for its stacks through the hub. |
+
+What Proxmox needs from the token, beyond `VM.Audit`, `VM.PowerMgmt` and `Sys.Audit`: the
+roles **PVEVMAdmin**, **PVEDatastoreAdmin** and **PVESDNUser** on `/` (Datacenter →
+Permissions → Add), or the privileges `VM.Allocate`, `VM.Config.*`, `Datastore.AllocateSpace`,
+`Datastore.AllocateTemplate`, `Datastore.Allocate` (to switch *import* on) and `SDN.Use`.
+`Sys.AccessNetwork` on the node (a custom role) lets Proxmox download the image itself.
+`GET /proxmox/capabilities` and the wizard say what is missing. The hub itself needs `ssh` and
+`ssh-keygen`, a dir storage for the image (`local`), a bridge the VMs share with the hub, a
+free address range, and internet from the VMs (the install log says at once when there is
+none).
+
+### VMs you made yourself
+
+Any VM with DCS in it can join the same fleet, and the hub then treats it like a built one:
 
 | How | When | What happens |
 |-----|------|--------------|
-| **The wizard's scan** (hub) | Setting up the hub, or *Link VMs* on its Proxmox page | After *Test connection* the wizard runs the link card: connect → token → inventory → **scan**. The hub asks Proxmox for each running guest's addresses (QEMU guest agent, or the container's interfaces) and probes DCS's API port. Every install it finds gets a **Link** button: enter an account of that DCS and the hub logs in, reads its identity and keeps it. VMs without DCS get the join code. |
-| **A join code** (member) | Installing DCS in a new VM, or a VM set up before the hub | The hub's Proxmox page (*Join code*) and the wizard show a code, valid 24 h. On the VM: `DCS_HUB_URL=http://<hub>:9876 DCS_JOIN_TOKEN=<code> ./setup.sh` for a fresh install, `./setup.sh --join http://<hub>:9876 <code>` for an installed one, or *Join a DCS hub* in that VM's wizard or Proxmox page. The member creates the account `dcs-hub` for the hub and hands it over once; the hub logs in, matches the guest and keeps it. |
+| **Scan and link** (hub) | The wizard's Proxmox section after *Test connection*, or *Link VMs* on the Proxmox page | The hub asks Proxmox for each running guest's addresses (QEMU guest agent, or the container's interfaces) and probes DCS's API port; every install it finds gets a *Link* button (an account of that DCS), the rest the join code. |
+| **A join code** (member) | Installing DCS in a VM, or a VM set up before the hub | The hub's Proxmox page (*Join code*) shows a code, valid 24 h. On the VM: `DCS_HUB_URL=http://<hub>:9876 DCS_JOIN_TOKEN=<code> ./setup.sh` for a fresh install, `./setup.sh --join http://<hub>:9876 <code>` for an installed one, or *Join a DCS hub* in that VM's wizard or Proxmox page. The member creates the account `dcs-hub` for the hub and hands it over once. |
 | **By address** (hub) | Any time | *Add member* on the Proxmox page: address, an account that exists on that DCS, optionally the guest. |
 
-`./setup.sh` asks which one this machine is on its first run — **standalone**, **hub** (link
+`./setup.sh` asks which one a machine is on its first run — **standalone**, **hub** (link
 Proxmox here) or **member** (hub address and join code) — and unattended installs answer with
 `DCS_FLEET_ROLE=hub|member|standalone`, `DCS_HUB_URL` + `DCS_JOIN_TOKEN` (+ `DCS_MEMBER_NAME`)
 and `DCS_PROXMOX_URL` + `DCS_PROXMOX_TOKEN_ID` + `DCS_PROXMOX_TOKEN_SECRET`. A join typed into
-`setup.sh` before the VM has an admin account is saved and runs in that VM's wizard, on the same
-progress card, right after the admin account exists.
+`setup.sh` before the VM has an admin account is saved and runs in that VM's wizard, on the
+same progress card. A fully unattended install (what the hub runs inside a VM) takes
+`DCS_UNATTENDED=true`, `DCS_ADMIN_USER`, `DCS_ADMIN_PASSWORD`, `DCS_STACKS`, `DCS_MEMBER_NAME`,
+`DCS_TZ`, `DCS_PUID`, `DCS_PGID`, `DCS_PROXY_DOMAIN`, `DCS_CF_DNS_API_TOKEN`, `DCS_API_PORT`,
+`DCS_API_BIND` and `DCS_NO_UI=true` (API only).
 
-### How a member is matched to its guest
-
-The hub reads the member's identity (hostname, SMBIOS uuid, addresses) and tries, in order: the
-**uuid** of a QEMU VM (`smbios1` in its configuration — exact, needs nothing in the guest), a
-**shared address** (the guest agent's or the container's addresses against the member's), then
-the **name** (guest name equals the member's hostname). A member the hub could not place is
-listed under *Members without a guest* with *Pick the guest*; the member menu's *Test* re-runs
-the match. Install the QEMU guest agent in every VM so the scan and the address match work.
+The hub matches a member to its guest by the VM's **SMBIOS uuid** (`smbios1` in its
+configuration), then a **shared address** (guest agent / container interfaces), then the
+**name**; a member it could not place is listed under *Members without a guest* with *Pick the
+guest*, and the member menu's *Test* re-matches.
 
 ### What the hub may do, and how it is kept safe
 
 - The hub's account on a member is an **admin** (`dcs-hub`, a random 40-character password kept
-  in the hub's secret store as `FLEET_MEMBER_<ID>_PASSWORD`). It is a *service account*: it
-  keeps its session when someone else signs in on that member.
+  in the hub's secret store as `FLEET_MEMBER_<ID>_PASSWORD`), a *service account* that keeps its
+  session when someone else signs in on that member.
 - Every call the dashboard makes on a member goes **through the hub**
-  (`/fleet/members/{id}/api/…`) with the caller's own role checked against the inner path as if
-  it were local — a viewer reads, a bot does what bots may, an admin does everything. Streams,
-  auth and setup are never forwarded. Non-GET calls are audited on the hub as `fleet_proxy`.
-- **Join codes** live 24 h (or the hours you choose), are used from the hub's LAN address, and
-  are rate-limited like logins; revoke them from the Proxmox page.
-- **Leaving**: *Leave* on the member removes the `dcs-hub` account there; *Remove* on the hub
-  forgets the member (and removes its account when it answers). Neither touches a stack.
-- The hub reaches members at `http://<address>:9876` (`FLEET_SELF_URL` on a member fixes a wrong
-  detected address; `FLEET_SCAN_PORTS` on the hub changes the ports the scan probes).
+  (`/fleet/members/{id}/api/…`, or transparently for stacks, containers and deploys) with the
+  caller's own role checked against the inner path — a viewer reads, a bot does what bots may,
+  an admin does everything. Streams, auth and setup are never forwarded. Non-GET calls are
+  audited on the hub as `fleet_proxy`.
+- **Join codes** live 24 h (48 h for a build), are rate-limited like logins, and can be revoked
+  from the Proxmox page. The **code bundle** a VM fetches needs a valid join code and never
+  carries `.env`, accounts, secrets, data, stacks or logs.
+- **Removing**: *Remove from the fleet* forgets a member (its `dcs-hub` account is removed when
+  it answers); *Stop and destroy the VM on Proxmox* also stops and deletes the VM with its
+  disks after you type the stack's name. *Leave* on a member removes the hub's account there.
+- **Whose stack is it**: the hub treats a stack as its own when it is in the hub's `DOCKER_STACKS`
+  or has containers up. A `Stacks/<name>` folder alone does not count — the repository ships one
+  per stack, and a stack placed in a VM leaves its folder behind on the hub — so the VM's stack is
+  the one listed, forwarded and deployed to. To move a stack that runs on the hub into a VM, stop
+  it and take it out of `DOCKER_STACKS` first (the wizard's Stacks step does that for you).
+- **One name, one guest**: building a VM for a stack whose name already exists as a guest on
+  Proxmox is refused — link that guest from the Proxmox page (*Link VMs*) or rename it there. A
+  failed build's VM can go with its job (*Dismiss* asks; `DELETE /fleet/jobs/{id}?destroy=true`).
+- The hub reaches members at `http://<address>:9876` and members reach the hub at
+  `FLEET_SELF_URL` (detected: the hub's LAN address and API port; set it when the hub sits
+  behind another address). `FLEET_SCAN_PORTS` changes the ports the scan probes,
+  `FLEET_IMAGE_URL` the cloud image, `FLEET_VM_USER` the user cloud-init makes.
 
 ### The API
 
@@ -253,13 +301,19 @@ the match. Install the QEMU guest agent in every VM so the scan and the address 
 |--------|------|--------|
 | GET | `/fleet/status` | user — hub, member or standalone; the hub this server joined; a pending join |
 | GET | `/fleet/members`, `/fleet/members/{id}` | user |
-| POST / PUT / DELETE | `/fleet/members`, `/fleet/members/{id}` | admin — add by address, edit, remove |
+| POST / PUT / DELETE | `/fleet/members`, `/fleet/members/{id}` (`?destroy=true` also destroys the VM) | admin |
 | POST | `/fleet/members/{id}/test` | admin — sign in afresh, read the identity, re-match the guest |
 | ANY | `/fleet/members/{id}/api/{path}` | the caller's role on the inner path — the proxy |
-| GET | `/fleet/overview` | user — every member with its stacks and container counts (10 s cache) |
-| GET / POST | `/fleet/discover` | admin — the scan (GET cached 30 s; POST scans now and accepts Proxmox values before they are saved) |
+| GET | `/fleet/overview` | user — every member with its stacks, containers and counts (10 s cache) |
+| GET / POST | `/fleet/discover` | admin — the scan (GET cached 30 s; POST scans now, accepts Proxmox values before they are saved) |
+| GET / POST | `/fleet/provision/defaults` | admin — prefilled values for building VMs (POST with Proxmox values before they are saved) |
+| POST | `/fleet/provision` | admin — build one VM per stack `{node, storage, image_storage, bridge, cidr, gateway, dns, ip_start, vms: [{stack, cores, memory_mb, disk_gb, ip}]}` |
+| GET | `/fleet/jobs`, `/fleet/jobs/{id}` | admin — the builds with steps and log |
+| POST / DELETE | `/fleet/jobs/{id}/retry`, `/fleet/jobs/{id}` | admin |
+| GET / POST | `/proxmox/capabilities`, `/proxmox/storage` | admin — what the token may do, the storages |
 | GET / POST / DELETE | `/fleet/join-tokens`, `/fleet/join-tokens/{token}` | admin — join codes |
 | POST | `/fleet/join` | public — a member registers with a join code |
+| GET | `/fleet/bundle?token=` | public with a join code — the hub's code for a VM being built |
 | GET | `/fleet/identity`, `/fleet/feed` | user — what a hub reads from a member |
 | POST / DELETE | `/fleet/join-hub`, `/fleet/hub` | admin — join a hub, leave it |
 
@@ -270,22 +324,22 @@ Command line, on any DCS: `.scripts/api-server.sh --join-hub URL CODE [NAME]`, `
 
 ## 6. Recommended layout on Proxmox
 
-- **The hub** in its own small LXC or VM (2 cores, 2 GB, Docker installed): it holds the Proxmox
-  link, the fleet, the Discord bot and the route feed. An LXC needs *nesting* on for Docker
-  (`features: nesting=1`, unprivileged is fine).
-- **One VM per group** (`media-services`, `networking-security`, `development-tools`…), each a
-  plain DCS install whose stack carries that group, joined to the hub with the join code. VMs
+- **The hub** in its own small LXC or VM (2 cores, 2 GB, Docker installed): it keeps the
+  dashboard (`core-infrastructure`), the Proxmox link, the fleet, the Discord bot and the route
+  feed. An LXC needs *nesting* on for Docker (`features: nesting=1`, unprivileged is fine). Not
+  on the Proxmox host itself: Docker there sets the kernel's forwarding policy to drop, which
+  breaks the bridges Proxmox routes through.
+- **One VM per stack**, built by the hub from the wizard's Stacks step (`media-services`,
+  `networking-security`, `development-tools`…): 2 cores, 4 GB and 32 GB by default, sized per
+  stack, each an API-only DCS with that one stack, joined to the hub, started at boot. VMs
   isolate CPU, memory and disks, and Proxmox backs each one up with vzdump.
-- **The proxy** (Traefik, Authelia, CrowdSec) in the networking VM, pulling the hub's feed —
-  which now carries every member's routes.
-- **The QEMU guest agent** in every VM (`apt install qemu-guest-agent`), and *Options → QEMU
-  Guest Agent* on in Proxmox: consistent snapshots, clean shutdowns, and the hub can read each
-  VM's IP for the scan and the match.
-- **DCS's own backups** stay per VM (Backup page); the hub's `.env`, `.data` and secret store are
-  tiny and are covered by the VM backup.
-
-The phase after this one lets the hub clone a cloud-init template into a new VM, install DCS
-inside and join it, so the wizard's layout step ("name your VMs") builds the whole tree.
+- **The proxy** (Traefik, Authelia, CrowdSec) in the `networking-security` VM, pulling the
+  hub's feed, which carries every VM's routes.
+- **Addresses**: a range next to the hub (the wizard proposes `.200` upwards on the hub's
+  subnet) on the bridge the hub shares with the VMs; the hub reaches each VM at
+  `http://<address>:9876`, the VMs reach the hub at `FLEET_SELF_URL`.
+- **DCS's own backups** stay per VM (Backup page); the hub's `.env`, `.data` and secret store
+  are tiny and are covered by the VM backup.
 
 ---
 
@@ -301,6 +355,12 @@ inside and join it, so the wizard's layout step ("name your VMs") builds the who
 | A stop shows as *VM stopped on its own* | The watcher only ignores changes DCS asked for in the last five minutes; a shutdown from the Proxmox UI or from inside the guest is reported, which is the point. |
 | Feed never pulled | The proxy machine must reach `http://<target host>:9876` (or the dashboard URL): test with `curl` from there; check the token in the snippet; Traefik logs a provider error when it cannot fetch. |
 | A route is missing from the feed | Its container publishes no host port, or only on `127.0.0.1`; the panel lists it under *skipped*. Add a `ports:` mapping. |
+| A build fails at **Image** | *cannot hold imported images*: tick *Import* under Datacenter → Storage → local → Content (or give the token `Datastore.Allocate`). *download refused* / a 403 with `Sys.AccessNetwork`: the hub then downloads and uploads the image itself; give the token `Sys.AccessNetwork` on the node to let Proxmox download. |
+| A build fails at **Create** | Proxmox's own message is in the log: `SDN.Use` on the bridge means the token lacks the role PVESDNUser; `Datastore.AllocateSpace` the role PVEDatastoreAdmin. |
+| A build fails at **SSH** | The VM booted but never answered at its address: the bridge is not the hub's network, the gateway or prefix is wrong, or the address is taken. The Proxmox console of the VM shows cloud-init's log. |
+| A build fails at **Install** with *cannot reach the internet* | The VM has no way out: the gateway does not answer, DNS fails, or (on a Proxmox host that also runs Docker) the forwarding policy dropped it. Fix the network, then *Retry*. |
+| A build fails at **Install** with *could not fetch the DCS bundle* | The VM cannot reach the hub at `FLEET_SELF_URL` (a 403 means the build's join code expired — *Retry* renews it). |
+| A build fails at **Join** | The VM installed DCS but its join never arrived: `FLEET_SELF_URL` must be the hub's address as the VM sees it; the VM's `~/.Docker-Compose-Skeleton-AIO/logs` says what it tried. |
 | *The hub could not log in to http://…* on a join | The hub must reach the member's API at that address: a firewall, or a wrong detected address — set `FLEET_SELF_URL=http://<member ip>:9876` in the member's `.env` (or pass `url` on the join) and join again. |
 | The join code is refused | Codes expire after 24 h (or the hours chosen) and are case-insensitive; mint a new one on the hub's Proxmox page. Five wrong codes from one address lock it out for a while, like logins. |
 | A member shows *no guest matched* | No guest agent (uuid still works for a VM if the hub reads `smbios1`, but an LXC or a VM whose name differs from the hostname needs the address or the name to match): pick the guest from the member menu. |

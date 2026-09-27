@@ -48,7 +48,7 @@ DCS_HOME=$(getent passwd "$DCS_USER" 2>/dev/null | cut -d: -f6)
 # Read API bind address from .env if available
 API_BIND="0.0.0.0"
 if [[ -f "$BASE_DIR/.env" ]]; then
-    _bind=$(grep -m1 '^API_BIND=' "$BASE_DIR/.env" 2>/dev/null | cut -d'=' -f2- | tr -d '"' | tr -d "'")
+    _bind=$(grep -m1 '^API_BIND=' "$BASE_DIR/.env" 2>/dev/null | cut -d'=' -f2- | tr -d '"' | tr -d "'" || true)
     [[ -n "$_bind" ]] && API_BIND="$_bind"
 fi
 
@@ -187,11 +187,37 @@ echo -e "    3. dcs-stacks.service runs start.sh (ordered startup + health check
 echo -e "    4. Containers with restart policies are also started by Docker"
 echo ""
 
-# ── Offer to start now ──
+# ── Start now ──
+# setup.sh leaves the API instance it started (nohup, outside systemd) running; the unit cannot
+# bind the same port until that instance is gone, so the hand-over is: stop it, start the
+# service, wait for /ping. Unattended installs (no terminal, or DCS_UNATTENDED=true) never prompt.
+_api_port=""
+[[ -f "$BASE_DIR/.env" ]] && _api_port=$(grep -m1 '^API_PORT=' "$BASE_DIR/.env" 2>/dev/null | cut -d'=' -f2- | tr -d '"' | tr -d "'" || true)
+[[ "$_api_port" =~ ^[0-9]+$ ]] || _api_port=9876
+_start_now=false
 if ! systemctl is-active --quiet dcs-api.service; then
-    read -rp "Start the API server now? [Y/n] " _start
-    if [[ "${_start,,}" != "n" ]]; then
-        systemctl start dcs-api.service
-        echo -e "${GREEN}✓${RST} API server started"
+    if [[ "${DCS_UNATTENDED:-false}" == "true" || ! -t 0 ]]; then
+        _start_now=true
+    else
+        read -rp "Start the API server now? [Y/n] " _start
+        [[ "${_start,,}" != "n" ]] && _start_now=true
+    fi
+fi
+if [[ "$_start_now" == "true" ]]; then
+    # an instance started outside systemd (setup.sh does that) would keep the port busy
+    su -s /bin/bash "$DCS_USER" -c "cd '$BASE_DIR' && '$BASE_DIR/.scripts/api-server.sh' --stop" >/dev/null 2>&1 || true
+    systemctl reset-failed dcs-api.service 2>/dev/null || true
+    systemctl start dcs-api.service
+    _host="$API_BIND"; [[ "$_host" == "0.0.0.0" || "$_host" == "::" || "$_host" == "[::]" ]] && _host="127.0.0.1"
+    _up=false
+    for _i in $(seq 1 30); do
+        if curl -fsS -m 2 -o /dev/null "http://$_host:$_api_port/ping" 2>/dev/null; then _up=true; break; fi
+        sleep 1
+    done
+    if [[ "$_up" == "true" ]] && systemctl is-active --quiet dcs-api.service; then
+        echo -e "${GREEN}✓${RST} API server started (dcs-api.service, ${API_BIND}:${_api_port})"
+    else
+        echo -e "${RED}✗${RST} dcs-api.service is not answering on ${API_BIND}:${_api_port} — see: journalctl -u dcs-api -n 30"
+        exit 1
     fi
 fi

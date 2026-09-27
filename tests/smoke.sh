@@ -672,7 +672,7 @@ check "proxmox: templates dropped"      3 "$(auth_request GET /proxmox/vms | bod
 check "proxmox: running count"          2 "$(auth_request GET /proxmox/vms | body_of | jq -r '.running' 2>/dev/null)"
 check "proxmox: tags split"             media "$(auth_request GET /proxmox/vms | body_of | jq -r '.vms[0].tags[1]' 2>/dev/null)"
 check "proxmox: nodes"                  pve "$(auth_request GET /proxmox/nodes | body_of | jq -r '.nodes[0].node' 2>/dev/null)"
-check "proxmox: vm detail"              media-services "$(auth_request GET /proxmox/vms/pve/qemu/100 | body_of | jq -r '.name' 2>/dev/null)"
+check "proxmox: vm detail"              media-vm "$(auth_request GET /proxmox/vms/pve/qemu/100 | body_of | jq -r '.name' 2>/dev/null)"
 check "proxmox: bad type refused"       400 "$(auth_request GET /proxmox/vms/pve/disk/100 | status_of)"
 check "proxmox: bad action refused"     400 "$(auth_request POST /proxmox/vms/pve/lxc/200/explode '{}' | status_of)"
 check "proxmox: reset is qemu-only"     400 "$(auth_request POST /proxmox/vms/pve/lxc/200/reset '{}' | status_of)"
@@ -699,7 +699,7 @@ _fleet_stop_listeners() { for d in "$WORK" "$MWORK"; do [[ -f "$d/.data/api-serv
 trap '_fleet_stop_listeners; rm -rf "$WORK" "$MWORK" "$PWORK"' EXIT
 _menvset() { sed -i "/^${1}=/d" "$MWORK/.env"; printf '%s=%s\n' "$1" "$2" >> "$MWORK/.env"; }
 _mlib() { local -a _c=("$@"); ( set --; cd "$MWORK" && source "$MWORK/.scripts/api-server.sh" >/dev/null 2>&1; "${_c[@]}" ) 2>/dev/null; }
-_envset API_AUTH_ENABLED true; _envset FLEET_SCAN_PORTS "$FLEET_PORT"
+_envset API_AUTH_ENABLED true; _envset FLEET_SCAN_PORTS "$FLEET_PORT"; _envset API_PORT "$HUB_PORT"
 _menvset API_AUTH_ENABLED true; _menvset API_PORT "$FLEET_PORT"; _menvset SERVER_NAME "Media VM"
 sed -i '/^PROXMOX_/d;/^FLEET_SCAN_PORTS=/d' "$MWORK/.env"
 rm -f "$MWORK/.data/fleet.json" "$MWORK/.data/api-server.pid" "$WORK/.data/fleet.json"
@@ -805,8 +805,102 @@ check "fleet: CLI join code"            yes "$(cd "$WORK" && "$API" --join-token
 check "fleet: CLI status is JSON"       true "$(cd "$WORK" && "$API" --fleet-status 2>/dev/null | jq -e 'has("members")' 2>/dev/null)"
 check "fleet: revoke code"              200 "$(auth_request DELETE "/fleet/join-tokens/$JT" | status_of)"
 check "fleet: revoked code gone"        no "$(auth_request GET /fleet/join-tokens | body_of | jq -e --arg t "$JT" '.tokens[] | select(.token == $t)' >/dev/null 2>&1 && echo yes || echo no)"
+
+echo "Fleet: the hub builds a VM for a stack (mock Proxmox, an ssh stand-in runs the real unattended setup)"
+PROV_PORT=$(( 20000 + RANDOM % 20000 )); [[ "$PROV_PORT" == "$HUB_PORT" || "$PROV_PORT" == "$FLEET_PORT" ]] && PROV_PORT=$(( PROV_PORT + 3 ))
+VMWORK="$WORK-vm"
+cat > "$WORK/ssh-shim.sh" <<'SHIM'
+#!/bin/bash
+# ssh stand-in: "… dcs@IP true" answers at once; the bootstrap command (script on stdin) runs the member bootstrap here —
+# a fresh copy of the repository and the real setup.sh, unattended and API-only, on the port the hub chose.
+set -u
+while [[ $# -gt 0 ]]; do case "$1" in -i|-o) shift 2 ;; -*) shift ;; *) break ;; esac; done
+target="${1:-}"; shift || true
+case "$*" in
+  true) exit 0 ;;
+  "bash -s"|*dcs-bootstrap*)
+    script=$(cat)
+    eval "$(printf '%s\n' "$script" | grep '^export DCS_')"
+    port="${DCS_MEMBER_URL##*:}"; host=$(sed -E 's#^https?://([^:/]+).*#\1#' <<< "$DCS_MEMBER_URL")
+    [[ -f "$SHIM_DIR/.data/api-server.pid" ]] && (cd "$SHIM_DIR" && "$SHIM_DIR/.scripts/api-server.sh" --stop >/dev/null 2>&1)
+    rm -rf "$SHIM_DIR"; git clone -q "$SHIM_ROOT" "$SHIM_DIR" || { echo "clone failed"; exit 1; }
+    for f in .scripts/api-server.sh setup.sh .env.example VERSION .scripts/fleet-bootstrap.sh; do cat "$SHIM_ROOT/$f" > "$SHIM_DIR/$f"; done
+    rm -rf "$SHIM_DIR/Stacks"   # the real bundle carries no stacks: a member starts with only its own
+    cd "$SHIM_DIR" || exit 1
+    echo "→ (stand-in) unattended member setup on 127.0.0.1:$port for stack $DCS_STACKS as $target"
+    DCS_UNATTENDED=true DCS_NO_UI=true DCS_FLEET_ROLE=member DCS_API_PORT="$port" DCS_API_BIND="$host" ./setup.sh 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep -E 'FAIL|WARN|Unattended|Joined|Join|Setup complete|API:' | tail -12
+    exit "${PIPESTATUS[0]}"
+    ;;
+  *) echo "stand-in: unknown command: $*" >&2; exit 1 ;;
+esac
+SHIM
+chmod +x "$WORK/ssh-shim.sh"
+_envset FLEET_SSH_CMD "$WORK/ssh-shim.sh"; _envset FLEET_SELF_URL "http://127.0.0.1:$HUB_PORT"; _envset FLEET_MEMBER_PORT "$PROV_PORT"; _envset FLEET_SSH_DIR "$WORK/.data/fleet-ssh"
+export SHIM_ROOT="$ROOT" SHIM_DIR="$VMWORK"
+_fleet_stop_listeners() { for d in "$WORK" "$MWORK" "$VMWORK"; do [[ -f "$d/.data/api-server.pid" ]] && (cd "$d" && "$d/.scripts/api-server.sh" --stop >/dev/null 2>&1); done; return 0; }
+trap '_fleet_stop_listeners; rm -rf "$WORK" "$MWORK" "$PWORK" "$VMWORK"' EXIT
+check "provision: defaults answer"      true "$(auth_request GET /fleet/provision/defaults | body_of | jq -r '.proxmox_linked' 2>/dev/null)"
+check "provision: default disk storage" local-lvm "$(auth_request GET /fleet/provision/defaults | body_of | jq -r '.storage' 2>/dev/null)"
+check "provision: token may create VMs" true "$(auth_request GET /proxmox/capabilities | body_of | jq -r '.can_provision' 2>/dev/null)"
+check "provision: storages listed"      yes "$(auth_request GET /proxmox/storage | body_of | jq -e '.storages | map(.storage) | index("local") != null' >/dev/null 2>&1 && echo yes || echo no)"
+check "provision: viewer denied"        403 "$(viewer_request GET /fleet/jobs | status_of)"
+check "provision: needs a stack"        400 "$(auth_request POST /fleet/provision '{"node":"pve","storage":"local-lvm","gateway":"192.0.2.1","vms":[]}' | status_of)"
+check "provision: bad name refused"     400 "$(auth_request POST /fleet/provision '{"node":"pve","storage":"local-lvm","gateway":"192.0.2.1","vms":[{"stack":"Bad Name"}]}' | status_of)"
+check "provision: local stack refused"  409 "$(auth_request POST /fleet/provision '{"node":"pve","storage":"local-lvm","gateway":"192.0.2.1","ip_start":"192.0.2.50","vms":[{"stack":"demo"}]}' | status_of)"
+check "provision: same-named guest refused" 409 "$(auth_request POST /fleet/provision '{"node":"pve","storage":"local-lvm","gateway":"192.0.2.1","ip_start":"192.0.2.60","vms":[{"stack":"networking-security"}]}' | status_of)"
+check "provision: twin guest named"     yes "$(auth_request POST /fleet/provision '{"node":"pve","storage":"local-lvm","gateway":"192.0.2.1","ip_start":"192.0.2.60","vms":[{"stack":"networking-security"}]}' | body_of | grep -q 'qemu 101 on pve' && echo yes)"
+# what counts as the hub's own stack: DOCKER_STACKS or containers up — not a folder the repository ships
+mkdir -p "$WORK/Stacks/leftover" && printf 'services:\n  x:\n    image: alpine\n' > "$WORK/Stacks/leftover/docker-compose.yml"
+check "hub stack: in DOCKER_STACKS"     0 "$(_lib _fleet_stack_is_hub demo; echo $?)"
+check "hub stack: a folder alone is not" 1 "$(_lib _fleet_stack_is_hub leftover; echo $?)"
+check "hub stack: unknown name"         1 "$(_lib _fleet_stack_is_hub nowhere; echo $?)"
+_PROV_BODY="{\"node\":\"pve\",\"storage\":\"local-lvm\",\"image_storage\":\"local\",\"bridge\":\"vmbr0\",\"cidr\":24,\"gateway\":\"192.0.2.1\",\"dns\":\"192.0.2.1\",\"vms\":[{\"stack\":\"media-services\",\"cores\":2,\"memory_mb\":2048,\"disk_gb\":16,\"ip\":\"127.0.0.1\"}]}"
+PROV=$(auth_request POST /fleet/provision "$_PROV_BODY")
+check "provision: job queued"           true "$(body_of <<< "$PROV" | jq -r '.success' 2>/dev/null)"
+JOB=$(body_of <<< "$PROV" | jq -r '.jobs[0].id' 2>/dev/null)
+check "provision: repeat refused"       409 "$(auth_request POST /fleet/provision "$_PROV_BODY" | status_of)"
+check "provision: join code minted"     yes "$(auth_request GET /fleet/join-tokens | body_of | jq -e '.tokens[] | select(.stack == "media-services")' >/dev/null 2>&1 && echo yes || echo no)"
+_JST=""; for _i in $(seq 1 150); do _JST=$(auth_request GET "/fleet/jobs/$JOB" | body_of | jq -r '.status' 2>/dev/null); [[ "$_JST" == "done" || "$_JST" == "failed" ]] && break; sleep 2; done
+check "provision: job finished"         "done" "$_JST"
+[[ "$_JST" == "done" ]] || { echo "  --- job log ---"; auth_request GET "/fleet/jobs/$JOB" | body_of | jq -r '.error, (.steps[] | "\(.id): \(.state) \(.detail)"), (.log[-25:][] | .text)' 2>/dev/null | sed 's/^/  /'; echo "  --- runner log ---"; tail -5 "$WORK/logs/fleet-jobs.log" 2>/dev/null | sed 's/^/  /'; }
+check "provision: every step done"      8 "$(auth_request GET "/fleet/jobs/$JOB" | body_of | jq -r '[.steps[] | select(.state == "done")] | length' 2>/dev/null)"
+check "provision: image imported"       yes "$(auth_request GET "/fleet/jobs/$JOB" | body_of | jq -r '.log[].text' 2>/dev/null | grep -q 'image ready on local' && echo yes || echo no)"
+check "provision: VM created"           media-services "$(auth_request GET /proxmox/vms | body_of | jq -r '.vms[] | select(.vmid == 105) | .name' 2>/dev/null)"
+check "provision: cloud-init address"   yes "$(auth_request GET /proxmox/vms/pve/qemu/105 | body_of | jq -r '.config.ipconfig0 // ""' 2>/dev/null | grep -q '127.0.0.1/24' && echo yes || echo no)"
+check "provision: hub key in cloud-init" yes "$(auth_request GET /proxmox/vms/pve/qemu/105 | body_of | jq -r '.config.sshkeys // ""' 2>/dev/null | grep -q 'ssh-ed25519' && echo yes || echo no)"
+check "provision: member registered"    105 "$(auth_request GET /fleet/members | body_of | jq -r '.members[] | select(.name == "media-services") | .vmid' 2>/dev/null)"
+check "provision: member runs the stack" media-services "$(auth_request GET /fleet/members | body_of | jq -r '.members[] | select(.name == "media-services") | .stacks[0]' 2>/dev/null)"
+check "provision: member marked built"  true "$(auth_request GET /fleet/members | body_of | jq -r '.members[] | select(.name == "media-services") | .provisioned' 2>/dev/null)"
+check "provision: admin password kept"  yes "$(_lib secrets_exists FLEET_MEMBER_MEDIA_SERVICES_ADMIN_PASSWORD && echo yes || echo no)"
+check "provision: audited"              yes "$(grep -q 'fleet_vm_ready' "$WORK/.data/audit.jsonl" 2>/dev/null && echo yes || echo no)"
+_MADM=$(auth_request GET /fleet/members | body_of | jq -r '.members[] | select(.name == "media-services") | .url' 2>/dev/null)
+check "member: unattended setup complete" true "$(curl -s -m 5 "$_MADM/setup/status" | jq -r '.initialized' 2>/dev/null)"
+check "member: API only, one stack"     media-services "$(curl -s -m 5 -X POST "$_MADM/auth/login" -H 'Content-Type: application/json' -d "{\"username\":\"admin\",\"password\":\"$(_lib secrets_get FLEET_MEMBER_MEDIA_SERVICES_ADMIN_PASSWORD)\"}" | jq -r '.token' 2>/dev/null | xargs -I{} curl -s -m 5 "$_MADM/stacks" -H 'Authorization: Bearer {}' | jq -r '.stacks | map(.name) | join(",")' 2>/dev/null)"
+echo "The hub's API is the fleet API"
+check "hub: /stacks lists the VM stack" vm "$(auth_request GET /stacks | body_of | jq -r '.stacks[] | select(.name == "media-services") | .placement' 2>/dev/null)"
+check "hub: local stacks tagged hub"    hub "$(auth_request GET /stacks | body_of | jq -r '.stacks[] | select(.name == "demo") | .placement' 2>/dev/null)"
+check "hub: remote count"               1 "$(auth_request GET /stacks | body_of | jq -r '.remote' 2>/dev/null)"
+check "hub: /stacks/{vm stack} forwarded" media-services "$(auth_request GET /stacks/media-services | body_of | jq -r '.name' 2>/dev/null)"
+check "hub: compose of the VM stack"    200 "$(auth_request GET /stacks/media-services/compose | status_of)"
+check "hub: unknown stack still 404"    404 "$(auth_request GET /stacks/nope-none | status_of)"
+_TPL=$(ls "$ROOT/.templates" | head -1)
+check "hub: dry run lands on the VM"    200 "$(auth_request POST "/templates/$_TPL/dry-run" '{"target_stack":"media-services"}' | status_of)"
+check "hub: forwarded post audited"     yes "$(grep -q '"action":"fleet_proxy"' "$WORK/.data/audit.jsonl" 2>/dev/null && echo yes || echo no)"
+check "hub: /containers has member field" yes "$(auth_request GET /containers | body_of | jq -e 'has("containers")' >/dev/null 2>&1 && echo yes || echo no)"
+check "hub: viewer reads the VM stack"  200 "$(viewer_request GET /stacks/media-services | status_of)"
+check "hub: viewer cannot start it"     403 "$(viewer_request POST /stacks/media-services/start '{}' | status_of)"
+check "jobs: listed"                    1 "$(auth_request GET /fleet/jobs | body_of | jq -r '.total' 2>/dev/null)"
+check "jobs: retry only when failed"    409 "$(auth_request POST "/fleet/jobs/$JOB/retry" '{}' | status_of)"
+check "destroy: member and VM removed"  true "$(auth_request DELETE '/fleet/members/media-services?destroy=true' | body_of | jq -r '.vm_destroyed' 2>/dev/null)"
+check "destroy: VM gone from Proxmox"   "" "$(auth_request GET /proxmox/vms | body_of | jq -r '.vms[] | select(.vmid == 105) | .name' 2>/dev/null)"
+check "destroy: audited"                yes "$(grep -q 'fleet_vm_destroyed' "$WORK/.data/audit.jsonl" 2>/dev/null && echo yes || echo no)"
+check "jobs: delete"                    200 "$(auth_request DELETE "/fleet/jobs/$JOB" | status_of)"
+(cd "$VMWORK" && "$VMWORK/.scripts/api-server.sh" --stop >/dev/null 2>&1)
+_envdel FLEET_SSH_CMD; _envdel FLEET_SELF_URL; _envdel FLEET_MEMBER_PORT; _envdel FLEET_SSH_DIR; unset SHIM_ROOT SHIM_DIR
+rm -rf "$WORK/.data/fleet-jobs" "$WORK/.data/fleet-ssh"
+
 _fleet_stop_listeners
-_envdel API_AUTH_ENABLED; _envdel FLEET_SCAN_PORTS
+_envdel API_AUTH_ENABLED; _envdel FLEET_SCAN_PORTS; _envset API_PORT 9876
 rm -f "$WORK/.data/fleet.json" "$WORK/.data/fleet-watch.stamp"; rm -rf "$WORK/.data/fleet-sessions"
 trap 'rm -rf "$WORK" "$MWORK" "$PWORK"' EXIT
 

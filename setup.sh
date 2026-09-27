@@ -70,6 +70,16 @@ _fail()    { echo -e "  ${C_RED}[FAIL]${C_RESET}  $1"; }
 _info()    { echo -e "  ${C_BLUE}[INFO]${C_RESET}  $1"; }
 _header()  { echo -e "\n${C_BOLD}${C_CYAN}$1${C_RESET}"; }
 _divider() { echo -e "${C_DIM}$(printf '%.0s-' {1..60})${C_RESET}"; }
+_env_set() {   # _env_set KEY VALUE — set or add one plain KEY=VALUE line in .env
+    local key="$1" value="$2" file="$BASE_DIR/.env"
+    [[ "$DRY_RUN" == "true" ]] && { _info "DRY RUN: $key=…"; return 0; }
+    if grep -q "^${key}=" "$file" 2>/dev/null; then
+        grep -v "^${key}=" "$file" > "$file.tmp" && printf '%s=%s\n' "$key" "$value" >> "$file.tmp" && chmod 600 "$file.tmp" && mv -f "$file.tmp" "$file"
+    else
+        [[ -s "$file" && "$(tail -c1 "$file")" != "" ]] && printf '\n' >> "$file"
+        printf '%s=%s\n' "$key" "$value" >> "$file"
+    fi
+}
 
 # =============================================================================
 # HELP / USAGE
@@ -99,6 +109,12 @@ answer with environment variables:
   DCS_PROXMOX_URL=https://pve:8006 DCS_PROXMOX_TOKEN_ID=user@realm!name
   DCS_PROXMOX_TOKEN_SECRET=<secret>            (links the hub to Proxmox)
 
+UNATTENDED (no prompts, no wizard — what the hub runs inside a new VM):
+  DCS_UNATTENDED=true DCS_ADMIN_USER=<name> DCS_ADMIN_PASSWORD=<password>
+  DCS_STACKS="media-services" DCS_MEMBER_NAME=media-services DCS_TZ=… DCS_PUID=… DCS_PGID=…
+  DCS_PROXY_DOMAIN=… DCS_CF_DNS_API_TOKEN=… DCS_API_PORT=9876 DCS_API_BIND=0.0.0.0
+  DCS_NO_UI=true                                (API only: the hub's dashboard drives it)
+
 WHAT IT DOES:
   1. Copies .env.example -> .env (if .env does not exist)
   2. Creates App-Data/ and logs/ directories
@@ -120,6 +136,13 @@ EOF
 DRY_RUN=false
 VERBOSE=false
 JOIN_ONLY_HUB=""; JOIN_ONLY_CODE=""; JOIN_ONLY_NAME=""
+# Unattended: no prompts, the admin account and the configuration come from
+# DCS_ADMIN_USER / DCS_ADMIN_PASSWORD / DCS_STACKS / DCS_MEMBER_NAME / DCS_TZ …
+# (the hub uses this to build member VMs). DCS_NO_UI=true skips DCS-UI: an
+# API-only install, driven from the hub's dashboard.
+UNATTENDED="${DCS_UNATTENDED:-false}"; [[ -n "${DCS_ADMIN_PASSWORD:-}" ]] && UNATTENDED=true
+NO_UI="${DCS_NO_UI:-false}"
+UNATTENDED_TOKEN=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -200,7 +223,7 @@ if [[ "$ENV_PVE_GUEST" == "true" ]] && command -v curl >/dev/null 2>&1; then
     _gw=$(ip -4 route show default 2>/dev/null | awk '{print $3; exit}')
     for _c in $_gw pve proxmox pve.local proxmox.local; do
         [[ -n "$_c" ]] || continue
-        _code=$(curl -sk -o /dev/null --max-time 1 -w '%{http_code}' "https://$_c:8006/api2/json/version" 2>/dev/null)
+        _code=$(curl -sk -o /dev/null --max-time 1 -w '%{http_code}' "https://$_c:8006/api2/json/version" 2>/dev/null) || true
         if [[ "$_code" == "401" || "$_code" == "200" ]]; then ENV_PVE_HINT="https://$_c:8006"; break; fi
     done
 fi
@@ -220,7 +243,7 @@ FLEET_ROLE="${DCS_FLEET_ROLE:-}"
 FLEET_HUB_URL="${DCS_HUB_URL:-}"; FLEET_JOIN_CODE="${DCS_JOIN_TOKEN:-}"; FLEET_MEMBER_NAME="${DCS_MEMBER_NAME:-}"
 [[ -n "$FLEET_HUB_URL" && -n "$FLEET_JOIN_CODE" ]] && FLEET_ROLE="member"
 case "$FLEET_ROLE" in hub|member|standalone|"") ;; *) _warn "DCS_FLEET_ROLE=$FLEET_ROLE is not hub, member or standalone — ignored"; FLEET_ROLE="" ;; esac
-if [[ -z "$FLEET_ROLE" && -t 0 && ! -f "$BASE_DIR/.api-auth/.setup-complete" ]]; then
+if [[ -z "$FLEET_ROLE" && -t 0 && "$UNATTENDED" != "true" && ! -f "$BASE_DIR/.api-auth/.setup-complete" ]]; then
     echo ""
     _info "How will this DCS be used?"
     echo "    1) Standalone — manage the Docker stacks on this machine (default)"
@@ -292,11 +315,28 @@ else
     _info "Create .env manually based on the project documentation"
 fi
 
+# Unattended: the values the caller passed go into .env now, so the stack
+# directories (Step 3) and the API (Step 7) follow them
+if [[ "$UNATTENDED" == "true" && -f "$BASE_DIR/.env" ]]; then
+    [[ -n "${DCS_STACKS:-}" ]] && _env_set DOCKER_STACKS "\"$DCS_STACKS\""
+    [[ -n "${DCS_MEMBER_NAME:-}" ]] && _env_set SERVER_NAME "\"$DCS_MEMBER_NAME\""
+    [[ -n "${DCS_TZ:-}" ]] && _env_set TZ "$DCS_TZ"
+    [[ -n "${DCS_PUID:-}" ]] && _env_set PUID "$DCS_PUID"
+    [[ -n "${DCS_PGID:-}" ]] && _env_set PGID "$DCS_PGID"
+    [[ -n "${DCS_PROXY_DOMAIN:-}" ]] && _env_set PROXY_DOMAIN "$DCS_PROXY_DOMAIN"
+    [[ -n "${DCS_API_PORT:-}" ]] && _env_set API_PORT "$DCS_API_PORT"
+    [[ -n "${DCS_API_BIND:-}" ]] && _env_set API_BIND "$DCS_API_BIND"
+    [[ -n "${DCS_ADMIN_PASSWORD:-}" ]] && _env_set API_AUTH_ENABLED true
+    set -a; source "$BASE_DIR/.env"; set +a
+    _ok "Unattended: .env prepared (stacks: ${DCS_STACKS:-default}, name: ${DCS_MEMBER_NAME:-$(hostname)})"
+fi
+
 # The DCS-UI container reaches the API through host.docker.internal, so the
 # listener must be enabled and bound to all interfaces. .env.example already
 # ships those defaults; this only repairs a .env inherited from an older
-# version (anchored matches, quote-safe, never touches comments).
-if [[ -f "$BASE_DIR/.env" ]]; then
+# version (anchored matches, quote-safe, never touches comments). An API-only
+# install (DCS_NO_UI) keeps whatever bind it was given.
+if [[ -f "$BASE_DIR/.env" && "$NO_UI" != "true" ]]; then
     if grep -qE '^API_BIND=["'"'"']?127\.0\.0\.1' "$BASE_DIR/.env"; then
         [[ "$DRY_RUN" != "true" ]] && sed -i -E 's/^API_BIND=.*$/API_BIND=0.0.0.0/' "$BASE_DIR/.env"
         _ok "Updated API_BIND to 0.0.0.0 (required for the DCS-UI container)"
@@ -316,23 +356,13 @@ fi
 # token with VM.Audit, VM.PowerMgmt and Sys.Audit — see docs/PROXMOX.md). The
 # same link can be made later in the wizard or in Server Config → Proxmox.
 # -----------------------------------------------------------------------------
-_env_set() {   # _env_set KEY VALUE — set or add one plain KEY=VALUE line in .env
-    local key="$1" value="$2" file="$BASE_DIR/.env"
-    [[ "$DRY_RUN" == "true" ]] && { _info "DRY RUN: $key=…"; return 0; }
-    if grep -q "^${key}=" "$file" 2>/dev/null; then
-        grep -v "^${key}=" "$file" > "$file.tmp" && printf '%s=%s\n' "$key" "$value" >> "$file.tmp" && chmod 600 "$file.tmp" && mv -f "$file.tmp" "$file"
-    else
-        [[ -s "$file" && "$(tail -c1 "$file")" != "" ]] && printf '\n' >> "$file"
-        printf '%s=%s\n' "$key" "$value" >> "$file"
-    fi
-}
 PVE_LINKED=false
 _pve_url=""; _pve_tid=""; _pve_sec=""; _pve_ask=false
 if [[ -f "$BASE_DIR/.env" ]] && ! grep -qE '^PROXMOX_URL=.+' "$BASE_DIR/.env" 2>/dev/null; then
     if [[ -n "${DCS_PROXMOX_URL:-}" && -n "${DCS_PROXMOX_TOKEN_ID:-}" && -n "${DCS_PROXMOX_TOKEN_SECRET:-}" ]]; then
         _pve_url="${DCS_PROXMOX_URL%/}"; _pve_tid="$DCS_PROXMOX_TOKEN_ID"; _pve_sec="$DCS_PROXMOX_TOKEN_SECRET"; _pve_ask=true
         _info "Linking Proxmox from DCS_PROXMOX_URL…"
-    elif [[ -t 0 && ( "$FLEET_ROLE" == "hub" || ( "$FLEET_ROLE" == "standalone" && "$ENV_PVE_GUEST" == "true" && -z "${DCS_FLEET_ROLE:-}" ) ) ]]; then
+    elif [[ -t 0 && "$UNATTENDED" != "true" && ( "$FLEET_ROLE" == "hub" || ( "$FLEET_ROLE" == "standalone" && "$ENV_PVE_GUEST" == "true" && -z "${DCS_FLEET_ROLE:-}" ) ) ]]; then
         echo ""
         _info "DCS can show and power the VMs and containers of this Proxmox host."
         _info "You need an API token: Datacenter → Permissions → API Tokens (docs/PROXMOX.md)."
@@ -350,9 +380,9 @@ if [[ -f "$BASE_DIR/.env" ]] && ! grep -qE '^PROXMOX_URL=.+' "$BASE_DIR/.env" 2>
     if [[ "$_pve_ask" == "true" ]]; then
         if [[ -n "$_pve_url" && -n "$_pve_tid" && -n "$_pve_sec" ]]; then
             _pve_verify=true
-            _pve_code=$(curl -s -o /dev/null --max-time 8 -w '%{http_code}' -H "Authorization: PVEAPIToken=${_pve_tid}=${_pve_sec}" "$_pve_url/api2/json/version" 2>/dev/null)
+            _pve_code=$(curl -s -o /dev/null --max-time 8 -w '%{http_code}' -H "Authorization: PVEAPIToken=${_pve_tid}=${_pve_sec}" "$_pve_url/api2/json/version" 2>/dev/null) || true
             if [[ "$_pve_code" == "000" ]]; then
-                _pve_code=$(curl -sk -o /dev/null --max-time 8 -w '%{http_code}' -H "Authorization: PVEAPIToken=${_pve_tid}=${_pve_sec}" "$_pve_url/api2/json/version" 2>/dev/null)
+                _pve_code=$(curl -sk -o /dev/null --max-time 8 -w '%{http_code}' -H "Authorization: PVEAPIToken=${_pve_tid}=${_pve_sec}" "$_pve_url/api2/json/version" 2>/dev/null) || true
                 [[ "$_pve_code" == "200" ]] && { _pve_verify=false; _info "Proxmox uses a self-signed certificate — verification is switched off for it"; }
             fi
             case "$_pve_code" in
@@ -829,11 +859,61 @@ _ensure_api_running || {
     exit 1
 }
 
-_ensure_core_infra_running || {
-    _info "DCS-UI may still be starting — try the URL below"
-}
+if [[ "$NO_UI" == "true" ]]; then
+    _info "API-only install: DCS-UI is not started here (a hub's dashboard drives this server)"
+else
+    _ensure_core_infra_running || {
+        _info "DCS-UI may still be starting — try the URL below"
+    }
+fi
 
-_print_url_banner
+# Unattended: the first admin account and the configuration, without the wizard
+# The address the unattended steps talk to: loopback, or the one specific address the API is bound to
+_api_local_url() {
+    local host="127.0.0.1"
+    [[ "${API_BIND:-}" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ && "${API_BIND}" != "0.0.0.0" ]] && host="$API_BIND"
+    printf 'http://%s:%s' "$host" "${API_PORT:-9876}"
+}
+_unattended_finish() {
+    local api user="${DCS_ADMIN_USER:-admin}" pass="${DCS_ADMIN_PASSWORD:-}" res tok stacks_json env_json i
+    api=$(_api_local_url)
+    [[ -n "$pass" ]] || { _warn "DCS_ADMIN_PASSWORD is not set — the first account is created in the wizard"; return 0; }
+    for i in $(seq 1 30); do curl -s -m 2 "$api/setup/status" >/dev/null 2>&1 && break; sleep 1; done
+    _info "Unattended setup: creating the admin account '$user'…"
+    res=$(curl -s -m 30 -X POST "$api/auth/setup" -H 'Content-Type: application/json' -d "$(jq -nc --arg u "$user" --arg p "$pass" '{username: $u, password: $p}')") || res=""
+    tok=$(jq -r '.token // empty' <<< "$res" 2>/dev/null) || tok=""
+    if [[ -z "$tok" ]]; then
+        res=$(curl -s -m 30 -X POST "$api/auth/login" -H 'Content-Type: application/json' -d "$(jq -nc --arg u "$user" --arg p "$pass" '{username: $u, password: $p}')") || res=""
+        tok=$(jq -r '.token // empty' <<< "$res" 2>/dev/null) || tok=""
+    fi
+    [[ -n "$tok" ]] || { _fail "Could not create or sign in the admin account: $(jq -r '.message // .' <<< "$res" 2>/dev/null | head -c 200)"; return 1; }
+    UNATTENDED_TOKEN="$tok"
+    stacks_json=$(printf '%s\n' ${DCS_STACKS:-} | grep -v '^$' | jq -R . | jq -sc .) || stacks_json="[]"
+    [[ "$stacks_json" != "[]" && -n "$stacks_json" ]] || stacks_json=$(printf '%s\n' ${DOCKER_STACKS:-core-infrastructure} | grep -v '^$' | jq -R . | jq -sc .) || stacks_json='["core-infrastructure"]'
+    env_json=$(jq -nc --arg n "${DCS_MEMBER_NAME:-${SERVER_NAME:-}}" --arg tz "${DCS_TZ:-${TZ:-UTC}}" --arg puid "${DCS_PUID:-${PUID:-1000}}" --arg pgid "${DCS_PGID:-${PGID:-1000}}" --arg dom "${DCS_PROXY_DOMAIN:-${PROXY_DOMAIN:-}}" \
+        '{SERVER_NAME: $n, TZ: $tz, PUID: $puid, PGID: $pgid, PROXY_DOMAIN: $dom} | with_entries(select(.value != ""))')
+    res=$(curl -s -m 120 -X POST "$api/setup/configure" -H "Authorization: Bearer $tok" -H 'Content-Type: application/json' -d "$(jq -nc --argjson e "$env_json" --argjson s "$stacks_json" '{env_vars: $e, stacks: $s}')") || res=""
+    jq -e '.error != true' <<< "$res" >/dev/null 2>&1 || _warn "setup/configure answered: $(head -c 200 <<< "$res")"
+    if [[ -n "${DCS_CF_DNS_API_TOKEN:-}" ]]; then
+        curl -s -m 20 -X POST "$api/secrets/CF_DNS_API_TOKEN" -H "Authorization: Bearer $tok" -H 'Content-Type: application/json' -d "$(jq -nc --arg v "$DCS_CF_DNS_API_TOKEN" '{value: $v}')" >/dev/null 2>&1 && _ok "Cloudflare token stored in the secret store"
+    fi
+    _ok "Admin account and configuration in place (stacks: $(jq -r 'join(", ")' <<< "$stacks_json"))"
+}
+_unattended_complete() {
+    [[ -n "$UNATTENDED_TOKEN" ]] || return 0
+    local res; res=$(curl -s -m 60 -X POST "$(_api_local_url)/setup/complete" -H "Authorization: Bearer $UNATTENDED_TOKEN" -H 'Content-Type: application/json' -d '{}') || res=""
+    if jq -e '.initialized == true' <<< "$res" >/dev/null 2>&1; then _ok "Setup complete (unattended)"; else _warn "setup/complete answered: $(head -c 200 <<< "$res")"; fi
+}
+if [[ "$UNATTENDED" == "true" ]]; then
+    _unattended_finish || exit 1
+fi
+
+if [[ "$NO_UI" == "true" ]]; then
+    echo ""
+    _info "API: http://${HOST_IP}:${API_PORT:-9876} (no dashboard on this server)"
+else
+    _print_url_banner
+fi
 
 # Fleet: a member joins now (or as soon as the wizard has made the first admin);
 # a hub prints the join code the other VMs use.
@@ -861,6 +941,7 @@ _fleet_closing() {
     esac
 }
 _fleet_closing
+[[ "$UNATTENDED" == "true" ]] && _unattended_complete
 
 if [[ "$ENV_PVE_GUEST" == "true" || "$ENV_PVE_HOST" == "true" ]]; then
     echo ""

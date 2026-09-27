@@ -4,7 +4,7 @@ Generated from the router in `.scripts/api-server.sh` by `.scripts/api-docs.sh` 
 Run `.scripts/api-docs.sh` after adding or changing a route; CI fails when this file is stale.
 
 The API listens on `API_BIND:API_PORT` (default `0.0.0.0:9876`) and answers JSON.
-Every endpoint below is `286` in total.
+Every endpoint below is `298` in total.
 
 ## Access levels
 
@@ -385,6 +385,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | Method | Path | Access | Description |
 |--------|------|--------|-------------|
 | GET | `/ping` | public | Liveness probe: no auth, no Docker call, a tiny body. The dashboard's heartbeat uses it, so the latency it shows is the round trip alone. |
+| GET | `/fleet/bundle` | public | The hub's own DCS code as a tar.gz for a VM being bootstrapped (needs ?token= — a valid join code); never includes data, accounts, secrets, stacks or logs |
 | GET | `/power` | user | UPS status: mains or battery, charge, runtime, load, and whether the watch loop runs |
 | GET | `/recovery` | admin | Recovery bundles on this box and how they are made (destination, off-box copy, retention, passphrase set?) |
 | GET | `/crowdsec/status` | user | CrowdSec presence, whitelist state and active decisions |
@@ -396,9 +397,14 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | GET | `/proxmox/vms/*/*/*` | user | One VM or container: live status and its configuration (cores, memory, OS, boot, description) |
 | GET | `/fleet/status` | user | What this server is in the fleet: a hub (members, join codes), a member (its hub), or standalone; plus a pending join and how others reach this API |
 | GET | `/fleet/members` | user | The members this hub manages, with the guest each one runs in and when it last answered |
-| GET | `/fleet/overview` | user | Every member with its stacks and container counts, fetched from the members in parallel (10 s cache) |
+| GET | `/fleet/overview` | user | Every member with its stacks, containers and counts, fetched from the members in parallel (10 s cache) |
 | GET | `/fleet/discover` | admin | Scan the guests for DCS installs: Proxmox gives each running guest's addresses (guest agent / container interfaces) and the API port is probed; found installs come back with the guest already matched (30 s cache; POST forces a new scan and accepts Proxmox values to try before they are saved) |
 | GET | `/fleet/join-tokens` | admin | The join codes that are still valid (admin) |
+| GET | `/fleet/provision/defaults` | admin | Suggested values for creating VMs: node, storages, bridge, an address range next to the hub, the cloud image, the admin name (admin) |
+| GET | `/fleet/jobs` | admin | VMs being created (and the ones that finished or failed), newest first |
+| GET | `/fleet/jobs/*` | admin | One VM job with its steps and log |
+| GET | `/proxmox/capabilities` | admin | What the API token may do on /: the privileges that creating VMs needs, and which are missing (POST with {url, token_id, token_secret, verify_tls} before the link is saved) |
+| GET | `/proxmox/storage` | admin | The node's storages with content types and free space (import_ready: can hold a cloud image) |
 | GET | `/fleet/identity` | user | What a hub needs to match this server to a guest: hostname, SMBIOS uuid, addresses, API port, version |
 | GET | `/fleet/feed` | user | This server's routes in Traefik feed form, for the hub to merge into its own feed (needs no feed token; the routes point at this host's published ports) |
 | GET | `/fleet/members/*/api/*` | user | Forward the call (GET, POST, PUT or DELETE) to that member with the hub's account; the caller's own role is checked against the inner path as if it were local (streams and auth are not forwarded) |
@@ -411,6 +417,11 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | POST | `/fleet/join-tokens` | admin | Mint a join code {ttl_hours?: 24}: a VM runs ./setup.sh with DCS_HUB_URL and DCS_JOIN_TOKEN (or ./setup.sh --join) and becomes a member |
 | POST | `/fleet/join-hub` | admin | Make this server a member of a hub {hub_url, token, name?, url?} or {pending: true} for the join setup.sh saved: creates the account dcs-hub here and registers with the hub |
 | POST | `/fleet/discover` | admin | Scan the guests for DCS installs: Proxmox gives each running guest's addresses (guest agent / container interfaces) and the API port is probed; found installs come back with the guest already matched (30 s cache; POST forces a new scan and accepts Proxmox values to try before they are saved) |
+| POST | `/fleet/provision` | admin | Create one VM per stack {node, storage, image_storage?, bridge, cidr, gateway, dns, ip_start?, vms: [{stack, cores?, memory_mb?, disk_gb?, ip?}]}: the jobs run in the background, GET /fleet/jobs follows them (admin) |
+| POST | `/fleet/provision/defaults` | admin | Suggested values for creating VMs: node, storages, bridge, an address range next to the hub, the cloud image, the admin name (admin) |
+| POST | `/proxmox/capabilities` | admin | What the API token may do on /: the privileges that creating VMs needs, and which are missing (POST with {url, token_id, token_secret, verify_tls} before the link is saved) |
+| POST | `/proxmox/storage` | admin | The node's storages with content types and free space (import_ready: can hold a cloud image) |
+| POST | `/fleet/jobs/*/retry` | admin | Run a failed VM job again from the step that failed |
 | POST | `/fleet/members/*/test` | admin | Log in to the member afresh, read its identity and version, and say which guest it matches |
 | POST | `/fleet/members/*/api/*` | admin | Forward the call (GET, POST, PUT or DELETE) to that member with the hub's account; the caller's own role is checked against the inner path as if it were local (streams and auth are not forwarded) |
 | POST | `/power/sample` | admin | Read the UPS right now (also refreshes what GET /power shows) |
@@ -425,6 +436,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | PUT | `/fleet/members/*` | admin | Change a member's name, address, account or the guest it is mapped to {name?, url?, username?, password?, vmid?, node?, type?, insecure?} |
 | DELETE | `/fleet/members/*/api/*` | admin | Forward the call (GET, POST, PUT or DELETE) to that member with the hub's account; the caller's own role is checked against the inner path as if it were local (streams and auth are not forwarded) |
 | DELETE | `/fleet/members/*` | admin | Forget a member (its dcs-hub account is removed there when it answers) |
+| DELETE | `/fleet/jobs/*` | admin | Forget a finished or failed job; ?destroy=true also destroys the VM a failed build left behind (a finished job's VM belongs to its member) |
 | DELETE | `/fleet/join-tokens/*` | admin | Revoke a join code |
 | DELETE | `/fleet/hub` | admin | Leave the hub: forget it and remove its dcs-hub account here (the hub drops this member when it next fails to answer, or when removed there) |
 | DELETE | `/crowdsec/decisions/*` | admin | Remove every decision for an address (unban) |
