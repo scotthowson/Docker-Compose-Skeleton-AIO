@@ -10,7 +10,7 @@
   <rect width="1600" height="1000" fill="url(#bg)"/>
 
   <text x="800" y="58" text-anchor="middle" fill="#e2e8f0" font-size="32" font-weight="700">DCS on Proxmox</text>
-  <text x="800" y="90" text-anchor="middle" fill="#94a3b8" font-size="16">One hub, one DCS per Docker VM, one proxy. Every box is an ordinary DCS install.</text>
+  <text x="800" y="90" text-anchor="middle" fill="#94a3b8" font-size="16">One hub builds one VM per stack and drives them all; one proxy. Every box is an ordinary DCS.</text>
 
   <!-- host frame -->
   <rect x="60" y="124" width="1480" height="800" rx="24" fill="#111a2e" stroke="#1e293b" stroke-width="2"/>
@@ -20,7 +20,7 @@
   <rect x="560" y="200" width="480" height="132" rx="20" fill="#0d1f1c" stroke="url(#hub)" stroke-width="3" filter="url(#glow)"/>
   <text x="800" y="244" text-anchor="middle" fill="#34d399" font-size="24" font-weight="800">DCS HUB</text>
   <text x="800" y="270" text-anchor="middle" fill="#94a3b8" font-size="14">its own small LXC or VM</text>
-  <text x="800" y="298" text-anchor="middle" fill="#e2e8f0" font-size="14">fleet view · VM power · deploy to any VM</text>
+  <text x="800" y="298" text-anchor="middle" fill="#e2e8f0" font-size="14">builds the VMs · fleet view · VM power · deploys to any VM</text>
   <text x="800" y="320" text-anchor="middle" fill="#e2e8f0" font-size="14">Discord bot · Cloudflare DNS · one route feed</text>
 
   <!-- proxmox api -->
@@ -58,7 +58,7 @@
   <text x="340" y="508" text-anchor="middle" fill="#22d3ee" font-size="18" font-weight="700">VM  media-services</text>
   <text x="340" y="530" text-anchor="middle" fill="#94a3b8" font-size="12">DCS member · Docker · one compose stack</text>
   <rect x="150" y="548" width="380" height="34" rx="10" fill="#132033" stroke="#1e3a5f"/>
-  <text x="340" y="570" text-anchor="middle" fill="#e2e8f0" font-size="13">DCS API :9876 · dashboard :3000</text>
+  <text x="340" y="570" text-anchor="middle" fill="#e2e8f0" font-size="13">DCS API :9876 · built and joined by the hub</text>
   <g fill="#cbd5e1" font-size="13">
     <rect x="150" y="598" width="182" height="32" rx="9" fill="#1e293b"/><text x="241" y="619" text-anchor="middle">Plex</text>
     <rect x="348" y="598" width="182" height="32" rx="9" fill="#1e293b"/><text x="439" y="619" text-anchor="middle">Sonarr</text>
@@ -74,7 +74,7 @@
   <text x="800" y="508" text-anchor="middle" fill="#a78bfa" font-size="18" font-weight="700">VM  networking-security</text>
   <text x="800" y="530" text-anchor="middle" fill="#94a3b8" font-size="12">DCS member · Docker · one compose stack</text>
   <rect x="610" y="548" width="380" height="34" rx="10" fill="#132033" stroke="#1e3a5f"/>
-  <text x="800" y="570" text-anchor="middle" fill="#e2e8f0" font-size="13">DCS API :9876 · dashboard :3000</text>
+  <text x="800" y="570" text-anchor="middle" fill="#e2e8f0" font-size="13">DCS API :9876 · built and joined by the hub</text>
   <g fill="#cbd5e1" font-size="13">
     <rect x="610" y="598" width="380" height="32" rx="9" fill="#2a1f45" stroke="#a78bfa"/><text x="800" y="619" text-anchor="middle" fill="#e9d5ff" font-weight="700">Traefik — routes for every VM</text>
     <rect x="610" y="642" width="182" height="32" rx="9" fill="#1e293b"/><text x="701" y="663" text-anchor="middle">Authelia</text>
@@ -89,7 +89,7 @@
   <text x="1260" y="508" text-anchor="middle" fill="#f472b6" font-size="18" font-weight="700">VM  development-tools</text>
   <text x="1260" y="530" text-anchor="middle" fill="#94a3b8" font-size="12">DCS member · Docker · one compose stack</text>
   <rect x="1070" y="548" width="380" height="34" rx="10" fill="#132033" stroke="#1e3a5f"/>
-  <text x="1260" y="570" text-anchor="middle" fill="#e2e8f0" font-size="13">DCS API :9876 · dashboard :3000</text>
+  <text x="1260" y="570" text-anchor="middle" fill="#e2e8f0" font-size="13">DCS API :9876 · built and joined by the hub</text>
   <g fill="#cbd5e1" font-size="13">
     <rect x="1070" y="598" width="182" height="32" rx="9" fill="#1e293b"/><text x="1161" y="619" text-anchor="middle">Ollama</text>
     <rect x="1268" y="598" width="182" height="32" rx="9" fill="#1e293b"/><text x="1359" y="619" text-anchor="middle">Open WebUI</text>

@@ -17892,13 +17892,17 @@ _fleet_identity_json() {
     mid=$(cut -c1-32 /etc/machine-id 2>/dev/null || echo "")
     uuid="${FLEET_IDENTITY_UUID:-}"
     [[ -n "$uuid" ]] || uuid=$(cat /sys/class/dmi/id/product_uuid 2>/dev/null || echo "")
+    # a VM's uuid is root-only in sysfs: the bootstrap keeps a copy the API's user can read (the hub matches guests by it)
+    [[ -n "$uuid" ]] || uuid=$(tr -d ' \n' < "$BASE_DIR/.data/product_uuid" 2>/dev/null || echo "")
+    # whether this DCS serves a dashboard of its own (an API-only member does not)
+    local dash=false; [[ "$(docker container inspect DCS-UI --format '{{.State.Running}}' 2>/dev/null)" == "true" ]] && dash=true
     ips=$(ip -4 -o addr show scope global 2>/dev/null | awk '$2 !~ /^(docker|br-|veth|virbr|lo)/ {split($4, a, "/"); print a[1]}' | head -8 | jq -R . | jq -sc .)
     [[ "$ips" == \[* ]] || ips='[]'
     port="${DCS_API_EFFECTIVE_PORT:-${API_PORT:-9876}}"
     local stacks; stacks=$(_api_get_stacks | tr ' ' '\n' | grep -v '^$' | jq -R . | jq -sc .); [[ "$stacks" == \[* ]] || stacks='[]'
     jq -nc --arg h "$host" --arg u "${uuid,,}" --arg m "$mid" --argjson ips "$ips" --arg p "$port" --arg v "$DCS_VERSION" --argjson stacks "$stacks" \
-        --arg n "${SERVER_NAME:-}" --arg os "$(. /etc/os-release 2>/dev/null; printf '%s' "${PRETTY_NAME:-}")" --arg virt "$(systemd-detect-virt 2>/dev/null || true)" \
-        '{hostname: $h, product_uuid: $u, machine_id: $m, ips: $ips, api_port: (($p | tonumber?) // 9876), version: $v, server_name: $n, os: $os, virt: $virt, stacks: $stacks}'
+        --arg n "${SERVER_NAME:-}" --arg os "$(. /etc/os-release 2>/dev/null; printf '%s' "${PRETTY_NAME:-}")" --arg virt "$(systemd-detect-virt 2>/dev/null || true)" --argjson dash "$dash" \
+        '{hostname: $h, product_uuid: $u, machine_id: $m, ips: $ips, api_port: (($p | tonumber?) // 9876), version: $v, server_name: $n, os: $os, virt: $virt, stacks: $stacks, dashboard: $dash}'
 }
 
 # node type vmid → JSON array of the guest's IPv4 addresses ([] without an agent)
@@ -18285,8 +18289,10 @@ handle_fleet_member_test() {
         ident=$(jq -c 'del(.machine_id)' <<< "$ident" 2>/dev/null || echo '{}')
         ver=$(jq -r '.version // ""' <<< "$ident")
         if _pve_configured; then match=$(_fleet_match_vm "$ident" 2>/dev/null) || match='null'; [[ "$match" == \{* ]] || match='null'; fi
-        _fleet_update --arg id "$id" --argjson i "$ident" --arg v "$ver" --argjson now "$(date +%s)" \
-            '.members = [(.members // [])[] | if .id == $id then .identity = (if ($i | length) > 0 then $i else .identity end) | .version = (if $v != "" then $v else .version end) | .reachable = true | .last_seen = $now | .last_error = "" else . end]' || true
+        # the re-match is kept (a guest mapped by hand stays as mapped)
+        _fleet_update --arg id "$id" --argjson i "$ident" --arg v "$ver" --argjson now "$(date +%s)" --argjson mt "$match" \
+            '.members = [(.members // [])[] | if .id == $id then .identity = (if ($i | length) > 0 then $i else .identity end) | .version = (if $v != "" then $v else .version end) | .reachable = true | .last_seen = $now | .last_error = ""
+                | (if ($mt | type) == "object" and .matched_by != "manual" then .vmid = $mt.vmid | .node = $mt.node | .type = $mt.type | .matched_by = $mt.matched_by else . end) else . end]' || true
             else
         err="$_FLEET_ERR"
     fi
@@ -18624,13 +18630,21 @@ _fleet_wait_children() {
 }
 _fleet_remote_stacks_json() {
     _fleet_has_members || { printf '[]'; return 0; }
-    local snap; snap=$(_fleet_snapshot); [[ "$snap" == \{* ]] || { printf '[]'; return 0; }
+    local snap; snap=$(_fleet_snapshot); [[ "$snap" == \{* ]] || snap='{"members":[]}'
+    local j; j=$(_fleet_load); [[ "$j" == \{* ]] || j='{"members":[]}'
     # only the stacks the hub really runs shadow a member's stack of the same name (a leftover folder does not)
     local -a local_names=() hub_names=()
     read -ra local_names <<< "$(_api_get_stacks)"
     local s; for s in "${local_names[@]}"; do _fleet_stack_is_hub "$s" && hub_names+=("$s"); done
     local locals; locals=$(printf '%s\n' "${hub_names[@]}" | jq -R . | jq -sc .)
-    jq -c --argjson l "$locals" '[.members[] | . as $m | (.stacks // [])[] | .name as $n | select(($l | index($n)) == null) | . + {placement: "vm", member: $m.id, member_name: $m.name, vmid: $m.vmid, node: $m.node, reachable: $m.reachable, version: $m.version}]' <<< "$snap"
+    # answering members: their live stacks; the others: the stacks remembered from their last answer, marked
+    # offline — a VM that is off still owns its stack, so the hub's leftover folder never stands in for it
+    jq -c --argjson l "$locals" --argjson j "$j" '
+        (.members // []) as $live | ([$live[] | select(.reachable) | .id]) as $up
+        | ([$live[] | select(.reachable) | . as $m | (.stacks // [])[] | .name as $n | select(($l | index($n)) == null)
+            | . + {placement: "vm", member: $m.id, member_name: $m.name, vmid: $m.vmid, node: $m.node, reachable: true, version: $m.version}])
+          + ([($j.members // [])[] | . as $r | select(($up | index($r.id)) == null) | ($r.stacks // [])[] | . as $n | select(($l | index($n)) == null)
+            | {name: $n, status: "unknown", running_containers: 0, containers: 0, placement: "vm", member: $r.id, member_name: $r.name, vmid: $r.vmid, node: $r.node, reachable: false, version: $r.version}])' <<< "$snap"
 }
 # The members' containers for GET /containers on a hub
 _fleet_remote_containers_json() {
@@ -18758,7 +18772,7 @@ _fleet_ip_next() {
 # What the wizard prefills: node, storages, bridge, the hub's network, the image, the admin name
 # GET /fleet/provision/defaults — Suggested values for creating VMs: node, storages, bridge, an address range next to the hub, the cloud image, the admin name (admin)
 handle_fleet_provision_defaults() {
-    local node="" storages='[]' res ip cidr gw dns start admin hubip
+    local node="" storages='[]' res ip cidr gw gw0 dns start admin hubip bridge bip
     if _pve_configured; then
         _pve_call res GET /nodes
         _pve_explain "$res" && node=$(jq -r --arg want "${PROXMOX_NODE:-}" '(if $want != "" then [.data[] | select(.node == $want)] else [.data[] | select(.status == "online")] end) | .[0].node // empty' <<< "$res")
@@ -18767,19 +18781,31 @@ handle_fleet_provision_defaults() {
             _pve_explain "$res" && storages=$(jq -c '[.data[] | select(.enabled != 0) | {storage, type, content: ((.content // "") | split(",")), avail: (.avail // 0), total: (.total // 0), images: (((.content // "") | split(",")) | index("images") != null), dir: (.type == "dir"), import_ready: (.type == "dir" and (((.content // "") | split(",")) | index("import") != null))}]' <<< "$res")
         fi
     fi
-    hubip=$(_feed_detected_host)
-    cidr=$(ip -4 -o addr show scope global 2>/dev/null | awk -v ip="$hubip" '$4 ~ "^"ip"/" {split($4, a, "/"); print a[2]; exit}'); [[ -n "$cidr" ]] || cidr=24
-    gw=$(ip -4 route show default 2>/dev/null | awk '{print $3; exit}')
-    dns=$(awk '/^nameserver/ {print $2; exit}' /etc/resolv.conf 2>/dev/null); [[ -n "$dns" && "$dns" != 127.* ]] || dns="${gw:-1.1.1.1}"
+    hubip=$(_feed_detected_host); cidr=""
+    gw=$(ip -4 route show default 2>/dev/null | awk '{print $3; exit}'); gw0="$gw"
+    # a hub that runs on the Proxmox host itself: its address on the bridge is the VMs' network, and
+    # the host is their gateway unless the default route already leaves through that bridge
+    bridge="vmbr0"
+    bip=$(ip -4 -o addr show dev "$bridge" scope global 2>/dev/null | awk '{print $4; exit}')
+    if [[ "$bip" == */* ]]; then
+        hubip="${bip%/*}"; cidr="${bip#*/}"
+        [[ "$(ip -4 route get "${gw:-0.0.0.0}" 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}' | head -1)" == "$bridge" ]] || gw="$hubip"
+    fi
+    [[ -n "$cidr" ]] || cidr=$(ip -4 -o addr show scope global 2>/dev/null | awk -v ip="$hubip" '$4 ~ "^"ip"/" {split($4, a, "/"); print a[2]; exit}'); [[ -n "$cidr" ]] || cidr=24
+    # DNS for the VMs: this host's resolver unless it is a local stub (systemd-resolved), then the stub's
+    # upstream servers, then the router on the default route, then a public resolver
+    dns=$(awk '/^nameserver/ && $2 !~ /^127\./ {print $2; exit}' /etc/resolv.conf 2>/dev/null)
+    [[ -n "$dns" ]] || dns=$(awk '/^nameserver/ && $2 !~ /^127\./ {print $2; exit}' /run/systemd/resolve/resolv.conf 2>/dev/null)
+    [[ -n "$dns" ]] || dns="${gw0:-1.1.1.1}"
     IFS=. read -r a b c d <<< "$hubip"
     if [[ "$d" =~ ^[0-9]+$ ]]; then start="$a.$b.$c.200"; (( d >= 200 )) && start="$a.$b.$c.100"; else start=""; fi
     admin=$(_fleet_hub_admin)
-    _api_success "$(jq -nc --arg node "$node" --argjson st "$storages" --arg hub "$hubip" --argjson cidr "$cidr" --arg gw "$gw" --arg dns "$dns" --arg start "$start" \
+    _api_success "$(jq -nc --arg node "$node" --argjson st "$storages" --arg hub "$hubip" --arg bridge "$bridge" --argjson cidr "$cidr" --arg gw "$gw" --arg dns "$dns" --arg start "$start" \
         --arg img "$FLEET_IMAGE_URL" --arg file "$FLEET_IMAGE_FILE" --arg admin "$admin" --arg tz "${TZ:-UTC}" --arg url "$(_fleet_self_url)" --arg dom "${PROXY_DOMAIN:-}" --argjson linked "$(_pve_configured && echo true || echo false)" \
         '{proxmox_linked: $linked, node: $node, storages: $st,
           storage: (([$st[] | select(.images)] | map(.storage) | (if index("local-lvm") then "local-lvm" elif index("local-zfs") then "local-zfs" else .[0] end)) // ""),
           image_storage: (([$st[] | select(.dir)] | map(.storage) | (if index("local") then "local" else .[0] end)) // ""),
-          bridge: "vmbr0", hub_ip: $hub, cidr: $cidr, gateway: $gw, dns: $dns, ip_start: $start, image_url: $img, image_file: $file,
+          bridge: $bridge, hub_ip: $hub, cidr: $cidr, gateway: $gw, dns: $dns, ip_start: $start, image_url: $img, image_file: $file,
           admin_user: $admin, tz: $tz, hub_url: $url, proxy_domain: $dom, vm_user: "dcs",
           defaults: {cores: 2, memory_mb: 4096, disk_gb: 32}}')"
 }

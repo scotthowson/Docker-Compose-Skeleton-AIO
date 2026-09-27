@@ -227,7 +227,7 @@ stopped):
 | **Cloud-init** | User `dcs` (`FLEET_VM_USER`) with the hub's own ssh key (made once in `.data/fleet-ssh`), the static address, gateway and DNS. |
 | **Boot** | Starts the VM and waits for the Proxmox task. |
 | **SSH** | Waits for the VM to answer ssh (first boot runs cloud-init). |
-| **Install** | Pipes `.scripts/fleet-bootstrap.sh` into the VM: a network check, curl/git/jq/socat/openssl/python3 and the QEMU guest agent, Docker (get.docker.com, with fallbacks) and Compose, then the hub's **own code** as a bundle (`GET /fleet/bundle?token=<join code>`, never data, accounts, secrets or stacks), then an **unattended member setup** that creates the admin (your username on the hub, a generated password kept in the hub's secret store as `FLEET_MEMBER_<STACK>_ADMIN_PASSWORD`), writes the configuration, creates the stack, starts the API without a dashboard and joins the hub, and finally the boot services (`dcs-api`, `dcs-stacks`). Every line lands in the job log. |
+| **Install** | Copies `.scripts/fleet-bootstrap.sh` to the VM and runs it: a network check, curl/git/jq/socat/openssl/python3 and the QEMU guest agent, Docker (get.docker.com, with fallbacks) and Compose, then the hub's **own code** as a bundle (`GET /fleet/bundle?token=<join code>`, never data, accounts, secrets or stacks), then an **unattended member setup** that creates the admin (your username on the hub, a generated password kept in the hub's secret store as `FLEET_MEMBER_<STACK>_ADMIN_PASSWORD`), writes the configuration, creates the stack, starts the API without a dashboard and joins the hub, and finally the boot services (`dcs-api`, `dcs-stacks`). Every line lands in the job log. |
 | **Join** | Waits for the VM's join, then maps the member to the VMID and marks it *provisioned*. |
 | **Ready** | Asks the member for its stacks through the hub. |
 
@@ -262,7 +262,8 @@ same progress card. A fully unattended install (what the hub runs inside a VM) t
 `DCS_API_BIND` and `DCS_NO_UI=true` (API only).
 
 The hub matches a member to its guest by the VM's **SMBIOS uuid** (`smbios1` in its
-configuration), then a **shared address** (guest agent / container interfaces), then the
+configuration; root-only in the VM's sysfs, so the bootstrap keeps a copy in `.data/product_uuid`
+for the API — do the same on a VM you set up by hand), then a **shared address** (guest agent / container interfaces), then the
 **name**; a member it could not place is listed under *Members without a guest* with *Pick the
 guest*, and the member menu's *Test* re-matches.
 
@@ -309,7 +310,7 @@ guest*, and the member menu's *Test* re-matches.
 | GET / POST | `/fleet/provision/defaults` | admin — prefilled values for building VMs (POST with Proxmox values before they are saved) |
 | POST | `/fleet/provision` | admin — build one VM per stack `{node, storage, image_storage, bridge, cidr, gateway, dns, ip_start, vms: [{stack, cores, memory_mb, disk_gb, ip}]}` |
 | GET | `/fleet/jobs`, `/fleet/jobs/{id}` | admin — the builds with steps and log |
-| POST / DELETE | `/fleet/jobs/{id}/retry`, `/fleet/jobs/{id}` | admin |
+| POST / DELETE | `/fleet/jobs/{id}/retry`, `/fleet/jobs/{id}` (`?destroy=true` also destroys a failed build's VM) | admin |
 | GET / POST | `/proxmox/capabilities`, `/proxmox/storage` | admin — what the token may do, the storages |
 | GET / POST / DELETE | `/fleet/join-tokens`, `/fleet/join-tokens/{token}` | admin — join codes |
 | POST | `/fleet/join` | public — a member registers with a join code |
@@ -362,6 +363,9 @@ Command line, on any DCS: `.scripts/api-server.sh --join-hub URL CODE [NAME]`, `
 | A build fails at **Install** with *could not fetch the DCS bundle* | The VM cannot reach the hub at `FLEET_SELF_URL` (a 403 means the build's join code expired — *Retry* renews it). |
 | A build fails at **Join** | The VM installed DCS but its join never arrived: `FLEET_SELF_URL` must be the hub's address as the VM sees it; the VM's `~/.Docker-Compose-Skeleton-AIO/logs` says what it tried. |
 | *The hub could not log in to http://…* on a join | The hub must reach the member's API at that address: a firewall, or a wrong detected address — set `FLEET_SELF_URL=http://<member ip>:9876` in the member's `.env` (or pass `url` on the join) and join again. |
+| A build is refused: *runs on this server (the hub)* | The hub runs that stack itself: it is in the hub's `DOCKER_STACKS` or has containers up. Stop it and take it out of `DOCKER_STACKS` (Settings), then build the VM; a bare `Stacks/<name>` folder never blocks a build. |
+| A build is refused: *A guest named … already exists on Proxmox* | A VM or container already carries the stack's name. Link it from the Proxmox page if it is that stack's DCS, or rename it in Proxmox and build. |
+| A build failed and its VM is still on Proxmox | *Retry* resumes the job (the VM is reused); *Dismiss* asks whether to destroy the VM as well (`DELETE /fleet/jobs/{id}?destroy=true`). |
 | The join code is refused | Codes expire after 24 h (or the hours chosen) and are case-insensitive; mint a new one on the hub's Proxmox page. Five wrong codes from one address lock it out for a while, like logins. |
 | A member shows *no guest matched* | No guest agent (uuid still works for a VM if the hub reads `smbios1`, but an LXC or a VM whose name differs from the hostname needs the address or the name to match): pick the guest from the member menu. |
 | The scan finds nothing | The scan needs each guest's addresses from the QEMU guest agent (or container interfaces) and DCS answering on port 9876 there (`FLEET_SCAN_PORTS` for others). A VM without the agent shows *address unknown*. |

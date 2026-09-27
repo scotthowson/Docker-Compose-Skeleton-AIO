@@ -72,6 +72,19 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - A bare `wait` in the hub's metrics loop made some bash versions print *not a child of this
   shell* without end (a 15 GB log in an hour); the fleet waits for its own children only.
 - `install-service.sh` died under `pipefail` when `.env` had no `API_BIND`.
+- The VM network the wizard proposes is read from the bridge when the hub sits on the Proxmox
+  host itself (its `vmbr0` address, the host as gateway), and its DNS is never a local stub:
+  `/etc/resolv.conf` unless it points at `127.*`, then systemd-resolved's upstream servers, then
+  the router, then a public resolver.
+- A member the hub built reports its SMBIOS uuid (root-only in sysfs; the bootstrap keeps a copy
+  the API can read) so the hub matches it to its guest by uuid, not just by address, and says
+  whether it serves a dashboard — the Proxmox page hides *Its dashboard* for API-only members
+  and counts the hub's own stacks only (a member's stack is not "run here").
+- The wizard refreshes the VM settings from the hub's defaults after another *Test connection*
+  unless you edited them.
+- *Test* on a member keeps the guest it re-matched (a guest mapped by hand stays as mapped). A
+  member that does not answer — its VM is off — keeps its stacks in the hub's list, marked
+  offline, so the hub's leftover `Stacks/<name>` folder never stands in for a VM's stack.
 - `api-server.sh --stop` trusts its pid file only when that process is this installation's own
   server, and only ever removes port listeners started from this installation — a copied
   `.data/` or a reused pid can no longer point it at another DCS.

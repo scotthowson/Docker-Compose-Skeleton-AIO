@@ -64,6 +64,9 @@ say "Fetching DCS from the hub…"
 rm -rf "$DIR" && mkdir -p "$DIR"
 curl -fsSL "$DCS_BUNDLE_URL" | tar -xz -C "$DIR" || die "could not fetch the DCS bundle from the hub ($DCS_HUB_URL)"
 cd "$DIR" || die "no $DIR"
+# the VM's SMBIOS uuid is root-only in sysfs: keep a copy the API's user can read (the hub matches guests by it)
+mkdir -p .data && { sudo -n cat /sys/class/dmi/id/product_uuid 2>/dev/null | tr -d ' \n' > .data/product_uuid; } || true
+[[ -s .data/product_uuid ]] || rm -f .data/product_uuid
 chmod +x setup.sh start.sh stop.sh compose.sh .scripts/*.sh 2>/dev/null
 say "DCS $(cat VERSION 2>/dev/null) unpacked; running the unattended member setup for stack $DCS_STACKS…"
 # the docker group is new to this session: run setup under it
