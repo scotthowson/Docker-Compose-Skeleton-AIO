@@ -23,8 +23,8 @@
     {
       "name": "HOMEPAGE_ALLOWED_HOSTS",
       "label": "Allowed Hosts",
-      "description": "Comma-separated list of allowed hostnames for the Homepage instance",
-      "default": "localhost:3000",
+      "description": "Hostnames Homepage answers to, comma-separated (* = any: fine behind Traefik, which already routes by hostname; restrict it to homepage.your.domain,localhost:3400 if you prefer)",
+      "default": "*",
       "required": false
     }
   ],

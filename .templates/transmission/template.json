@@ -1,10 +1,10 @@
 {
   "name": "transmission",
   "title": "Transmission",
-  "description": "Lightweight BitTorrent client with minimal resource usage. Clean web UI, encryption, peer exchange, magnet links. Ideal for headless servers \u2014 uses very little CPU and memory.",
+  "description": "Lightweight BitTorrent client with minimal resource usage. Clean web UI, encryption, peer exchange, magnet links. Ideal for headless servers — uses very little CPU and memory.",
   "category": "download",
   "target_stack": "media-services",
-  "icon": "\ud83d\udce5",
+  "icon": "📥",
   "tags": [
     "torrent",
     "download",
@@ -20,5 +20,7 @@
       "default": "9091",
       "required": false
     }
-  ]
+  ],
+  "auth": "bypass",
+  "auth_note": "Not put behind Authelia: its own apps and clients sign in directly (the deploy sheet can still protect it)"
 }

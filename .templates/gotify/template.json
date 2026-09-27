@@ -5,7 +5,14 @@
   "category": "notifications",
   "target_stack": "communication-collaboration",
   "icon": "📨",
-  "tags": ["notifications", "push", "alerts", "messaging", "api", "webhook"],
+  "tags": [
+    "notifications",
+    "push",
+    "alerts",
+    "messaging",
+    "api",
+    "webhook"
+  ],
   "variables": [
     {
       "name": "PORT_GOTIFY",
@@ -14,5 +21,7 @@
       "default": "8094",
       "required": false
     }
-  ]
+  ],
+  "auth": "bypass",
+  "auth_note": "Not put behind Authelia: its own apps and clients sign in directly (the deploy sheet can still protect it)"
 }

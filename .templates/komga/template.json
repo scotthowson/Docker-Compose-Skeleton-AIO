@@ -36,5 +36,7 @@
       "default": "1g",
       "required": false
     }
-  ]
+  ],
+  "auth": "bypass",
+  "auth_note": "Not put behind Authelia: its own apps and clients sign in directly (the deploy sheet can still protect it)"
 }

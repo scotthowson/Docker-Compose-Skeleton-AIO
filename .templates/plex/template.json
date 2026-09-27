@@ -5,7 +5,14 @@
   "category": "media",
   "target_stack": "media-services",
   "icon": "📺",
-  "tags": ["media", "streaming", "video", "music", "plex", "linuxserver"],
+  "tags": [
+    "media",
+    "streaming",
+    "video",
+    "music",
+    "plex",
+    "linuxserver"
+  ],
   "variables": [
     {
       "name": "PLEX_CLAIM",
@@ -49,5 +56,7 @@
       "default": "docker",
       "required": false
     }
-  ]
+  ],
+  "auth": "bypass",
+  "auth_note": "Not put behind Authelia: its own apps and clients sign in directly (the deploy sheet can still protect it)"
 }

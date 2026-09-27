@@ -1,1 +1,34 @@
-{"name":"immich","title":"Immich","description":"Self-hosted Google Photos replacement with mobile auto-backup, face recognition, smart search, and shared albums. 90,000+ GitHub stars — the #1 photo management solution.","category":"photos","target_stack":"storage-backup","icon":"📸","tags":["photos","backup","gallery","mobile","ai","face-recognition"],"variables":[{"name":"PORT_IMMICH","label":"Host Port","description":"Port to expose Immich on","default":"2283","required":false},{"name":"IMMICH_DB_PASSWORD","label":"Database Password","description":"Password for the Immich PostgreSQL database","default":"immich","required":true}]}
+{
+  "name": "immich",
+  "title": "Immich",
+  "description": "Self-hosted Google Photos replacement with mobile auto-backup, face recognition, smart search, and shared albums. 90,000+ GitHub stars — the #1 photo management solution.",
+  "category": "photos",
+  "target_stack": "storage-backup",
+  "icon": "📸",
+  "tags": [
+    "photos",
+    "backup",
+    "gallery",
+    "mobile",
+    "ai",
+    "face-recognition"
+  ],
+  "variables": [
+    {
+      "name": "PORT_IMMICH",
+      "label": "Host Port",
+      "description": "Port to expose Immich on",
+      "default": "2283",
+      "required": false
+    },
+    {
+      "name": "IMMICH_DB_PASSWORD",
+      "label": "Database Password",
+      "description": "Password for the Immich PostgreSQL database",
+      "default": "immich",
+      "required": true
+    }
+  ],
+  "auth": "bypass",
+  "auth_note": "Not put behind Authelia: its own apps and clients sign in directly (the deploy sheet can still protect it)"
+}

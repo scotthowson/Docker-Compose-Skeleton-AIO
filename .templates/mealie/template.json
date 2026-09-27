@@ -5,7 +5,13 @@
   "category": "lifestyle",
   "target_stack": "entertainment-personal",
   "icon": "🍽️",
-  "tags": ["recipes", "cooking", "meal-planning", "shopping-list", "food"],
+  "tags": [
+    "recipes",
+    "cooking",
+    "meal-planning",
+    "shopping-list",
+    "food"
+  ],
   "variables": [
     {
       "name": "PORT_MEALIE",
@@ -14,5 +20,7 @@
       "default": "9925",
       "required": false
     }
-  ]
+  ],
+  "auth": "bypass",
+  "auth_note": "Not put behind Authelia: its own apps and clients sign in directly (the deploy sheet can still protect it)"
 }

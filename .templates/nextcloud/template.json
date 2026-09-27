@@ -5,7 +5,13 @@
   "category": "storage",
   "target_stack": "storage-backup",
   "icon": "☁️",
-  "tags": ["storage", "file-sync", "collaboration", "cloud", "nextcloud"],
+  "tags": [
+    "storage",
+    "file-sync",
+    "collaboration",
+    "cloud",
+    "nextcloud"
+  ],
   "variables": [
     {
       "name": "HOST_PORT",
@@ -14,5 +20,7 @@
       "default": "8080",
       "required": false
     }
-  ]
+  ],
+  "auth": "bypass",
+  "auth_note": "Not put behind Authelia: its own apps and clients sign in directly (the deploy sheet can still protect it)"
 }

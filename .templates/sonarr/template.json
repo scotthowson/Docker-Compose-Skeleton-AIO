@@ -5,7 +5,14 @@
   "category": "media",
   "target_stack": "media-services",
   "icon": "📺",
-  "tags": ["tv", "automation", "arr", "media", "series", "download"],
+  "tags": [
+    "tv",
+    "automation",
+    "arr",
+    "media",
+    "series",
+    "download"
+  ],
   "variables": [
     {
       "name": "PORT_SONARR",
@@ -14,5 +21,7 @@
       "default": "8989",
       "required": false
     }
-  ]
+  ],
+  "auth": "bypass",
+  "auth_note": "Not put behind Authelia: its own apps and clients sign in directly (the deploy sheet can still protect it)"
 }

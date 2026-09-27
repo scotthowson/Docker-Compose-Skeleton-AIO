@@ -475,6 +475,8 @@ cat > "$WORK/fakebin/docker" <<'FAKE'
 case "$*" in
   "ps -a --filter status=exited --filter status=created --filter status=dead --format {{.Names}}") printf 'zz-stopped\nIT-Tools\nzz-other\n' ;;
   "inspect Ollama") exit 1 ;;
+  "inspect --type container Authelia") [[ -f "$(dirname "$0")/.authelia" ]] && exit 0 || exit 1 ;;
+  "inspect --type container Never") exit 1 ;;
   *) exit 0 ;;
 esac
 FAKE
@@ -679,6 +681,11 @@ check "proxmox: vm detail"              media-vm "$(auth_request GET /proxmox/vm
 check "proxmox: bad type refused"       400 "$(auth_request GET /proxmox/vms/pve/disk/100 | status_of)"
 check "proxmox: bad action refused"     400 "$(auth_request POST /proxmox/vms/pve/lxc/200/explode '{}' | status_of)"
 check "proxmox: reset is qemu-only"     400 "$(auth_request POST /proxmox/vms/pve/lxc/200/reset '{}' | status_of)"
+check "proxmox: balloon is qemu-only"   400 "$(auth_request POST /proxmox/vms/pve/lxc/200/balloon '{}' | status_of)"
+_BL=$(auth_request POST /proxmox/vms/pve/qemu/100/balloon '{}')
+check "proxmox: balloon set"            200 "$(printf '%s' "$_BL" | status_of)"
+check "proxmox: balloon is half the RAM" '4096 8192' "$(printf '%s' "$_BL" | body_of | jq -r '"\(.balloon) \(.memory)"' 2>/dev/null)"
+check "proxmox: balloon in the config"  4096 "$(auth_request GET /proxmox/vms/pve/qemu/100 | body_of | jq -r '.balloon' 2>/dev/null)"
 check "proxmox: start a container"      true "$(auth_request POST /proxmox/vms/pve/lxc/200/start '{}' | body_of | jq -r '.success' 2>/dev/null)"
 check "proxmox: upid returned"          yes "$([[ "$(auth_request POST /proxmox/vms/pve/qemu/101/reboot '{}' | body_of | jq -r '.upid' 2>/dev/null)" == UPID:* ]] && echo yes || echo no)"
 check "proxmox: action audited"         yes "$(grep -q '"action":"proxmox_vm_start"' "$WORK/.data/audit.jsonl" 2>/dev/null && echo yes || echo no)"
@@ -1130,6 +1137,97 @@ if docker info >/dev/null 2>&1; then
 else
     echo "  skip (no Docker daemon)"
 fi
+
+echo "Routes: template defaults, Authelia by default, the rebuild; the fleet's domain; the engine card; Cloudflare + DDNS against a stand-in"
+# templates: one with a variable default and a published port, one whose apps bring their own clients (auth: bypass)
+mkdir -p "$WORK/.templates/routed-tpl" "$WORK/.templates/bypass-tpl" "$WORK/Stacks/demo2"
+printf '{"name":"routed-tpl","title":"Routed","category":"other","variables":[{"name":"ROUTED_PORT","label":"Port","default":"8123"}]}\n' > "$WORK/.templates/routed-tpl/template.json"
+printf 'services:\n  routed-tpl:\n    image: alpine\n    container_name: Routed\n    ports:\n      - "${ROUTED_PORT}:80"\n' > "$WORK/.templates/routed-tpl/docker-compose.yml"
+printf '{"name":"bypass-tpl","title":"Bypass","category":"other","auth":"bypass","variables":[]}\n' > "$WORK/.templates/bypass-tpl/template.json"
+printf 'services:\n  bypass-tpl:\n    image: alpine\n    container_name: Bypass\n    ports:\n      - "8124:80"\n' > "$WORK/.templates/bypass-tpl/docker-compose.yml"
+printf 'services:\n  placeholder:\n    image: alpine\n' > "$WORK/Stacks/demo2/docker-compose.yml"
+# the proxy stack: a domain, and a Traefik that knows the Authelia forward-auth middleware
+check "fleet domain: placeholder is none"    "" "$(_lib _fleet_domain)"
+printf 'TRAEFIK_DOMAIN=smoke.test\n' >> "$WORK/Stacks/zz-proxy/.env"
+_ZZR="$WORK/Stacks/zz-proxy/App-Data/Traefik/custom_routes"
+printf 'http:\n  middlewares:\n    traefik-chain:\n      chain:\n        middlewares:\n          - "https-redirect"\n    compress-gzip:\n      compress: {}\n    authelia-forwardauth:\n      forwardAuth:\n        address: "http://Authelia:9091/api/verify?rd=https://auth.smoke.test"\n' > "$_ZZR/core-infrastructure/traefik.yml"
+sed -i 's/^DOCKER_STACKS=.*/DOCKER_STACKS="demo demo2 zz-proxy"/' "$WORK/.env"
+fake_request() { PATH="$WORK/fakebin:$PATH" auth_request "$@"; }
+rm -f "$WORK/fakebin/.authelia"
+check "authelia absent: no middleware"      "" "$(PATH="$WORK/fakebin:$PATH" _lib _traefik_authelia_middleware)"
+touch "$WORK/fakebin/.authelia"
+check "authelia present: middleware found"  authelia-forwardauth "$(PATH="$WORK/fakebin:$PATH" _lib _traefik_authelia_middleware)"
+check "bypass template recognised"          0 "$(_lib _authelia_bypass_template bypass-tpl; echo $?)"
+check "routed template not bypass"          1 "$(_lib _authelia_bypass_template routed-tpl; echo $?)"
+_D1=$(fake_request POST /templates/routed-tpl/deploy '{"target_stack":"demo","auto_start":false}')
+check "deploy without variables works"      200 "$(printf '%s' "$_D1" | status_of)"
+check "deploy: template default applied"    8123 "$(grep -m1 '^ROUTED_PORT=' "$WORK/Stacks/demo/.env" | cut -d= -f2 | tr -d '"')"
+check "deploy: route written"               yes "$([[ -f "$_ZZR/demo/routed-tpl.yml" ]] && echo yes || echo no)"
+check "deploy: route host from the domain"  1 "$(grep -c 'Host(`routed-tpl.smoke.test`)' "$_ZZR/demo/routed-tpl.yml")"
+check "deploy: route behind Authelia"       1 "$(grep -c '"authelia-forwardauth"' "$_ZZR/demo/routed-tpl.yml")"
+check "deploy: chain kept"                  1 "$(grep -c '"traefik-chain"' "$_ZZR/demo/routed-tpl.yml")"
+fake_request POST /templates/bypass-tpl/deploy '{"target_stack":"demo","auto_start":false}' >/dev/null
+check "deploy: bypass template stays open"  0 "$(grep -c '"authelia-forwardauth"' "$_ZZR/demo/bypass-tpl.yml")"
+fake_request POST /templates/routed-tpl/deploy '{"target_stack":"demo2","auto_start":false,"authelia_services":[]}' >/dev/null
+check "deploy: explicit none respected"     0 "$(grep -c '"authelia-forwardauth"' "$_ZZR/demo2/routed-tpl.yml")"
+check "deploy: explicit none is marked"     1 "$(grep -c '^# authelia: off' "$_ZZR/demo2/routed-tpl.yml")"
+# a route written before Authelia arrived
+printf 'http:\n  routers:\n    old-router:\n      entryPoints:\n        - "websecure"\n      rule: "Host(`old.smoke.test`)"\n      service: "old"\n      middlewares:\n        - "traefik-chain"\n        - "compress-gzip"\n      tls: {}\n  services:\n    old:\n      loadBalancer:\n        servers:\n          - url: "http://Old:80"\n' > "$_ZZR/demo/old.yml"
+check "authelia arrives: old route protected" 1 "$(PATH="$WORK/fakebin:$PATH" _lib _authelia_protect_existing_routes)"
+check "authelia arrives: middleware placed"   1 "$(grep -c '"authelia-forwardauth"' "$_ZZR/demo/old.yml")"
+check "authelia arrives: not twice"           0 "$(PATH="$WORK/fakebin:$PATH" _lib _authelia_protect_existing_routes)"
+check "authelia arrives: bypass untouched"    0 "$(grep -c '"authelia-forwardauth"' "$_ZZR/demo/bypass-tpl.yml")"
+check "authelia arrives: explicit none kept"  0 "$(grep -c '"authelia-forwardauth"' "$_ZZR/demo2/routed-tpl.yml")"
+# the rebuild: a compose service with a port and a container gets its route; a placeholder that was never created does not
+printf 'services:\n  routed-tpl:\n    image: alpine\n    container_name: Routed\n    ports:\n      - "8123:80"\n  later:\n    image: alpine\n    container_name: Later\n    ports:\n      - "8125:80"\n  ghost:\n    image: alpine\n    container_name: Never\n    ports:\n      - "8126:80"\n' > "$WORK/Stacks/demo/docker-compose.yml"
+_RB=$(fake_request POST /traefik/routes/rebuild '{"stack":"demo"}')
+check "rebuild answers"                      200 "$(printf '%s' "$_RB" | status_of)"
+check "rebuild: one route written"           1 "$(printf '%s' "$_RB" | body_of | jq -r '.routes_written')"
+check "rebuild: existing route left alone"   yes "$([[ -f "$_ZZR/demo/later.yml" && -f "$_ZZR/demo/routed-tpl.yml" ]] && echo yes || echo no)"
+check "rebuild: never-created service skipped" no "$([[ -f "$_ZZR/demo/ghost.yml" ]] && echo yes || echo no)"
+check "rebuild: new route behind Authelia"   1 "$(grep -c '"authelia-forwardauth"' "$_ZZR/demo/later.yml")"
+check "rebuild: unknown stack"               404 "$(fake_request POST /traefik/routes/rebuild '{"stack":"nope-zz"}' | status_of)"
+check "rebuild: viewer denied"               403 "$(viewer_request POST /traefik/routes/rebuild '{}' | status_of)"
+# the fleet chain: a VM's routers get the local chain and Authelia, a bypass template's router does not
+_FC=$(PATH="$WORK/fakebin:$PATH" _lib _routes_apply_local_chain '{"http":{"routers":{"m1-routed-tpl-dcs":{"rule":"Host(`a.smoke.test`)","service":"m1-routed-tpl-dcs"},"m1-bypass-tpl-dcs":{"rule":"Host(`b.smoke.test`)","service":"m1-bypass-tpl-dcs"}},"services":{}}}')
+check "fleet chain: protected router"        'traefik-chain compress-gzip authelia-forwardauth' "$(printf '%s' "$_FC" | jq -r '.http.routers["m1-routed-tpl-dcs"].middlewares | join(" ")')"
+check "fleet chain: bypass router open"      'traefik-chain compress-gzip' "$(printf '%s' "$_FC" | jq -r '.http.routers["m1-bypass-tpl-dcs"].middlewares | join(" ")')"
+rm -f "$WORK/fakebin/.authelia"
+# the engine card: what this server reports (no update is started here — it would run apt on the machine)
+_EN=$(fake_request GET /system/docker-engine)
+check "engine: answers"                      200 "$(printf '%s' "$_EN" | status_of)"
+check "engine: shape"                        true "$(printf '%s' "$_EN" | body_of | jq -r 'has("version") and has("source") and has("candidate") and has("upgradable") and has("sudo_ready") and has("last_update")')"
+check "engine: status idle"                  idle "$(fake_request GET /system/docker-engine/status | body_of | jq -r '.status')"
+check "engine: update viewer denied"         403 "$(viewer_request POST /system/docker-engine/update '{}' | status_of)"
+check "engine: fleet update needs members"   409 "$(fake_request POST /fleet/docker-engine/update '{"members":"all"}' | status_of)"
+# the fleet's proxy domain: what the hub hands over, and what a member does with it
+check "fleet domain: from the proxy stack"   smoke.test "$(_lib _fleet_domain)"
+check "domain: hostname accepted"            0 "$(_lib _domain_valid home.example.org; echo $?)"
+check "domain: garbage refused"              1 "$(_lib _domain_valid 'bad domain'; echo $?)"
+check "domain hand-off: no hub here"         409 "$(auth_request POST /fleet/hub/domain '{"domain":"x.example.org"}' | status_of)"
+# Cloudflare + DDNS against the stand-in: a CNAME for a routed service, then the dynamic A records following the public address
+_CFP=$(( 20000 + RANDOM % 20000 )); _CFS="$WORK/.data/cf-mock.json"
+python3 "$ROOT/tests/mock-cloudflare.py" "$_CFP" smoke-cf-token "$_CFS" >/dev/null 2>&1 &
+_CFPID=$!
+for _i in $(seq 1 30); do curl -s -m 1 -o /dev/null "http://127.0.0.1:$_CFP/ip" && break; sleep 0.2; done
+_cf() { CF_API_BASE="http://127.0.0.1:$_CFP/client/v4" CF_DNS_API_TOKEN=smoke-cf-token DDNS_IP_URLS="http://127.0.0.1:$_CFP/ip" "$@"; }
+_cf _lib _cloudflare_add_dns app smoke.test smoke-cf-token >/dev/null
+check "cloudflare: CNAME created"            1 "$(jq -r '[.records["zone-smoke.test"][]? | select(.type == "CNAME" and .name == "app.smoke.test")] | length' "$_CFS" 2>/dev/null)"
+check "cloudflare: CNAME proxied to the apex" 'smoke.test true' "$(jq -r '[.records["zone-smoke.test"][]? | select(.name == "app.smoke.test")][0] | "\(.content) \(.proxied)"' "$_CFS" 2>/dev/null)"
+_cf _lib _cloudflare_add_dns app smoke.test smoke-cf-token >/dev/null
+check "cloudflare: not created twice"        1 "$(jq -r '[.records["zone-smoke.test"][]? | select(.name == "app.smoke.test")] | length' "$_CFS" 2>/dev/null)"
+rm -f "$WORK/.api-auth/.cf-zone-cache" "$WORK/.data/ddns-current-ip"
+_cf env DDNS_ENABLED=true DDNS_SUBDOMAINS='@,home,app' DDNS_ONCE=true DDNS_INTERVAL=1 TRAEFIK_DOMAIN=smoke.test bash -c "cd '$WORK' && source '$API' >/dev/null 2>&1; _ddns_update_loop" >/dev/null 2>&1
+check "ddns: public address noted"           203.0.113.7 "$(cat "$WORK/.data/ddns-current-ip" 2>/dev/null)"
+check "ddns: apex A record"                  203.0.113.7 "$(jq -r '[.records["zone-smoke.test"][]? | select(.type == "A" and .name == "smoke.test")][0].content' "$_CFS" 2>/dev/null)"
+check "ddns: subdomain A record"             203.0.113.7 "$(jq -r '[.records["zone-smoke.test"][]? | select(.type == "A" and .name == "home.smoke.test")][0].content' "$_CFS" 2>/dev/null)"
+check "ddns: routed CNAME left to routing"   0 "$(jq -r '[.records["zone-smoke.test"][]? | select(.type == "A" and .name == "app.smoke.test")] | length' "$_CFS" 2>/dev/null)"
+check "ddns: log says updated"               1 "$(grep -c 'IP updated: none → 203.0.113.7' "$WORK/.api-auth/ddns.log" 2>/dev/null)"
+curl -s -m 2 -X POST "http://127.0.0.1:$_CFP/ip?set=203.0.113.9" >/dev/null
+_cf env DDNS_ENABLED=true DDNS_SUBDOMAINS='@,home' DDNS_ONCE=true DDNS_INTERVAL=1 TRAEFIK_DOMAIN=smoke.test bash -c "cd '$WORK' && source '$API' >/dev/null 2>&1; _ddns_update_loop" >/dev/null 2>&1
+check "ddns: address change followed"        203.0.113.9 "$(jq -r '[.records["zone-smoke.test"][]? | select(.type == "A" and .name == "home.smoke.test")][0].content' "$_CFS" 2>/dev/null)"
+check "ddns: one A record per name"          1 "$(jq -r '[.records["zone-smoke.test"][]? | select(.type == "A" and .name == "smoke.test")] | length' "$_CFS" 2>/dev/null)"
+kill "$_CFPID" 2>/dev/null; wait "$_CFPID" 2>/dev/null || true
 
 echo
 printf '%d passed, %d failed\n' "$PASS" "$FAIL"

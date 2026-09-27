@@ -10,6 +10,40 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Routes to the VMs through the hub's own Traefik.** The hub writes the members' routes into
   its Traefik's `custom_routes/fleet-members.yml` (file provider, watched) from the metrics loop,
   only when they change, and removes the file when no VM offers a route (audit `fleet_routes`).
+  Every VM router gets the hub's middleware chain (CrowdSec, headers, compression, Authelia), a
+  new route gets its Cloudflare record and its Homarr tile from the hub, and a Traefik that runs
+  inside a VM receives everyone else's routes from the hub (`POST /fleet/routes`).
+- **One domain for the fleet.** The hub hands its proxy domain to every member: at build time
+  (`DCS_PROXY_DOMAIN`), with the join answer, or from the loop for older members
+  (`POST /fleet/hub/domain`). A member with a domain of its own keeps it.
+- **Routes for what was deployed before.** When the domain arrives (or by hand,
+  `POST /traefik/routes/rebuild {stack?}`), every service that publishes a port and exists as a
+  container gets the route a fresh deploy would have written.
+- **Authelia protects by default.** With Authelia deployed, routes written by a deploy, the
+  rebuild and the hub (for the VMs) carry its forward-auth middleware, except for templates
+  whose apps bring their own clients (`"auth": "bypass"` — Plex, Jellyfin, Nextcloud, Immich,
+  Vaultwarden, ntfy, Gitea, MinIO, the *arr apps, …) and for what the deploy sheet switches off;
+  routes written before Authelia go behind it when it is deployed (audit `authelia_routes`).
+  The deploy sheet defaults its switches accordingly and always sends its choice.
+- **Template defaults on every deploy.** A deploy without `variables` (the API, an automation,
+  a hub deploying into a VM) fills them from `template.json` like the wizard does — no more
+  `:3000` published on a random port. Homepage's allowed hosts default to `*` behind Traefik.
+- **Docker Engine card** on the Updates page: version, package source (Docker's, Debian's,
+  Fedora's), the newest version that source offers, the AppArmor/`docker.io` problem called
+  out, a one-click update (unattended with passwordless sudo, otherwise with the Linux account
+  like the OS updates) and, on a hub, every VM's engine with *Update N VMs*
+  (`GET /system/docker-engine`, `POST /system/docker-engine/update`, `…/status`,
+  `POST /fleet/docker-engine/update`).
+- **Real memory numbers for VMs.** VMs the hub builds get a memory balloon (half the memory as
+  the floor), so Proxmox reports the guest's usage instead of the host's view of the whole
+  allocation and can take idle memory back; `POST /proxmox/vms/{node}/qemu/{vmid}/balloon`
+  retrofits an older VM (reboot to take effect) and the VM detail carries `balloon` and the
+  guest's memory figures.
+- **The setup wizard** lists Authelia and CrowdSec in its review, keeps its results on screen
+  when a step failed, and says what Authelia does to later deploys.
+- **Cloudflare and dynamic DNS are tested**: `tests/mock-cloudflare.py` stands in for the API
+  (`CF_API_BASE`, `DDNS_IP_URLS`, `DDNS_ONCE` for tests); the smoke covers the CNAME a routed
+  service gets, the A records that follow the public address, and the CNAME left to routing.
 
 ### Fixed
 

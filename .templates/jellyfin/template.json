@@ -5,7 +5,13 @@
   "category": "media",
   "target_stack": "media-services",
   "icon": "🎬",
-  "tags": ["media", "streaming", "video", "music", "jellyfin"],
+  "tags": [
+    "media",
+    "streaming",
+    "video",
+    "music",
+    "jellyfin"
+  ],
   "variables": [
     {
       "name": "HOST_PORT",
@@ -28,5 +34,7 @@
       "default": "/srv/jellyfin/config",
       "required": true
     }
-  ]
+  ],
+  "auth": "bypass",
+  "auth_note": "Not put behind Authelia: its own apps and clients sign in directly (the deploy sheet can still protect it)"
 }

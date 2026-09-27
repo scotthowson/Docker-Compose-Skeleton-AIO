@@ -5,7 +5,13 @@
   "category": "storage",
   "target_stack": "storage-backup",
   "icon": "🪣",
-  "tags": ["storage", "object-storage", "s3", "compatible", "minio"],
+  "tags": [
+    "storage",
+    "object-storage",
+    "s3",
+    "compatible",
+    "minio"
+  ],
   "variables": [
     {
       "name": "API_PORT",
@@ -35,5 +41,7 @@
       "default": "changeme123",
       "required": true
     }
-  ]
+  ],
+  "auth": "bypass",
+  "auth_note": "Not put behind Authelia: its own apps and clients sign in directly (the deploy sheet can still protect it)"
 }

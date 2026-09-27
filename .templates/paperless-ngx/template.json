@@ -5,7 +5,14 @@
   "category": "documents",
   "target_stack": "storage-backup",
   "icon": "📑",
-  "tags": ["documents", "ocr", "archive", "paperless", "scan", "search"],
+  "tags": [
+    "documents",
+    "ocr",
+    "archive",
+    "paperless",
+    "scan",
+    "search"
+  ],
   "variables": [
     {
       "name": "PORT_PAPERLESS",
@@ -21,5 +28,7 @@
       "default": "",
       "required": true
     }
-  ]
+  ],
+  "auth": "bypass",
+  "auth_note": "Not put behind Authelia: its own apps and clients sign in directly (the deploy sheet can still protect it)"
 }

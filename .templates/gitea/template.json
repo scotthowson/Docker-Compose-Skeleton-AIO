@@ -5,7 +5,13 @@
   "category": "development",
   "target_stack": "development-tools",
   "icon": "🍵",
-  "tags": ["development", "git", "version-control", "self-hosted", "gitea"],
+  "tags": [
+    "development",
+    "git",
+    "version-control",
+    "self-hosted",
+    "gitea"
+  ],
   "variables": [
     {
       "name": "HOST_PORT",
@@ -21,5 +27,7 @@
       "default": "222",
       "required": false
     }
-  ]
+  ],
+  "auth": "bypass",
+  "auth_note": "Not put behind Authelia: its own apps and clients sign in directly (the deploy sheet can still protect it)"
 }

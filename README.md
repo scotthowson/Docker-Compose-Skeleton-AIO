@@ -63,6 +63,11 @@ Browser ──► DCS-UI (container, :3000) ──/api/──► api-server.sh (
 - **Wildcard HTTPS** — Traefik with a `*.yourdomain.com` certificate via the Cloudflare DNS
   challenge; every new service is reachable at `service.yourdomain.com` without touching a config.
 - **Authelia SSO** — optional single sign-on with 2FA, deployed and configured by the wizard.
+  Once it is there, every service you deploy sits behind the portal — on the hub and in the VMs
+  the hub builds — except templates whose apps bring their own clients (Plex, Jellyfin, Nextcloud,
+  Immich, Vaultwarden, the *arr apps…; `"auth": "bypass"` in their `template.json`), and the
+  deploy sheet's per-route switch decides otherwise. Services deployed before Authelia go behind
+  it when it arrives.
 - **A real API** — 298 endpoints covering stacks, containers, images, networks, volumes, logs,
   templates, routes, DNS, plugins, schedules, secrets, backups, snapshots, metrics, notifications,
   webhooks, automations, system updates and the web terminal. See [docs/API.md](docs/API.md).

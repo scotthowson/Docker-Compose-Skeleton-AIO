@@ -4,7 +4,7 @@ Generated from the router in `.scripts/api-server.sh` by `.scripts/api-docs.sh` 
 Run `.scripts/api-docs.sh` after adding or changing a route; CI fails when this file is stale.
 
 The API listens on `API_BIND:API_PORT` (default `0.0.0.0:9876`) and answers JSON.
-Every endpoint below is `314` in total.
+Every endpoint below is `315` in total.
 
 ## Access levels
 
@@ -203,7 +203,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | GET | `/templates/deploy-history` | admin | Template deploy and undeploy events |
 | GET | `/templates/gallery` | user | List templates from gallery catalog |
 | GET | `/templates/{template}` | user | Template metadata, compose file and .env |
-| POST | `/templates/{template}/deploy` | admin | Deploy a template into a stack (merge, routes, DNS, optional start) |
+| POST | `/templates/{template}/deploy` | admin | Template deploy |
 | POST | `/templates/{template}/undeploy` | admin | Remove a template's services from a stack with their containers (remove_containers=false keeps them; optionally data, images, routes) |
 | POST | `/templates/{template}/dry-run` | user | Preview a deployment: conflicts, ports, variables and policy findings |
 | POST | `/templates/import` | admin | Import a template from compose content |
@@ -230,6 +230,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | GET | `/dns/records` | admin | DNS records of the zone (all types) with their DCS route links |
 | GET | `/homarr/status` | user | Check if Homarr is deployed and has an API key configured |
 | POST | `/traefik/feed/token` | admin | Mint a new feed token (paste the new one into the remote Traefik) |
+| POST | `/traefik/routes/rebuild` | admin | Write the missing routes for the services of one stack {stack} or of every stack: services that publish a port and have no route file yet get Host(service.domain) → the container, like a fresh deploy (a domain is needed: TRAEFIK_DOMAIN or PROXY_DOMAIN); routes written before Authelia arrived go behind it (answer: routes_written, authelia_protected) |
 | POST | `/homarr/register` | admin | Put an app on the Homarr dashboard now {name, url, icon, description} |
 | POST | `/dns/records` | admin | Create a record {type, name, content, ttl, proxied, priority, comment, zone} |
 | POST | `/dns/records/sync` | admin | Create the proxied CNAME records that DCS routes are missing |
@@ -419,7 +420,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | POST | `/fleet/join` | public | A member registers itself with a join code {token, name, url, username, password, identity?, vmid?, node?, type?}: the hub logs in to it, matches it to a guest and keeps it (no session; rate-limited like a login) |
 | POST | `/fleet/relay` | public | A member's event for the hub {token, event, context}: the hub notes it in its activity (fleet_event) and fires its own notification rules with the VM named; public, the relay token says who |
 | POST | `/proxmox/test` | admin | Try a Proxmox connection with the given url, token_id, token_secret and verify_tls without saving them |
-| POST | `/proxmox/vms/*/*/*/*` | admin | Power action on a VM or container: start, shutdown, stop, reboot, reset (VMs only), suspend, resume — audited and sent to the webhooks |
+| POST | `/proxmox/vms/*/*/*/*` | admin | Power action on a VM or container: start, shutdown, stop, reboot, reset (VMs only), balloon (VMs only: a memory balloon with half the memory as its floor, so Proxmox reports the guest's real usage and can reclaim idle memory; reboot afterwards), suspend, resume — audited and sent to the webhooks |
 | POST | `/fleet/members` | admin | Add a member by address and an account on it {url, username, password, name?, vmid?, node?, type?, insecure?}; the hub logs in, learns who it is and matches it to a guest |
 | POST | `/fleet/join-tokens` | admin | Mint a join code {ttl_hours?: 24}: a VM runs ./setup.sh with DCS_HUB_URL and DCS_JOIN_TOKEN (or ./setup.sh --join) and becomes a member |
 | POST | `/fleet/join-hub` | admin | Make this server a member of a hub {hub_url, token, name?, url?} or {pending: true} for the join setup.sh saved: creates the account dcs-hub here and registers with the hub |

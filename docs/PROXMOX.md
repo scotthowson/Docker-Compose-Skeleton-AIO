@@ -327,10 +327,25 @@ is the same: `?fleet=1` on `GET /health`, `/images`, `/networks`, `/volumes`, `/
 Some things go further than a merged list:
 
 - **Routes to the VMs.** The hub's own Traefik reaches every service inside the VMs without any
-  configuration: the hub writes the members' routes (each VM's DCS builds them from its
-  containers' Traefik labels) into its Traefik's `custom_routes` directory as
+  configuration: the hub writes the members' routes (each VM's DCS writes one per deployed
+  service, `service.your.domain`) into its Traefik's `custom_routes` directory as
   `fleet-members.yml`, which the file provider watches, and keeps that file current every half
-  minute. A Traefik somewhere else keeps using the feed (section 4).
+  minute — with the hub's own middleware chain on every router, so a service in a VM is served,
+  compressed, guarded by CrowdSec and put behind Authelia exactly like one on the hub (templates
+  whose apps bring their own clients stay open; see the README). A new route also gets its
+  Cloudflare record and its Homarr tile from the hub when those are set up there. When the
+  Traefik lives inside a VM instead, the hub pushes everyone else's routes into that VM's
+  Traefik (`POST /fleet/routes`). A Traefik somewhere else keeps using the feed (section 4).
+- **One domain.** The fleet's domain is the hub's (`TRAEFIK_DOMAIN` or `PROXY_DOMAIN`): a VM the
+  hub builds gets it at build time, a server that joins gets it with the join answer, and older
+  members get it from the hub within a minute (`POST /fleet/hub/domain`, written as
+  `PROXY_DOMAIN`); a member that has a domain of its own keeps it. When the domain arrives, the
+  VM writes the routes for the services it already runs (`POST /traefik/routes/rebuild` does
+  the same by hand, on any DCS that got Traefik after its stacks).
+- **The engine under the containers.** The Updates page's *Docker Engine* card shows the engine
+  on the hub and in every VM — version, package source, the newest version that source offers —
+  and updates them (`GET /system/docker-engine?fleet=1`, `POST /fleet/docker-engine/update`);
+  a VM the hub built needs no password for it.
 
 - **Events reach the hub.** A VM's DCS sends every event it raises (a container that stopped, a
   stack that started, an update, a failed backup…) to its hub with a relay token the hub handed
@@ -455,6 +470,12 @@ guest*, and the member menu's *Test* re-matches.
 | POST | `/snapshots/create?fleet=1` | admin — one snapshot on the hub and one on every member; `results[]` per DCS |
 | POST | `/fleet/relay` | public with a relay token — a member's event for the hub `{token, event, context}`: noted as `fleet_event`, notified with the VM named |
 | POST | `/fleet/hub/relay-token` | admin, on a member — the hub hands the member its relay token `{token}` |
+| POST | `/fleet/hub/domain` | admin, on a member — the hub hands the member the fleet's proxy domain `{domain, force}`; kept when the member has one of its own |
+| POST | `/fleet/routes` | admin, on a member that runs a Traefik — the hub hands it everyone else's routes for that Traefik (`fleet-members.yml`) |
+| POST | `/traefik/routes/rebuild` | admin — routes for services deployed before the domain (or Traefik) was there `{stack?}`; routes written before Authelia go behind it |
+| GET | `/system/docker-engine` (`?fleet=1` on a hub) | user — the Docker Engine: version, package source, newest version offered, whether it can be updated unattended |
+| POST | `/system/docker-engine/update`, `/fleet/docker-engine/update` | admin — update the engine here (unattended with passwordless sudo, else with the Terminal session and password) / on members `{members}` |
+| POST | `/proxmox/vms/{node}/qemu/{vmid}/balloon` | admin — give a VM a memory balloon (half its memory as the floor): Proxmox then shows the guest's real usage and can take idle memory back |
 | GET / POST | `/proxmox/capabilities`, `/proxmox/storage` | admin — what the token may do, the storages |
 | GET / POST / DELETE | `/fleet/join-tokens`, `/fleet/join-tokens/{token}` | admin — join codes |
 | POST | `/fleet/join` | public — a member registers with a join code |
@@ -519,6 +540,9 @@ Command line, on any DCS: `.scripts/api-server.sh --join-hub URL CODE [NAME]`, `
 | A VM's events do not show on the hub's Activity page or in its Discord/NTFY | The member has no relay token yet: the hub hands one out within a minute of the member answering (`.data/fleet-relay.json` on the hub); a member older than 3.9.0 gets it after an update round. Events raised while the hub was unreachable are not queued. |
 | The dashboard container (DCS-UI) is *unhealthy* and its log says `socketpair() failed (13: Permission denied)` | Debian's own `docker.io` 26 with AppArmor 4.1 (Debian 13, and a Proxmox host) denies nginx its worker sockets. `setup.sh` detects that pairing and writes `DCS_UI_APPARMOR=unconfined` into `Stacks/core-infrastructure/.env`; on an install made before 3.9.1 add that line yourself and run `docker compose up -d dcs-ui` in that folder, or install Docker CE, which needs nothing. |
 | A service inside a VM is not reachable through the hub's Traefik | The hub writes the members' routes into its Traefik's `custom_routes/fleet-members.yml` every half minute (audit entry `fleet_routes`); the member must answer, its container must carry Traefik labels, and the hub's Traefik must reach the VM's address (same bridge, no firewall in between). The feed for a Traefik elsewhere is separate (section 4). |
+| A VM's RAM shows near 100 % on the Proxmox page while the guest is idle | Without a memory balloon Proxmox reports the host's view of the VM (its whole allocation, once the page cache fills). VMs the hub builds get a balloon (half the memory as the floor); for an older one use *Enable ballooning* in the VM's sheet (or `qm set <vmid> --balloon <half>`) and reboot it. |
+| A service in a VM answers without the Authelia portal | The hub's Traefik puts VM routes behind Authelia when Authelia is deployed on the hub; templates whose apps bring their own clients (`"auth": "bypass"` in their `template.json`) stay open on purpose. The deploy sheet's per-route switch decides otherwise. |
+| A service deployed into a VM has no route | The VM had no domain when the service was deployed: the hub hands the domain out within a minute (audit `fleet_domain`), and the member writes the missing routes then; *Rebuild routes* (`POST /traefik/routes/rebuild`) does it by hand. |
 | A VM's own Updates page says *Updated by its hub* | By design: a VM built by the hub has no git checkout, its code comes from the hub's Updates page (*Update all VMs*). |
 | Detection says nothing about Proxmox | Detection reads `systemd-detect-virt` and the DMI vendor; a VM without the guest agent still shows as *QEMU/KVM*, which is treated as a probable Proxmox VM. The probe looks for port 8006 on the default gateway and on `pve`, `proxmox`, `pve.local`, `proxmox.local`; if your host has another name, just type the URL. |
 

@@ -5,7 +5,13 @@
   "category": "automation",
   "target_stack": "miscellaneous-services",
   "icon": "🏠",
-  "tags": ["automation", "smart-home", "iot", "home-assistant", "hass"],
+  "tags": [
+    "automation",
+    "smart-home",
+    "iot",
+    "home-assistant",
+    "hass"
+  ],
   "variables": [
     {
       "name": "HOST_PORT",
@@ -14,5 +20,7 @@
       "default": "8123",
       "required": false
     }
-  ]
+  ],
+  "auth": "bypass",
+  "auth_note": "Not put behind Authelia: its own apps and clients sign in directly (the deploy sheet can still protect it)"
 }

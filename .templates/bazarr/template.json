@@ -5,7 +5,14 @@
   "category": "media",
   "target_stack": "media-services",
   "icon": "💬",
-  "tags": ["subtitles", "arr", "media", "sonarr", "radarr", "automation"],
+  "tags": [
+    "subtitles",
+    "arr",
+    "media",
+    "sonarr",
+    "radarr",
+    "automation"
+  ],
   "variables": [
     {
       "name": "PORT_BAZARR",
@@ -14,5 +21,7 @@
       "default": "6767",
       "required": false
     }
-  ]
+  ],
+  "auth": "bypass",
+  "auth_note": "Not put behind Authelia: its own apps and clients sign in directly (the deploy sheet can still protect it)"
 }
