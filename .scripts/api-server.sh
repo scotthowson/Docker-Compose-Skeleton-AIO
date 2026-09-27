@@ -320,8 +320,16 @@ _api_port_listeners() {
 
 if [[ "$STOP_SERVER" == "true" ]]; then
     stopped=false
+    _self_path="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
     if [[ -f "$API_PID_FILE" ]]; then
         pid=$(cat "$API_PID_FILE" 2>/dev/null)
+        # the pid file is trusted only when that process really is this installation's server:
+        # a copied .data/ (or a reused pid) must never point --stop at someone else's process
+        _pidcmd=""; [[ "$pid" =~ ^[0-9]+$ ]] && _pidcmd=$(tr '\0' ' ' < "/proc/${pid}/cmdline" 2>/dev/null || true)
+        if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null && [[ "$_pidcmd" != *"$_self_path"* && "$_pidcmd" != *"$BASE_DIR/.scripts/api-server.sh"* ]]; then
+            echo "PID file points at PID $pid (${_pidcmd:0:70}), which is not this installation's API server — ignored"
+            pid=""
+        fi
         if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
             # SIGTERM lets the server's trap stop the listener and its helpers
             kill -TERM "$pid" 2>/dev/null
@@ -344,7 +352,6 @@ if [[ "$STOP_SERVER" == "true" ]]; then
     # owns the port — another program, or another DCS installation — is
     # reported, never killed.
     _leftover=$(_api_port_listeners "$API_PORT")
-    _self_path="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
     for _p in $_leftover; do
         _cmd=$(tr '\0' ' ' < "/proc/${_p}/cmdline" 2>/dev/null || true)
         # the listener is a socat whose parent is this script: match either the

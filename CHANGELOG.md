@@ -72,6 +72,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - A bare `wait` in the hub's metrics loop made some bash versions print *not a child of this
   shell* without end (a 15 GB log in an hour); the fleet waits for its own children only.
 - `install-service.sh` died under `pipefail` when `.env` had no `API_BIND`.
+- `api-server.sh --stop` trusts its pid file only when that process is this installation's own
+  server, and only ever removes port listeners started from this installation — a copied
+  `.data/` or a reused pid can no longer point it at another DCS.
 
 ## [3.8.0] - 2026-09-27
 

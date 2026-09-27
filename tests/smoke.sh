@@ -896,6 +896,16 @@ check "destroy: VM gone from Proxmox"   "" "$(auth_request GET /proxmox/vms | bo
 check "destroy: audited"                yes "$(grep -q 'fleet_vm_destroyed' "$WORK/.data/audit.jsonl" 2>/dev/null && echo yes || echo no)"
 check "jobs: delete"                    200 "$(auth_request DELETE "/fleet/jobs/$JOB" | status_of)"
 (cd "$VMWORK" && "$VMWORK/.scripts/api-server.sh" --stop >/dev/null 2>&1)
+# --stop trusts the pid file only for this installation's own server (a copied .data/ must never stop another one)
+mkdir -p "$WORK/stopcheck/.scripts" "$WORK/stopcheck/.data"
+cat "$API" > "$WORK/stopcheck/.scripts/api-server.sh"; chmod +x "$WORK/stopcheck/.scripts/api-server.sh"
+printf 'API_PORT=1\n' > "$WORK/stopcheck/.env"
+sleep 60 & _FOREIGN=$!
+printf '%s' "$_FOREIGN" > "$WORK/stopcheck/.data/api-server.pid"
+_STOP_OUT=$(cd "$WORK/stopcheck" && ./.scripts/api-server.sh --stop 2>&1)
+check "stop: foreign pid file ignored"   yes "$(kill -0 "$_FOREIGN" 2>/dev/null && echo yes || echo no)"
+check "stop: foreign pid file reported"  yes "$(grep -q 'not this installation' <<< "$_STOP_OUT" && echo yes || echo no)"
+kill "$_FOREIGN" 2>/dev/null; wait "$_FOREIGN" 2>/dev/null
 _envdel FLEET_SSH_CMD; _envdel FLEET_SELF_URL; _envdel FLEET_MEMBER_PORT; _envdel FLEET_SSH_DIR; unset SHIM_ROOT SHIM_DIR
 rm -rf "$WORK/.data/fleet-jobs" "$WORK/.data/fleet-ssh"
 
