@@ -532,6 +532,30 @@ _api_success() {
     _api_response 200 "$body"
 }
 
+# Short-lived response cache for the endpoints every open dashboard polls:
+# the Docker daemon answers once per TTL however many clients ask. Any write
+# request (and any audited event) clears it, so an action shows on the next
+# poll. Usage: _api_cached NAME TTL_SECONDS HANDLER [ARGS…]
+API_CACHE_DIR="${API_CACHE_DIR:-$BASE_DIR/.data/cache}"
+_api_cached() {
+    local name="$1" ttl="$2"; shift 2
+    local k f now mtime
+    for k in "${!QUERY_PARAMS[@]}"; do name+="_${k}-${QUERY_PARAMS[$k]}"; done
+    name=$(printf '%s' "$name" | tr -c 'A-Za-z0-9_.-' '_')
+    f="$API_CACHE_DIR/$name.http"
+    if [[ "${API_RESPONSE_CACHE:-true}" != "false" && -s "$f" ]]; then
+        now=$(date +%s); mtime=$(stat -c %Y "$f" 2>/dev/null || echo 0)
+        if (( now - mtime < ttl )); then cat "$f"; return 0; fi
+    fi
+    mkdir -p "$API_CACHE_DIR" 2>/dev/null
+    local tmp="$f.tmp.$$"
+    "$@" > "$tmp"
+    cat "$tmp"
+    if head -c 12 "$tmp" 2>/dev/null | grep -q '^HTTP/1.1 200'; then mv -f "$tmp" "$f" 2>/dev/null; else rm -f "$tmp"; fi
+    return 0
+}
+_api_cache_clear() { rm -f "${API_CACHE_DIR:-$BASE_DIR/.data/cache}"/*.http 2>/dev/null; return 0; }
+
 # =============================================================================
 # QUERY STRING PARSER
 # =============================================================================
@@ -2045,7 +2069,7 @@ handle_health() {
         inspect_data=$(timeout 10 docker inspect $all_cids 2>/dev/null | jq -r '.[] | "\(.Name | ltrimstr("/"))\t\(.State.Status)\t\(if .State.Health then .State.Health.Status else "none" end)\t\(.RestartCount // 0)\t\(.Config.Labels["com.docker.compose.project"] // "")"' 2>/dev/null) || inspect_data=""
     fi
 
-    local -a _bad_names=()
+    local -a _bad_names=() _stopped_names=() _unhealthy_names=()
     local _bad_list="" cstack
     while IFS=$'\t' read -r name state health restart_count cstack; do
         [[ -z "$name" ]] && continue
@@ -2058,11 +2082,11 @@ handle_health() {
             health="sleeping"
         elif [[ "$state" != "running" ]]; then
             stopped=$(( stopped + 1 ))
-            _bad_names+=("$name")
+            _bad_names+=("$name"); _stopped_names+=("$name")
             _fire_notifications "container_stopped" "container=$name" "status=stopped" "stack=$cstack" 2>/dev/null
         elif [[ "$health" == "unhealthy" ]]; then
             unhealthy=$(( unhealthy + 1 ))
-            _bad_names+=("$name"); _bad_list+="${_bad_list:+, }$name"
+            _bad_names+=("$name"); _unhealthy_names+=("$name"); _bad_list+="${_bad_list:+, }$name"
             _fire_notifications "container_unhealthy" "container=$name" "status=unhealthy" "stack=$cstack" 2>/dev/null
         else
             healthy=$(( healthy + 1 ))
@@ -2070,7 +2094,7 @@ handle_health() {
 
         # Check restart threshold
         if [[ "${restart_count:-0}" -ge "$_restart_threshold" ]] 2>/dev/null; then
-            _bad_names+=("$name")
+            _bad_names+=("$name"); _unhealthy_names+=("$name")
             _fire_notifications "container_unhealthy" "container=$name" "status=restarting (${restart_count}x)" "stack=$cstack" 2>/dev/null
         fi
 
@@ -2109,6 +2133,23 @@ handle_health() {
             api_mem_kb=$(ps -o rss= -p "$api_pid_val" 2>/dev/null | tr -d ' ' || echo 0)
         fi
     fi
+
+    # What changed since the last poll goes to the audit log and the Integrations
+    # webhooks: containers that stopped on their own, failed their health check,
+    # or came back. Stops and starts DCS performed itself are not news.
+    local _tr_kind _tr_name
+    local -a _tr_stopped=() _tr_unhealthy=() _tr_recovered=()
+    while read -r _tr_kind _tr_name; do
+        [[ -n "$_tr_name" ]] || continue
+        case "$_tr_kind" in
+            stopped)   _container_intended "$_tr_name" "$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}' "$_tr_name" 2>/dev/null)" || _tr_stopped+=("$_tr_name") ;;
+            unhealthy) _tr_unhealthy+=("$_tr_name") ;;
+            recovered) _container_intended "$_tr_name" "$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}' "$_tr_name" 2>/dev/null)" || _tr_recovered+=("$_tr_name") ;;
+        esac
+    done < <(_health_transitions "${_stopped_names[*]}" "${_unhealthy_names[*]}")
+    _health_announce container_stopped "stopped on its own" ${_tr_stopped[@]+"${_tr_stopped[@]}"}
+    _health_announce container_unhealthy "is failing its health check" ${_tr_unhealthy[@]+"${_tr_unhealthy[@]}"}
+    _health_announce container_recovered "is running and healthy again" ${_tr_recovered[@]+"${_tr_recovered[@]}"}
 
     # Containers that recovered may alert again right away
     _notify_state_prune_containers ${_bad_names[@]+"${_bad_names[@]}"}
@@ -2716,7 +2757,12 @@ handle_containers() {
         local _stats_cache="$BASE_DIR/.data/container-stats-cache.json"
         [[ ! -f "$_stats_cache" ]] && echo '{}' > "$_stats_cache"
 
-        # Refresh cache in background for next request
+        # Refresh in the background for the next request, at most every 15 s
+        # (docker stats walks every container's cgroups: not free)
+        local _stats_age=99999
+        [[ -f "$_stats_cache" ]] && _stats_age=$(( $(date +%s) - $(stat -c %Y "$_stats_cache" 2>/dev/null || echo 0) ))
+        if (( _stats_age >= 15 )); then
+        touch "$_stats_cache" 2>/dev/null
         (
             mkdir -p "$BASE_DIR/.data" 2>/dev/null
             local _sl
@@ -2727,6 +2773,7 @@ handle_containers() {
             }')
             [[ -n "$_sl" ]] && printf '{%s}' "$_sl" > "$_stats_cache"
         ) </dev/null >/dev/null 2>&1 &
+        fi
 
         # Build containers JSON — read stats cache via --slurpfile (avoids shell arg size limits)
         local containers_json
@@ -3860,8 +3907,8 @@ handle_auth_invite() {
     fi
 
     # Validate role
-    if [[ "$role" != "user" && "$role" != "admin" && "$role" != "bot" ]]; then
-        _api_error 400 "Invalid role. Must be 'user', 'admin' or 'bot'."
+    if [[ "$role" != "user" && "$role" != "admin" ]]; then
+        _api_error 400 "Invalid role. Invites are for people: 'user' or 'admin'. Bot accounts are created directly on the Users page."
         return
     fi
 
@@ -4066,7 +4113,15 @@ handle_auth_users() {
 
     # Strip sensitive fields (password_hash, salt)
     local safe_users
-    safe_users=$(echo "$users" | jq '[.[] | {username: .username, role: .role, created_at: .created_at}]' 2>/dev/null)
+    safe_users=$(echo "$users" | jq -c '[.[] | {username: .username, role: .role, created_at: .created_at}]' 2>/dev/null)
+    # What each person set on their profile (display name, avatar, status), for the Users page
+    local profiles='{}' _pu _pf
+    while IFS= read -r _pu; do
+        _pf="$PROFILES_DIR/${_pu}.json"
+        [[ -n "$_pu" && -f "$_pf" ]] || continue
+        profiles=$(jq -c --arg u "$_pu" --slurpfile p "$_pf" '. + {($u): ($p[0] | {display_name: ((.displayName // "") | tostring), avatar: ((.icon // .avatar // "") | tostring), status_emoji: ((.statusEmoji // "") | tostring), status_text: ((.statusText // "") | tostring)})}' <<< "$profiles" 2>/dev/null) || profiles="$profiles"
+    done < <(printf '%s' "$safe_users" | jq -r '.[].username' 2>/dev/null)
+    safe_users=$(jq -c --argjson p "$profiles" 'map(. + ($p[.username] // {}))' <<< "$safe_users" 2>/dev/null || printf '%s' "$safe_users")
     _api_success "{\"total\": $(echo "$safe_users" | jq 'length' 2>/dev/null || echo 0), \"users\": $safe_users}"
 }
 
@@ -4883,6 +4938,12 @@ handle_container_action() {
         *)        _api_error 400 "Unknown action: $action"; return ;;
     esac
 
+    local _verb
+    case "$action" in start) _verb="Started" ;; stop) _verb="Stopped" ;; restart) _verb="Restarted" ;; recreate) _verb="Recreated" ;; *) _verb="Removed" ;; esac
+    [[ "$success" == "true" ]] || _verb+=" (with errors)"
+    _container_mark_intended "$name"
+    _audit_log "container_${action}" "$_verb $name by ${AUTH_USERNAME:-someone}" 2>/dev/null
+
     local escaped_output
     escaped_output=$(_api_json_escape "$output")
 
@@ -5012,6 +5073,7 @@ handle_container_reset() {
         if [[ "$RST_ERROR" == "Container not found"* ]]; then _api_error 404 "$RST_ERROR"; else _api_error 400 "$RST_ERROR"; fi
         return
     fi
+    _container_mark_intended "$name"
     local compose_file="$RST_PROJ_DIR/docker-compose.yml" env_file=""
     [[ -f "$RST_PROJ_DIR/.env" ]] && env_file="$RST_PROJ_DIR/.env"
     local output="" success=true stamp trash m target
@@ -8106,6 +8168,7 @@ _dcs_power_loop() {
                     _power_notify "🔋 $host_name: battery low, stopping stacks" "$event" urgent "battery" "low_battery"
                     stopped=true
                     _power_write_state "$sample" "$stopped" "$event"
+                    _container_mark_intended_all
                     "$BASE_DIR/stop.sh" --force >> "$BASE_DIR/logs/power.log" 2>&1 || true
                     if [[ -n "${UPS_HOST_SHUTDOWN_CMD:-}" ]]; then
                         echo "[$(date '+%F %T')] power: running UPS_HOST_SHUTDOWN_CMD" >> "$BASE_DIR/logs/power.log"
@@ -10489,6 +10552,86 @@ _notify_state_prune_containers() {
         'with_entries(select(((.key | test("\\|container_(stopped|unhealthy)\\|")) | not) or ((.key | split("|")[3]) as $c | ($keep | index($c)) != null)))' >/dev/null 2>&1 || true
 }
 
+# Containers DCS itself stopped, restarted, recreated or is deploying right now
+# (name → epoch, "stack:NAME" → epoch). The health monitor consults this so a
+# stop you asked for is never announced as a crash, and a start you asked for
+# is not announced as a recovery. Marks last 5 minutes.
+INTENDED_FILE="${INTENDED_FILE:-$BASE_DIR/.data/intended.json}"
+_container_mark_intended() {
+    [[ $# -gt 0 ]] || return 0
+    local now names
+    now=$(date +%s)
+    names=$(printf '%s\n' "$@" | sed '/^$/d' | jq -R . | jq -s -c .)
+    _api_state_file "$INTENDED_FILE" '{}' object >/dev/null 2>&1 || true
+    _api_jq_update_file "$INTENDED_FILE" --argjson n "$now" --argjson names "$names" \
+        'reduce $names[] as $k (.; .[$k] = $n) | with_entries(select(.value > ($n - 600)))' >/dev/null 2>&1 || true
+    return 0
+}
+_container_mark_intended_stack() {
+    local stack="$1"
+    [[ -n "$stack" ]] || return 0
+    local -a names=("stack:$stack")
+    local n
+    while IFS= read -r n; do [[ -n "$n" ]] && names+=("$n"); done < <(docker ps -a --filter "label=com.docker.compose.project=$stack" --format '{{.Names}}' 2>/dev/null)
+    _container_mark_intended "${names[@]}"
+}
+_container_mark_intended_all() {
+    local -a names=()
+    local n
+    while IFS= read -r n; do [[ -n "$n" ]] && names+=("$n"); done < <(docker ps -a --format '{{.Names}}' 2>/dev/null)
+    _container_mark_intended ${names[@]+"${names[@]}"}
+}
+# Usage: _container_intended NAME [STACK] — true when DCS touched it (or its stack) in the last 5 min
+_container_intended() {
+    [[ -s "$INTENDED_FILE" ]] || return 1
+    jq -e --arg k "$1" --arg s "stack:${2:-}" --argjson n "$(date +%s)" \
+        '((.[$k] // 0) > ($n - 300)) or ($s != "stack:" and (.[$s] // 0) > ($n - 300))' "$INTENDED_FILE" >/dev/null 2>&1
+}
+
+# Compare this health poll's stopped and unhealthy containers with the last one.
+# Prints one line per change — "stopped NAME", "unhealthy NAME", "recovered NAME" —
+# and remembers the new picture. The first poll after a start only records.
+# Usage: _health_transitions "stopped names" "unhealthy names" (space separated)
+HEALTH_TRANSITIONS_FILE="${HEALTH_TRANSITIONS_FILE:-$BASE_DIR/.data/health-bad.json}"
+_health_transitions() {
+    local stopped="$1" unhealthy="$2" file="$HEALTH_TRANSITIONS_FILE"
+    local cur_s cur_u prev_s='[]' prev_u='[]' first=false
+    # shellcheck disable=SC2086
+    cur_s=$(printf '%s\n' $stopped | sed '/^$/d' | sort -u | jq -R . | jq -s -c .)
+    # shellcheck disable=SC2086
+    cur_u=$(printf '%s\n' $unhealthy | sed '/^$/d' | sort -u | jq -R . | jq -s -c .)
+    if [[ -s "$file" ]]; then
+        prev_s=$(jq -c '.stopped // []' "$file" 2>/dev/null) || prev_s='[]'
+        prev_u=$(jq -c '.unhealthy // []' "$file" 2>/dev/null) || prev_u='[]'
+    else
+        first=true
+    fi
+    mkdir -p "$(dirname "$file")" 2>/dev/null
+    jq -nc --argjson s "$cur_s" --argjson u "$cur_u" '{stopped: $s, unhealthy: $u}' > "$file.tmp" 2>/dev/null && mv -f "$file.tmp" "$file"
+    [[ "$first" == "true" ]] && return 0
+    jq -nr --argjson cs "$cur_s" --argjson cu "$cur_u" --argjson ps "$prev_s" --argjson pu "$prev_u" '
+        ( ($cs - $ps) | map("stopped " + .) ),
+        ( ($cu - $pu) | map("unhealthy " + .) ),
+        ( (($ps + $pu) - ($cs + $cu)) | unique | map("recovered " + .) )
+        | .[]' 2>/dev/null
+    return 0
+}
+
+# One audit entry (and so one webhook post) per container, or a single summary
+# when many change in the same poll — a whole box stopping is one message.
+# Usage: _health_announce EVENT PHRASE NAME…
+_health_announce() {
+    local event="$1" phrase="$2"; shift 2
+    local n=$# c
+    (( n == 0 )) && return 0
+    if (( n <= 5 )); then
+        for c in "$@"; do _audit_log "$event" "$c $phrase" 2>/dev/null; done
+    else
+        _audit_log "$event" "$n containers $phrase: $(printf '%s, ' "$@" | sed 's/, $//' | cut -c1-200)" 2>/dev/null
+    fi
+    return 0
+}
+
 # Images whose newest layer is older than DAYS days, one repo:tag per line
 _images_older_than() {
     local days="$1" now img created ep
@@ -10506,25 +10649,35 @@ _images_older_than() {
 # a rule asks for it) and images older than 30 days. Thresholds come from the
 # Alerts settings; repeats are held back by the events' cooldowns.
 _alerts_evaluate() {
-    _ntfy_endpoint >/dev/null 2>&1 || _discord_webhook >/dev/null 2>&1 || return 0
-    [[ -f "$NOTIFICATIONS_FILE" ]] || return 0
-    local wanted
-    wanted=$(jq -r '[.rules[]? | select(.enabled == true) | .trigger] | unique | join(" ")' "$NOTIFICATIONS_FILE" 2>/dev/null) || wanted=""
-    [[ -n "$wanted" ]] || return 0
+    local wanted=""
+    if [[ -f "$NOTIFICATIONS_FILE" ]] && { _ntfy_endpoint >/dev/null 2>&1 || _discord_webhook >/dev/null 2>&1; }; then
+        wanted=$(jq -r '[.rules[]? | select(.enabled == true) | .trigger] | unique | join(" ")' "$NOTIFICATIONS_FILE" 2>/dev/null) || wanted=""
+    fi
     local thr_disk thr_cpu thr_mem alerts_file="$BASE_DIR/.api-auth/alerts.json"
     thr_disk=$(jq -r '.thresholds.disk_warning // 85' "$alerts_file" 2>/dev/null); [[ "$thr_disk" =~ ^[0-9]+$ ]] || thr_disk=85
     thr_cpu=$(jq -r '.thresholds.cpu_warning // 80' "$alerts_file" 2>/dev/null); [[ "$thr_cpu" =~ ^[0-9]+$ ]] || thr_cpu=80
     thr_mem=$(jq -r '.thresholds.memory_warning // 80' "$alerts_file" 2>/dev/null); [[ "$thr_mem" =~ ^[0-9]+$ ]] || thr_mem=80
-    if [[ " $wanted " == *" disk_warning "* ]]; then
-        local pct mount
-        while read -r _ _ _ _ pct mount; do
-            pct="${pct%\%}"
-            [[ "$pct" =~ ^[0-9]+$ && -n "$mount" ]] || continue
-            if (( pct >= thr_disk )); then
+    # Disk space is always watched: a filesystem crossing the threshold is audited
+    # once (so the Integrations webhooks hear it) and again only after it dropped
+    # back below; rules for disk_warning repeat on their own cooldown.
+    local pct mount over='[]' prev_over='[]' dstate="$BASE_DIR/.data/disk-state.json"
+    [[ -s "$dstate" ]] && { prev_over=$(jq -c '.over // []' "$dstate" 2>/dev/null) || prev_over='[]'; }
+    while read -r _ _ _ _ pct mount; do
+        pct="${pct%\%}"
+        [[ "$pct" =~ ^[0-9]+$ && -n "$mount" ]] || continue
+        if (( pct >= thr_disk )); then
+            over=$(jq -c --arg m "$mount" '. + [$m]' <<< "$over" 2>/dev/null || printf '%s' "$over")
+            if ! jq -e --arg m "$mount" 'index($m) != null' <<< "$prev_over" >/dev/null 2>&1; then
+                _audit_log "disk_warning" "$mount is ${pct}% full (the warning threshold is ${thr_disk}%)" 2>/dev/null
+            fi
+            if [[ " $wanted " == *" disk_warning "* ]]; then
                 _fire_notifications "disk_warning" "mount=$mount" "status=${pct}%" "message=$mount is ${pct}% full (the warning threshold is ${thr_disk}%)"
             fi
-        done < <(df -P -l -x tmpfs -x devtmpfs -x overlay -x squashfs -x efivarfs -x fuse.portal 2>/dev/null | tail -n +2)
-    fi
+        fi
+    done < <(df -P -l -x tmpfs -x devtmpfs -x overlay -x squashfs -x efivarfs -x fuse.portal 2>/dev/null | tail -n +2)
+    mkdir -p "$BASE_DIR/.data" 2>/dev/null
+    jq -nc --argjson o "$over" '{over: $o}' > "$dstate.tmp" 2>/dev/null && mv -f "$dstate.tmp" "$dstate"
+    [[ -n "$wanted" ]] || return 0
     if [[ " $wanted " == *" container_high_cpu "* || " $wanted " == *" container_high_memory "* ]]; then
         local cname cpu mem
         while IFS='|' read -r cname cpu mem; do
@@ -14226,6 +14379,7 @@ print('\n'.join(result))
         (
             set +e
             _stack_activity_pid "$target_stack"
+            _container_mark_intended_stack "$target_stack"
             _plugin_hooks_now "pre-start" "$(_hook_ctx "$target_stack" "$_deploy_ctx")"
             local _up_ok=true
             # Safety: ensure Traefik directories exist ONLY if Traefik is in this stack
@@ -15540,6 +15694,7 @@ _audit_log() {
     escaped_detail=$(_api_json_escape "$detail")
 
     printf '{"timestamp":"%s","action":"%s","detail":"%s"}\n' "$timestamp" "$escaped_action" "$escaped_detail" >> "$audit_file"
+    _api_cache_clear
 
     # Fire webhooks if configured (detached from the request's socket)
     _webhook_fire "$action" "$detail" </dev/null >/dev/null 2>&1 &
@@ -15574,7 +15729,9 @@ _webhook_fire() {
     command -v jq >/dev/null 2>&1 || return
 
     local urls
-    urls=$(jq -r --arg evt "$event" '.[] | select(.enabled == true) | select(.events | index($evt)) | .url' "$webhooks_file" 2>/dev/null)
+    urls=$(jq -r --arg evt "$event" '($evt | ascii_downcase | ltrimstr("auth.")) as $ev
+        | .[] | select(.enabled == true)
+        | select(((.events // []) | map(tostring | ascii_downcase | ltrimstr("auth.")) | index($ev)) != null) | .url' "$webhooks_file" 2>/dev/null)
 
     while IFS= read -r url; do
         [[ -z "$url" ]] && continue
@@ -16202,7 +16359,7 @@ _discord_event_style() {
     local e="${1,,}" emoji color label
     case "$e" in
         container_unhealthy)   emoji="🩺"; color=$DISCORD_COLOR_BAD;    label="Container unhealthy" ;;
-        container_stopped)     emoji="⏹️"; color=$DISCORD_COLOR_WARN;   label="Container stopped" ;;
+        container_stopped)     emoji="⏹️"; color=$DISCORD_COLOR_WARN;   label="Container stopped on its own" ;;
         container_high_cpu)    emoji="🔥"; color=$DISCORD_COLOR_WARN;   label="High CPU" ;;
         container_high_memory) emoji="🧠"; color=$DISCORD_COLOR_WARN;   label="High memory" ;;
         disk_warning)          emoji="💽"; color=$DISCORD_COLOR_WARN;   label="Disk space" ;;
@@ -16227,11 +16384,18 @@ _discord_event_style() {
         api_restart)           emoji="♻️"; color=$DISCORD_COLOR_INFO;   label="API restarted" ;;
         user_create)           emoji="👤"; color=$DISCORD_COLOR_INFO;   label="User created" ;;
         container_reset|auth.container_reset) emoji="💣"; color=$DISCORD_COLOR_WARN; label="Nuked and reinstalled" ;;
+        container_start)       emoji="▶️"; color=$DISCORD_COLOR_OK;     label="Container started" ;;
+        container_stop)        emoji="⏹️"; color=$DISCORD_COLOR_WARN;   label="Container stopped" ;;
+        container_restart)     emoji="🔁"; color=$DISCORD_COLOR_INFO;   label="Container restarted" ;;
+        container_recreate)    emoji="♻️"; color=$DISCORD_COLOR_INFO;   label="Container recreated" ;;
+        container_remove)      emoji="🗑️"; color=$DISCORD_COLOR_SLATE;  label="Container removed" ;;
+        container_recovered)   emoji="💚"; color=$DISCORD_COLOR_OK;     label="Container recovered" ;;
         sablier_*)             emoji="💤"; color=$DISCORD_COLOR_INFO;   label="On demand" ;;
         ddns_*)                emoji="🌐"; color=$DISCORD_COLOR_INFO;   label="Dynamic DNS" ;;
         crowdsec_*|auth.crowdsec_*) emoji="🛡️"; color=$DISCORD_COLOR_INFO; label="CrowdSec" ;;
         auth.login_ok)         emoji="🔑"; color=$DISCORD_COLOR_SLATE;  label="Signed in" ;;
         auth.login_fail*)      emoji="🔒"; color=$DISCORD_COLOR_WARN;   label="Failed sign-in" ;;
+        auth.lockout)          emoji="🔒"; color=$DISCORD_COLOR_BAD;    label="Account locked" ;;
         auth.*)                emoji="🔑"; color=$DISCORD_COLOR_SLATE;  label="$(printf '%s' "${e#auth.}" | tr '_' ' ')" ;;
         test)                  emoji="🔔"; color=$DISCORD_COLOR_INFO;   label="Test" ;;
         *)                     emoji="📣"; color=$DISCORD_COLOR_INFO;   label="$(printf '%s' "$e" | tr '_.' '  ')" ;;
@@ -18745,6 +18909,7 @@ _stack_run_detached() {
         local base_ctx
         base_ctx=$(_hook_ctx "$stack" "{\"action\":\"$action\"}")
         printf '%s | %s %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$action" "$stack"
+        _container_mark_intended_stack "$stack"
         case "$action" in
             start)
                 _plugin_hooks_now "pre-start" "$base_ctx"
@@ -19890,12 +20055,12 @@ handle_request() {
 
         # Standard authenticated GET endpoints
         case "$path" in
-            /status)                    handle_status ;;
-            /health)                    handle_health ;;
-            /stacks)                    handle_stacks ;;
+            /status)                    _api_cached status 10 handle_status ;;
+            /health)                    _api_cached health 5 handle_health ;;
+            /stacks)                    _api_cached stacks 10 handle_stacks ;;
             /images)                    handle_images false ;;
             /images/stale)              handle_images true ;;
-            /containers)                handle_containers ;;
+            /containers)                _api_cached containers 5 handle_containers ;;
             /config)                    handle_config ;;
             /system)                    handle_system ;;
             /disks)                     handle_disks ;;
@@ -19946,7 +20111,7 @@ handle_request() {
             /homarr/status)             handle_homarr_status ;;
             /metrics/history)           handle_metrics_history ;;
             /metrics/summary)           handle_metrics_summary ;;
-            /health/score)              handle_health_score ;;
+            /health/score)              _api_cached health-score 15 handle_health_score ;;
             /health/score/history)      handle_health_score_history ;;
             /settings/dashboard)        handle_dashboard_layout_get ;;
             /settings/profile)          handle_profile_get ;;
@@ -20218,6 +20383,7 @@ handle_request() {
 
         # SECURITY: Audit log ALL authenticated POST requests (write operations)
         _api_audit_log "$client_ip" "POST" "${AUTH_USERNAME:-unknown}" "$path"
+        _api_cache_clear
 
         # Setup wizard endpoints (require auth + setup not complete)
         case "$path" in
@@ -20731,6 +20897,7 @@ handle_request() {
 
         # SECURITY: Audit log ALL PUT/PATCH requests
         _api_audit_log "$client_ip" "PUT" "${AUTH_USERNAME:-unknown}" "$path"
+        _api_cache_clear
 
         case "$path" in
             /dns/records/*)
@@ -20765,6 +20932,7 @@ handle_request() {
 
         # SECURITY: Audit log ALL DELETE requests
         _api_audit_log "$client_ip" "DELETE" "${AUTH_USERNAME:-unknown}" "$path"
+        _api_cache_clear
 
         case "$path" in
             /auth/sessions/*)

@@ -217,7 +217,23 @@ Your profile then shows *Managing <server> · 17/17 containers · 9 stacks · al
 
 ## 6. Generic webhooks (Integrations)
 
-Notifications page → **Webhooks** posts audit events (deploys, undeploys, health changes, backups, stack starts/stops) to any URL. A Discord webhook URL there receives the same embeds as section 1; a Slack incoming webhook receives text; anything else receives `{event, title, detail, timestamp, hostname, server, version}` as JSON. "Test" sends a sample so you can see the shape.
+Notifications page → **Webhooks** posts audited events to any URL, and this is the simplest way to get
+a Discord channel that follows the server without writing rules: paste a Discord webhook URL, tick the
+events, done. A Discord URL receives the same embeds as section 1; a Slack incoming webhook receives
+text; anything else receives `{event, title, detail, timestamp, hostname, server, version}` as JSON.
+"Test" sends a sample so you can see the shape. The picker groups the events:
+
+| Group | Events |
+| --- | --- |
+| Containers | `container_stopped` (on its own), `container_unhealthy`, `container_recovered`, `container_start`, `container_stop`, `container_restart`, `container_recreate`, `container_remove`, `container_reset` (nuke & reinstall) |
+| Stacks & deploys | `deploy`, `undeploy`, `stack_start`, `stack_stop`, `stack_restart`, `stack_update`, `automation_run` |
+| Health & space | `health_change` (the overall verdict), `disk_warning` (once per threshold crossing) |
+| Backups & DCS | `backup_complete`, `backup_failed`, `recovery_bundle`, `recovery_restore`, `system_update`, `system_rollback`, `api_restart` |
+| Security & accounts | `login_fail`, `lockout`, `login_ok`, `user_create`, `user_role`, `crowdsec_unban` |
+
+Stops and starts DCS performs itself (a stack stop, a deploy, a nuke, the UPS shutdown) are never
+reported as crashes or recoveries; only what happens on its own is. When more than five containers
+change in the same health poll you get one summary message instead of a flood.
 
 ---
 

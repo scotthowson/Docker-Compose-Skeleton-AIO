@@ -3,6 +3,33 @@
 All notable changes to Docker Compose Skeleton AIO are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [3.5.2] - 2026-09-27
+
+### Added
+
+- **Container events reach the Integrations webhooks.** Start, stop, restart, recreate and
+  remove from DCS are audited (`container_start`, `container_stop`, …), and the health monitor
+  announces transitions: `container_stopped` (on its own), `container_unhealthy`,
+  `container_recovered`. Stops, restarts, deploys, nukes and the UPS shutdown that DCS itself
+  performs are marked as intended for five minutes, so they never read as crashes and a start
+  you asked for is not a "recovery". More than five containers changing in one poll is one
+  summary message. `disk_warning` is audited once per threshold crossing.
+- **Webhook catalogue**: events are matched case-insensitively and without the `auth.` prefix,
+  so a hook can subscribe to `user_create`, `login_fail`, `lockout`, `system_update`,
+  `recovery_bundle` and every other audited action the dashboard now lists in groups.
+- **User list carries profiles**: `GET /auth/users` adds `display_name`, `avatar`,
+  `status_emoji` and `status_text` from each person's profile.
+
+### Changed
+
+- **Lighter on the Docker daemon.** `/status`, `/health`, `/stacks`, `/containers` and
+  `/health/score` are served from a short cache (10 s, 5 s, 10 s, 5 s, 15 s) shared by every
+  client; any write, and any audited event, clears it (`API_RESPONSE_CACHE=false` turns it off).
+  The container stats sweep behind `/containers` runs at most every 15 s instead of on every
+  call. On a box with several dashboards open this removes most of containerd's and dockerd's
+  CPU time.
+- Invites are for people again (`user` or `admin`); bot accounts are created directly.
+
 ## [3.5.1] - 2026-09-27
 
 ### Fixed

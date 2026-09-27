@@ -236,8 +236,10 @@ Two channels, both optional, set in `.env` (the setup wizard and the Server Conf
 
 Rules fire for unhealthy, stopped, busy or memory-hungry containers, low disk space, stacks that
 stop or fail, deploys, image updates and ageing images, backups, automations and every change of
-the server's overall health. Generic webhooks on the Notifications page get the same embed when
-they point at Discord, text when they point at Slack, and a JSON envelope elsewhere.
+the server's overall health. Generic webhooks on the Notifications page follow the audit log
+instead — containers stopping on their own, failing or recovering, every start/stop/restart/
+deploy/nuke you perform, backups, DCS updates, failed sign-ins — grouped in a picker; they get the
+same embed when they point at Discord, text when they point at Slack, and a JSON envelope elsewhere.
 
 Commands from Discord are a separate integration: deploy the **DCS Discord Bot** template
 (`ghcr.io/scotthowson/dcs-discord-bot`), which signs in to the API with its own **bot account**
