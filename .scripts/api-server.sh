@@ -18831,7 +18831,11 @@ handle_fleet_provision() {
     for i in $(seq 0 $((n - 1))); do
         stack=$(jq -r ".vms[$i].stack // \"\"" <<< "$body"); src=$(jq -r ".vms[$i].source // \"\"" <<< "$body"); [[ -n "$src" ]] || src="$stack"; cores=$(jq -r ".vms[$i].cores // 2" <<< "$body"); mem=$(jq -r ".vms[$i].memory_mb // 4096" <<< "$body"); disk=$(jq -r ".vms[$i].disk_gb // 32" <<< "$body"); ip=$(jq -r ".vms[$i].ip // \"\"" <<< "$body")
         [[ "$stack" =~ ^[a-z0-9][a-z0-9-]{0,40}$ ]] || { _api_error 400 "Stack names are lowercase letters, digits and dashes: '$stack'"; return; }
-        _fleet_stack_is_hub "$stack" && { _api_error 409 "$stack runs on this server (the hub): it is in DOCKER_STACKS or has containers up — take it out of the hub's stacks first"; return; }
+        if _fleet_stack_is_hub "$stack"; then
+            local _why="it is in this server's DOCKER_STACKS — take it out (Stacks page → order) and stop it first"
+            [[ " ${DOCKER_STACKS:-} " == *" $stack "* ]] || _why="its containers are still up here — a stop takes a moment; try again when the Stacks page shows it stopped"
+            _api_error 409 "$stack runs on this server (the hub): $_why"; return
+        fi
         [[ "$src" =~ ^[a-z0-9][a-z0-9-]{0,40}$ ]] || { _api_error 400 "source must be a stack folder name: '$src'"; return; }
         [[ "$src" != "$stack" ]] && _fleet_stack_is_hub "$src" && { _api_error 409 "$src runs on this server (the hub) — stop it and take it out of DOCKER_STACKS before moving it into a VM"; return; }
         [[ -n "$(_fleet_member_for_stack "$stack")" ]] && { _api_error 409 "$stack already runs on a member VM"; return; }
