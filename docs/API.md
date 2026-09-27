@@ -4,7 +4,7 @@ Generated from the router in `.scripts/api-server.sh` by `.scripts/api-docs.sh` 
 Run `.scripts/api-docs.sh` after adding or changing a route; CI fails when this file is stale.
 
 The API listens on `API_BIND:API_PORT` (default `0.0.0.0:9876`) and answers JSON.
-Every endpoint below is `308` in total.
+Every endpoint below is `314` in total.
 
 ## Access levels
 
@@ -256,6 +256,8 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | Method | Path | Access | Description |
 |--------|------|--------|-------------|
 | GET | `/system/update/check` | admin | Newer DCS release on the channel? Version, release notes, local edits and how the API can restart |
+| GET | `/system/docker-engine` | user | Docker engine fleet |
+| GET | `/system/docker-engine/status` | user | The engine update in progress or the last one (idle, running, done, failed) |
 | GET | `/system/update/history` | admin | Outcomes of unattended self-updates (last 30) and whether a job runs now |
 | GET | `/system/os-update/status` | admin | Poll background OS update progress |
 | GET | `/system/crontab` | admin | User crontab entries |
@@ -267,6 +269,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | POST | `/system/update/rollback` | admin | Return to a backup tag {backup_tag, restart}; user files are kept, edited framework files backed up |
 | POST | `/system/os-update/check` | admin | List available OS package updates (terminal session required) |
 | POST | `/system/os-update/apply` | admin | Apply OS package updates in the background (terminal session required) |
+| POST | `/system/docker-engine/update` | admin | Bring the Docker Engine to the newest version the package source offers, in the background: unattended where this API has passwordless sudo (a VM the hub built), otherwise with {terminal_token, password} like the OS updates; the daemon restarts and every container comes back on its restart policy; GET /system/docker-engine/status follows it |
 
 ## Backups and maintenance
 
@@ -429,6 +432,9 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | POST | `/fleet/update` | admin | Bring members to this hub's DCS version {members: ["id", …] or "all"}: each fetches the hub's code bundle, keeps its own files and re-executes; the answer lists what happened per member |
 | POST | `/fleet/self-update` | admin | Install a DCS code bundle over this server's own code {bundle_url, version?}: data, accounts, secrets, stacks and the settings in .config are kept, the old code is saved under .snapshots, then the API re-executes on the new code |
 | POST | `/fleet/hub/relay-token` | admin | The hub hands this member the token its events travel with {token} (admin: the hub's own account) |
+| POST | `/fleet/routes` | admin | The hub hands this DCS the other servers' routes for the Traefik that runs here {http: {routers, services}}; written as custom_routes/fleet-members.yml (admin: the hub's own account); 409 without a Traefik here |
+| POST | `/fleet/hub/domain` | admin | The hub hands this member the fleet's proxy domain {domain, force}: written as PROXY_DOMAIN when this DCS has none yet (or the example.com placeholder), so the routes it writes for its stacks carry the fleet's domain; a domain of its own (a Traefik here) is kept unless force is true |
+| POST | `/fleet/docker-engine/update` | admin | Bring the Docker Engine up to date on members {members: ["id", …] or "all"} (each VM the hub built has passwordless sudo, so no password travels); the answer says what each member started |
 | POST | `/fleet/jobs/*/retry` | admin | Run a failed VM job again from the step that failed |
 | POST | `/fleet/members/*/test` | admin | Log in to the member afresh, read its identity and version, and say which guest it matches |
 | POST | `/fleet/members/*/api/*` | admin | Forward the call (GET, POST, PUT or DELETE) to that member with the hub's account; the caller's own role is checked against the inner path as if it were local (streams and auth are not forwarded) |

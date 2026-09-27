@@ -16,6 +16,10 @@ services:
 
   dcs-ui:
     container_name: DCS-UI
+    # Debian's own docker.io (26) with AppArmor 4 denies nginx its worker sockets and the dashboard never answers:
+    # setup.sh sets DCS_UI_APPARMOR=unconfined in this stack's .env on such hosts; Docker CE needs nothing
+    security_opt:
+      - "apparmor=${DCS_UI_APPARMOR:-docker-default}"
     image: ghcr.io/scotthowson/docker-compose-skeleton-ui:latest
     # To build locally instead of pulling from GHCR, uncomment below:
     # build:

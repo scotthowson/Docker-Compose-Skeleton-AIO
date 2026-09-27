@@ -326,6 +326,12 @@ is the same: `?fleet=1` on `GET /health`, `/images`, `/networks`, `/volumes`, `/
 
 Some things go further than a merged list:
 
+- **Routes to the VMs.** The hub's own Traefik reaches every service inside the VMs without any
+  configuration: the hub writes the members' routes (each VM's DCS builds them from its
+  containers' Traefik labels) into its Traefik's `custom_routes` directory as
+  `fleet-members.yml`, which the file provider watches, and keeps that file current every half
+  minute. A Traefik somewhere else keeps using the feed (section 4).
+
 - **Events reach the hub.** A VM's DCS sends every event it raises (a container that stopped, a
   stack that started, an update, a failed backup…) to its hub with a relay token the hub handed
   it when it joined (`POST /fleet/relay`). The hub notes it in the Activity timeline as
@@ -511,6 +517,8 @@ Command line, on any DCS: `.scripts/api-server.sh --join-hub URL CODE [NAME]`, `
 | A member's stacks are missing from the Proxmox page | *Members answering* in the page header says whether the hub reached it; the member menu's *Test* explains a refusal (a changed password on the member: edit the member and enter it again). |
 | An update round says *the bundle could not be unpacked: … Function not implemented* | The member's `dcs-api.service` still carries `RestrictSUIDSGID=true` from an older installer; under it systemd answers tar's `openat2()` with ENOSYS on Fedora 44 (systemd 259). Run `sudo .scripts/install-service.sh` once on that VM and restart the service — every later round refreshes the unit by itself when the installer changes. |
 | A VM's events do not show on the hub's Activity page or in its Discord/NTFY | The member has no relay token yet: the hub hands one out within a minute of the member answering (`.data/fleet-relay.json` on the hub); a member older than 3.9.0 gets it after an update round. Events raised while the hub was unreachable are not queued. |
+| The dashboard container (DCS-UI) is *unhealthy* and its log says `socketpair() failed (13: Permission denied)` | Debian's own `docker.io` 26 with AppArmor 4.1 (Debian 13, and a Proxmox host) denies nginx its worker sockets. `setup.sh` detects that pairing and writes `DCS_UI_APPARMOR=unconfined` into `Stacks/core-infrastructure/.env`; on an install made before 3.9.1 add that line yourself and run `docker compose up -d dcs-ui` in that folder, or install Docker CE, which needs nothing. |
+| A service inside a VM is not reachable through the hub's Traefik | The hub writes the members' routes into its Traefik's `custom_routes/fleet-members.yml` every half minute (audit entry `fleet_routes`); the member must answer, its container must carry Traefik labels, and the hub's Traefik must reach the VM's address (same bridge, no firewall in between). The feed for a Traefik elsewhere is separate (section 4). |
 | A VM's own Updates page says *Updated by its hub* | By design: a VM built by the hub has no git checkout, its code comes from the hub's Updates page (*Update all VMs*). |
 | Detection says nothing about Proxmox | Detection reads `systemd-detect-virt` and the DMI vendor; a VM without the guest agent still shows as *QEMU/KVM*, which is treated as a probable Proxmox VM. The probe looks for port 8006 on the default gateway and on `pve`, `proxmox`, `pve.local`, `proxmox.local`; if your host has another name, just type the URL. |
 

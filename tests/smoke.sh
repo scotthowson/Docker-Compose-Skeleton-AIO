@@ -861,7 +861,16 @@ _envset TRAEFIK_FEED_ENABLED true; _envset TRAEFIK_FEED_TOKEN fleet-feed-token
 check "fleet: hub feed merges member"   yes "$(request GET '/traefik/dynamic?token=fleet-feed-token' '' "${AUTH[@]}" | body_of | jq -e --arg k "${MID}-fleetwho-dcs" '.http.routers | has($k)' >/dev/null 2>&1 && echo yes || echo no)"
 check "fleet: merged service renamed"   "${MID}-fleetwho-dcs" "$(request GET '/traefik/dynamic?token=fleet-feed-token' '' "${AUTH[@]}" | body_of | jq -r --arg k "${MID}-fleetwho-dcs" '.http.routers[$k].service' 2>/dev/null)"
 check "fleet: feed status counts them"  yes "$([[ "$(auth_request GET /traefik/feed/status | body_of | jq -r '.member_routes' 2>/dev/null)" -ge 1 ]] && echo yes || echo no)"
+# the hub's own Traefik gets the members' routes as a file in its custom_routes directory (the file provider watches it)
+_lib _fleet_routes_write_local
+_HROUTES="$WORK/Stacks/zz-proxy/App-Data/Traefik/custom_routes"
+check "fleet: member routes written locally" yes "$(jq -e --arg k "${MID}-fleetwho-dcs" '.http.routers | has($k)' "$_HROUTES/fleet-members.yml" >/dev/null 2>&1 && echo yes || echo no)"
+check "fleet: local route points at the VM" yes "$(jq -r --arg k "${MID}-fleetwho-dcs" '.http.services[$k].loadBalancer.servers[0].url' "$_HROUTES/fleet-members.yml" 2>/dev/null | grep -q '10.9.9' && echo yes || echo no)"
+_MT1=$(stat -c %Y "$_HROUTES/fleet-members.yml" 2>/dev/null); sleep 1; _lib _fleet_routes_write_local
+check "fleet: unchanged routes not rewritten" "$_MT1" "$(stat -c %Y "$_HROUTES/fleet-members.yml" 2>/dev/null)"
 _envdel TRAEFIK_FEED_ENABLED; _envdel TRAEFIK_FEED_TOKEN; rm -f "$_MROUTES/fleetwho.yml"
+_lib _fleet_routes_write_local
+check "fleet: removed route leaves the file" no "$(jq -e --arg k "${MID}-fleetwho-dcs" '.http.routers | has($k)' "$_HROUTES/fleet-members.yml" >/dev/null 2>&1 && echo yes || echo no)"
 # the watcher: a member that stops answering, then comes back
 (cd "$MWORK" && "$MWORK/.scripts/api-server.sh" --stop >/dev/null 2>&1)
 timeout 10 bash -c "while curl -s -m 1 http://127.0.0.1:$FLEET_PORT/ping >/dev/null 2>&1; do sleep 0.3; done" 2>/dev/null

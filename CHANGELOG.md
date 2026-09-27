@@ -3,6 +3,25 @@
 All notable changes to Docker Compose Skeleton AIO are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- **Routes to the VMs through the hub's own Traefik.** The hub writes the members' routes into
+  its Traefik's `custom_routes/fleet-members.yml` (file provider, watched) from the metrics loop,
+  only when they change, and removes the file when no VM offers a route (audit `fleet_routes`).
+
+### Fixed
+
+- The dashboard container stayed unhealthy on hosts with Debian's own `docker.io` 26 and
+  AppArmor 4.1 (Debian 13, Proxmox hosts): nginx could not create its worker sockets. `setup.sh`
+  now detects that pairing and sets `DCS_UI_APPARMOR=unconfined` in the core stack's `.env`; the
+  dashboard service carries `security_opt: apparmor=${DCS_UI_APPARMOR:-docker-default}`.
+- `POST /proxmox/test` without `verify_tls` kept the saved choice instead of turning verification
+  on, which made the link panel fail against a self-signed Proxmox.
+- A member takes code only from its own hub (`POST /fleet/self-update` refuses other hosts).
+- The smoke's fleet score check no longer assumes containers exist (the CI runner has none).
+
 ## [3.9.0] - 2026-09-27
 
 ### Added

@@ -592,6 +592,15 @@ if command -v docker >/dev/null 2>&1; then
         _ok "Docker daemon is running"
         docker_version="$(docker version --format '{{.Server.Version}}' 2>/dev/null || echo 'unknown')"
         _info "Docker version: $docker_version"
+        # Debian's own docker.io (26) with AppArmor 4 denies nginx its worker sockets, so the dashboard container never
+        # answers: on that pairing the core stack runs the dashboard unconfined (Docker CE ships a profile that works)
+        if docker info --format '{{.SecurityOptions}}' 2>/dev/null | grep -q apparmor && [[ "${docker_version%%.*}" =~ ^[0-9]+$ ]] && (( ${docker_version%%.*} < 27 )) \
+           && [[ -f /sys/module/apparmor/parameters/enabled ]] && dpkg -s docker.io >/dev/null 2>&1; then
+            _core_env="$BASE_DIR/Stacks/core-infrastructure/.env"
+            if [[ -d "$BASE_DIR/Stacks/core-infrastructure" ]] && ! grep -q '^DCS_UI_APPARMOR=' "$_core_env" 2>/dev/null; then
+                printf 'DCS_UI_APPARMOR=unconfined\n' >> "$_core_env" 2>/dev/null && _warn "Docker $docker_version from Debian with AppArmor: the dashboard runs unconfined (DCS_UI_APPARMOR in Stacks/core-infrastructure/.env); Docker CE would not need this"
+            fi
+        fi
     else
         _fail "Docker daemon is not running or not accessible"
         _info "Start Docker with: sudo systemctl start docker"
