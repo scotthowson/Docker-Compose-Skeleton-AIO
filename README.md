@@ -68,7 +68,7 @@ Browser ──► DCS-UI (container, :3000) ──/api/──► api-server.sh (
   Immich, Vaultwarden, the *arr apps…; `"auth": "bypass"` in their `template.json`), and the
   deploy sheet's per-route switch decides otherwise. Services deployed before Authelia go behind
   it when it arrives.
-- **A real API** — 298 endpoints covering stacks, containers, images, networks, volumes, logs,
+- **A real API** — 315 endpoints covering stacks, containers, images, networks, volumes, logs,
   templates, routes, DNS, plugins, schedules, secrets, backups, snapshots, metrics, notifications,
   webhooks, automations, system updates and the web terminal. See [docs/API.md](docs/API.md).
 - **Security by default** — accounts are mandatory on any non-loopback bind, a fresh install only
@@ -214,7 +214,7 @@ JSON in and out, no runtime to install. It starts with `setup.sh`/`start.sh` or 
   daemon; any write or audited event clears it. `GET /ping` is the no-auth liveness probe the
   UI's heartbeat times. `API_RESPONSE_CACHE=false` turns the cache off, `API_CACHE_MAX_STALE`
   (120 s) caps how old a served answer may be.
-- **Reference** — [docs/API.md](docs/API.md) lists all 298 endpoints with their access level and
+- **Reference** — [docs/API.md](docs/API.md) lists all 315 endpoints with their access level and
   is generated from the router by `.scripts/api-docs.sh`; `GET /` serves the same catalogue.
 
 ---

@@ -114,7 +114,7 @@ APP_DATA_DIR="${APP_DATA_DIR:-$BASE_DIR/App-Data}"
 # process agrees on the bind address, port and authentication policy.
 API_PORT="${DCS_API_EFFECTIVE_PORT:-${API_PORT:-9876}}"
 API_BIND="${DCS_API_EFFECTIVE_BIND:-${API_BIND:-127.0.0.1}}"
-API_VERSION="1.11.0"
+API_VERSION="1.12.0"
 DCS_VERSION="$(cat "${BASE_DIR}/VERSION" 2>/dev/null || echo "unknown")"
 
 # Plugin system
