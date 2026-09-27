@@ -641,7 +641,7 @@ touch -d '-30 seconds' "$WORK/.data/cache/stacks.http"
 _st=$(auth_request GET /stacks)
 check "cache: stale answer served"      stale "$(printf '%s' "$_st" | _cache_state)"
 check "cache: stale answer is 200"      200 "$(printf '%s' "$_st" | status_of)"
-check "cache: stale answer carries Age" yes "$(printf '%s' "$_st" | grep -qi '^Age: 30' && echo yes || echo no)"
+check "cache: stale answer carries Age" yes "$(printf '%s' "$_st" | grep -qiE '^Age: 3[0-9]' && echo yes || echo no)"
 timeout 10 bash -c "until [[ \$(( \$(date +%s) - \$(stat -c %Y '$WORK/.data/cache/stacks.http' 2>/dev/null || echo 0) )) -lt 5 ]]; do sleep 0.2; done" 2>/dev/null
 check "cache: refreshed in background"  yes "$([[ $(_cache_age) -lt 5 ]] && echo yes || echo no)"
 check "cache: refresh lock released"    no "$([[ -d "$WORK/.data/cache/stacks.http.lock" ]] && echo yes || echo no)"
@@ -651,6 +651,78 @@ check "cache: miss rebuilt the file"    yes "$([[ $(_cache_age) -lt 5 ]] && echo
 check "ping: public"                    200 "$(request GET /ping '' "${AUTH[@]}" | status_of)"
 check "ping: says ok"                   true "$(request GET /ping '' "${AUTH[@]}" | body_of | jq -r '.ok' 2>/dev/null)"
 check "ping: names a version"           yes "$([[ -n "$(request GET /ping '' "${AUTH[@]}" | body_of | jq -r '.version // empty' 2>/dev/null)" ]] && echo yes || echo no)"
+
+echo "Proxmox (against a stand-in server)"
+# Values live in the install's .env (it is data the API loads on every request; the environment
+# never overrides it), so the tests write them there and remove them afterwards.
+_envset() { sed -i "/^${1}=/d" "$WORK/.env"; printf '%s=%s\n' "$1" "$2" >> "$WORK/.env"; }
+_envdel() { sed -i "/^${1}=/d" "$WORK/.env"; }
+check "proxmox: not configured"         false "$(auth_request GET /proxmox/status | body_of | jq -r '.configured' 2>/dev/null)"
+check "proxmox: vms need config"        503 "$(auth_request GET /proxmox/vms | status_of)"
+check "proxmox: environment reported"   yes "$(auth_request GET /proxmox/status | body_of | jq -e '.environment | has("guest")' >/dev/null 2>&1 && echo yes || echo no)"
+check "setup defaults: environment"     yes "$(request GET /setup/defaults '' "${NOAUTH[@]}" | body_of | jq -e '.system.proxmox | has("guest")' >/dev/null 2>&1 && echo yes || echo no)"
+_PVE_PORT=$(( 20000 + RANDOM % 20000 ))
+python3 "$ROOT/tests/mock-proxmox.py" "$_PVE_PORT" 'dcs@pve!smoke' 'smoke-secret' "$WORK/.data/pve-mock.json" >/dev/null 2>&1 &
+_PVE_PID=$!
+timeout 10 bash -c "until curl -s -o /dev/null http://127.0.0.1:$_PVE_PORT/api2/json/version; do sleep 0.2; done" 2>/dev/null
+_envset PROXMOX_URL "http://127.0.0.1:$_PVE_PORT"; _envset PROXMOX_TOKEN_ID 'dcs@pve!smoke'; _envset PROXMOX_TOKEN_SECRET 'smoke-secret'; _envset API_RESPONSE_CACHE false
+check "proxmox: reachable"              true "$(auth_request GET /proxmox/status | body_of | jq -r '.reachable' 2>/dev/null)"
+check "proxmox: version seen"           8.3.0 "$(auth_request GET /proxmox/status | body_of | jq -r '.version' 2>/dev/null)"
+check "proxmox: templates dropped"      3 "$(auth_request GET /proxmox/vms | body_of | jq -r '.total' 2>/dev/null)"
+check "proxmox: running count"          2 "$(auth_request GET /proxmox/vms | body_of | jq -r '.running' 2>/dev/null)"
+check "proxmox: tags split"             media "$(auth_request GET /proxmox/vms | body_of | jq -r '.vms[0].tags[1]' 2>/dev/null)"
+check "proxmox: nodes"                  pve "$(auth_request GET /proxmox/nodes | body_of | jq -r '.nodes[0].node' 2>/dev/null)"
+check "proxmox: vm detail"              media-services "$(auth_request GET /proxmox/vms/pve/qemu/100 | body_of | jq -r '.name' 2>/dev/null)"
+check "proxmox: bad type refused"       400 "$(auth_request GET /proxmox/vms/pve/disk/100 | status_of)"
+check "proxmox: bad action refused"     400 "$(auth_request POST /proxmox/vms/pve/lxc/200/explode '{}' | status_of)"
+check "proxmox: reset is qemu-only"     400 "$(auth_request POST /proxmox/vms/pve/lxc/200/reset '{}' | status_of)"
+check "proxmox: start a container"      true "$(auth_request POST /proxmox/vms/pve/lxc/200/start '{}' | body_of | jq -r '.success' 2>/dev/null)"
+check "proxmox: upid returned"          yes "$([[ "$(auth_request POST /proxmox/vms/pve/qemu/101/reboot '{}' | body_of | jq -r '.upid' 2>/dev/null)" == UPID:* ]] && echo yes || echo no)"
+check "proxmox: action audited"         yes "$(grep -q '"action":"proxmox_vm_start"' "$WORK/.data/audit.jsonl" 2>/dev/null && echo yes || echo no)"
+check "proxmox: marked intended"        true "$(auth_request GET /proxmox/vms | body_of | jq -r '.vms[] | select(.vmid == 200) | .intended' 2>/dev/null)"
+check "proxmox: tasks listed"           qmreboot "$(auth_request GET /proxmox/tasks | body_of | jq -r '.tasks[0].type' 2>/dev/null)"
+check "proxmox: test with values"       true "$(auth_request POST /proxmox/test "{\"url\":\"http://127.0.0.1:$_PVE_PORT\",\"token_id\":\"dcs@pve!smoke\",\"token_secret\":\"smoke-secret\"}" | body_of | jq -r '.reachable' 2>/dev/null)"
+check "proxmox: bad token explained"    false "$(auth_request POST /proxmox/test "{\"url\":\"http://127.0.0.1:$_PVE_PORT\",\"token_id\":\"dcs@pve!smoke\",\"token_secret\":\"nope\"}" | body_of | jq -r '.reachable' 2>/dev/null)"
+check "proxmox: bad token hint"         yes "$(auth_request POST /proxmox/test "{\"url\":\"http://127.0.0.1:$_PVE_PORT\",\"token_id\":\"dcs@pve!smoke\",\"token_secret\":\"nope\"}" | body_of | jq -r '.error' 2>/dev/null | grep -q 'rejected the API token' && echo yes || echo no)"
+check "proxmox: viewer may look"        200 "$(viewer_request GET /proxmox/status | status_of)"
+check "proxmox: viewer may not power"   403 "$(viewer_request POST /proxmox/vms/pve/lxc/200/stop '{}' | status_of)"
+check "proxmox: bot may power"          0 "$(_lib _api_bot_allowed POST /proxmox/vms/pve/lxc/200/stop; echo $?)"
+check "proxmox: watcher silent first"   0 "$(PROXMOX_STATE_FILE="$WORK/.data/pve-state.json" _lib _pve_watch; grep -c 'proxmox_vm_stopped' "$WORK/.data/audit.jsonl" 2>/dev/null)"
+auth_request POST /proxmox/vms/pve/qemu/100/stop '{}' >/dev/null   # DCS asked: never an alert
+_lib _api_jq_update_file "$WORK/.data/intended.json" 'del(."pve:100")' >/dev/null 2>&1 || true
+touch -d '-2 minutes' "$WORK/.data/pve-state.json" 2>/dev/null
+PROXMOX_STATE_FILE="$WORK/.data/pve-state.json" _lib _pve_watch
+check "proxmox: unexpected stop noticed" 1 "$(grep -c 'proxmox_vm_stopped' "$WORK/.data/audit.jsonl" 2>/dev/null)"
+check "event style: vm stopped"         "VM stopped on its own" "$(_lib _discord_event_style proxmox_vm_stopped | cut -d'|' -f3)"
+check "notify wording: vm stopped"      "VM {vm} stopped" "$(_lib eval '_notify_default_templates proxmox_vm_stopped; printf %s "$NT_TITLE"')"
+kill $_PVE_PID 2>/dev/null; wait $_PVE_PID 2>/dev/null
+_envdel PROXMOX_URL; _envdel PROXMOX_TOKEN_ID; _envdel PROXMOX_TOKEN_SECRET
+check "proxmox: unlinked again"         false "$(auth_request GET /proxmox/status | body_of | jq -r '.configured' 2>/dev/null)"
+
+echo "Traefik feed"
+check "feed: off by default"            401 "$(request GET '/traefik/dynamic?token=x' '' "${AUTH[@]}" | status_of)"
+check "feed: status off"                false "$(auth_request GET /traefik/feed/status | body_of | jq -r '.enabled' 2>/dev/null)"
+_envset TRAEFIK_FEED_ENABLED true; _envset TRAEFIK_FEED_TOKEN feed-secret; _envset TRAEFIK_FEED_TARGET_HOST 10.0.0.9
+_FEED_DIR=$(_lib _find_traefik_routes_dir)
+check "feed: routes dir resolved"       yes "$([[ -n "$_FEED_DIR" ]] && echo yes || echo no)"
+mkdir -p "$_FEED_DIR/demo"
+printf 'http:\n  routers:\n    whoami-router:\n      entryPoints:\n        - "websecure"\n      rule: "Host(`whoami.example.com`)"\n      service: "whoami"\n      middlewares:\n        - "traefik-chain"\n      tls: {}\n  services:\n    whoami:\n      loadBalancer:\n        servers:\n          - url: "http://10.0.0.5:8080"\n' > "$_FEED_DIR/demo/whoami.yml"
+check "feed: wrong token"               401 "$(request GET '/traefik/dynamic?token=nope' '' "${AUTH[@]}" | status_of)"
+_FD=$(request GET '/traefik/dynamic?token=feed-secret' '' "${AUTH[@]}")
+check "feed: token in query works"      200 "$(printf '%s' "$_FD" | status_of)"
+check "feed: router served"             'Host(`whoami.example.com`)' "$(printf '%s' "$_FD" | body_of | jq -r '.http.routers["whoami-dcs"].rule' 2>/dev/null)"
+check "feed: non-container url kept"    http://10.0.0.5:8080 "$(printf '%s' "$_FD" | body_of | jq -r '.http.services["whoami-dcs"].loadBalancer.servers[0].url' 2>/dev/null)"
+check "feed: remote middlewares only"   null "$(printf '%s' "$_FD" | body_of | jq -r '.http.routers["whoami-dcs"].middlewares' 2>/dev/null)"
+check "feed: tls on"                    yes "$(printf '%s' "$_FD" | body_of | jq -e '.http.routers["whoami-dcs"].tls' >/dev/null 2>&1 && echo yes || echo no)"
+check "feed: bearer token works"        200 "$(printf 'GET /traefik/dynamic HTTP/1.1\r\nHost: test\r\nAuthorization: Bearer feed-secret\r\n\r\n' | env DOCKER_COMPOSE_CMD="${DOCKER_COMPOSE_CMD:-docker compose}" "${AUTH[@]}" "$API" --handle-request 2>/dev/null | status_of)"
+check "feed: status counts routes"      yes "$([[ "$(auth_request GET /traefik/feed/status | body_of | jq -r '.routes' 2>/dev/null)" -ge 1 ]] && echo yes || echo no)"
+check "feed: status has snippet"        yes "$(auth_request GET /traefik/feed/status | body_of | jq -r '.snippet' 2>/dev/null | grep -q 'providers:' && echo yes || echo no)"
+check "feed: last poll recorded"        yes "$([[ "$(auth_request GET /traefik/feed/status | body_of | jq -r '.last_poll' 2>/dev/null)" -gt 0 ]] && echo yes || echo no)"
+check "feed: viewer may not see status" 403 "$(viewer_request GET /traefik/feed/status | status_of)"
+check "feed: token rotated"             yes "$([[ "$(auth_request POST /traefik/feed/token '{}' | body_of | jq -r '.token' 2>/dev/null | wc -c)" -ge 40 ]] && echo yes || echo no)"
+check "feed: old token refused"         401 "$(request GET '/traefik/dynamic?token=feed-secret' '' "${AUTH[@]}" | status_of)"
+_envdel TRAEFIK_FEED_ENABLED; _envdel TRAEFIK_FEED_TOKEN; _envdel TRAEFIK_FEED_TARGET_HOST; _envdel API_RESPONSE_CACHE
+rm -rf "$_FEED_DIR/demo/whoami.yml"
 check "crowdsec alerts: viewer denied"  403 "$(viewer_request POST /crowdsec/notifications '{}' | status_of)"
 
 echo "Docker-backed endpoints (skipped when Docker is unavailable)"

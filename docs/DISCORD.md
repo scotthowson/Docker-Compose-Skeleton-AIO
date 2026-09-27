@@ -158,6 +158,8 @@ Type `/` in the channel. Names autocomplete while you type. Every reply has butt
 | `/updates` | Newer images and images older than 30 days; check the registry; update everything |
 | `/logs <target> [lines]` | Last lines of a container or stack, visible only to you |
 | `/routes [check]` | Domains Traefik serves, optionally probed |
+| `/vms` | Every Proxmox node and guest: state, CPU, memory, uptime (needs the Proxmox link) |
+| `/vm <vm> <action>` | `info`, or `start`, `shutdown`, `stop`, `reboot`, `reset`, `suspend`, `resume` a VM or container — admins, with a confirmation for anything but start and resume |
 | `/power` | UPS state |
 | `/security` | CrowdSec bans and trusted addresses |
 | `/schedules` · `/audit [count]` · `/dcs` · `/help` | Schedules and automations · recent actions · DCS version and updates · this list |
@@ -230,6 +232,7 @@ text; anything else receives `{event, title, detail, timestamp, hostname, server
 | Health & space | `health_change` (the overall verdict), `disk_warning` (once per threshold crossing) |
 | Backups & DCS | `backup_complete`, `backup_failed`, `recovery_bundle`, `recovery_restore`, `system_update`, `system_rollback`, `api_restart` |
 | Security & accounts | `login_fail`, `lockout`, `login_ok`, `user_create`, `user_role`, `crowdsec_unban` |
+| Proxmox | `proxmox_vm_stopped` (a guest stopped on its own), `proxmox_vm_started` (came back without DCS), `proxmox_vm_start`, `proxmox_vm_shutdown`, `proxmox_vm_stop`, `proxmox_vm_reboot`, `proxmox_vm_reset`, `proxmox_vm_suspend`, `proxmox_vm_resume` (by DCS) |
 
 Stops and starts DCS performs itself (a stack stop, a deploy, a nuke, the UPS shutdown) are never
 reported as crashes or recoveries; only what happens on its own is. When more than five containers

@@ -151,6 +151,40 @@ _info "Stacks directory: $COMPOSE_DIR"
 _info "App-Data target : $APP_DATA_DIR"
 _info "Running as user : ${CURRENT_USER}:${CURRENT_GROUP}"
 
+# -----------------------------------------------------------------------------
+# What kind of machine this is: the OS, bare metal or a guest (a QEMU/KVM guest
+# is most likely a Proxmox VM, an LXC container most likely lives on a Proxmox
+# host), or the Proxmox host itself. On a guest, look for the Proxmox API on
+# the default gateway and the usual names so the link can be offered later.
+# -----------------------------------------------------------------------------
+ENV_OS="$(. /etc/os-release 2>/dev/null && printf '%s' "${PRETTY_NAME:-$NAME}")"
+ENV_VIRT="$(systemd-detect-virt 2>/dev/null || true)"; [[ -n "$ENV_VIRT" ]] || ENV_VIRT="unknown"
+ENV_PVE_HOST=false; ENV_PVE_GUEST=false; ENV_PVE_HINT=""; ENV_MACHINE="bare metal"
+if [[ -d /etc/pve ]] && command -v pvesh >/dev/null 2>&1; then
+    ENV_PVE_HOST=true; ENV_MACHINE="the Proxmox host itself"
+else
+    case "$ENV_VIRT" in
+        kvm|qemu) ENV_PVE_GUEST=true; ENV_MACHINE="QEMU/KVM virtual machine — most likely a Proxmox VM" ;;
+        lxc|lxc-libvirt) ENV_PVE_GUEST=true; ENV_MACHINE="LXC container — most likely on a Proxmox host" ;;
+        none|unknown) ENV_MACHINE="bare metal" ;;
+        *) ENV_MACHINE="$ENV_VIRT guest" ;;
+    esac
+fi
+if [[ "$ENV_PVE_GUEST" == "true" ]] && command -v curl >/dev/null 2>&1; then
+    _gw=$(ip -4 route show default 2>/dev/null | awk '{print $3; exit}')
+    for _c in $_gw pve proxmox pve.local proxmox.local; do
+        [[ -n "$_c" ]] || continue
+        _code=$(curl -sk -o /dev/null --max-time 1 -w '%{http_code}' "https://$_c:8006/api2/json/version" 2>/dev/null)
+        if [[ "$_code" == "401" || "$_code" == "200" ]]; then ENV_PVE_HINT="https://$_c:8006"; break; fi
+    done
+fi
+_info "Operating system: ${ENV_OS:-unknown}"
+_info "Machine         : $ENV_MACHINE"
+[[ -n "$ENV_PVE_HINT" ]] && _info "Proxmox API     : found at $ENV_PVE_HINT"
+if [[ "$ENV_PVE_HOST" == "true" ]]; then
+    _warn "This is the Proxmox host itself. DCS runs best in a small LXC or VM on it (docs/PROXMOX.md); continuing anyway."
+fi
+
 # Running setup through sudo would leave .env, logs/ and every App-Data
 # directory owned by root and start the API server as root.
 if [[ $EUID -eq 0 && -n "${SUDO_USER:-}" ]]; then
@@ -211,6 +245,54 @@ if [[ -f "$BASE_DIR/.env" ]]; then
     if grep -qE '^API_AUTH_ENABLED=["'"'"']?false' "$BASE_DIR/.env"; then
         _warn "API_AUTH_ENABLED=false is ignored on a non-loopback bind — authentication stays on"
         _info "(set API_INSECURE_NO_AUTH=true as well if you really want an open API)"
+    fi
+fi
+
+# -----------------------------------------------------------------------------
+# On a Proxmox guest, offer to link DCS to the Proxmox API right away (an API
+# token with VM.Audit, VM.PowerMgmt and Sys.Audit — see docs/PROXMOX.md). The
+# same link can be made later in the wizard or in Server Config → Proxmox.
+# -----------------------------------------------------------------------------
+_env_set() {   # _env_set KEY VALUE — set or add one plain KEY=VALUE line in .env
+    local key="$1" value="$2" file="$BASE_DIR/.env"
+    [[ "$DRY_RUN" == "true" ]] && { _info "DRY RUN: $key=…"; return 0; }
+    if grep -q "^${key}=" "$file" 2>/dev/null; then
+        grep -v "^${key}=" "$file" > "$file.tmp" && printf '%s=%s\n' "$key" "$value" >> "$file.tmp" && chmod 600 "$file.tmp" && mv -f "$file.tmp" "$file"
+    else
+        [[ -s "$file" && "$(tail -c1 "$file")" != "" ]] && printf '\n' >> "$file"
+        printf '%s=%s\n' "$key" "$value" >> "$file"
+    fi
+}
+PVE_LINKED=false
+if [[ "$ENV_PVE_GUEST" == "true" && -t 0 && -f "$BASE_DIR/.env" ]] && ! grep -qE '^PROXMOX_URL=.+' "$BASE_DIR/.env" 2>/dev/null; then
+    echo ""
+    _info "DCS can show and power the VMs and containers of this Proxmox host."
+    _info "You need an API token: Datacenter → Permissions → API Tokens (docs/PROXMOX.md)."
+    read -r -p "  Link DCS to this Proxmox now? [y/N] " _pve_yn
+    if [[ "${_pve_yn,,}" == "y" || "${_pve_yn,,}" == "yes" ]]; then
+        read -r -p "  Proxmox URL [${ENV_PVE_HINT:-https://pve.example.com:8006}]: " _pve_url
+        _pve_url="${_pve_url:-${ENV_PVE_HINT:-}}"; _pve_url="${_pve_url%/}"
+        read -r -p "  API token ID (user@realm!name): " _pve_tid
+        read -r -s -p "  Token secret: " _pve_sec; echo ""
+        if [[ -n "$_pve_url" && -n "$_pve_tid" && -n "$_pve_sec" ]]; then
+            _pve_verify=true
+            _pve_code=$(curl -s -o /dev/null --max-time 8 -w '%{http_code}' -H "Authorization: PVEAPIToken=${_pve_tid}=${_pve_sec}" "$_pve_url/api2/json/version" 2>/dev/null)
+            if [[ "$_pve_code" == "000" ]]; then
+                _pve_code=$(curl -sk -o /dev/null --max-time 8 -w '%{http_code}' -H "Authorization: PVEAPIToken=${_pve_tid}=${_pve_sec}" "$_pve_url/api2/json/version" 2>/dev/null)
+                [[ "$_pve_code" == "200" ]] && { _pve_verify=false; _info "Proxmox uses a self-signed certificate — verification is switched off for it"; }
+            fi
+            case "$_pve_code" in
+                200)
+                    _env_set PROXMOX_URL "$_pve_url"; _env_set PROXMOX_TOKEN_ID "$_pve_tid"; _env_set PROXMOX_TOKEN_SECRET "$_pve_sec"; _env_set PROXMOX_VERIFY_TLS "$_pve_verify"
+                    PVE_LINKED=true; _ok "Proxmox linked: $_pve_url" ;;
+                401) _warn "Proxmox rejected the token (check user@realm!name and the secret) — link it later in Server Config → Proxmox" ;;
+                403) _warn "The token lacks VM.Audit, VM.PowerMgmt or Sys.Audit on / — fix the role, then link it in Server Config → Proxmox" ;;
+                *)   _warn "Proxmox did not answer at $_pve_url (HTTP ${_pve_code:-none}) — link it later in Server Config → Proxmox" ;;
+            esac
+            unset _pve_sec
+        else
+            _skip "Proxmox link skipped (missing values) — Server Config → Proxmox does the same later"
+        fi
     fi
 fi
 
@@ -678,3 +760,14 @@ _ensure_core_infra_running || {
 }
 
 _print_url_banner
+
+if [[ "$ENV_PVE_GUEST" == "true" || "$ENV_PVE_HOST" == "true" ]]; then
+    echo ""
+    if [[ "$PVE_LINKED" == "true" ]]; then
+        _info "Proxmox: linked — the Proxmox page shows your VMs and containers; docs/PROXMOX.md covers the rest"
+    elif grep -qE '^PROXMOX_URL=.+' "$BASE_DIR/.env" 2>/dev/null; then
+        _info "Proxmox: linked in .env — see the Proxmox page"
+    else
+        _info "Proxmox: link it any time in Server Config → Proxmox (API token, docs/PROXMOX.md)${ENV_PVE_HINT:+ — the API answered at $ENV_PVE_HINT}"
+    fi
+fi

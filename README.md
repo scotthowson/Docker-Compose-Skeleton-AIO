@@ -2,27 +2,30 @@
   <img src="https://img.shields.io/badge/bash-4.0+-4EAA25?style=flat-square&logo=gnubash&logoColor=white" alt="Bash 4+" />
   <img src="https://img.shields.io/badge/docker-compose_v2-2496ED?style=flat-square&logo=docker&logoColor=white" alt="Docker Compose v2" />
   <img src="https://img.shields.io/badge/templates-151-34d399?style=flat-square" alt="151 templates" />
-  <img src="https://img.shields.io/badge/API_endpoints-210-06b6d4?style=flat-square" alt="210 API endpoints" />
+  <img src="https://img.shields.io/badge/API_endpoints-264-06b6d4?style=flat-square" alt="264 API endpoints" />
   <a href="https://github.com/scotthowson/Docker-Compose-Skeleton-AIO/actions/workflows/ci.yml"><img src="https://github.com/scotthowson/Docker-Compose-Skeleton-AIO/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
   <img src="https://img.shields.io/badge/license-MIT-f472b6?style=flat-square" alt="MIT" />
 </p>
 
 # Docker Compose Skeleton — All-In-One
 
-**Your whole homelab, managed from one repository and one browser tab.**
+**Your whole homelab, managed from one repository and one browser tab — on one box, or across every
+VM of a Proxmox host.**
 
 DCS AIO bundles the Docker Compose Skeleton framework with its web UI. One clone, one setup script,
-and you get a management dashboard on port 3000, a hardened REST API on port 9876, 103 one-click
+and you get a management dashboard on port 3000, a hardened REST API on port 9876, 151 one-click
 service templates, automatic HTTPS routing through Traefik, Cloudflare DNS, optional Authelia SSO,
-plugins, schedules, backups and metrics — all driven by plain Bash and Docker Compose.
+Discord notifications and a bot, plugins, schedules, backups, metrics, and a Proxmox page that
+starts, stops and watches the VMs around it — all driven by plain Bash and Docker Compose.
 
 ```bash
-git clone https://github.com/scotthowson/Docker-Compose-Skeleton-AIO.git
-cd Docker-Compose-Skeleton-AIO
+git clone https://github.com/scotthowson/Docker-Compose-Skeleton-AIO.git ~/.Docker-Compose-Skeleton-AIO
+cd ~/.Docker-Compose-Skeleton-AIO
 ./setup.sh
 ```
 
-Then open `http://<your-server>:3000` and follow the setup wizard.
+`setup.sh` checks Docker, creates `.env`, notices where it runs (bare metal, a Proxmox VM or LXC,
+or the Proxmox host itself) and prints the URL of the web UI. Open it and follow the wizard.
 
 ---
 
@@ -41,14 +44,21 @@ Browser ──► DCS-UI (container, :3000) ──/api/──► api-server.sh (
   `core-infrastructure → networking-security → monitoring-management → development-tools →
   media-services → web-applications → storage-backup → communication-collaboration →
   entertainment-personal → miscellaneous-services`.
-- **151 templates** — deploy Jellyfin, Nextcloud, Grafana, Vaultwarden, Immich and 146 more into any
-  stack. Each deployment is security-scanned, port-checked, merged into the stack's compose file,
-  given a Traefik route and a Cloudflare CNAME, connected to the proxy network and started.
-  Undeploy reverses every step.
+- **151 templates** — deploy Jellyfin, Nextcloud, Grafana, Vaultwarden, Immich, Home Assistant,
+  Frigate, Minecraft and 143 more into any stack. Each deployment is security-scanned,
+  port-checked, merged into the stack's compose file, given a Traefik route and a Cloudflare
+  CNAME, connected to the proxy network and started. Undeploy reverses every step. Every template
+  was deployed and watched until healthy before it shipped.
+- **Proxmox** — link an API token and the Proxmox page shows every node, VM and LXC container with
+  live load, starts, shuts down, reboots and resets them with a confirmation, and alerts when a
+  guest stops on its own. The Discord bot gets `/vms` and `/vm`. See [docs/PROXMOX.md](docs/PROXMOX.md).
+- **A Traefik in another VM or machine** — publish every route as a feed that a Traefik elsewhere
+  (the networking VM, a friend's proxy) pulls with its HTTP provider; nothing to install there, and
+  a new deployment is routed within seconds.
 - **Wildcard HTTPS** — Traefik with a `*.yourdomain.com` certificate via the Cloudflare DNS
   challenge; every new service is reachable at `service.yourdomain.com` without touching a config.
 - **Authelia SSO** — optional single sign-on with 2FA, deployed and configured by the wizard.
-- **A real API** — 254 endpoints covering stacks, containers, images, networks, volumes, logs,
+- **A real API** — 264 endpoints covering stacks, containers, images, networks, volumes, logs,
   templates, routes, DNS, plugins, schedules, secrets, backups, snapshots, metrics, notifications,
   webhooks, automations, system updates and the web terminal. See [docs/API.md](docs/API.md).
 - **Security by default** — accounts are mandatory on any non-loopback bind, a fresh install only
@@ -60,18 +70,24 @@ Browser ──► DCS-UI (container, :3000) ──/api/──► api-server.sh (
 ## Quick start
 
 ```bash
-git clone https://github.com/scotthowson/Docker-Compose-Skeleton-AIO.git
-cd Docker-Compose-Skeleton-AIO
+git clone https://github.com/scotthowson/Docker-Compose-Skeleton-AIO.git ~/.Docker-Compose-Skeleton-AIO
+cd ~/.Docker-Compose-Skeleton-AIO
 ./setup.sh          # creates .env, directories and permissions; checks Docker; starts the API + web UI
 ```
 
-`setup.sh` prints the URL of the web UI when it is healthy. The wizard then walks through:
+The hidden directory keeps your home tidy and is where the self-updater, the recovery bundle and
+the docs expect the install. `setup.sh` reports the operating system and the kind of machine it
+runs on; inside a Proxmox VM or LXC it looks for the Proxmox API on the network and offers to link
+it (an API token, see [docs/PROXMOX.md](docs/PROXMOX.md)), then prints the URL of the web UI when
+it is healthy. The wizard walks through:
 
 1. **Account** — the first admin account (PBKDF2-hashed, rate-limited, optional TOTP).
-2. **Configure** — domain, timezone, PUID/PGID, notifications (ntfy, Discord), Traefik with
-   Authelia and CrowdSec, dynamic DNS; you choose which stack the proxy services land in.
-3. **Authelia** — optional SSO with generated configuration and Redis sessions.
-4. **Complete** — deploys Traefik (and Authelia), creates DNS records and starts the core stack.
+2. **Server** — domain, timezone, PUID/PGID, notifications (ntfy, Discord), Traefik with
+   Authelia and CrowdSec, dynamic DNS, and — opened by itself on a Proxmox guest — the Proxmox
+   link with a *Test connection* button; you choose which stack the proxy services land in.
+3. **Stacks** — the stack directories to create.
+4. **Review** — deploys Traefik (and Authelia, CrowdSec, ntfy), creates DNS records and starts
+   the core stack.
 
 After that:
 
@@ -188,7 +204,7 @@ JSON in and out, no runtime to install. It starts with `setup.sh`/`start.sh` or 
   daemon; any write or audited event clears it. `GET /ping` is the no-auth liveness probe the
   UI's heartbeat times. `API_RESPONSE_CACHE=false` turns the cache off, `API_CACHE_MAX_STALE`
   (120 s) caps how old a served answer may be.
-- **Reference** — [docs/API.md](docs/API.md) lists all 254 endpoints with their access level and
+- **Reference** — [docs/API.md](docs/API.md) lists all 264 endpoints with their access level and
   is generated from the router by `.scripts/api-docs.sh`; `GET /` serves the same catalogue.
 
 ---
@@ -357,6 +373,53 @@ backup tag when the health score dropped by `UPDATE_ROLLBACK_DROP` points. The o
 to your notification channels and listed on the Updates page. Framework files you edited by hand
 are never replaced unattended — the Updates page asks you first.
 
+### Proxmox
+
+![DCS on Proxmox](docs/proxmox-architecture.png)
+
+Link an API token (Datacenter → Permissions → API Tokens, with `VM.Audit`, `VM.PowerMgmt` and
+`Sys.Audit` on `/`) in **Server Config → Proxmox**, in the wizard, or when `setup.sh` asks, and:
+
+- the **Proxmox** page lists every node with CPU, memory, disk and uptime, and every VM and LXC
+  container with its state and load; admins start, shut down, stop, reboot, reset, suspend and
+  resume them, each with a confirmation that says what it does; recent tasks are listed;
+- a **dashboard card** shows the same at a glance;
+- power actions are **audited** (`proxmox_vm_start` …) and reach webhooks and Discord; a watcher
+  raises `proxmox_vm_stopped` when a guest stops without DCS asking, `proxmox_vm_started` when it
+  comes back — both are notification-rule triggers;
+- the **Discord bot** answers `/vms` and `/vm <name> <action>`.
+
+`GET /proxmox/status|nodes|vms|tasks`, `GET /proxmox/vms/{node}/{qemu|lxc}/{vmid}`,
+`POST /proxmox/vms/{node}/{type}/{vmid}/{action}` and `POST /proxmox/test` are the endpoints;
+`PROXMOX_URL`, `PROXMOX_TOKEN_ID`, `PROXMOX_TOKEN_SECRET` (or the secret of that name),
+`PROXMOX_VERIFY_TLS` and `PROXMOX_NODE` the settings.
+
+The recommended layout puts one DCS in a small LXC or VM as the **hub** and one DCS in each Docker
+VM, with the proxy in the networking VM pulling the hub's route feed (below). Members joining a
+hub — one dashboard for every VM's stacks, a deploy-to-VM picker, one merged feed — is the next
+phase and builds on exactly these pieces. [docs/PROXMOX.md](docs/PROXMOX.md) is the full guide,
+from the token to the troubleshooting table.
+
+### A Traefik in another VM or machine
+
+In a hub-and-VMs layout the Traefik in the networking VM must serve containers that live in the
+other VMs; the same goes for a proxy on another box. Switch on **Server Config → Traefik & DNS → Publish routes
+as a feed**. DCS mints a token and shows the snippet for that Traefik's static configuration:
+
+```yaml
+providers:
+  http:
+    endpoint: "http://192.168.1.20:9876/traefik/dynamic?token=…"
+    pollInterval: "10s"
+```
+
+Every route DCS makes is served with its service rewritten to `<target host>:<published port>`
+and the middlewares you name on that side; the panel shows when the proxy last pulled and which
+routes it could not offer (a container that publishes no host port). A host without its own
+Traefik keeps its route files in `.data/routes`, so deploys and Cloudflare DNS keep working; a
+local Traefik and the feed can be on together. `GET /traefik/dynamic?token=…` is the endpoint,
+`GET /traefik/feed/status` and `POST /traefik/feed/token` the admin side.
+
 ### Running inside a VM (Proxmox, KVM, QEMU)
 
 DCS needs nothing special in a virtual machine. What helps is the **QEMU guest agent**, an OS
@@ -370,7 +433,8 @@ sudo apt install qemu-guest-agent && sudo systemctl enable --now qemu-guest-agen
 ```
 
 then switch on **Options → QEMU Guest Agent** for the VM in Proxmox. `GET /system` reports the
-same facts as `virtualization` and `guest_agent`.
+same facts as `virtualization` and `guest_agent`; `setup.sh` and `GET /setup/defaults` report
+whether the machine is a Proxmox guest and where the Proxmox API answers.
 
 ---
 

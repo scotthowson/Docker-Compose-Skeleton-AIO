@@ -3,6 +3,34 @@
 All notable changes to Docker Compose Skeleton AIO are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [3.8.0] - 2026-09-27
+
+### Added
+
+- **Proxmox.** Link an API token (`PROXMOX_URL`, `PROXMOX_TOKEN_ID`, `PROXMOX_TOKEN_SECRET` or
+  the secret of that name, `PROXMOX_VERIFY_TLS`, `PROXMOX_NODE`) and DCS shows every node, VM and
+  LXC container with live load, powers them (`start`, `shutdown`, `stop`, `reboot`, `reset`,
+  `suspend`, `resume`) with an audit entry and webhook event per action, lists recent tasks, and
+  watches the guests once a minute: `proxmox_vm_stopped` and `proxmox_vm_started` fire when a
+  guest changes state without DCS asking (a change DCS made is remembered for five minutes).
+  Endpoints: `GET /proxmox/status|nodes|vms|tasks`, `GET /proxmox/vms/{node}/{type}/{vmid}`,
+  `POST /proxmox/vms/{node}/{type}/{vmid}/{action}`, `POST /proxmox/test`. Viewers may look,
+  admins and bots may power. `docs/PROXMOX.md` is the guide; `tests/mock-proxmox.py` stands in
+  for a host in the smoke suite.
+- **Setup knows where it runs.** `setup.sh` and `GET /setup/defaults` report the operating
+  system and whether the machine is bare metal, a QEMU/KVM guest (a Proxmox VM), an LXC container
+  or the Proxmox host itself, probe the default gateway and the usual names for a Proxmox API,
+  and offer to link it; the wizard's Server step opens a Proxmox section by itself on a guest,
+  with a *Test connection* button.
+- **A Traefik in another VM or machine.** `GET /traefik/dynamic?token=…` serves every route DCS keeps as
+  a Traefik HTTP-provider configuration, each service rewritten to `TRAEFIK_FEED_TARGET_HOST`
+  (default: the detected LAN IP) and the container's published port, with the middlewares,
+  entrypoint, TLS and certificate resolver of the remote side (`TRAEFIK_FEED_*`). Turning
+  `TRAEFIK_FEED_ENABLED` on mints the token; `GET /traefik/feed/status` reports routes served,
+  routes skipped and when the proxy last pulled; `POST /traefik/feed/token` rotates. A host with
+  no Traefik of its own keeps its route files in `.data/routes`, so deploys still make routes and
+  DNS records; the proxy network and Sablier plugin steps only run with a local Traefik.
+
 ## [3.7.0] - 2026-09-27
 
 ### Added

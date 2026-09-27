@@ -4,7 +4,7 @@ Generated from the router in `.scripts/api-server.sh` by `.scripts/api-docs.sh` 
 Run `.scripts/api-docs.sh` after adding or changing a route; CI fails when this file is stale.
 
 The API listens on `API_BIND:API_PORT` (default `0.0.0.0:9876`) and answers JSON.
-Every endpoint below is `254` in total.
+Every endpoint below is `264` in total.
 
 ## Access levels
 
@@ -217,6 +217,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 
 | Method | Path | Access | Description |
 |--------|------|--------|-------------|
+| GET | `/traefik/dynamic` | public | Dynamic configuration for a Traefik on another machine (its HTTP provider); needs ?token= or a Bearer token equal to TRAEFIK_FEED_TOKEN |
 | GET | `/ddns/status` | admin | Check DDNS status and current IP |
 | GET | `/routes/health` | user | Probe every custom route through Traefik (no changes made) |
 | GET | `/traefik/status` | user | Traefik status |
@@ -224,9 +225,11 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | GET | `/routes/certificates` | user | Reverse-proxy health: domain, ACME challenge and account, certificates held, a live probe of every route through Traefik, the last Traefik errors, and hints |
 | GET | `/routes/check` | user | Check if a subdomain is available |
 | GET | `/dns/status` | user | Cloudflare integration: where the token comes from, whether it is valid, the zone |
+| GET | `/traefik/feed/status` | admin | The Traefik feed: on or off, token, target host, what it serves and skips, when it was last pulled, and the provider snippet to paste |
 | GET | `/dns/zones` | admin | Zones the Cloudflare token can manage |
 | GET | `/dns/records` | admin | DNS records of the zone (all types) with their DCS route links |
 | GET | `/homarr/status` | user | Check if Homarr is deployed and has an API key configured |
+| POST | `/traefik/feed/token` | admin | Mint a new feed token (paste the new one into the remote Traefik) |
 | POST | `/homarr/register` | admin | Put an app on the Homarr dashboard now {name, url, icon, description} |
 | POST | `/dns/records` | admin | Create a record {type, name, content, ttl, proxied, priority, comment, zone} |
 | POST | `/dns/records/sync` | admin | Create the proxied CNAME records that DCS routes are missing |
@@ -386,7 +389,14 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | GET | `/recovery` | admin | Recovery bundles on this box and how they are made (destination, off-box copy, retention, passphrase set?) |
 | GET | `/crowdsec/status` | user | CrowdSec presence, whitelist state and active decisions |
 | GET | `/crowdsec/decisions` | user | Active CrowdSec decisions (bans) |
+| GET | `/proxmox/status` | user | The Proxmox link: configured, reachable, version, node and VM counts, and what to fix when it is not |
+| GET | `/proxmox/nodes` | user | Every Proxmox node with CPU, memory, disk and uptime |
+| GET | `/proxmox/vms` | user | Every VM and LXC container with status, CPU, memory, disk, uptime and tags |
+| GET | `/proxmox/tasks` | user | Recent Proxmox tasks (starts, stops, backups, migrations): who ran them and how they ended |
+| GET | `/proxmox/vms/*/*/*` | user | One VM or container: live status and its configuration (cores, memory, OS, boot, description) |
 | GET | `/recovery/*/download` | admin | Download a recovery bundle |
+| POST | `/proxmox/test` | admin | Try a Proxmox connection with the given url, token_id, token_secret and verify_tls without saving them |
+| POST | `/proxmox/vms/*/*/*/*` | admin | Power action on a VM or container: start, shutdown, stop, reboot, reset (VMs only), suspend, resume — audited and sent to the webhooks |
 | POST | `/power/sample` | admin | Read the UPS right now (also refreshes what GET /power shows) |
 | POST | `/sablier/repair` | admin | Recreate on-demand containers that a prune removed (created, not started, so Sablier can wake them) |
 | POST | `/recovery/bundle` | admin | Write an encrypted recovery bundle now {passphrase?, include_app_data: [stacks], copy_remote} |
