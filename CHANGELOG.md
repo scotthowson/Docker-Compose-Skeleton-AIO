@@ -82,6 +82,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and counts the hub's own stacks only (a member's stack is not "run here").
 - The wizard refreshes the VM settings from the hub's defaults after another *Test connection*
   unless you edited them.
+- **The VM is born as the stack.** A build has a *Stack* step: the hub's `Stacks/<name>` folder
+  (compose, `.env`, config files — never `App-Data`, data or backups) is copied into the VM over
+  ssh and started through the member's API; a row renamed in the wizard keeps the folder it came
+  from (`source`). Nothing to copy: the VM starts empty and takes templates.
+- **The VMs page.** On a hub the Stacks page reads *VMs* (sidebar too): VMs first, each one a
+  stack, then the hub's own stacks; a VM opens on the containers running in it with
+  start/stop/restart per row, the compose editor and logs, and its power (start, reboot, shut
+  down) in the header; *New VM* and the build cards live on the same page. The Proxmox page's VM
+  cards list the same containers with *Open* and *Edit compose* instead of a stack row.
 - *Test* on a member keeps the guest it re-matched (a guest mapped by hand stays as mapped). A
   member that does not answer — its VM is off — keeps its stacks in the hub's list, marked
   offline, so the hub's leftover `Stacks/<name>` folder never stands in for a VM's stack.

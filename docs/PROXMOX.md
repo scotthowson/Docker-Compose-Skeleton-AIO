@@ -203,6 +203,16 @@ instead, and the hub — the DCS linked to Proxmox — makes that invisible:
   list says which stacks are VMs, and the bot's `/stacks` and `/fleet` follow. Nothing is
   scheduled or moved between VMs: this is a control plane over independent compose hosts, and
   a VM that loses the hub keeps running its stack.
+- **The VM is born as the stack**: when the hub builds the VM for `media-services`, its own
+  `Stacks/media-services` folder (compose, `.env`, config files — never `App-Data`, data or
+  backups) moves into the VM and starts there; a row you renamed in the wizard keeps the folder it
+  came from. The hub's copy is a leftover from then on. A stack with no folder starts empty and
+  takes templates.
+- **The Stacks page is the VMs page** on a hub: the sidebar reads *VMs*, the VMs come first (each
+  one a stack) and the hub's own stacks follow; open a VM for the containers running in it, with
+  start/stop/restart per container, the compose editor, logs, and the VM's own power. *New VM*
+  builds one more, and the builds show on the same page. The Proxmox page's VM cards list the
+  same containers with *Open* and *Edit compose*.
 - **Proxmox and DCS agree**: starting or stopping a VM in the Proxmox UI is the stack going up
   or down (the VM starts at boot and DCS's boot services start the stack); the Proxmox page
   shows each VM with its stack, containers and power buttons.
@@ -229,6 +239,7 @@ stopped):
 | **SSH** | Waits for the VM to answer ssh (first boot runs cloud-init). |
 | **Install** | Copies `.scripts/fleet-bootstrap.sh` to the VM and runs it: a network check, curl/git/jq/socat/openssl/python3 and the QEMU guest agent, Docker (get.docker.com, with fallbacks) and Compose, then the hub's **own code** as a bundle (`GET /fleet/bundle?token=<join code>`, never data, accounts, secrets or stacks), then an **unattended member setup** that creates the admin (your username on the hub, a generated password kept in the hub's secret store as `FLEET_MEMBER_<STACK>_ADMIN_PASSWORD`), writes the configuration, creates the stack, starts the API without a dashboard and joins the hub, and finally the boot services (`dcs-api`, `dcs-stacks`). Every line lands in the job log. |
 | **Join** | Waits for the VM's join, then maps the member to the VMID and marks it *provisioned*. |
+| **Stack** | Copies the hub's `Stacks/<source>` (default: the stack's own name) into the VM over ssh — compose, `.env` and config files, never `App-Data`, data, backups or logs — and starts it through the member's API. Nothing to copy: the VM starts empty. |
 | **Ready** | Asks the member for its stacks through the hub. |
 
 What Proxmox needs from the token, beyond `VM.Audit`, `VM.PowerMgmt` and `Sys.Audit`: the
@@ -308,7 +319,7 @@ guest*, and the member menu's *Test* re-matches.
 | GET | `/fleet/overview` | user — every member with its stacks, containers and counts (10 s cache) |
 | GET / POST | `/fleet/discover` | admin — the scan (GET cached 30 s; POST scans now, accepts Proxmox values before they are saved) |
 | GET / POST | `/fleet/provision/defaults` | admin — prefilled values for building VMs (POST with Proxmox values before they are saved) |
-| POST | `/fleet/provision` | admin — build one VM per stack `{node, storage, image_storage, bridge, cidr, gateway, dns, ip_start, vms: [{stack, cores, memory_mb, disk_gb, ip}]}` |
+| POST | `/fleet/provision` | admin — build one VM per stack `{node, storage, image_storage, bridge, cidr, gateway, dns, ip_start, vms: [{stack, source, cores, memory_mb, disk_gb, ip}]}`; `source` is the hub folder that moves into the VM (default: the stack name) |
 | GET | `/fleet/jobs`, `/fleet/jobs/{id}` | admin — the builds with steps and log |
 | POST / DELETE | `/fleet/jobs/{id}/retry`, `/fleet/jobs/{id}` (`?destroy=true` also destroys a failed build's VM) | admin |
 | GET / POST | `/proxmox/capabilities`, `/proxmox/storage` | admin — what the token may do, the storages |
@@ -362,6 +373,7 @@ Command line, on any DCS: `.scripts/api-server.sh --join-hub URL CODE [NAME]`, `
 | A build fails at **Install** with *cannot reach the internet* | The VM has no way out: the gateway does not answer, DNS fails, or (on a Proxmox host that also runs Docker) the forwarding policy dropped it. Fix the network, then *Retry*. |
 | A build fails at **Install** with *could not fetch the DCS bundle* | The VM cannot reach the hub at `FLEET_SELF_URL` (a 403 means the build's join code expired — *Retry* renews it). |
 | A build fails at **Join** | The VM installed DCS but its join never arrived: `FLEET_SELF_URL` must be the hub's address as the VM sees it; the VM's `~/.Docker-Compose-Skeleton-AIO/logs` says what it tried. |
+| A build stops at **Stack** | The hub could not copy its `Stacks/<source>` into the VM over ssh (the VM's disk, or a folder the hub cannot read) — *Retry* copies again. A copy that landed but did not start says so in the log: open the VM on the VMs page and start it from there. |
 | *The hub could not log in to http://…* on a join | The hub must reach the member's API at that address: a firewall, or a wrong detected address — set `FLEET_SELF_URL=http://<member ip>:9876` in the member's `.env` (or pass `url` on the join) and join again. |
 | A build is refused: *runs on this server (the hub)* | The hub runs that stack itself: it is in the hub's `DOCKER_STACKS` or has containers up. Stop it and take it out of `DOCKER_STACKS` (Settings), then build the VM; a bare `Stacks/<name>` folder never blocks a build. |
 | A build is refused: *A guest named … already exists on Proxmox* | A VM or container already carries the stack's name. Link it from the Proxmox page if it is that stack's DCS, or rename it in Proxmox and build. |

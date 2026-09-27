@@ -410,9 +410,12 @@ one after another — Debian cloud image imported once, a VM with a cloud-init d
 address, the hub's ssh key, a bootstrap that installs Docker and the hub's own DCS code, an
 unattended member setup that creates the admin (your username, a generated password kept in the
 hub's secret store), one stack, an API without a dashboard, boot services, and the join — all on
-a progress card, resumable step by step. *New VM stack* on the Proxmox page builds one more. A
-stack counts as the hub's own when it is in `DOCKER_STACKS` or running there — the `Stacks/`
-folders the repository ships never get in the way of a VM.
+a progress card, resumable step by step, and the hub's own `Stacks/<name>` (compose and `.env`,
+never `App-Data`) moves into the VM and starts there — the VM is born as the stack. *New VM* on
+the VMs page or the Proxmox page builds one more. A stack counts as the hub's own when it is in
+`DOCKER_STACKS` or running there — the `Stacks/` folders the repository ships never get in the
+way of a VM. On a hub the Stacks page is the **VMs** page: open a VM for the containers running
+in it, their controls, the compose editor and the VM's power.
 
 The hub's **API is the fleet API**: `GET /stacks` lists every VM's stack next to its own with a
 *VM* chip, and stacks, containers and template deploys that live in a VM are forwarded to that

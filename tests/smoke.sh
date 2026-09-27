@@ -831,6 +831,9 @@ case "$*" in
     DCS_UNATTENDED=true DCS_NO_UI=true DCS_FLEET_ROLE=member DCS_API_PORT="$port" DCS_API_BIND="$host" ./setup.sh 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep -E 'FAIL|WARN|Unattended|Joined|Join|Setup complete|API:' | tail -12
     exit "${PIPESTATUS[0]}"
     ;;
+  *"tar -xzf -"*)
+    # the stack moving in: the VM's install dir is the stand-in's clone
+    cmd="${*//\~\/.Docker-Compose-Skeleton-AIO/$SHIM_DIR}"; bash -c "$cmd" ;;
   *) echo "stand-in: unknown command: $*" >&2; exit 1 ;;
 esac
 SHIM
@@ -854,48 +857,56 @@ mkdir -p "$WORK/Stacks/leftover" && printf 'services:\n  x:\n    image: alpine\n
 check "hub stack: in DOCKER_STACKS"     0 "$(_lib _fleet_stack_is_hub demo; echo $?)"
 check "hub stack: a folder alone is not" 1 "$(_lib _fleet_stack_is_hub leftover; echo $?)"
 check "hub stack: unknown name"         1 "$(_lib _fleet_stack_is_hub nowhere; echo $?)"
-_PROV_BODY="{\"node\":\"pve\",\"storage\":\"local-lvm\",\"image_storage\":\"local\",\"bridge\":\"vmbr0\",\"cidr\":24,\"gateway\":\"192.0.2.1\",\"dns\":\"192.0.2.1\",\"vms\":[{\"stack\":\"media-services\",\"cores\":2,\"memory_mb\":2048,\"disk_gb\":16,\"ip\":\"127.0.0.1\"}]}"
+# the hub has a Stacks/smoke-photos folder (not in DOCKER_STACKS): the build moves it into the VM and starts it there
+# (the hub and the stand-in share this machine's Docker, so the hub's folder carries another name: a renamed row, source ≠ stack)
+mkdir -p "$WORK/Stacks/smoke-photos-src" && printf 'services:\n  x:\n    image: alpine:3\n    command: ["sleep","infinity"]\n' > "$WORK/Stacks/smoke-photos-src/docker-compose.yml" && printf 'SMOKE_PHOTOS=1\n' > "$WORK/Stacks/smoke-photos-src/.env"
+_PROV_BODY="{\"node\":\"pve\",\"storage\":\"local-lvm\",\"image_storage\":\"local\",\"bridge\":\"vmbr0\",\"cidr\":24,\"gateway\":\"192.0.2.1\",\"dns\":\"192.0.2.1\",\"vms\":[{\"stack\":\"smoke-photos\",\"source\":\"smoke-photos-src\",\"cores\":2,\"memory_mb\":2048,\"disk_gb\":16,\"ip\":\"127.0.0.1\"}]}"
 PROV=$(auth_request POST /fleet/provision "$_PROV_BODY")
 check "provision: job queued"           true "$(body_of <<< "$PROV" | jq -r '.success' 2>/dev/null)"
 JOB=$(body_of <<< "$PROV" | jq -r '.jobs[0].id' 2>/dev/null)
 check "provision: repeat refused"       409 "$(auth_request POST /fleet/provision "$_PROV_BODY" | status_of)"
-check "provision: join code minted"     yes "$(auth_request GET /fleet/join-tokens | body_of | jq -e '.tokens[] | select(.stack == "media-services")' >/dev/null 2>&1 && echo yes || echo no)"
+check "provision: join code minted"     yes "$(auth_request GET /fleet/join-tokens | body_of | jq -e '.tokens[] | select(.stack == "smoke-photos")' >/dev/null 2>&1 && echo yes || echo no)"
 _JST=""; for _i in $(seq 1 150); do _JST=$(auth_request GET "/fleet/jobs/$JOB" | body_of | jq -r '.status' 2>/dev/null); [[ "$_JST" == "done" || "$_JST" == "failed" ]] && break; sleep 2; done
 check "provision: job finished"         "done" "$_JST"
 [[ "$_JST" == "done" ]] || { echo "  --- job log ---"; auth_request GET "/fleet/jobs/$JOB" | body_of | jq -r '.error, (.steps[] | "\(.id): \(.state) \(.detail)"), (.log[-25:][] | .text)' 2>/dev/null | sed 's/^/  /'; echo "  --- runner log ---"; tail -5 "$WORK/logs/fleet-jobs.log" 2>/dev/null | sed 's/^/  /'; }
-check "provision: every step done"      8 "$(auth_request GET "/fleet/jobs/$JOB" | body_of | jq -r '[.steps[] | select(.state == "done")] | length' 2>/dev/null)"
+check "provision: every step done"      9 "$(auth_request GET "/fleet/jobs/$JOB" | body_of | jq -r '[.steps[] | select(.state == "done")] | length' 2>/dev/null)"
 check "provision: image imported"       yes "$(auth_request GET "/fleet/jobs/$JOB" | body_of | jq -r '.log[].text' 2>/dev/null | grep -q 'image ready on local' && echo yes || echo no)"
-check "provision: VM created"           media-services "$(auth_request GET /proxmox/vms | body_of | jq -r '.vms[] | select(.vmid == 105) | .name' 2>/dev/null)"
+check "provision: VM created"           smoke-photos "$(auth_request GET /proxmox/vms | body_of | jq -r '.vms[] | select(.vmid == 105) | .name' 2>/dev/null)"
 check "provision: cloud-init address"   yes "$(auth_request GET /proxmox/vms/pve/qemu/105 | body_of | jq -r '.config.ipconfig0 // ""' 2>/dev/null | grep -q '127.0.0.1/24' && echo yes || echo no)"
 check "provision: hub key in cloud-init" yes "$(auth_request GET /proxmox/vms/pve/qemu/105 | body_of | jq -r '.config.sshkeys // ""' 2>/dev/null | grep -q 'ssh-ed25519' && echo yes || echo no)"
-check "provision: member registered"    105 "$(auth_request GET /fleet/members | body_of | jq -r '.members[] | select(.name == "media-services") | .vmid' 2>/dev/null)"
-check "provision: member runs the stack" media-services "$(auth_request GET /fleet/members | body_of | jq -r '.members[] | select(.name == "media-services") | .stacks[0]' 2>/dev/null)"
-check "provision: member marked built"  true "$(auth_request GET /fleet/members | body_of | jq -r '.members[] | select(.name == "media-services") | .provisioned' 2>/dev/null)"
-check "provision: admin password kept"  yes "$(_lib secrets_exists FLEET_MEMBER_MEDIA_SERVICES_ADMIN_PASSWORD && echo yes || echo no)"
+check "provision: member registered"    105 "$(auth_request GET /fleet/members | body_of | jq -r '.members[] | select(.name == "smoke-photos") | .vmid' 2>/dev/null)"
+check "provision: member runs the stack" smoke-photos "$(auth_request GET /fleet/members | body_of | jq -r '.members[] | select(.name == "smoke-photos") | .stacks[0]' 2>/dev/null)"
+check "provision: stack moved into the VM" yes "$(auth_request GET "/fleet/jobs/$JOB" | body_of | jq -r '.steps[] | select(.id == "stack") | .detail' 2>/dev/null | grep -q 'started in the VM' && echo yes || echo no)"
+check "provision: source folder named"  yes "$(auth_request GET "/fleet/jobs/$JOB" | body_of | jq -r '.log[].text' 2>/dev/null | grep -q 'Stacks/smoke-photos-src from the hub copied into the VM as smoke-photos' && echo yes || echo no)"
+check "provision: VM has the compose"   yes "$(auth_request GET /stacks/smoke-photos/compose | body_of | jq -r '.content // .compose // ""' 2>/dev/null | grep -q 'sleep' && echo yes || echo no)"
+check "provision: stack running in VM"  running "$(auth_request GET /stacks/smoke-photos | body_of | jq -r '.status' 2>/dev/null | cut -d: -f1)"
+check "provision: member marked built"  true "$(auth_request GET /fleet/members | body_of | jq -r '.members[] | select(.name == "smoke-photos") | .provisioned' 2>/dev/null)"
+check "provision: admin password kept"  yes "$(_lib secrets_exists FLEET_MEMBER_SMOKE_PHOTOS_ADMIN_PASSWORD && echo yes || echo no)"
 check "provision: audited"              yes "$(grep -q 'fleet_vm_ready' "$WORK/.data/audit.jsonl" 2>/dev/null && echo yes || echo no)"
-_MADM=$(auth_request GET /fleet/members | body_of | jq -r '.members[] | select(.name == "media-services") | .url' 2>/dev/null)
+_MADM=$(auth_request GET /fleet/members | body_of | jq -r '.members[] | select(.name == "smoke-photos") | .url' 2>/dev/null)
 check "member: unattended setup complete" true "$(curl -s -m 5 "$_MADM/setup/status" | jq -r '.initialized' 2>/dev/null)"
-check "member: API only, one stack"     media-services "$(curl -s -m 5 -X POST "$_MADM/auth/login" -H 'Content-Type: application/json' -d "{\"username\":\"admin\",\"password\":\"$(_lib secrets_get FLEET_MEMBER_MEDIA_SERVICES_ADMIN_PASSWORD)\"}" | jq -r '.token' 2>/dev/null | xargs -I{} curl -s -m 5 "$_MADM/stacks" -H 'Authorization: Bearer {}' | jq -r '.stacks | map(.name) | join(",")' 2>/dev/null)"
+check "member: API only, one stack"     smoke-photos "$(curl -s -m 5 -X POST "$_MADM/auth/login" -H 'Content-Type: application/json' -d "{\"username\":\"admin\",\"password\":\"$(_lib secrets_get FLEET_MEMBER_SMOKE_PHOTOS_ADMIN_PASSWORD)\"}" | jq -r '.token' 2>/dev/null | xargs -I{} curl -s -m 5 "$_MADM/stacks" -H 'Authorization: Bearer {}' | jq -r '.stacks | map(.name) | join(",")' 2>/dev/null)"
 echo "The hub's API is the fleet API"
-check "hub: /stacks lists the VM stack" vm "$(auth_request GET /stacks | body_of | jq -r '.stacks[] | select(.name == "media-services") | .placement' 2>/dev/null)"
+check "hub: /stacks lists the VM stack" vm "$(auth_request GET /stacks | body_of | jq -r '.stacks[] | select(.name == "smoke-photos") | .placement' 2>/dev/null)"
 check "hub: local stacks tagged hub"    hub "$(auth_request GET /stacks | body_of | jq -r '.stacks[] | select(.name == "demo") | .placement' 2>/dev/null)"
 check "hub: remote count"               1 "$(auth_request GET /stacks | body_of | jq -r '.remote' 2>/dev/null)"
-check "hub: /stacks/{vm stack} forwarded" media-services "$(auth_request GET /stacks/media-services | body_of | jq -r '.name' 2>/dev/null)"
-check "hub: compose of the VM stack"    200 "$(auth_request GET /stacks/media-services/compose | status_of)"
+check "hub: /stacks/{vm stack} forwarded" smoke-photos "$(auth_request GET /stacks/smoke-photos | body_of | jq -r '.name' 2>/dev/null)"
+check "hub: compose of the VM stack"    200 "$(auth_request GET /stacks/smoke-photos/compose | status_of)"
 check "hub: unknown stack still 404"    404 "$(auth_request GET /stacks/nope-none | status_of)"
 _TPL=$(ls "$ROOT/.templates" | head -1)
-check "hub: dry run lands on the VM"    200 "$(auth_request POST "/templates/$_TPL/dry-run" '{"target_stack":"media-services"}' | status_of)"
+check "hub: dry run lands on the VM"    200 "$(auth_request POST "/templates/$_TPL/dry-run" '{"target_stack":"smoke-photos"}' | status_of)"
 check "hub: forwarded post audited"     yes "$(grep -q '"action":"fleet_proxy"' "$WORK/.data/audit.jsonl" 2>/dev/null && echo yes || echo no)"
 check "hub: /containers has member field" yes "$(auth_request GET /containers | body_of | jq -e 'has("containers")' >/dev/null 2>&1 && echo yes || echo no)"
-check "hub: viewer reads the VM stack"  200 "$(viewer_request GET /stacks/media-services | status_of)"
-check "hub: viewer cannot start it"     403 "$(viewer_request POST /stacks/media-services/start '{}' | status_of)"
+check "hub: viewer reads the VM stack"  200 "$(viewer_request GET /stacks/smoke-photos | status_of)"
+check "hub: viewer cannot start it"     403 "$(viewer_request POST /stacks/smoke-photos/start '{}' | status_of)"
 check "jobs: listed"                    1 "$(auth_request GET /fleet/jobs | body_of | jq -r '.total' 2>/dev/null)"
 check "jobs: retry only when failed"    409 "$(auth_request POST "/fleet/jobs/$JOB/retry" '{}' | status_of)"
-check "destroy: member and VM removed"  true "$(auth_request DELETE '/fleet/members/media-services?destroy=true' | body_of | jq -r '.vm_destroyed' 2>/dev/null)"
+check "destroy: member and VM removed"  true "$(auth_request DELETE '/fleet/members/smoke-photos?destroy=true' | body_of | jq -r '.vm_destroyed' 2>/dev/null)"
 check "destroy: VM gone from Proxmox"   "" "$(auth_request GET /proxmox/vms | body_of | jq -r '.vms[] | select(.vmid == 105) | .name' 2>/dev/null)"
 check "destroy: audited"                yes "$(grep -q 'fleet_vm_destroyed' "$WORK/.data/audit.jsonl" 2>/dev/null && echo yes || echo no)"
 check "jobs: delete"                    200 "$(auth_request DELETE "/fleet/jobs/$JOB" | status_of)"
 (cd "$VMWORK" && "$VMWORK/.scripts/api-server.sh" --stop >/dev/null 2>&1)
+(cd "$VMWORK/Stacks/smoke-photos" 2>/dev/null && docker compose -p smoke-photos down --remove-orphans >/dev/null 2>&1) || true
 # --stop trusts the pid file only for this installation's own server (a copied .data/ must never stop another one)
 mkdir -p "$WORK/stopcheck/.scripts" "$WORK/stopcheck/.data"
 cat "$API" > "$WORK/stopcheck/.scripts/api-server.sh"; chmod +x "$WORK/stopcheck/.scripts/api-server.sh"
