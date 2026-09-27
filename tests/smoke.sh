@@ -633,6 +633,24 @@ check "cache: served again"             200 "$(auth_request GET /stacks | status
 auth_request POST /stacks/nope-none/start '{}' >/dev/null
 check "cache: cleared by a write"       no "$([[ -e "$WORK/.data/cache/stacks.http" ]] && echo yes || echo no)"
 check "cache: opt-out honoured"         200 "$(API_RESPONSE_CACHE=false auth_request GET /stacks | status_of)"
+_cache_state() { grep -i '^X-DCS-Cache:' | tr -d '\r' | awk '{print $2}'; }
+_cache_age()   { echo $(( $(date +%s) - $(stat -c %Y "$WORK/.data/cache/stacks.http" 2>/dev/null || echo 0) )); }
+auth_request GET /stacks >/dev/null
+check "cache: fresh answer is a hit"    hit "$(auth_request GET /stacks | _cache_state)"
+touch -d '-30 seconds' "$WORK/.data/cache/stacks.http"
+_st=$(auth_request GET /stacks)
+check "cache: stale answer served"      stale "$(printf '%s' "$_st" | _cache_state)"
+check "cache: stale answer is 200"      200 "$(printf '%s' "$_st" | status_of)"
+check "cache: stale answer carries Age" yes "$(printf '%s' "$_st" | grep -qi '^Age: 30' && echo yes || echo no)"
+timeout 10 bash -c "until [[ \$(( \$(date +%s) - \$(stat -c %Y '$WORK/.data/cache/stacks.http' 2>/dev/null || echo 0) )) -lt 5 ]]; do sleep 0.2; done" 2>/dev/null
+check "cache: refreshed in background"  yes "$([[ $(_cache_age) -lt 5 ]] && echo yes || echo no)"
+check "cache: refresh lock released"    no "$([[ -d "$WORK/.data/cache/stacks.http.lock" ]] && echo yes || echo no)"
+touch -d '-1000 seconds' "$WORK/.data/cache/stacks.http"
+check "cache: too old is a miss"        miss "$(auth_request GET /stacks | _cache_state)"
+check "cache: miss rebuilt the file"    yes "$([[ $(_cache_age) -lt 5 ]] && echo yes || echo no)"
+check "ping: public"                    200 "$(request GET /ping '' "${AUTH[@]}" | status_of)"
+check "ping: says ok"                   true "$(request GET /ping '' "${AUTH[@]}" | body_of | jq -r '.ok' 2>/dev/null)"
+check "ping: names a version"           yes "$([[ -n "$(request GET /ping '' "${AUTH[@]}" | body_of | jq -r '.version // empty' 2>/dev/null)" ]] && echo yes || echo no)"
 check "crowdsec alerts: viewer denied"  403 "$(viewer_request POST /crowdsec/notifications '{}' | status_of)"
 
 echo "Docker-backed endpoints (skipped when Docker is unavailable)"

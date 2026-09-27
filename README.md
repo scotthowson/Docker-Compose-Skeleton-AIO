@@ -48,7 +48,7 @@ Browser ──► DCS-UI (container, :3000) ──/api/──► api-server.sh (
 - **Wildcard HTTPS** — Traefik with a `*.yourdomain.com` certificate via the Cloudflare DNS
   challenge; every new service is reachable at `service.yourdomain.com` without touching a config.
 - **Authelia SSO** — optional single sign-on with 2FA, deployed and configured by the wizard.
-- **A real API** — 210 endpoints covering stacks, containers, images, networks, volumes, logs,
+- **A real API** — 254 endpoints covering stacks, containers, images, networks, volumes, logs,
   templates, routes, DNS, plugins, schedules, secrets, backups, snapshots, metrics, notifications,
   webhooks, automations, system updates and the web terminal. See [docs/API.md](docs/API.md).
 - **Security by default** — accounts are mandatory on any non-loopback bind, a fresh install only
@@ -157,7 +157,14 @@ JSON in and out, no runtime to install. It starts with `setup.sh`/`start.sh` or 
 - **Behind the UI** — the DCS-UI container proxies `/api/` to the host; `API_TRUSTED_PROXIES`
   tells the API which proxies may set `X-Forwarded-For`, so rate limits and audit logs see the
   real client.
-- **Reference** — [docs/API.md](docs/API.md) lists all 210 endpoints with their access level and
+- **Fast to poll** — the read endpoints every dashboard polls (`/status`, `/health`,
+  `/containers`, `/stacks`, `/events`, `/routes`, `/disks`, `/topology`…) come from a short
+  shared cache. An answer past its TTL is returned at once and refreshed in the background
+  (`X-DCS-Cache: hit|stale|miss` and `Age` tell you which), so a poll never waits for the Docker
+  daemon; any write or audited event clears it. `GET /ping` is the no-auth liveness probe the
+  UI's heartbeat times. `API_RESPONSE_CACHE=false` turns the cache off, `API_CACHE_MAX_STALE`
+  (120 s) caps how old a served answer may be.
+- **Reference** — [docs/API.md](docs/API.md) lists all 254 endpoints with their access level and
   is generated from the router by `.scripts/api-docs.sh`; `GET /` serves the same catalogue.
 
 ---

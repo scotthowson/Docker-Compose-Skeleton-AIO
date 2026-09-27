@@ -3,6 +3,29 @@
 All notable changes to Docker Compose Skeleton AIO are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [3.6.0] - 2026-09-27
+
+### Added
+
+- **`GET /ping`** — a public liveness probe: no auth, no Docker call, a tiny body. The
+  dashboard's heartbeat times it, so the latency in the status bar is the round trip alone.
+- Cached answers carry **`X-DCS-Cache: hit|stale|miss`** and **`Age`**, so a slow poll can be
+  told apart from a slow network.
+
+### Changed
+
+- **Polls never wait for Docker.** The response cache is stale-while-revalidate: an answer past
+  its TTL is served at once and refreshed in the background (one refresh per endpoint at a
+  time); only an answer older than `API_CACHE_MAX_STALE` (120 s), or a cache a write just
+  cleared, runs the handler inline. `/events`, `/routes`, `/routes/certificates`, `/disks`,
+  `/system`, `/networks`, `/volumes`, `/images`, `/images/check-updates`, `/logs/stats`,
+  `/maintenance/report`, `/topology` and `/dns/status` join `/status`, `/health`, `/stacks`,
+  `/containers` and `/health/score` behind it. On a 45-container host the median `/containers`
+  and `/health` answer goes from ~700 ms to ~100 ms; `/topology` (11 s to compute) is instant
+  after its first call.
+- The compose command is detected once by the listener and inherited by the request handlers
+  instead of running `docker compose version` on every request (~25 ms each).
+
 ## [3.5.2] - 2026-09-27
 
 ### Added

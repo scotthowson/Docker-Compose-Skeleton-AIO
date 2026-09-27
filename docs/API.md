@@ -4,7 +4,7 @@ Generated from the router in `.scripts/api-server.sh` by `.scripts/api-docs.sh` 
 Run `.scripts/api-docs.sh` after adding or changing a route; CI fails when this file is stale.
 
 The API listens on `API_BIND:API_PORT` (default `0.0.0.0:9876`) and answers JSON.
-Every endpoint below is `253` in total.
+Every endpoint below is `254` in total.
 
 ## Access levels
 
@@ -381,6 +381,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 
 | Method | Path | Access | Description |
 |--------|------|--------|-------------|
+| GET | `/ping` | public | Liveness probe: no auth, no Docker call, a tiny body. The dashboard's heartbeat uses it, so the latency it shows is the round trip alone. |
 | GET | `/power` | user | UPS status: mains or battery, charge, runtime, load, and whether the watch loop runs |
 | GET | `/recovery` | admin | Recovery bundles on this box and how they are made (destination, off-box copy, retention, passphrase set?) |
 | GET | `/crowdsec/status` | user | CrowdSec presence, whitelist state and active decisions |
