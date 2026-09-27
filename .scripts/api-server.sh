@@ -18681,6 +18681,9 @@ handle_fleet_self_update() {
     [[ "$body" == \{* ]] || { _api_error 400 "A JSON body is required"; return; }
     url=$(jq -r '.bundle_url // ""' <<< "$body"); ver=$(jq -r '.version // ""' <<< "$body")
     [[ "$url" =~ ^https?://[^[:space:]]+$ ]] || { _api_error 400 "bundle_url must be an http(s) URL"; return; }
+    # a member takes code from its own hub and nowhere else (an admin session on the member cannot point it elsewhere)
+    local hub_url; hub_url=$(jq -r '.hub.url // ""' "$FLEET_FILE" 2>/dev/null); hub_url="${hub_url%/}"
+    if [[ -n "$hub_url" && "$url" != "$hub_url/"* ]]; then _api_error 403 "This DCS takes code from its hub at $hub_url only"; return; fi
     old=$(tr -d '[:space:]' < "$BASE_DIR/VERSION" 2>/dev/null || echo "$DCS_VERSION")
     tmp=$(mktemp "${TMPDIR:-/tmp}/dcs-bundle-XXXXXX") || { _api_error 500 "no temp space"; return; }
     if ! curl -fsSL --max-time 300 -o "$tmp" "$url"; then rm -f "$tmp"; _api_error 502 "could not fetch the bundle from $url"; return; fi
