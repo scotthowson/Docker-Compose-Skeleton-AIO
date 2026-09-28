@@ -3,6 +3,36 @@
 All notable changes to Docker Compose Skeleton AIO are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [3.9.3] - 2026-09-28
+
+### Added
+
+- **A shell inside a VM, from the hub.** The Terminal page gets the Hub / VM chips: the hub's
+  own Terminal session (its Linux credentials) unlocks a shell in every VM the hub built, the
+  command travels over the hub's ssh key (`GET /fleet/members/{id}/terminal` says whether it
+  can, `POST /fleet/members/{id}/terminal/exec {terminal_token, command, cwd?}` runs it) with
+  the same command guard, rate limit, 60 s limit and audit log as the host terminal. Each server
+  keeps its own working directory; the prompt says where a command ran.
+- **The Maintenance page asks the hub once.** `GET /maintenance/report`, `/orphans` and
+  `/disk` take `?fleet=1` on a hub: the hub asks every VM at the same time and answers the
+  merged picture (numbers and sizes added up, rows tagged `member`, `member_name`, `vmid`,
+  `members[]` per DCS), cached 30 s — one request instead of three per server. A dashboard
+  on an older hub keeps asking each server itself.
+
+### Fixed
+
+- **Templates load fast again — and so does every large answer.** The "empty answer" guard
+  on every success answer stripped the blanks out of the whole body with a bash substitution,
+  which is quadratic: five seconds of CPU for the 120 KB templates list (the page had grown
+  slower with every template added — 151 since 3.9.0), and seconds on every cache miss of a
+  hub's `/containers`, `/images` or `/routes`. It is a regex search for one non-blank character
+  now (a millisecond). The catalogue is also read with one jq run instead of one per template,
+  and the list is cached for a minute (any template write clears it).
+- Dashboard cards that listed stacks or containers by bare name (Stack Status, Stack Controls,
+  Container Overview, Spotlight, Quick Actions) key their rows by where they live too, so a
+  hub whose VMs run same-named stacks or containers renders every row; Quick Actions says
+  which VM a choice belongs to.
+
 ## [3.9.2] - 2026-09-27
 
 ### Added

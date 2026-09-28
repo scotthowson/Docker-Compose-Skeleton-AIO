@@ -347,9 +347,18 @@ Some things go further than a merged list:
   pages: a container's buttons (start, stop, restart, recreate, remove, env, exec, logs, Sablier,
   Nuke & reinstall) act on the VM it lives in, a stack's backup runs on its VM and restores go to
   the archive's own server, a VM's files and `.env` open through the hub, OS updates on a VM the
-  hub built need no password, and maintenance numbers add up. The Live Events page follows the
-  same choice (`GET /stream?fleet=1` / `?member=`). The hub only forwards a container request
-  to the member whose recorded placements include the container's stack.
+  hub built need no password, and maintenance numbers add up (the hub answers the Maintenance
+  page's three questions for the whole fleet in one call each: `GET /maintenance/report`,
+  `/orphans`, `/disk` with `?fleet=1`). The Live Events page follows the same choice
+  (`GET /stream?fleet=1` / `?member=`). The hub only forwards a container request to the
+  member whose recorded placements include the container's stack.
+- **A shell in every VM.** The Terminal page has the Hub / VM chips: unlock it once with the
+  hub's Linux credentials and a VM the hub built is a click away — the command runs inside the
+  VM as its DCS account over the hub's ssh key (`GET /fleet/members/{id}/terminal` says whether
+  the hub can, `POST /fleet/members/{id}/terminal/exec` runs it), with the same command guard,
+  rate limit, 60 s limit and audit log as the hub's own terminal; the prompt says where each
+  command ran. A VM you made yourself needs the hub's public key
+  (`.data/fleet-ssh/id_ed25519.pub`) in its DCS account's `authorized_keys` first.
 - **Themes and Homarr.** Themes (Settings → Appearance) live on the hub and every dashboard
   follows the one set for everyone; Homarr on the hub gets a tile for every routed app, the
   VMs' included, once its API key is stored (Server Config → Integrations, or
@@ -526,6 +535,8 @@ A member is another machine, so the hub treats everything it sends as data:
 | POST | `/fleet/hub/relay-token` | admin, on a member — the hub hands the member its relay token `{token}` |
 | GET | `/backups?fleet=1` | as the plain endpoint — the members' rows merged in (`member`, `member_name`, `vmid`); `GET /containers` on a hub carries them always |
 | GET | `/stream?fleet=1` / `?member=id` | user — the hub's SSE stream with every VM's docker events (or one VM's) |
+| GET | `/maintenance/report`, `/maintenance/orphans`, `/maintenance/disk` with `?fleet=1` | user — the hub's and every VM's maintenance picture in one answer each: numbers and sizes added up, rows tagged, `members[]` per DCS (30 s cache) |
+| GET / POST | `/fleet/members/{id}/terminal`, `/fleet/members/{id}/terminal/exec` | admin — can the hub open a shell in this VM (its ssh key, a live test); run a command there `{terminal_token, command, cwd?}` with the hub's own Terminal session, guarded, rate-limited and audited like the host terminal |
 | POST | `/fleet/hub/domain` | admin, on a member — the hub hands the member the fleet's proxy domain `{domain, force}`; kept when the member has one of its own |
 | POST | `/fleet/routes` | admin, on a member that runs a Traefik — the hub hands it everyone else's routes for that Traefik (`fleet-members.yml`) |
 | POST | `/traefik/routes/rebuild` | admin — routes for services deployed before the domain (or Traefik) was there `{stack?}`; routes written before Authelia go behind it |
@@ -574,6 +585,7 @@ Command line, on any DCS: `.scripts/api-server.sh --join-hub URL CODE [NAME]`, `
 | *did not answer* | Wrong URL or port (the web UI's, `:8006`), a firewall in front of it, or certificate verification on with the self-signed certificate — switch it off, or install a real certificate on Proxmox. |
 | Guests missing | *Only this node* is set, or they are templates (never listed). |
 | `reset` refused for a container | Containers have no hardware reset; use *Reboot*. |
+| The Terminal says *the hub cannot open a shell in* a VM | The hub reaches a VM's shell with its own ssh key as the VM's DCS account (`dcs`): a VM the hub built accepts it; one you made yourself needs the hub's public key (`.data/fleet-ssh/id_ed25519.pub` on the hub) in `~dcs/.ssh/authorized_keys`, and a VM that is off does not answer. The reason shown names which. |
 | A stop shows as *VM stopped on its own* | The watcher only ignores changes DCS asked for in the last five minutes; a shutdown from the Proxmox UI or from inside the guest is reported, which is the point. |
 | Feed never pulled | The proxy machine must reach `http://<target host>:9876` (or the dashboard URL): test with `curl` from there; check the token in the snippet; Traefik logs a provider error when it cannot fetch. |
 | A route is missing from the feed | Its container publishes no host port, or only on `127.0.0.1`; the panel lists it under *skipped*. Add a `ports:` mapping. |

@@ -240,6 +240,16 @@ check "container name derives project"  demo-x-1 "$(_lib _compose_container_name
 mkdir -p "$WORK/.templates/demo-tpl" && printf '{"name":"demo-tpl","title":"Demo","category":"other","variables":[]}\n' > "$WORK/.templates/demo-tpl/template.json" && printf 'services:\n  demo:\n    image: alpine\n    environment:\n      - PW=${SECRETS_DEMO_TPL_PW}\n' > "$WORK/.templates/demo-tpl/docker-compose.yml"
 check "template detail lists secrets"   DEMO_TPL_PW "$(auth_request GET /templates/demo-tpl | body_of | jq -r '.secrets[0].name' 2>/dev/null)"
 check "template secret reported missing" false "$(auth_request GET /templates/demo-tpl | body_of | jq -r '.secrets[0].exists' 2>/dev/null)"
+# the catalogue: one jq run for every template.json, cached; a folder without one is still listed, a broken one is skipped
+mkdir -p "$WORK/.templates/bare-tpl"; printf 'services: {}\n' > "$WORK/.templates/bare-tpl/docker-compose.yml"
+_TN=$(find "$WORK/.templates" -mindepth 1 -maxdepth 1 -type d | wc -l)
+check "templates: every folder listed"   "$_TN" "$(auth_request GET /templates | body_of | jq -r '.total' 2>/dev/null)"
+check "templates: bare folder listed"    other "$(auth_request GET /templates | body_of | jq -r '.templates[] | select(.name == "bare-tpl") | .category' 2>/dev/null)"
+check "templates: list is cached"        yes "$(auth_request GET /templates | grep -qi '^X-DCS-Cache:' && echo yes || echo no)"
+mkdir -p "$WORK/.templates/broken-tpl"; printf '{not json' > "$WORK/.templates/broken-tpl/template.json"; rm -f "$WORK/.data/cache"/templates*.http
+check "templates: broken one skipped"    "$_TN" "$(auth_request GET /templates | body_of | jq -r '.total' 2>/dev/null)"
+check "templates: others still there"    demo-tpl "$(auth_request GET /templates | body_of | jq -r '.templates[] | select(.name == "demo-tpl") | .name' 2>/dev/null)"
+rm -rf "$WORK/.templates/bare-tpl" "$WORK/.templates/broken-tpl"; rm -f "$WORK/.data/cache"/templates*.http
 check "image check exposes registry time" yes "$(auth_request GET /images/check-updates | body_of | jq -e 'has("registry_checked_at")' >/dev/null 2>&1 && echo yes || echo no)"
 check "network flags: driver default"   yes "$(_lib _network_create_flags '{}' | grep -qx -- 'bridge' && echo yes || echo no)"
 check "network flags: attachable+ipv6"  2 "$(_lib _network_create_flags '{"attachable":true,"ipv6":true}' | grep -c -- '--attachable\|--ipv6')"
@@ -798,6 +808,44 @@ check "fleet: bot may drive members"    0 "$(_lib _api_bot_allowed POST "/fleet/
 check "fleet: overview reaches member"  true "$(auth_request GET /fleet/overview | body_of | jq -r '.members[0].reachable' 2>/dev/null)"
 check "fleet: overview counts stacks"   yes "$([[ "$(auth_request GET /fleet/overview | body_of | jq -r '.totals.stacks' 2>/dev/null)" -ge 1 ]] && echo yes || echo no)"
 check "fleet: overview names member"    media-vm "$(auth_request GET /fleet/overview | body_of | jq -r '.members[0].name' 2>/dev/null)"
+# the Maintenance page's three questions, answered by the hub for the whole fleet in one call each
+_MR=$(auth_request GET '/maintenance/report?fleet=1' | body_of)
+check "maintenance: fleet report merged" true "$(jq -r '.fleet == true and (.totals.containers.total | type) == "number" and (.members | length) == 2 and .members[0].id == null and .members[1].id == "'"$MID"'" and .members[1].ok == true' <<< "$_MR" 2>/dev/null)"
+check "maintenance: fleet sizes add up"  yes "$(jq -r '.totals.app_data_size' <<< "$_MR" 2>/dev/null | grep -qE '^([0-9.]+ [KMGTP]?B|N/A)$' && echo yes || echo no)"
+check "maintenance: fleet orphans tagged" true "$(auth_request GET '/maintenance/orphans?fleet=1' | body_of | jq -r '.fleet == true and (.containers | type) == "array" and (.images | type) == "array" and (.members | length) == 2 and ([.members[] | .ok] | all)' 2>/dev/null)"
+_MD=$(auth_request GET '/maintenance/disk?fleet=1' | body_of)
+check "maintenance: fleet disk merged"   true "$(jq -r '.fleet == true and (.stack_sizes | type) == "array" and (.docker_df | type) == "array" and (.total_app_data | type) == "string" and (.members | length) == 2' <<< "$_MD" 2>/dev/null)"
+check "maintenance: fleet rows say where" true "$(jq -r '[.stack_sizes[] | .member] | all(. == null or . == "'"$MID"'")' <<< "$_MD" 2>/dev/null)"
+check "maintenance: plain report unchanged" true "$(auth_request GET /maintenance/report | body_of | jq -r 'has("fleet") | not' 2>/dev/null)"
+check "maintenance: viewer may read fleet" 200 "$(viewer_request GET '/maintenance/report?fleet=1' | status_of)"
+# a shell inside a VM, opened by the hub: its own Terminal session unlocks it, its ssh key carries the command
+check "vm terminal: status is an admin's" 403 "$(viewer_request GET "/fleet/members/$MID/terminal" | status_of)"
+check "vm terminal: no key yet"          false "$(auth_request GET "/fleet/members/$MID/terminal" | body_of | jq -r '.available' 2>/dev/null)"
+check "vm terminal: reason given"        yes "$(auth_request GET "/fleet/members/$MID/terminal" | body_of | jq -r '.reason' 2>/dev/null | grep -q 'ssh key' && echo yes || echo no)"
+check "vm terminal: unknown member"      404 "$(auth_request GET "/fleet/members/nobody/terminal" | status_of)"
+check "vm terminal: exec needs a session" 401 "$(auth_request POST "/fleet/members/$MID/terminal/exec" '{"command":"id"}' | status_of)"
+check "vm terminal: viewer cannot exec"  403 "$(viewer_request POST "/fleet/members/$MID/terminal/exec" '{"command":"id","terminal_token":"x"}' | status_of)"
+_TT=smoketermtoken0123456789abcdef0123456789abcdef; _NOW=$(date +%s)
+printf '{"sessions":[{"token":"%s","username":"%s","created_at":%s,"expires_at":%s,"auth_method":"smoke"}]}\n' "$_TT" "$(id -un)" "$_NOW" $((_NOW + 3600)) > "$WORK/.api-auth/terminal-sessions.json"
+check "vm terminal: exec unknown member" 404 "$(auth_request POST "/fleet/members/nobody/terminal/exec" "{\"command\":\"id\",\"terminal_token\":\"$_TT\"}" | status_of)"
+check "vm terminal: exec needs a command" 400 "$(auth_request POST "/fleet/members/$MID/terminal/exec" "{\"terminal_token\":\"$_TT\"}" | status_of)"
+check "vm terminal: the guard applies"   403 "$(auth_request POST "/fleet/members/$MID/terminal/exec" "{\"command\":\"rm -rf /\",\"terminal_token\":\"$_TT\"}" | status_of)"
+check "vm terminal: traversal refused"   400 "$(auth_request POST "/fleet/members/$MID/terminal/exec" "{\"command\":\"id\",\"cwd\":\"/tmp/../etc\",\"terminal_token\":\"$_TT\"}" | status_of)"
+check "vm terminal: exec needs the key"  409 "$(auth_request POST "/fleet/members/$MID/terminal/exec" "{\"command\":\"id\",\"terminal_token\":\"$_TT\"}" | status_of)"
+# with a key and an ssh that runs the command here: the answer carries the output, the exit code and the directory
+mkdir -p "$WORK/.data/fleet-ssh"; printf 'smoke\n' > "$WORK/.data/fleet-ssh/id_ed25519"
+printf '#!/bin/bash\n# the smoke ssh: skip the options and the user@host, run the command here\nwhile [[ $# -gt 0 ]]; do case "$1" in -i|-o) shift 2 ;; *@*) shift; break ;; *) shift ;; esac; done\nexec bash -c "$*"\n' > "$WORK/fake-ssh"; chmod +x "$WORK/fake-ssh"
+_VX=$(FLEET_SSH_CMD="$WORK/fake-ssh" auth_request POST "/fleet/members/$MID/terminal/exec" "{\"command\":\"echo hello-from-vm; exit 3\",\"terminal_token\":\"$_TT\"}" | body_of)
+check "vm terminal: output comes back"   hello-from-vm "$(jq -r '.output' <<< "$_VX" 2>/dev/null)"
+check "vm terminal: exit code kept"      3 "$(jq -r '.exit_code' <<< "$_VX" 2>/dev/null)"
+check "vm terminal: answer says where"   "$MID" "$(jq -r 'select(.success == false) | .member' <<< "$_VX" 2>/dev/null)"
+check "vm terminal: cwd honoured"        "$WORK" "$(FLEET_SSH_CMD="$WORK/fake-ssh" auth_request POST "/fleet/members/$MID/terminal/exec" "{\"command\":\"pwd\",\"cwd\":\"$WORK\",\"terminal_token\":\"$_TT\"}" | body_of | jq -r '.output' 2>/dev/null)"
+check "vm terminal: bad cwd reported"    2 "$(FLEET_SSH_CMD="$WORK/fake-ssh" auth_request POST "/fleet/members/$MID/terminal/exec" "{\"command\":\"pwd\",\"cwd\":\"/nope/none\",\"terminal_token\":\"$_TT\"}" | body_of | jq -r '.exit_code' 2>/dev/null)"
+check "vm terminal: home is the default" "$HOME" "$(FLEET_SSH_CMD="$WORK/fake-ssh" auth_request POST "/fleet/members/$MID/terminal/exec" "{\"command\":\"pwd\",\"terminal_token\":\"$_TT\"}" | body_of | jq -r '.cwd' 2>/dev/null)"
+check "vm terminal: audited with the VM" yes "$(grep -q "member=$MID" "$WORK/.api-auth/terminal-audit.log" 2>/dev/null && echo yes || echo no)"
+check "vm terminal: history shows it"    yes "$(auth_request GET /terminal/history | body_of | jq -r '.commands[0]' 2>/dev/null | grep -q "member=$MID" && echo yes || echo no)"
+check "vm terminal: status live"         true "$(FLEET_SSH_CMD="$WORK/fake-ssh" auth_request GET "/fleet/members/$MID/terminal" | body_of | jq -r '.available' 2>/dev/null)"
+rm -rf "$WORK/.data/fleet-ssh" "$WORK/fake-ssh" "$WORK/.api-auth/terminal-sessions.json" "$WORK/.api-auth/terminal-rate.log"
 check "fleet: scan finds the member"    "http://127.0.0.1:$FLEET_PORT" "$(auth_request GET /fleet/discover | body_of | jq -r '.guests[] | select(.vmid == 100) | .dcs.url' 2>/dev/null)"
 check "fleet: scan links the guest"     "$MID" "$(auth_request GET /fleet/discover | body_of | jq -r '.guests[] | select(.vmid == 100) | .member.id' 2>/dev/null)"
 check "fleet: scan skips agentless VM"  null "$(auth_request GET /fleet/discover | body_of | jq -r '.guests[] | select(.vmid == 101) | .dcs' 2>/dev/null)"

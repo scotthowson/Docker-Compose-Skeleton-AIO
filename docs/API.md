@@ -4,7 +4,7 @@ Generated from the router in `.scripts/api-server.sh` by `.scripts/api-docs.sh` 
 Run `.scripts/api-docs.sh` after adding or changing a route; CI fails when this file is stale.
 
 The API listens on `API_BIND:API_PORT` (default `0.0.0.0:9876`) and answers JSON.
-Every endpoint below is `324` in total.
+Every endpoint below is `326` in total.
 
 ## Access levels
 
@@ -199,7 +199,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 
 | Method | Path | Access | Description |
 |--------|------|--------|-------------|
-| GET | `/templates` | user | Available templates |
+| GET | `/templates` | user | List every template in the catalogue (one jq run for all of them, cached 60 s; any template write clears it) |
 | GET | `/templates/deploy-history` | admin | Template deploy and undeploy events |
 | GET | `/templates/gallery` | user | List templates from gallery catalog |
 | GET | `/templates/{template}` | user | Template metadata, compose file and .env |
@@ -279,9 +279,9 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 
 | Method | Path | Access | Description |
 |--------|------|--------|-------------|
-| GET | `/maintenance/report` | user | Docker disk usage report |
-| GET | `/maintenance/orphans` | user | Containers, volumes and networks no stack references |
-| GET | `/maintenance/disk` | user | Per-stack App-Data sizes, Docker disk usage and volume sizes |
+| GET | `/maintenance/report` | user | Docker disk usage report; ?fleet=1 on a hub adds the VMs' numbers up (totals) with members[] per DCS |
+| GET | `/maintenance/orphans` | user | Containers, volumes and networks no stack references; ?fleet=1 on a hub lists every VM's too, each row tagged member, member_name, vmid |
+| GET | `/maintenance/disk` | user | Per-stack App-Data sizes, Docker disk usage and volume sizes; ?fleet=1 on a hub merges every VM's (stacks tagged, docker's table added up per type) |
 | GET | `/backups` | admin | Fleet merged |
 | GET | `/backups/status` | admin | Progress of the running backup or the last result |
 | GET | `/backups/config` | admin | Backup source, destination and retention |
@@ -418,6 +418,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | GET | `/fleet/identity` | user | What a hub needs to match this server to a guest: hostname, SMBIOS uuid, addresses, API port, version |
 | GET | `/fleet/feed` | user | This server's routes in Traefik feed form, for the hub to merge into its own feed (needs no feed token; the routes point at this host's published ports) |
 | GET | `/fleet/members/*/api/*` | user | Forward the call (GET, POST, PUT or DELETE) to that member with the hub's account; the caller's own role is checked against the inner path as if it were local (streams and auth are not forwarded) |
+| GET | `/fleet/members/*/terminal` | admin | Can the hub open a shell in this VM: its ssh key, the VM's address and a live test {available, member, member_name, vmid, host, user, reason} |
 | GET | `/fleet/members/*` | user | One member, with a live check that it answers |
 | GET | `/themes` | user | The themes stored on this server (without their CSS) and the one every dashboard follows (active, "" = the default look) |
 | GET | `/themes/*` | user | One stored theme, the whole document (palette and CSS) |
@@ -443,6 +444,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | POST | `/fleet/docker-engine/update` | admin | Bring the Docker Engine up to date on members {members: ["id", …] or "all"} (each VM the hub built has passwordless sudo, so no password travels); the answer says what each member started |
 | POST | `/fleet/jobs/*/retry` | admin | Run a failed VM job again from the step that failed |
 | POST | `/fleet/members/*/test` | admin | Log in to the member afresh, read its identity and version, and say which guest it matches |
+| POST | `/fleet/members/*/terminal/exec` | admin | Run a shell command inside a VM over the hub's ssh key {terminal_token, command, cwd?}: the hub's own Terminal session unlocks it; the same command guard, rate limit, 60 s limit and audit log as the host terminal |
 | POST | `/fleet/members/*/api/*` | admin | Forward the call (GET, POST, PUT or DELETE) to that member with the hub's account; the caller's own role is checked against the inner path as if it were local (streams and auth are not forwarded) |
 | POST | `/power/sample` | admin | Read the UPS right now (also refreshes what GET /power shows) |
 | POST | `/sablier/repair` | admin | Recreate on-demand containers that a prune removed (created, not started, so Sablier can wake them) |
