@@ -8,11 +8,18 @@ on:
 jobs:
   lint-and-test:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
       - name: Install tools
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck jq socat
+        # ShellCheck 0.10+ has --extended-analysis (the linter turns it off for the 25,000-line API script:
+        # the dataflow analysis needs ~12 GB and killed the 7 GB runner); Ubuntu's package is 0.9
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq jq socat xz-utils
+          curl -fsSL https://github.com/koalaman/shellcheck/releases/download/v0.10.0/shellcheck-v0.10.0.linux.x86_64.tar.xz | tar -xJ
+          sudo install -m 755 shellcheck-v0.10.0/shellcheck /usr/local/bin/shellcheck && rm -rf shellcheck-v0.10.0
+          shellcheck --version | head -2
 
       - name: Lint (bash -n, shellcheck, compose config, API reference)
         run: tests/lint.sh

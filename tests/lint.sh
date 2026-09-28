@@ -21,7 +21,11 @@ done
 
 if command -v shellcheck >/dev/null 2>&1; then
     echo "shellcheck (warning level)"
-    if ! shellcheck -S warning -e SC1090,SC1091 "${SCRIPTS[@]}"; then rc=1; fi
+    # The API script is 25,000 lines: ShellCheck's extended (dataflow) analysis needs about 12 GB on it and
+    # killed the CI runner (7 GB). Without it the same warnings come out at 0.6 GB. LINT_FULL=1 turns it back on.
+    SC_OPTS=(-S warning -e SC1090,SC1091)
+    if [[ "${LINT_FULL:-0}" != "1" ]] && shellcheck --help 2>&1 | grep -q -- '--extended-analysis'; then SC_OPTS+=(--extended-analysis=false); fi
+    if ! shellcheck "${SC_OPTS[@]}" "${SCRIPTS[@]}"; then rc=1; fi
 else
     echo "shellcheck not installed — skipped"
 fi
