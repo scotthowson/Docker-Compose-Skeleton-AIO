@@ -25,7 +25,20 @@ jobs:
         run: tests/lint.sh
 
       - name: Smoke tests (request handler over stdin)
-        run: tests/smoke.sh
+        run: tests/smoke.sh 2>&1 | tee smoke.log
+
+      # the checks that failed, on the run's summary page (the logs need a sign-in)
+      - name: Smoke failures in the summary
+        if: failure()
+        run: |
+          {
+            echo '### Smoke checks that failed'
+            echo
+            echo '```'
+            grep -E '^  FAIL' smoke.log || echo '(no FAIL line — the run stopped before the end; last lines below)'
+            tail -n 15 smoke.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Setup dry run
         run: ./setup.sh --dry-run
