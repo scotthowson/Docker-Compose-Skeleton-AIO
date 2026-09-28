@@ -106,6 +106,15 @@ doc_path() {
         "/auth/invite/*")               p="/auth/invite/{code}" ;;
         "/health/score/*")              p="/health/score/{stack}" ;;
         "/export/*")                    p="/export/{health|system|config}" ;;
+        "/fleet/members/*/api/*")       p="/fleet/members/{id}/api/{path}" ;;
+        "/fleet/members/*"*)            p="${p/\*/\{id\}}" ;;
+        "/fleet/jobs/*"*)               p="${p/\*/\{id\}}" ;;
+        "/fleet/templates/*")           p="/fleet/templates/{vmid}" ;;
+        "/fleet/join-tokens/*")         p="/fleet/join-tokens/{token}" ;;
+        "/proxmox/vms/*/*/*/*")         p="/proxmox/vms/{node}/{type}/{vmid}/{action}" ;;
+        "/proxmox/vms/*/*/*")           p="/proxmox/vms/{node}/{type}/{vmid}" ;;
+        "/homarr/*"*)                   p="${p/\*/\{name\}}" ;;
+        "/themes/*")                    p="/themes/{name}" ;;
     esac
     printf '%s' "$p"
 }

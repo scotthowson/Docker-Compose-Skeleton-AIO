@@ -402,7 +402,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | GET | `/proxmox/nodes` | user | Every Proxmox node with CPU, memory, disk and uptime |
 | GET | `/proxmox/vms` | user | Every VM and LXC container with status, CPU, memory, disk, uptime and tags |
 | GET | `/proxmox/tasks` | user | Recent Proxmox tasks (starts, stops, backups, migrations): who ran them and how they ended |
-| GET | `/proxmox/vms/*/*/*` | user | One VM or container: live status and its configuration (cores, memory, OS, boot, description) |
+| GET | `/proxmox/vms/{node}/{type}/{vmid}` | user | One VM or container: live status and its configuration (cores, memory, OS, boot, description) |
 | GET | `/fleet/status` | user | What this server is in the fleet: a hub (members, join codes), a member (its hub), or standalone; plus a pending join and how others reach this API |
 | GET | `/fleet/members` | user | The members this hub manages, with the guest each one runs in and when it last answered |
 | GET | `/fleet/overview` | user | Every member with its stacks, containers and counts, fetched from the members in parallel (10 s cache) |
@@ -412,21 +412,21 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | GET | `/fleet/jobs` | admin | VMs being created (and the ones that finished or failed), newest first |
 | GET | `/fleet/templates` | admin | The DCS templates the hub baked (VMs cloned from one build in about 40 s) |
 | GET | `/fleet/versions` | admin | The hub's DCS version next to every member's, asked live; behind = members on another version, plus the last update round and whether one is queued for after the hub's restart |
-| GET | `/fleet/jobs/*` | admin | One VM job with its steps and log |
+| GET | `/fleet/jobs/{id}` | admin | One VM job with its steps and log |
 | GET | `/proxmox/capabilities` | admin | What the API token may do on /: the privileges that creating VMs needs, and which are missing (POST with {url, token_id, token_secret, verify_tls} before the link is saved) |
 | GET | `/proxmox/storage` | admin | The node's storages with content types and free space (import_ready: can hold a cloud image) |
 | GET | `/fleet/identity` | user | What a hub needs to match this server to a guest: hostname, SMBIOS uuid, addresses, API port, version |
 | GET | `/fleet/feed` | user | This server's routes in Traefik feed form, for the hub to merge into its own feed (needs no feed token; the routes point at this host's published ports) |
-| GET | `/fleet/members/*/api/*` | user | Forward the call (GET, POST, PUT or DELETE) to that member with the hub's account; the caller's own role is checked against the inner path as if it were local (streams and auth are not forwarded) |
-| GET | `/fleet/members/*/terminal` | admin | Can the hub open a shell in this VM: its ssh key, the VM's address and a live test {available, member, member_name, vmid, host, user, reason} |
-| GET | `/fleet/members/*` | user | One member, with a live check that it answers |
+| GET | `/fleet/members/{id}/api/{path}` | user | Forward the call (GET, POST, PUT or DELETE) to that member with the hub's account; the caller's own role is checked against the inner path as if it were local (streams and auth are not forwarded) |
+| GET | `/fleet/members/{id}/terminal` | admin | Can the hub open a shell in this VM: its ssh key, the VM's address and a live test {available, member, member_name, vmid, host, user, reason} |
+| GET | `/fleet/members/{id}` | user | One member, with a live check that it answers |
 | GET | `/themes` | user | The themes stored on this server (without their CSS) and the one every dashboard follows (active, "" = the default look) |
-| GET | `/themes/*` | user | One stored theme, the whole document (palette and CSS) |
+| GET | `/themes/{name}` | user | One stored theme, the whole document (palette and CSS) |
 | GET | `/recovery/*/download` | admin | Download a recovery bundle |
 | POST | `/fleet/join` | public | A member registers itself with a join code {token, name, url, username, password, identity?, vmid?, node?, type?}: the hub logs in to it, matches it to a guest and keeps it (no session; rate-limited like a login) |
 | POST | `/fleet/relay` | public | A member's event for the hub {token, event, context}: the hub notes it in its activity (fleet_event) and fires its own notification rules with the VM named; public, the relay token says who; at most 30 events a minute per member (429 beyond) |
 | POST | `/proxmox/test` | admin | Try a Proxmox connection with the given url, token_id, token_secret and verify_tls without saving them |
-| POST | `/proxmox/vms/*/*/*/*` | admin | Power action on a VM or container: start, shutdown, stop, reboot, reset (VMs only), balloon (VMs only: a memory balloon whose floor keeps the guest three quarters of its memory, so Proxmox reports the guest's real usage and can take a little back; reboot afterwards), suspend, resume — audited and sent to the webhooks |
+| POST | `/proxmox/vms/{node}/{type}/{vmid}/{action}` | admin | Power action on a VM or container: start, shutdown, stop, reboot, reset (VMs only), balloon (VMs only: a memory balloon whose floor keeps the guest three quarters of its memory, so Proxmox reports the guest's real usage and can take a little back; reboot afterwards), suspend, resume — audited and sent to the webhooks |
 | POST | `/fleet/members` | admin | Add a member by address and an account on it {url, username, password, name?, vmid?, node?, type?, insecure?}; the hub logs in, learns who it is and matches it to a guest |
 | POST | `/fleet/join-tokens` | admin | Mint a join code {ttl_hours?: 24}: a VM runs ./setup.sh with DCS_HUB_URL and DCS_JOIN_TOKEN (or ./setup.sh --join) and becomes a member |
 | POST | `/fleet/join-hub` | admin | Make this server a member of a hub {hub_url, token, name?, url?} or {pending: true} for the join setup.sh saved: creates the account dcs-hub here and registers with the hub |
@@ -442,10 +442,10 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | POST | `/fleet/routes` | admin | The hub hands this DCS the other servers' routes for the Traefik that runs here {http: {routers, services}}; written as custom_routes/fleet-members.yml (admin: the hub's own account); 409 without a Traefik here |
 | POST | `/fleet/hub/domain` | admin | The hub hands this member the fleet's proxy domain {domain, force}: written as PROXY_DOMAIN when this DCS has none yet (or the example.com placeholder), so the routes it writes for its stacks carry the fleet's domain; a domain of its own (a Traefik here) is kept unless force is true |
 | POST | `/fleet/docker-engine/update` | admin | Bring the Docker Engine up to date on members {members: ["id", …] or "all"} (each VM the hub built has passwordless sudo, so no password travels); the answer says what each member started |
-| POST | `/fleet/jobs/*/retry` | admin | Run a failed VM job again from the step that failed |
-| POST | `/fleet/members/*/test` | admin | Log in to the member afresh, read its identity and version, and say which guest it matches |
-| POST | `/fleet/members/*/terminal/exec` | admin | Run a shell command inside a VM over the hub's ssh key {terminal_token, command, cwd?}: the hub's own Terminal session unlocks it; the same command guard, rate limit, 60 s limit and audit log as the host terminal |
-| POST | `/fleet/members/*/api/*` | admin | Forward the call (GET, POST, PUT or DELETE) to that member with the hub's account; the caller's own role is checked against the inner path as if it were local (streams and auth are not forwarded) |
+| POST | `/fleet/jobs/{id}/retry` | admin | Run a failed VM job again from the step that failed |
+| POST | `/fleet/members/{id}/test` | admin | Log in to the member afresh, read its identity and version, and say which guest it matches |
+| POST | `/fleet/members/{id}/terminal/exec` | admin | Run a shell command inside a VM over the hub's ssh key {terminal_token, command, cwd?}: the hub's own Terminal session unlocks it; the same command guard, rate limit, 60 s limit and audit log as the host terminal |
+| POST | `/fleet/members/{id}/api/{path}` | admin | Forward the call (GET, POST, PUT or DELETE) to that member with the hub's account; the caller's own role is checked against the inner path as if it were local (streams and auth are not forwarded) |
 | POST | `/power/sample` | admin | Read the UPS right now (also refreshes what GET /power shows) |
 | POST | `/sablier/repair` | admin | Recreate on-demand containers that a prune removed (created, not started, so Sablier can wake them) |
 | POST | `/themes` | admin | Store a theme: the document itself {schema: 1, name, title, mode, palette: {accent, accentSecondary, bg, surface, surfaceRaised, border, text, textMuted, success, warning, danger, info}, font, radius, css}; replaces a theme of the same name; CSS that loads or runs something is cut out and reported (stripped) |
@@ -458,14 +458,14 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | POST | `/crowdsec/unban-me` | user | Unban the caller: its client address and the home public address |
 | POST | `/crowdsec/notifications` | admin | Send CrowdSec's alerts to Discord {webhook?, test?}: renders the template with the webhook (default: the server's), restarts CrowdSec, and optionally posts a test alert |
 | PUT | `/themes/active` | admin | The theme every dashboard follows {name} ("" = the default look); it must be stored here first |
-| PUT | `/fleet/members/*/api/*` | admin | Forward the call (GET, POST, PUT or DELETE) to that member with the hub's account; the caller's own role is checked against the inner path as if it were local (streams and auth are not forwarded) |
-| PUT | `/fleet/members/*` | admin | Change a member's name, address, account, the guest it is mapped to, or the stacks it answers for {name?, url?, username?, password?, vmid?, node?, type?, insecure?, stacks?: ["name", …]} (a placement makes the hub forward that stack's requests to this member; a stack the hub runs itself cannot be placed) |
-| DELETE | `/themes/*` | admin | Remove a stored theme (dashboards following it go back to the default look) |
-| DELETE | `/fleet/members/*/api/*` | admin | Forward the call (GET, POST, PUT or DELETE) to that member with the hub's account; the caller's own role is checked against the inner path as if it were local (streams and auth are not forwarded) |
-| DELETE | `/fleet/members/*` | admin | Forget a member (its dcs-hub account is removed there when it answers) |
-| DELETE | `/fleet/templates/*` | admin | Forget a DCS template and destroy the template VM on Proxmox |
-| DELETE | `/fleet/jobs/*` | admin | Forget a finished or failed job; ?destroy=true also destroys the VM a failed build (or a by-hand install that never joined) left behind |
-| DELETE | `/fleet/join-tokens/*` | admin | Revoke a join code |
+| PUT | `/fleet/members/{id}/api/{path}` | admin | Forward the call (GET, POST, PUT or DELETE) to that member with the hub's account; the caller's own role is checked against the inner path as if it were local (streams and auth are not forwarded) |
+| PUT | `/fleet/members/{id}` | admin | Change a member's name, address, account, the guest it is mapped to, or the stacks it answers for {name?, url?, username?, password?, vmid?, node?, type?, insecure?, stacks?: ["name", …]} (a placement makes the hub forward that stack's requests to this member; a stack the hub runs itself cannot be placed) |
+| DELETE | `/themes/{name}` | admin | Remove a stored theme (dashboards following it go back to the default look) |
+| DELETE | `/fleet/members/{id}/api/{path}` | admin | Forward the call (GET, POST, PUT or DELETE) to that member with the hub's account; the caller's own role is checked against the inner path as if it were local (streams and auth are not forwarded) |
+| DELETE | `/fleet/members/{id}` | admin | Forget a member (its dcs-hub account is removed there when it answers) |
+| DELETE | `/fleet/templates/{vmid}` | admin | Forget a DCS template and destroy the template VM on Proxmox |
+| DELETE | `/fleet/jobs/{id}` | admin | Forget a finished or failed job; ?destroy=true also destroys the VM a failed build (or a by-hand install that never joined) left behind |
+| DELETE | `/fleet/join-tokens/{token}` | admin | Revoke a join code |
 | DELETE | `/fleet/hub` | admin | Leave the hub: forget it and remove its dcs-hub account here (the hub drops this member when it next fails to answer, or when removed there) |
 | DELETE | `/crowdsec/decisions/*` | admin | Remove every decision for an address (unban) |
 | DELETE | `/crowdsec/trust/*` | admin | Remove an address from the whitelist |
