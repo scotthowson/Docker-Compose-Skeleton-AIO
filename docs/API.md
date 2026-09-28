@@ -4,7 +4,7 @@ Generated from the router in `.scripts/api-server.sh` by `.scripts/api-docs.sh` 
 Run `.scripts/api-docs.sh` after adding or changing a route; CI fails when this file is stale.
 
 The API listens on `API_BIND:API_PORT` (default `0.0.0.0:9876`) and answers JSON.
-Every endpoint below is `326` in total.
+Every endpoint below is `327` in total.
 
 ## Access levels
 
@@ -153,6 +153,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | GET | `/containers/{container}/logs/live` | user | Fetch recent logs for polling |
 | GET | `/containers/{container}/stats` | user | Live CPU, memory, network and block I/O of a container |
 | GET | `/containers/{container}/logs` | user | Recent log lines of a container (tail 1–9999, default 100) |
+| GET | `/containers/{container}/sablier` | user | The container's on-demand settings: whether Sablier starts it on the first request, the idle time, the waiting page, its name and whether details show (read from the Sablier middleware on its route, wherever a deploy put it), whether Traefik routes it and Sablier is deployed, and group when a hand-written block wakes it with others |
 | GET | `/containers/{container}/processes` | user | Process list inside a container |
 | GET | `/containers/{container}/reset` | admin | Preview a nuke & reinstall: stack, service, image, App-Data folders that would be emptied (with sizes), named volumes, and folders kept because another container shares them |
 | GET | `/containers/{container}` | user | Container detail |
@@ -163,7 +164,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | POST | `/containers/{container}/remove` | admin | Start, stop, restart, recreate (Compose-managed only) or remove a container |
 | POST | `/containers/{container}/reset` | admin | Nuke & reinstall {confirm: "<container>", wipe_app_data: true, wipe_volumes: false, pull: true}: remove the container, move its App-Data folders to App-Data/.trash, drop its own named volumes when asked, pull and create it again from the compose file |
 | POST | `/containers/{container}/exec` | admin | Run a command inside a container (30 s limit) |
-| POST | `/containers/{container}/sablier` | admin | Start this container on demand through Sablier (enabled: true) or serve it normally again; writes or removes the Traefik middleware on its route |
+| POST | `/containers/{container}/sablier` | admin | Start this container on demand through Sablier (enabled: true) or serve it normally again {enabled, session?, theme?, display_name?, show_details?}: writes the Traefik middleware on its route (a block a template deploy put there is rewritten with the new settings) or removes it |
 | POST | `/containers/{container}/env` | admin | Change a Compose-managed container's environment in its stack {set{}, unset[], recreate} |
 | POST | `/containers/{container}/rename` | admin | Rename a container |
 

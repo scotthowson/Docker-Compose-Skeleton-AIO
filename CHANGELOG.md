@@ -3,6 +3,44 @@
 All notable changes to Docker Compose Skeleton AIO are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [3.9.4] - 2026-09-28
+
+### Added
+
+- **On-demand settings on the Containers page.** The Start on demand button opens a dialog with
+  the same choices as the deploy sheet — how long a container may idle before Sablier stops
+  it, the waiting page (ghost, shuffle, hacker-terminal, matrix), the name shown there and
+  whether details show — and when a container already starts on demand the same button
+  brings the settings back to change them or to serve it normally again.
+  `GET /containers/{name}/sablier` answers the current settings (read from the Sablier
+  middleware on its route, wherever a deploy put it) and whether Traefik routes the container
+  and Sablier is deployed; `POST /containers/{name}/sablier` takes `show_details` too, and a
+  block a template deploy wrote into the route file is rewritten with the new settings (and
+  removed on disable) instead of being doubled. The middleware now goes last in the router's
+  list, after the chain and Authelia, so a visitor is checked before the container is woken.
+
+### Fixed
+
+- **Sablier deployed from the template never started.** It mounted `sablier.yml` and
+  `state.json` from App-Data, which a fresh deploy does not have, so Docker made folders there
+  and Sablier stopped with "is a directory" on every start. It takes its settings as flags now
+  and keeps its state in a folder (`App-Data/Sablier/data`); proven on the lab end to end — a
+  request to a sleeping container gets the waiting page, the container starts, and Traefik
+  serves it a few seconds later.
+- **File Browser kept its users and settings in anonymous volumes.** The current image reads
+  `/config` and `/database`, so the template's `/.filebrowser.json` and `/database.db` mounts
+  were ignored and a recreate lost everything. It mounts `config`, `database` and `data`
+  folders under App-Data and runs as the stack's user. A File Browser deployed before keeps
+  its old volumes until it is redeployed.
+- **Dashy started without a configuration** (a folder in place of `conf.yml`); the template
+  ships a starter `config.yml`.
+- **Every deploy now makes its App-Data mounts before the containers start** — folders owned
+  by the DCS user instead of root, and a mount that names a file (it has an extension) as an
+  empty file, replacing an empty folder an earlier failed start left there. Templates imported
+  from elsewhere get the same protection.
+- The API lets browsers remember a CORS preflight for ten minutes: a dashboard on another
+  origin sent an OPTIONS request before nearly every call.
+
 ## [3.9.3] - 2026-09-28
 
 ### Added

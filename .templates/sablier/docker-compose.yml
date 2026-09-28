@@ -3,18 +3,20 @@ services:
     image: acouvreur/sablier:1.6.1
     container_name: Sablier
     restart: unless-stopped
+    # Every setting is a flag: the idle time and the waiting page of a container come from
+    # the Traefik middleware on its route (the Containers page writes it), these are defaults.
+    # The state file lives in a directory, which Sablier creates it in on the first start.
     command:
       - start
       - --provider.name=docker
-      - --configFile=/etc/sablier/sablier.yml
+      - --storage.file=/etc/sablier/data/state.json
+      - --sessions.default-duration=30m
+      - --strategy.dynamic.default-theme=ghost
     environment:
       - TZ=${TZ:-UTC}
-      - PUID=${PUID:-1000}
-      - PGID=${PGID:-1000}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - ${APP_DATA_DIR:-./App-Data}/Sablier/sablier.yml:/etc/sablier/sablier.yml
-      - ${APP_DATA_DIR:-./App-Data}/Sablier/state.json:/etc/sablier/state.json
+      - ${APP_DATA_DIR:-./App-Data}/Sablier/data:/etc/sablier/data
     healthcheck:
       test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:10000/health || exit 1"]
       interval: 30s

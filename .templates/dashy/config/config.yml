@@ -1,0 +1,18 @@
+# Dashy's configuration (https://dashy.to/docs/configuring). Edit it here or with the
+# editor built into Dashy; DCS placed this starter copy and never overwrites it.
+pageInfo:
+  title: Dashy
+  description: Your homelab at a glance
+appConfig:
+  theme: nord-frost
+  layout: auto
+  iconSize: medium
+  statusCheck: true
+sections:
+  - name: Getting started
+    icon: fas fa-rocket
+    items:
+      - title: Dashy documentation
+        description: Sections, items, widgets and themes
+        url: https://dashy.to/docs
+        icon: fas fa-book

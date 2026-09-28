@@ -2,7 +2,7 @@
   <img src="https://img.shields.io/badge/bash-4.0+-4EAA25?style=flat-square&logo=gnubash&logoColor=white" alt="Bash 4+" />
   <img src="https://img.shields.io/badge/docker-compose_v2-2496ED?style=flat-square&logo=docker&logoColor=white" alt="Docker Compose v2" />
   <img src="https://img.shields.io/badge/templates-151-34d399?style=flat-square" alt="151 templates" />
-  <img src="https://img.shields.io/badge/API_endpoints-326-06b6d4?style=flat-square" alt="326 API endpoints" />
+  <img src="https://img.shields.io/badge/API_endpoints-327-06b6d4?style=flat-square" alt="327 API endpoints" />
   <a href="https://github.com/scotthowson/Docker-Compose-Skeleton-AIO/actions/workflows/ci.yml"><img src="https://github.com/scotthowson/Docker-Compose-Skeleton-AIO/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
   <img src="https://img.shields.io/badge/license-MIT-f472b6?style=flat-square" alt="MIT" />
 </p>
@@ -74,7 +74,7 @@ Browser ──► DCS-UI (container, :3000) ──/api/──► api-server.sh (
   Immich, Vaultwarden, the *arr apps…; `"auth": "bypass"` in their `template.json`), and the
   deploy sheet's per-route switch decides otherwise. Services deployed before Authelia go behind
   it when it arrives.
-- **A real API** — 326 endpoints covering stacks, containers, images, networks, volumes, logs,
+- **A real API** — 327 endpoints covering stacks, containers, images, networks, volumes, logs,
   templates, routes, DNS, plugins, schedules, secrets, backups, snapshots, metrics, notifications,
   webhooks, automations, system updates and the web terminal. See [docs/API.md](docs/API.md).
 - **Security by default** — accounts are mandatory on any non-loopback bind, a fresh install only
@@ -317,11 +317,16 @@ brand kit for avatars and banners.
 ### Services that start on demand (Sablier)
 
 Deploy the **Sablier** template and any container behind a Traefik route can sleep when idle:
-open it on the Containers page and press **Start on demand**. DCS writes the Sablier middleware
-onto its route (declaring the plugin in Traefik's static config if an older install lacks it),
-Traefik shows a short "starting" page on the first request, and Sablier stops the container
-after 30 minutes idle. Health, Uptime and the container list show such containers as
-**on demand** instead of stopped, and they raise no "container stopped" notification.
+open it on the Containers page and press **Start on demand**, then choose how long it may idle
+(5 minutes to 12 hours) and which waiting page visitors see (ghost, shuffle, hacker-terminal,
+matrix) — the same choices the deploy sheet offers. DCS writes the Sablier middleware onto its
+route, last in the chain so a visitor passes CrowdSec and Authelia before anything is woken
+(declaring the plugin in Traefik's static config if an older install lacks it); Traefik shows
+the waiting page on the first request and Sablier stops the container once it has idled that
+long. The same button, or the **on demand** badge in the list, brings the settings back to
+change them or to serve the container normally again. Health, Uptime and the container list
+show such containers as **on demand** instead of stopped, and they raise no "container
+stopped" notification.
 
 ### Intrusion detection (CrowdSec)
 

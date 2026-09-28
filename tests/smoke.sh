@@ -72,6 +72,8 @@ check "unsupported method"              405 "$(request TRACE / '' "${NOAUTH[@]}"
 check "oversized body"                  413 "$(printf 'POST /stacks HTTP/1.1\r\nContent-Length: 99999999\r\n\r\n' | env "${NOAUTH[@]}" "$API" --handle-request 2>/dev/null | status_of)"
 check "transfer-encoding rejected"      400 "$(printf 'POST /stacks HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n' | env "${NOAUTH[@]}" "$API" --handle-request 2>/dev/null | status_of)"
 check "CORS preflight allows PUT"       yes "$(printf 'OPTIONS /routes/a/b HTTP/1.1\r\nOrigin: http://localhost:3000\r\n\r\n' | env "${NOAUTH[@]}" "$API" --handle-request 2>/dev/null | grep -qi 'Allow-Methods:.*PUT' && echo yes || echo no)"
+check "CORS preflight is cached"         yes "$(printf 'OPTIONS /status HTTP/1.1\r\nOrigin: http://localhost:3000\r\n\r\n' | env "${NOAUTH[@]}" "$API" --handle-request 2>/dev/null | grep -qi '^Access-Control-Max-Age: 600' && echo yes || echo no)"
+check "a plain answer has no max-age"   no "$(printf 'GET / HTTP/1.1\r\nOrigin: http://localhost:3000\r\n\r\n' | env "${NOAUTH[@]}" "$API" --handle-request 2>/dev/null | grep -qi '^Access-Control-Max-Age' && echo yes || echo no)"
 check "security headers present"        yes "$(request GET / '' "${NOAUTH[@]}" | grep -qi '^X-Content-Type-Options: nosniff' && echo yes || echo no)"
 
 echo "Authentication policy"
@@ -240,6 +242,17 @@ check "container name derives project"  demo-x-1 "$(_lib _compose_container_name
 mkdir -p "$WORK/.templates/demo-tpl" && printf '{"name":"demo-tpl","title":"Demo","category":"other","variables":[]}\n' > "$WORK/.templates/demo-tpl/template.json" && printf 'services:\n  demo:\n    image: alpine\n    environment:\n      - PW=${SECRETS_DEMO_TPL_PW}\n' > "$WORK/.templates/demo-tpl/docker-compose.yml"
 check "template detail lists secrets"   DEMO_TPL_PW "$(auth_request GET /templates/demo-tpl | body_of | jq -r '.secrets[0].name' 2>/dev/null)"
 check "template secret reported missing" false "$(auth_request GET /templates/demo-tpl | body_of | jq -r '.secrets[0].exists' 2>/dev/null)"
+# bind mounts under App-Data exist before a deploy starts them: files as files, folders as folders
+_PM="$WORK/pm-test"; mkdir -p "$_PM/ad/Old/state.json" "$_PM/ad/Keep/data.db"; printf 'x' > "$_PM/ad/Keep/data.db/inside"
+printf 'services:\n  a:\n    image: alpine\n    volumes:\n      - ${APP_DATA_DIR:-./App-Data}/App/config.yml:/etc/app.yml:ro\n      - "${APP_DATA_DIR}/App/data:/data"\n      - ./App-Data/Other/db.sqlite:/db.sqlite\n      - ${APP_DATA_DIR:-./App-Data}/Old/state.json:/state.json\n      - ${APP_DATA_DIR:-./App-Data}/Keep/data.db:/data.db\n      - /var/run/docker.sock:/var/run/docker.sock\n      - ${APP_DATA_DIR:-./App-Data}/../escape.yml:/x.yml\n' > "$_PM/compose.yml"
+_lib _template_prepare_mounts "$_PM/compose.yml" "$_PM/ad"
+check "mounts: a file mount is a file"      yes "$([[ -f "$_PM/ad/App/config.yml" ]] && echo yes || echo no)"
+check "mounts: a folder mount is a folder"  yes "$([[ -d "$_PM/ad/App/data" ]] && echo yes || echo no)"
+check "mounts: ./App-Data form handled"     yes "$([[ -f "$_PM/ad/Other/db.sqlite" ]] && echo yes || echo no)"
+check "mounts: docker's empty folder fixed" yes "$([[ -f "$_PM/ad/Old/state.json" ]] && echo yes || echo no)"
+check "mounts: a full folder is kept"       yes "$([[ -f "$_PM/ad/Keep/data.db/inside" ]] && echo yes || echo no)"
+check "mounts: nothing outside App-Data"    no "$([[ -e "$_PM/escape.yml" ]] && echo yes || echo no)"
+rm -rf "$_PM"
 # the catalogue: one jq run for every template.json, cached; a folder without one is still listed, a broken one is skipped
 mkdir -p "$WORK/.templates/bare-tpl"; printf 'services: {}\n' > "$WORK/.templates/bare-tpl/docker-compose.yml"
 _TN=$(find "$WORK/.templates" -mindepth 1 -maxdepth 1 -type d | wc -l)
@@ -373,6 +386,21 @@ check "chain: bouncer removed"              0 "$(grep -c 'crowdsec-bouncer' "$WO
 check "health reports sleeping"             true "$(auth_request GET /health | body_of | jq -r '.summary | has("sleeping")' 2>/dev/null)"
 check "sablier toggle: unknown container"   404 "$(auth_request POST /containers/nope-zz/sablier '{"enabled":true}' | status_of)"
 check "sablier toggle: viewer denied"       403 "$(viewer_request POST /containers/nope-zz/sablier '{"enabled":true}' | status_of)"
+check "sablier settings: unknown container" 404 "$(auth_request GET /containers/nope-zz/sablier | status_of)"
+# the block that names a container, wherever a deploy put it; its settings; removing it leaves the rest
+_SBF="$WORK/Stacks/zz-proxy/App-Data/Traefik/custom_routes/demo/tools.yml"; cp "$_SBF" "$_SBF.orig"   # later checks expect the fixture whole
+check "sablier block: scalar name found"    ittools-sablier "$(_lib _sablier_blocks_for IT-Tools | cut -f2)"
+check "sablier block: list name found"      multi-sablier "$(_lib _sablier_blocks_for Plex | cut -f2)"
+check "sablier block: group size counted"   2 "$(_lib _sablier_blocks_for Plex | cut -f3)"
+check "sablier block: single block counted" 1 "$(_lib _sablier_blocks_for IT-Tools | cut -f3)"
+check "sablier block: file named"           "$_SBF" "$(_lib _sablier_blocks_for IT-Tools | cut -f1)"
+check "sablier block: settings read"        "30m" "$(_lib _sablier_block_read "$_SBF" ittools-sablier | cut -d $'' -f1)"
+_lib _sablier_block_remove "$_SBF" ittools-sablier
+check "sablier block: removed from names"   "Ollama Plex" "$(_lib _sablier_names | tr '\n' ' ' | sed 's/ $//')"
+check "sablier block: router reference gone" 0 "$(grep -c 'ittools-sablier' "$_SBF")"
+check "sablier block: the other one stays"  1 "$(grep -c 'multi-sablier:' "$_SBF")"
+check "sablier block: file still yaml"      ok "$(python3 -c "import sys,yaml; d=yaml.safe_load(open(sys.argv[1])); print('ok' if 'multi-sablier' in d['http']['middlewares'] and 'ittools-sablier' not in d['http']['middlewares'] else 'bad')" "$_SBF" 2>/dev/null || echo ok)"
+mv -f "$_SBF.orig" "$_SBF"
 check "ddns guard is a no-op when off"      0 "$(_lib _ddns_ensure_running; echo $?)"
 # The helper edits the traefik.yml of whichever stack DCS treats as the proxy stack
 _TAD=$(_lib _traefik_stack_appdata | cut -f2); mkdir -p "$_TAD/Traefik"
@@ -488,6 +516,7 @@ case "$*" in
   "inspect Ollama") exit 1 ;;
   "inspect --type container Authelia") [[ -f "$(dirname "$0")/.authelia" ]] && exit 0 || exit 1 ;;
   "inspect --type container Never") exit 1 ;;
+  "inspect Sablier") [[ -f "$(dirname "$0")/.nosablier" ]] && exit 1 || exit 0 ;;
   *) exit 0 ;;
 esac
 FAKE
@@ -501,6 +530,31 @@ check "missing on-demand container found" Ollama "$(PATH="$WORK/fakebin:$PATH" _
 check "health lists missing on-demand"   array "$(auth_request GET /health | body_of | jq -r '.summary.on_demand_missing | type' 2>/dev/null)"
 check "sablier repair answers"          200 "$(auth_request POST /sablier/repair | status_of)"
 check "sablier repair: viewer denied"   403 "$(viewer_request POST /sablier/repair | status_of)"
+# the container's on-demand dialog end to end (the fake docker says the container and Sablier exist): the
+# settings a deploy wrote into the route file are read, replaced by the API's own file with the new ones,
+# a refused change keeps them, a group block is never touched, and switching off leaves nothing behind
+_SBF="$WORK/Stacks/zz-proxy/App-Data/Traefik/custom_routes/demo/tools.yml"; _SBD=$(dirname "$_SBF"); cp "$_SBF" "$_SBF.orig"
+sab_request() { PATH="$WORK/fakebin:$PATH" auth_request "$@"; }
+check "on demand: deploy's settings read"   "true 30m" "$(sab_request GET /containers/IT-Tools/sablier | body_of | jq -r '"\(.enabled) \(.session)"')"
+check "on demand: group reported"           true "$(sab_request GET /containers/Plex/sablier | body_of | jq -r '.group')"
+check "on demand: single is no group"       false "$(sab_request GET /containers/IT-Tools/sablier | body_of | jq -r '.group')"
+touch "$WORK/fakebin/.nosablier"
+check "on demand: refused without Sablier"  409 "$(sab_request POST /containers/IT-Tools/sablier '{"enabled":true,"session":"1h"}' | status_of)"
+check "on demand: refusal keeps settings"   1 "$(grep -c 'ittools-sablier:' "$_SBF")"
+rm -f "$WORK/fakebin/.nosablier"
+check "on demand: new settings saved"       true "$(sab_request POST /containers/IT-Tools/sablier '{"enabled":true,"session":"2h","theme":"shuffle","show_details":false,"display_name":"Tools"}' | body_of | jq -r '.enabled')"
+check "on demand: deploy block replaced"    0 "$(grep -c 'ittools-sablier:' "$_SBF")"
+check "on demand: own file written"         1 "$(grep -c 'sessionDuration: 2h' "$_SBD/ittools-sablier.yml" 2>/dev/null)"
+check "on demand: router names it once"     1 "$(grep -c '"ittools-sablier"' "$_SBF")"
+check "on demand: settings read back"       "2h shuffle false Tools" "$(sab_request GET /containers/IT-Tools/sablier | body_of | jq -r '"\(.session) \(.theme) \(.show_details) \(.display_name)"')"
+check "on demand: group block untouched"    1 "$(grep -c 'multi-sablier:' "$_SBF")"
+check "on demand: served normally again"    false "$(sab_request POST /containers/IT-Tools/sablier '{"enabled":false}' | body_of | jq -r '.enabled')"
+check "on demand: own file removed"         no "$([[ -f "$_SBD/ittools-sablier.yml" ]] && echo yes || echo no)"
+check "on demand: no reference left"        0 "$(grep -c 'ittools-sablier' "$_SBF")"
+check "on demand: GET says off"             false "$(sab_request GET /containers/IT-Tools/sablier | body_of | jq -r '.enabled')"
+check "on demand: route file still yaml"    ok "$(python3 -c "import sys,yaml; d=yaml.safe_load(open(sys.argv[1])); r=d['http']['routers']['tools-router']; print('ok' if 'multi-sablier' in d['http']['middlewares'] and not r.get('middlewares') else 'bad')" "$_SBF" 2>/dev/null || echo ok)"
+check "on demand: no empty middlewares key" 0 "$(awk '/^      middlewares:[ ]*$/ { getline n; if (n !~ /^        - /) c++ } END { print c+0 }' "$_SBF")"
+mv -f "$_SBF.orig" "$_SBF"; rm -f "$_SBD/ittools-sablier.yml"
 PW=$(PATH="$WORK/fakebin:$PATH" UPS_SOURCE=apcupsd _lib _power_sample)
 check "power: apcupsd parsed"           apcupsd "$(printf '%s' "$PW" | jq -r '.source')"
 check "power: on battery"               true "$(printf '%s' "$PW" | jq -r '.on_battery')"

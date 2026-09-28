@@ -3,6 +3,7 @@
   "title": "Dashy",
   "description": "Feature-rich homelab dashboard with status checking, widgets, themes, icon packs, and multi-page layouts. YAML-configured, self-hosted, with an interactive config editor built in.",
   "category": "dashboard",
+  "config_path": "Dashy",
   "target_stack": "web-applications",
   "icon": "🏠",
   "tags": [
