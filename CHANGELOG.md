@@ -3,6 +3,53 @@
 All notable changes to Docker Compose Skeleton AIO are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [3.9.2] - 2026-09-27
+
+### Added
+
+- **Themes.** A theme is a small document (palette of a dozen colours, dark or light, optional
+  font, corner radius and extra CSS) that every dashboard can follow: stored on the server
+  (`GET/POST /themes`, `GET/DELETE /themes/{name}`, `POST /themes/import {url}`,
+  `PUT /themes/active {name}`), made in the dashboard's Theme Studio with a live preview,
+  exported as a file, installed from a file or an https address, and set for everyone by an
+  admin. CSS that loads or runs anything is cut out and reported. Eight built-in themes ship
+  with the dashboard (Nord, Dracula, Catppuccin, Solarized, Gruvbox, two light ones and the
+  default look).
+- **Live Events for the fleet.** `GET /stream?fleet=1` on a hub carries every VM's docker
+  events next to its own (each with `member`, `member_name`, `vmid`); `?member=id` one VM's.
+  The Live Events page has the Everywhere / Hub / VM chips and a capsule per event.
+- **Every remaining page works with the VMs.** Containers (the hub's `GET /containers` already lists every VM's, tagged; every
+  button — start, stop, restart, recreate, remove, env, exec, logs, Sablier, Nuke & reinstall —
+  on the VM the container lives in), Logs, Uptime, Topology, Backup & Restore
+  (`GET /backups?fleet=1`; the stack list shows where each stack lives, a backup runs on that
+  VM, restores go to the archive's own server, *Back up everything* covers the hub and every VM),
+  File Browser, Environment, System (OS updates on a hub-built VM need no password) and
+  Maintenance (numbers add up, actions run everywhere or on one VM).
+- **Homarr made whole.** `POST /homarr/key {key}` checks the key against Homarr and stores it;
+  `DELETE /homarr/key`; `POST /homarr/sync` registers every routed service (the hub's and the
+  VMs') that Homarr does not have yet; `GET /homarr/status` says which mode applies (tiles on
+  the home board, library only, not deployed) and how to get a key. A settings panel drives it.
+- **Proxmox guest cards** are one shape with equal heights per row: the same slots for every
+  guest, containers collapsed to a summary line that expands in place, actions pinned to the
+  bottom.
+
+### Changed
+
+- **The memory balloon floor is three quarters of a VM's memory** (at most 512 MB can be taken
+  back): half turned out too low — under host pressure a 1.5 GB VM was squeezed to 768 MB, its
+  Java app was killed and its API stalled. Existing VMs: *Enable ballooning* again in the VM's
+  sheet, or `qm set <vmid> --balloon <three quarters>`.
+- The Docker Engine card answers at once: the package source's newest version is asked in the
+  background (dnf could take twenty seconds and the card sat on its skeleton), the card shows
+  "asking the package source" until it is known, and a dashboard newer than its server explains
+  that the framework must be updated first.
+
+### Security
+
+- A member can no longer attract a container request by naming a container it does not own:
+  the hub forwards `/containers/{name}/…` only to the member whose recorded placements include
+  the container's stack, and to nobody when two members name it (pin one with `?member=`).
+
 ## [3.9.1] - 2026-09-27
 
 ### Added
@@ -34,8 +81,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   like the OS updates) and, on a hub, every VM's engine with *Update N VMs*
   (`GET /system/docker-engine`, `POST /system/docker-engine/update`, `…/status`,
   `POST /fleet/docker-engine/update`).
-- **Real memory numbers for VMs.** VMs the hub builds get a memory balloon (half the memory as
-  the floor), so Proxmox reports the guest's usage instead of the host's view of the whole
+- **Real memory numbers for VMs.** VMs the hub builds get a memory balloon (the guest keeps
+  three quarters), so Proxmox reports the guest's usage instead of the host's view of the whole
   allocation and can take idle memory back; `POST /proxmox/vms/{node}/qemu/{vmid}/balloon`
   retrofits an older VM (reboot to take effect) and the VM detail carries `balloon` and the
   guest's memory figures.

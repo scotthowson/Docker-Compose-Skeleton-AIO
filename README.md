@@ -2,7 +2,7 @@
   <img src="https://img.shields.io/badge/bash-4.0+-4EAA25?style=flat-square&logo=gnubash&logoColor=white" alt="Bash 4+" />
   <img src="https://img.shields.io/badge/docker-compose_v2-2496ED?style=flat-square&logo=docker&logoColor=white" alt="Docker Compose v2" />
   <img src="https://img.shields.io/badge/templates-151-34d399?style=flat-square" alt="151 templates" />
-  <img src="https://img.shields.io/badge/API_endpoints-298-06b6d4?style=flat-square" alt="298 API endpoints" />
+  <img src="https://img.shields.io/badge/API_endpoints-324-06b6d4?style=flat-square" alt="324 API endpoints" />
   <a href="https://github.com/scotthowson/Docker-Compose-Skeleton-AIO/actions/workflows/ci.yml"><img src="https://github.com/scotthowson/Docker-Compose-Skeleton-AIO/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
   <img src="https://img.shields.io/badge/license-MIT-f472b6?style=flat-square" alt="MIT" />
 </p>
@@ -62,13 +62,19 @@ Browser ──► DCS-UI (container, :3000) ──/api/──► api-server.sh (
   a new deployment is routed within seconds.
 - **Wildcard HTTPS** — Traefik with a `*.yourdomain.com` certificate via the Cloudflare DNS
   challenge; every new service is reachable at `service.yourdomain.com` without touching a config.
+- **Themes** — eight built-in looks (Nord, Dracula, Catppuccin, Solarized, Gruvbox, two light
+  ones and the default) plus a Theme Studio: pick a palette with live preview, add CSS, save it
+  on the server so every dashboard and phone follows it, export it as a file, install one from a
+  file or an https address. Unsafe CSS is stripped.
+- **Homarr** — apps DCS deploys or routes (the VMs' too) land on your Homarr dashboard; with an
+  API key stored (Server Config → Integrations) they get a tile on the home board.
 - **Authelia SSO** — optional single sign-on with 2FA, deployed and configured by the wizard.
   Once it is there, every service you deploy sits behind the portal — on the hub and in the VMs
   the hub builds — except templates whose apps bring their own clients (Plex, Jellyfin, Nextcloud,
   Immich, Vaultwarden, the *arr apps…; `"auth": "bypass"` in their `template.json`), and the
   deploy sheet's per-route switch decides otherwise. Services deployed before Authelia go behind
   it when it arrives.
-- **A real API** — 315 endpoints covering stacks, containers, images, networks, volumes, logs,
+- **A real API** — 324 endpoints covering stacks, containers, images, networks, volumes, logs,
   templates, routes, DNS, plugins, schedules, secrets, backups, snapshots, metrics, notifications,
   webhooks, automations, system updates and the web terminal. See [docs/API.md](docs/API.md).
 - **Security by default** — accounts are mandatory on any non-loopback bind, a fresh install only
@@ -214,7 +220,7 @@ JSON in and out, no runtime to install. It starts with `setup.sh`/`start.sh` or 
   daemon; any write or audited event clears it. `GET /ping` is the no-auth liveness probe the
   UI's heartbeat times. `API_RESPONSE_CACHE=false` turns the cache off, `API_CACHE_MAX_STALE`
   (120 s) caps how old a served answer may be.
-- **Reference** — [docs/API.md](docs/API.md) lists all 315 endpoints with their access level and
+- **Reference** — [docs/API.md](docs/API.md) lists all 324 endpoints with their access level and
   is generated from the router by `.scripts/api-docs.sh`; `GET /` serves the same catalogue.
 
 ---

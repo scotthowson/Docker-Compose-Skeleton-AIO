@@ -4,7 +4,7 @@ Generated from the router in `.scripts/api-server.sh` by `.scripts/api-docs.sh` 
 Run `.scripts/api-docs.sh` after adding or changing a route; CI fails when this file is stale.
 
 The API listens on `API_BIND:API_PORT` (default `0.0.0.0:9876`) and answers JSON.
-Every endpoint below is `315` in total.
+Every endpoint below is `324` in total.
 
 ## Access levels
 
@@ -231,12 +231,15 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | GET | `/homarr/status` | user | Check if Homarr is deployed and has an API key configured |
 | POST | `/traefik/feed/token` | admin | Mint a new feed token (paste the new one into the remote Traefik) |
 | POST | `/traefik/routes/rebuild` | admin | Write the missing routes for the services of one stack {stack} or of every stack: services that publish a port and have no route file yet get Host(service.domain) → the container, like a fresh deploy (a domain is needed: TRAEFIK_DOMAIN or PROXY_DOMAIN); routes written before Authelia arrived go behind it (answer: routes_written, authelia_protected) |
+| POST | `/homarr/key` | admin | Store Homarr's API key {key} after checking it against the Homarr running here (its /api/boards must answer); the secret HOMARR_API_KEY then puts every registered app on the home board as a tile |
+| POST | `/homarr/sync` | admin | Register every routed service Homarr does not have yet (the hub's own routes and the VMs' in fleet-members.yml): an app plus a tile with the key stored, a library entry without; answers how many were queued |
 | POST | `/homarr/register` | admin | Put an app on the Homarr dashboard now {name, url, icon, description} |
 | POST | `/dns/records` | admin | Create a record {type, name, content, ttl, proxied, priority, comment, zone} |
 | POST | `/dns/records/sync` | admin | Create the proxied CNAME records that DCS routes are missing |
 | POST | `/routes/reconcile` | admin | Probe the routes and restart Traefik once if they are dead |
 | PUT | `/dns/records/*` | admin | Change a record's type, name, content, TTL, proxy status, priority or comment |
 | PUT | `/routes/{stack}/{service}` | admin | Update a route file's subdomain |
+| DELETE | `/homarr/key` | admin | Forget Homarr's API key (apps then land in the library only) |
 | DELETE | `/dns/records/*` | admin | Delete a record (the zone apex and names DCS routes use need force=true) |
 | DELETE | `/routes/{stack}/{service}` | admin | Delete a route file and optionally clean up DNS |
 
@@ -248,7 +251,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | GET | `/logs/stats` | user | Log file size and per-level counts |
 | GET | `/logs/archives` | user | Rotated log archives |
 | GET | `/events` | user | Fleet merged |
-| GET | `/stream` | user | SSE endpoint: docker events + periodic metrics |
+| GET | `/stream` | user | SSE endpoint: docker events + periodic metrics (on a hub ?fleet=1 adds every VM's docker events, ?member=id one VM's instead; each carries member, member_name, vmid) |
 | GET | `/audit` | admin | Fleet merged |
 | GET | `/logs/live` | user | Stream DCS application log |
 
@@ -268,8 +271,8 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | POST | `/system/update/apply` | admin | Update to the channel's release {confirm, replace_local, restart}; user files are kept, a backup tag allows rollback |
 | POST | `/system/ui-update/apply` | admin | Pull latest DCS-UI image and recreate container |
 | POST | `/system/update/rollback` | admin | Return to a backup tag {backup_tag, restart}; user files are kept, edited framework files backed up |
-| POST | `/system/os-update/check` | admin | List available OS package updates (terminal session required) |
-| POST | `/system/os-update/apply` | admin | Apply OS package updates in the background (terminal session required) |
+| POST | `/system/os-update/check` | admin | List available OS package updates (a terminal session, or passwordless sudo as on a VM the hub built) |
+| POST | `/system/os-update/apply` | admin | Apply OS package updates in the background (a terminal session, or passwordless sudo as on a VM the hub built) |
 | POST | `/system/docker-engine/update` | admin | Bring the Docker Engine to the newest version the package source offers, in the background: unattended where this API has passwordless sudo (a VM the hub built), otherwise with {terminal_token, password} like the OS updates; the daemon restarts and every container comes back on its restart policy; GET /system/docker-engine/status follows it |
 
 ## Backups and maintenance
@@ -279,7 +282,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | GET | `/maintenance/report` | user | Docker disk usage report |
 | GET | `/maintenance/orphans` | user | Containers, volumes and networks no stack references |
 | GET | `/maintenance/disk` | user | Per-stack App-Data sizes, Docker disk usage and volume sizes |
-| GET | `/backups` | admin | Backup archives in BACKUP_DEST_DIR |
+| GET | `/backups` | admin | Fleet merged |
 | GET | `/backups/status` | admin | Progress of the running backup or the last result |
 | GET | `/backups/config` | admin | Backup source, destination and retention |
 | GET | `/snapshots` | admin | Fleet merged |
@@ -416,11 +419,13 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | GET | `/fleet/feed` | user | This server's routes in Traefik feed form, for the hub to merge into its own feed (needs no feed token; the routes point at this host's published ports) |
 | GET | `/fleet/members/*/api/*` | user | Forward the call (GET, POST, PUT or DELETE) to that member with the hub's account; the caller's own role is checked against the inner path as if it were local (streams and auth are not forwarded) |
 | GET | `/fleet/members/*` | user | One member, with a live check that it answers |
+| GET | `/themes` | user | The themes stored on this server (without their CSS) and the one every dashboard follows (active, "" = the default look) |
+| GET | `/themes/*` | user | One stored theme, the whole document (palette and CSS) |
 | GET | `/recovery/*/download` | admin | Download a recovery bundle |
 | POST | `/fleet/join` | public | A member registers itself with a join code {token, name, url, username, password, identity?, vmid?, node?, type?}: the hub logs in to it, matches it to a guest and keeps it (no session; rate-limited like a login) |
 | POST | `/fleet/relay` | public | A member's event for the hub {token, event, context}: the hub notes it in its activity (fleet_event) and fires its own notification rules with the VM named; public, the relay token says who; at most 30 events a minute per member (429 beyond) |
 | POST | `/proxmox/test` | admin | Try a Proxmox connection with the given url, token_id, token_secret and verify_tls without saving them |
-| POST | `/proxmox/vms/*/*/*/*` | admin | Power action on a VM or container: start, shutdown, stop, reboot, reset (VMs only), balloon (VMs only: a memory balloon with half the memory as its floor, so Proxmox reports the guest's real usage and can reclaim idle memory; reboot afterwards), suspend, resume — audited and sent to the webhooks |
+| POST | `/proxmox/vms/*/*/*/*` | admin | Power action on a VM or container: start, shutdown, stop, reboot, reset (VMs only), balloon (VMs only: a memory balloon whose floor keeps the guest three quarters of its memory, so Proxmox reports the guest's real usage and can take a little back; reboot afterwards), suspend, resume — audited and sent to the webhooks |
 | POST | `/fleet/members` | admin | Add a member by address and an account on it {url, username, password, name?, vmid?, node?, type?, insecure?}; the hub logs in, learns who it is and matches it to a guest |
 | POST | `/fleet/join-tokens` | admin | Mint a join code {ttl_hours?: 24}: a VM runs ./setup.sh with DCS_HUB_URL and DCS_JOIN_TOKEN (or ./setup.sh --join) and becomes a member |
 | POST | `/fleet/join-hub` | admin | Make this server a member of a hub {hub_url, token, name?, url?} or {pending: true} for the join setup.sh saved: creates the account dcs-hub here and registers with the hub |
@@ -441,6 +446,8 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | POST | `/fleet/members/*/api/*` | admin | Forward the call (GET, POST, PUT or DELETE) to that member with the hub's account; the caller's own role is checked against the inner path as if it were local (streams and auth are not forwarded) |
 | POST | `/power/sample` | admin | Read the UPS right now (also refreshes what GET /power shows) |
 | POST | `/sablier/repair` | admin | Recreate on-demand containers that a prune removed (created, not started, so Sablier can wake them) |
+| POST | `/themes` | admin | Store a theme: the document itself {schema: 1, name, title, mode, palette: {accent, accentSecondary, bg, surface, surfaceRaised, border, text, textMuted, success, warning, danger, info}, font, radius, css}; replaces a theme of the same name; CSS that loads or runs something is cut out and reported (stripped) |
+| POST | `/themes/import` | admin | Fetch a theme document from an https address {url, replace} (256 KB at most) and store it; 409 when the name is taken and replace is not true |
 | POST | `/recovery/bundle` | admin | Write an encrypted recovery bundle now {passphrase?, include_app_data: [stacks], copy_remote} |
 | POST | `/recovery/restore` | admin | Restore a bundle from this box {file, passphrase, confirm, restart}; a pre-restore snapshot is kept |
 | POST | `/recovery/upload` | admin | Store a bundle sent by the browser {filename, content_b64} |
@@ -448,8 +455,10 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | POST | `/crowdsec/trust` | admin | Add an address to the whitelist (body {ip}; defaults to the home public address and the caller) |
 | POST | `/crowdsec/unban-me` | user | Unban the caller: its client address and the home public address |
 | POST | `/crowdsec/notifications` | admin | Send CrowdSec's alerts to Discord {webhook?, test?}: renders the template with the webhook (default: the server's), restarts CrowdSec, and optionally posts a test alert |
+| PUT | `/themes/active` | admin | The theme every dashboard follows {name} ("" = the default look); it must be stored here first |
 | PUT | `/fleet/members/*/api/*` | admin | Forward the call (GET, POST, PUT or DELETE) to that member with the hub's account; the caller's own role is checked against the inner path as if it were local (streams and auth are not forwarded) |
 | PUT | `/fleet/members/*` | admin | Change a member's name, address, account, the guest it is mapped to, or the stacks it answers for {name?, url?, username?, password?, vmid?, node?, type?, insecure?, stacks?: ["name", …]} (a placement makes the hub forward that stack's requests to this member; a stack the hub runs itself cannot be placed) |
+| DELETE | `/themes/*` | admin | Remove a stored theme (dashboards following it go back to the default look) |
 | DELETE | `/fleet/members/*/api/*` | admin | Forward the call (GET, POST, PUT or DELETE) to that member with the hub's account; the caller's own role is checked against the inner path as if it were local (streams and auth are not forwarded) |
 | DELETE | `/fleet/members/*` | admin | Forget a member (its dcs-hub account is removed there when it answers) |
 | DELETE | `/fleet/templates/*` | admin | Forget a DCS template and destroy the template VM on Proxmox |

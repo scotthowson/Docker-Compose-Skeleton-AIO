@@ -685,8 +685,8 @@ check "proxmox: reset is qemu-only"     400 "$(auth_request POST /proxmox/vms/pv
 check "proxmox: balloon is qemu-only"   400 "$(auth_request POST /proxmox/vms/pve/lxc/200/balloon '{}' | status_of)"
 _BL=$(auth_request POST /proxmox/vms/pve/qemu/100/balloon '{}')
 check "proxmox: balloon set"            200 "$(printf '%s' "$_BL" | status_of)"
-check "proxmox: balloon is half the RAM" '4096 8192' "$(printf '%s' "$_BL" | body_of | jq -r '"\(.balloon) \(.memory)"' 2>/dev/null)"
-check "proxmox: balloon in the config"  4096 "$(auth_request GET /proxmox/vms/pve/qemu/100 | body_of | jq -r '.balloon' 2>/dev/null)"
+check "proxmox: balloon keeps three quarters" '7680 8192' "$(printf '%s' "$_BL" | body_of | jq -r '"\(.balloon) \(.memory)"' 2>/dev/null)"
+check "proxmox: balloon in the config"  7680 "$(auth_request GET /proxmox/vms/pve/qemu/100 | body_of | jq -r '.balloon' 2>/dev/null)"
 check "proxmox: start a container"      true "$(auth_request POST /proxmox/vms/pve/lxc/200/start '{}' | body_of | jq -r '.success' 2>/dev/null)"
 check "proxmox: upid returned"          yes "$([[ "$(auth_request POST /proxmox/vms/pve/qemu/101/reboot '{}' | body_of | jq -r '.upid' 2>/dev/null)" == UPID:* ]] && echo yes || echo no)"
 check "proxmox: action audited"         yes "$(grep -q '"action":"proxmox_vm_start"' "$WORK/.data/audit.jsonl" 2>/dev/null && echo yes || echo no)"
@@ -719,6 +719,8 @@ printf '3.8.99\n' > "$MWORK/VERSION"   # an older member: the hub brings it to i
 (cd "$MWORK" && FLEET_IDENTITY_UUID=11111111-2222-3333-4444-555555555555 setsid nohup "$MWORK/.scripts/api-server.sh" --bind 127.0.0.1 --port "$FLEET_PORT" > "$MWORK/logs/member-listener.log" 2>&1 < /dev/null &)
 timeout 30 bash -c "until curl -s -m 1 http://127.0.0.1:$HUB_PORT/ping | grep -q '\"ok\"' && curl -s -m 1 http://127.0.0.1:$FLEET_PORT/ping | grep -q '\"ok\"'; do sleep 0.3; done" 2>/dev/null
 check "fleet: hub listener up"          yes "$(curl -s -m 2 http://127.0.0.1:$HUB_PORT/ping | jq -r '.ok' 2>/dev/null | sed 's/true/yes/')"
+check "fleet: stream answers with metrics"     yes "$(curl -sN -m 4 "http://127.0.0.1:$HUB_PORT/stream?token=$TOKEN&fleet=1" 2>/dev/null | grep -q '^event: metrics' && echo yes || echo no)"
+check "fleet: stream for one member answers"   yes "$(curl -sN -m 4 "http://127.0.0.1:$HUB_PORT/stream?token=$TOKEN&member=nope-zz" 2>/dev/null | grep -q '^event: metrics' && echo yes || echo no)"
 check "fleet: member listener up"       yes "$(curl -s -m 2 http://127.0.0.1:$FLEET_PORT/ping | jq -r '.ok' 2>/dev/null | sed 's/true/yes/')"
 MTOKEN=$(curl -s -m 5 -X POST "http://127.0.0.1:$FLEET_PORT/auth/login" -H 'Content-Type: application/json' -d '{"username":"admin","password":"correct horse battery"}' | jq -r '.token // empty' 2>/dev/null)
 member_request() { local m="$1" p="$2" b="${3:-}"; curl -s -m 20 -X "$m" "http://127.0.0.1:$FLEET_PORT$p" -H "Authorization: Bearer $MTOKEN" -H 'Content-Type: application/json' ${b:+-d "$b"}; }
@@ -1414,6 +1416,43 @@ check "fleet domain: from the proxy stack"   smoke.test "$(_lib _fleet_domain)"
 check "domain: hostname accepted"            0 "$(_lib _domain_valid home.example.org; echo $?)"
 check "domain: garbage refused"              1 "$(_lib _domain_valid 'bad domain'; echo $?)"
 check "selinux relabel: harmless everywhere" 0 "$(_lib _selinux_relabel_code; echo $?)"
+# a member may only attract requests for containers inside stacks the hub placed on it; two claimants → nobody
+_FSNAP="$WORK/.data/fleet-overview.json"; _FFILE_BAK="$WORK/.data/fleet.json.smokebak"; [[ -f "$WORK/.data/fleet.json" ]] && cp "$WORK/.data/fleet.json" "$_FFILE_BAK"
+printf '{"members":[{"id":"vm-a","name":"A","url":"http://127.0.0.1:1","stacks":["media"]},{"id":"vm-b","name":"B","url":"http://127.0.0.1:2","stacks":["photos"]}]}\n' > "$WORK/.data/fleet.json"
+printf '{"members":[{"id":"vm-a","reachable":true,"containers":[{"name":"Plex","stack":"media"},{"name":"Traefik","stack":"core-infrastructure"},{"name":"Shared","stack":"media"}]},{"id":"vm-b","reachable":true,"containers":[{"name":"Immich","stack":"photos"},{"name":"Shared","stack":"photos"},{"name":"Stolen","stack":"media"}]}]}\n' > "$_FSNAP"
+check "forward: container in a placed stack"  vm-a "$(_lib _fleet_member_for_container Plex)"
+check "forward: claimed hub stack ignored"    "" "$(_lib _fleet_member_for_container Traefik)"
+check "forward: stack placed elsewhere ignored" "" "$(_lib _fleet_member_for_container Stolen)"
+check "forward: two claimants → nobody"       "" "$(_lib _fleet_member_for_container Shared)"
+check "forward: bad name ignored"             "" "$(_lib _fleet_member_for_container '../x')"
+rm -f "$_FSNAP"; if [[ -f "$_FFILE_BAK" ]]; then mv -f "$_FFILE_BAK" "$WORK/.data/fleet.json"; else rm -f "$WORK/.data/fleet.json"; fi
+# themes: stored documents every dashboard can follow
+_TH='{"schema":1,"name":"smoke-night","title":"Smoke Night","mode":"dark","palette":{"accent":"#34d399","accentSecondary":"#22d3ee","bg":"#020617","surface":"#0f172a","text":"#f1f5f9"},"css":"body{} @import url(evil.css); .x{background:url(https://evil/x.png)}"}'
+_TR=$(auth_request POST /themes "$_TH")
+check "theme: stored"                        200 "$(printf '%s' "$_TR" | status_of)"
+check "theme: css cleaned and reported"      1 "$(printf '%s' "$_TR" | body_of | jq -r '.stripped | length')"
+check "theme: file written"                  yes "$([[ -s "$WORK/.config/themes/smoke-night.json" ]] && echo yes || echo no)"
+check "theme: @import gone from the file"    0 "$(grep -c '@import url' "$WORK/.config/themes/smoke-night.json")"
+check "theme: listed without css"            'smoke-night true' "$(auth_request GET /themes | body_of | jq -r '.themes[0] | "\(.name) \(.has_css)"')"
+check "theme: viewer may list"               200 "$(viewer_request GET /themes | status_of)"
+check "theme: viewer may not store"          403 "$(viewer_request POST /themes "$_TH" | status_of)"
+check "theme: bad name refused"              400 "$(auth_request POST /themes '{"name":"Bad Name","palette":{"accent":"#000000","bg":"#000000","surface":"#000000","text":"#ffffff"}}' | status_of)"
+check "theme: bad colour refused"            400 "$(auth_request POST /themes '{"name":"bad-colour","palette":{"accent":"red","bg":"#000000","surface":"#000000","text":"#ffffff"}}' | status_of)"
+check "theme: palette needs the basics"      400 "$(auth_request POST /themes '{"name":"thin","palette":{"accent":"#000000"}}' | status_of)"
+check "theme: import needs https"            400 "$(auth_request POST /themes/import '{"url":"http://127.0.0.1/x.json"}' | status_of)"
+check "theme: active must exist"             404 "$(auth_request PUT /themes/active '{"name":"nope-zz"}' | status_of)"
+check "theme: set active"                    smoke-night "$(auth_request PUT /themes/active '{"name":"smoke-night"}' | body_of | jq -r '.active')"
+check "theme: list says active"              smoke-night "$(auth_request GET /themes | body_of | jq -r '.active')"
+check "theme: get the document"              '#34d399' "$(auth_request GET /themes/smoke-night | body_of | jq -r '.palette.accent')"
+check "theme: delete"                        200 "$(auth_request DELETE /themes/smoke-night | status_of)"
+check "theme: active cleared with it"        "" "$(auth_request GET /themes | body_of | jq -r '.active')"
+check "theme: gone"                          404 "$(auth_request GET /themes/smoke-night | status_of)"
+# homarr: the key and the sync need a Homarr here
+check "homarr: status shape"                 true "$(auth_request GET /homarr/status | body_of | jq -r 'has("mode") and has("hint") and has("has_api_key")')"
+check "homarr: key format checked"           400 "$(auth_request POST /homarr/key '{"key":"short"}' | status_of)"
+check "homarr: key needs Homarr"             409 "$(auth_request POST /homarr/key '{"key":"abcdefghijklmnopqrstuvwxyz0123456789"}' | status_of)"
+check "homarr: sync needs Homarr"            409 "$(auth_request POST /homarr/sync '{}' | status_of)"
+check "homarr: viewer may not set a key"     403 "$(viewer_request POST /homarr/key '{"key":"abcdefghijklmnopqrstuvwxyz0123456789"}' | status_of)"
 check "domain hand-off: no hub here"         409 "$(auth_request POST /fleet/hub/domain '{"domain":"x.example.org"}' | status_of)"
 # Cloudflare + DDNS against the stand-in: a CNAME for a routed service, then the dynamic A records following the public address
 _CFP=$(( 20000 + RANDOM % 20000 )); _CFS="$WORK/.data/cf-mock.json"
