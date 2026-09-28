@@ -23,6 +23,7 @@ if command -v shellcheck >/dev/null 2>&1; then
     echo "shellcheck (warning level)"
     # The API script is 25,000 lines: ShellCheck's extended (dataflow) analysis needs about 12 GB on it and
     # killed the CI runner (7 GB). Without it the same warnings come out at 0.6 GB. LINT_FULL=1 turns it back on.
+    # shellcheck disable=SC2054  # the comma belongs to the -e code list, it is one element
     SC_OPTS=(-S warning -e SC1090,SC1091)
     if [[ "${LINT_FULL:-0}" != "1" ]] && shellcheck --help 2>&1 | grep -q -- '--extended-analysis'; then SC_OPTS+=(--extended-analysis=false); fi
     if ! shellcheck "${SC_OPTS[@]}" "${SCRIPTS[@]}"; then rc=1; fi
