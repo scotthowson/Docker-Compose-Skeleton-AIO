@@ -152,7 +152,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | GET | `/containers/{container}/files/content` | admin | Read file contents inside a container |
 | GET | `/containers/{container}/logs/live` | user | Fetch recent logs for polling |
 | GET | `/containers/{container}/stats` | user | Live CPU, memory, network and block I/O of a container |
-| GET | `/containers/{container}/logs` | user | Recent log lines of a container |
+| GET | `/containers/{container}/logs` | user | Recent log lines of a container (tail 1–9999, default 100) |
 | GET | `/containers/{container}/processes` | user | Process list inside a container |
 | GET | `/containers/{container}/reset` | admin | Preview a nuke & reinstall: stack, service, image, App-Data folders that would be emptied (with sizes), named volumes, and folders kept because another container shares them |
 | GET | `/containers/{container}` | user | Container detail |
