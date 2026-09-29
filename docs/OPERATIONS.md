@@ -251,7 +251,7 @@ describes the security model.
   Themes are stored on the server, an admin sets the one every dashboard follows, and a theme can be
   exported as a file or installed from a file or an https address. CSS that loads or runs anything is
   removed.
-- **Your apps**: for the apps [theme.park](https://theme-park.dev) supports (the *arr apps, qBittorrent,
+- **Your apps**: for the apps [theme.park](https://theme-park.dev) supports (the \*arr apps, qBittorrent,
   Plex, Jellyfin, Uptime Kuma and many more), a container's page has a **Theme** button. DCS adds the
   theme.park middleware to the app's Traefik route; nothing inside the container changes, and **Remove
   theme** gives the app its own look back.

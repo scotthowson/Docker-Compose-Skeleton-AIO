@@ -39,7 +39,7 @@ the first start.
    | Start | The new services are pulled, created and started, and followed until they are healthy |
 
 5. **Use it.** Open it at its port or at `https://<name>.<your-domain>`. The container's page has its logs,
-   a shell, its environment and **Nuke & reinstall**.
+   *Run Command*, its environment and **Nuke & reinstall**.
 
 **Undeploy** takes the template's services out of the stack and removes their containers. On request it
 also removes their data, their images and their routes.
@@ -62,7 +62,7 @@ Once the **Authelia** template is deployed, every new route goes behind its logi
 unless you say otherwise:
 
 - Templates whose apps bring their own clients stay open by default: Plex, Jellyfin, Nextcloud, Immich,
-  Vaultwarden, the *arr apps, ntfy, Gitea, MinIO and others. The catalogue marks them **Own sign-in**
+  Vaultwarden, the \*arr apps, ntfy, Gitea, MinIO and others. The catalogue marks them **Own sign-in**
   (`"auth": "bypass"` in their `template.json`), because a phone app or a TV cannot pass a web portal.
 - The deploy sheet has a switch per route, and its choice always wins.
 - Routes that existed before Authelia was deployed go behind it when it arrives.
