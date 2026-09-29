@@ -125,7 +125,7 @@ _cs_hex_to_addr() {
 
 # Normalise a ban target. Prints "Ip<TAB>value" or "Range<TAB>network/bits"; fails for anything else.
 _cs_norm_target() {
-    local v="$1" addr bits max hex
+    local v="$1" addr bits max hex v4
     [[ ${#v} -le 64 && -n "$v" ]] || return 1
     if [[ "$v" == */* ]]; then
         addr="${v%%/*}"; bits="${v#*/}"
@@ -135,11 +135,20 @@ _cs_norm_target() {
     fi
     if _cs_is_v4 "$addr"; then max=32; elif _cs_is_v6 "$addr"; then max=128; else return 1; fi
     if [[ -z "$bits" ]]; then
-        if [[ $max -eq 32 ]]; then printf 'Ip\t%s' "$addr"; else printf 'Ip\t%s' "$(_cs_hex_to_addr "$(_cs_addr_hex "$addr")")"; fi
+        if [[ $max -eq 32 ]]; then printf 'Ip\t%s' "$addr"; return 0; fi
+        hex=$(_cs_addr_hex "$addr")
+        # ::ffff:8.8.4.4 is the IPv4 address 8.8.4.4 as an IPv6 socket sees it; Traefik's clients come as IPv4, so that is what a ban must name
+        if [[ "${hex:0:24}" == 00000000000000000000ffff ]]; then printf 'Ip\t%s' "$(_cs_hex_to_addr "${hex:24:8}")"; return 0; fi
+        printf 'Ip\t%s' "$(_cs_hex_to_addr "$hex")"
         return 0
     fi
     (( bits <= max )) || return 1
     hex=$(_cs_mask_hex "$(_cs_addr_hex "$addr")" "$bits")
+    if [[ $max -eq 128 && "${hex:0:24}" == 00000000000000000000ffff ]] && (( bits >= 96 )); then
+        v4=$(_cs_hex_to_addr "${hex:24:8}"); bits=$(( bits - 96 ))
+        if (( bits == 32 )); then printf 'Ip\t%s' "$v4"; else printf 'Range\t%s/%s' "$v4" "$bits"; fi
+        return 0
+    fi
     if (( bits == max )); then printf 'Ip\t%s' "$(_cs_hex_to_addr "$hex")"; else printf 'Range\t%s/%s' "$(_cs_hex_to_addr "$hex")" "$bits"; fi
 }
 
