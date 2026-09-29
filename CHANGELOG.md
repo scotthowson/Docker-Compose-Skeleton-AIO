@@ -35,9 +35,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - `GET /fleet/provision/defaults` lists the guests Proxmox already has (`guests`: name, VMID, type,
-  node, state; templates apart). The setup wizard (UI 3.9.9) marks a stack whose name is taken —
-  "VM 101 exists" — leaves just that one out of the build with a note, and builds the rest.
-- Smoke suite 1050: a refused request queues nothing (later stack refused, stack listed twice, one
+  node, state; templates apart) and the stacks with containers up on this server (`running_stacks`).
+  The setup wizard (UI 3.9.9) marks a stack whose name is taken — "VM 101 exists" — leaves just that
+  one out of the build with a note and builds the rest, and locks the stacks that already run on the
+  hub (a build used to refuse them at the very end, after everything else was set up).
+- Smoke suite 1052: a refused request queues nothing (later stack refused, stack listed twice, one
   address for two VMs), the guests in the defaults, a VM deploy's Authelia choice (kept, applied, cleared,
   refused without Authelia), the stack count with a leftover folder, and the wizard's removed stacks.
 

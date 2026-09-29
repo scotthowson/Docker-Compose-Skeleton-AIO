@@ -1415,6 +1415,10 @@ check "provision: …queues nothing either"        0 "$(_pvj zz-dup)"
 check "provision: one address for two VMs"     409 "$(auth_request POST /fleet/provision "{$_PVB,\"vms\":[{\"stack\":\"zz-a\",\"ip\":\"192.0.2.77\"},{\"stack\":\"zz-b\",\"ip\":\"192.0.2.77\"}]}" | status_of)"
 check "provision: …queues nothing as well"       0 "$(( $(_pvj zz-a) + $(_pvj zz-b) ))"
 check "provision defaults: the guests Proxmox has" yes "$(auth_request GET /fleet/provision/defaults | body_of | jq -e '(.guests | map(.name)) as $g | ($g | index("networking-security") != null) and ($g | index("template-debian") == null)' >/dev/null 2>&1 && echo yes || echo no)"
+check "provision defaults: a guest's memory (for the capacity bar)" 8 "$(auth_request GET /fleet/provision/defaults | body_of | jq -r '.guests[] | select(.name == "media-vm") | .maxmem_gb' 2>/dev/null)"
+# stacks with containers up on the hub are reported (they cannot become VMs while they run here)
+mkdir -p "$WORK/fakebin2" && printf '#!/bin/bash\n[[ "$1 $2 $3" == "compose ls --format" ]] && { echo "[{\\"Name\\":\\"demo\\",\\"Status\\":\\"running(1)\\"}]"; exit 0; }\nexec "%s/fakebin/docker" "$@"\n' "$WORK" > "$WORK/fakebin2/docker" && chmod +x "$WORK/fakebin2/docker"
+check "provision defaults: stacks running on the hub" demo "$(PATH="$WORK/fakebin2:$PATH" auth_request GET /fleet/provision/defaults | body_of | jq -r '.running_stacks | join(" ")' 2>/dev/null)"
 # what counts as the hub's own stack: DOCKER_STACKS or containers up — not a folder the repository ships
 mkdir -p "$WORK/Stacks/leftover" && printf 'services:\n  x:\n    image: alpine\n' > "$WORK/Stacks/leftover/docker-compose.yml"
 check "hub stack: in DOCKER_STACKS"     0 "$(_lib _fleet_stack_is_hub demo; echo $?)"
