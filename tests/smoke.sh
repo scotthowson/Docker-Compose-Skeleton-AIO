@@ -14,7 +14,7 @@ set -u
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/dcs-smoke-XXXXXX")"
-trap 'rm -rf "$WORK"' EXIT
+trap '[[ -n "${RIP_MAIN:-}" ]] && kill "$RIP_MAIN" 2>/dev/null; [[ -n "${RIP_DDNS:-}" ]] && kill "$RIP_DDNS" 2>/dev/null; rm -rf "$WORK"' EXIT
 
 # Minimal isolated installation: scripts, config, one stack, an .env
 mkdir -p "$WORK/.scripts" "$WORK/.lib" "$WORK/.config" "$WORK/Stacks/demo" "$WORK/.data" "$WORK/logs" "$WORK/.api-auth" "$WORK/.templates"
@@ -517,6 +517,23 @@ _gu checkout -q -- .scripts/tool.sh; chmod +x "$UPD/.scripts/tool.sh"   # the ed
 check "exec bit: the next release applies" 200 "$(_upd POST /system/update/apply '{"confirm":true}' | status_of)"
 check "exec bit: next release content"     'echo three' "$(cat "$UPD/.scripts/tool.sh")"
 check "exec bit: executable after that"    yes "$([[ -x "$UPD/.scripts/tool.sh" ]] && echo yes || echo no)"
+# SELinux: git writes api-server.sh anew and the file takes the directory's label (user_home_t), which systemd cannot
+# start a service from (203/EXEC). Every code switch, the Update button included, has to put bin_t back
+mkdir -p "$WORK/fakebin-se"
+printf '#!/bin/bash\necho Enforcing\n' > "$WORK/fakebin-se/getenforce"
+printf '#!/bin/bash\nif [[ "$1" == "-c" && "$2" == "%%C" ]]; then\n  [[ -f "$(dirname "$0")/labelled.$(basename "$3")" ]] && echo system_u:object_r:bin_t:s0 || echo system_u:object_r:user_home_t:s0\n  exit 0\nfi\nexec %s "$@"\n' "$(command -v stat)" > "$WORK/fakebin-se/stat"
+printf '#!/bin/bash\nexit 0\n' > "$WORK/fakebin-se/restorecon"
+printf '#!/bin/bash\nshift 2\nfor f in "$@"; do printf "%%s\\n" "$f" >> "$(dirname "$0")/chcon.log"; : > "$(dirname "$0")/labelled.$(basename "$f")"; done\n' > "$WORK/fakebin-se/chcon"
+chmod +x "$WORK/fakebin-se/"*
+printf '1.3.0\n' > "$UPD_SRC/VERSION"; printf 'echo four\n' > "$UPD_SRC/.scripts/tool.sh"
+_gs add -A >/dev/null && _gs commit -q -m 'release 1.3.0' && _gs tag v1.3.0 && _gs push -q origin main --tags
+RL=$(PATH="$WORK/fakebin-se:$PATH" _upd POST /system/update/apply '{"confirm":true}')
+check "selinux: the update goes through"    200 "$(printf '%s' "$RL" | status_of)"
+check "selinux: api-server.sh labelled bin_t" "$UPD/.scripts/api-server.sh" "$(grep -m1 'api-server\.sh' "$WORK/fakebin-se/chcon.log" 2>/dev/null)"
+RLB=$(printf '%s' "$RL" | body_of | jq -r '.backup_tag')
+rm -f "$WORK/fakebin-se/chcon.log" "$WORK/fakebin-se/labelled."*
+check "selinux: rollback goes through"      200 "$(PATH="$WORK/fakebin-se:$PATH" _upd POST /system/update/rollback "{\"backup_tag\":\"$RLB\"}" | status_of)"
+check "selinux: labelled again after it"    "$UPD/.scripts/api-server.sh" "$(grep -m1 'api-server\.sh' "$WORK/fakebin-se/chcon.log" 2>/dev/null)"
 check "user path: Stacks"               0 "$(_lib _api_git_is_user_path Stacks/demo/.env; echo $?)"
 check "user path: scripts are not"      1 "$(_lib _api_git_is_user_path .scripts/api-server.sh; echo $?)"
 sleep 300 & _UPD_SLEEP=$!
@@ -528,6 +545,279 @@ printf 'reexec-usr1\n' > "$WORK/.data/api-server.caps"
 check "restart method: new listener (USR1)" "reexec $_UPD_SLEEP USR1" "$(_lib _api_restart_method)"
 kill "$_UPD_SLEEP" 2>/dev/null; wait "$_UPD_SLEEP" 2>/dev/null || true
 rm -f "$WORK/.data/api-server.pid" "$WORK/.data/api-server.caps"
+
+echo "Restart in place: a request's helpers must not keep the port, and the port comes back"
+# a handler keeps the connection and nothing else: ncat hands every handler its listening socket
+_fdt() { exec 7>/dev/null 8</dev/null; _api_close_inherited_fds; local r="" n; for n in 0 1 2 7 8; do [[ -e /proc/$BASHPID/fd/$n ]] && r+="$n:open " || r+="$n:closed "; done; printf '%s' "${r% }"; }
+check "handler: inherited descriptors closed" "0:open 1:open 2:open 7:closed 8:closed" "$(_lib _fdt)"
+_free_port() { python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])'; }
+_alive() { [[ -d "/proc/$1" && "$(awk '{print $3}' "/proc/$1/stat" 2>/dev/null)" != Z ]]; }   # a zombie is not running
+# a helper that inherited the listening socket (what older versions left behind: the DDNS loop's 300 s sleep)
+RP=$(_free_port)
+python3 - "$RP" <<'PY' &
+import os, socket, sys
+s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("127.0.0.1", int(sys.argv[1]))); s.listen(5); os.set_inheritable(s.fileno(), True)
+os.execvp("sleep", ["sleep", "300"])
+PY
+RP_PID=$!
+sleep 0.7
+check "leaked helper: holds the port"       "$RP_PID" "$(_lib _api_port_listeners "$RP")"
+check "leaked helper: the port is reclaimed" 0 "$(_lib _api_reclaim_port "$RP" >/dev/null; echo $?)"
+for _i in $(seq 1 10); do _alive "$RP_PID" || break; sleep 0.3; done
+check "leaked helper: ended"                no "$(_alive "$RP_PID" && echo yes || echo no)"
+kill -KILL "$RP_PID" 2>/dev/null; wait "$RP_PID" 2>/dev/null
+check "leaked helper: the port is free"     "" "$(_lib _api_port_listeners "$RP")"
+# another program on the port is not ours to end
+RP2=$(_free_port)
+python3 -c 'import socket, sys, time; s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); s.bind(("127.0.0.1", int(sys.argv[1]))); s.listen(5); time.sleep(300)' "$RP2" &
+RP2_PID=$!
+sleep 0.7
+check "another program: left alone"         1 "$(_lib _api_reclaim_port "$RP2" >/dev/null; echo $?)"
+check "another program: still running"      yes "$(_alive "$RP2_PID" && echo yes || echo no)"
+kill "$RP2_PID" 2>/dev/null; wait "$RP2_PID" 2>/dev/null
+# A copy of the API as a real listener on a loopback port: _rip_install DIR PORT
+_rip_install() {
+    local d="$1" port="$2"
+    mkdir -p "$d/.scripts" "$d/.lib" "$d/.config" "$d/.data" "$d/logs" "$d/.api-auth" "$d/Stacks"
+    command cp "$API" "$d/.scripts/"; command cp "$ROOT/compose.sh" "$ROOT/VERSION" "$d/"
+    command cp -r "$ROOT/.lib/." "$d/.lib/"; command cp -r "$ROOT/.config/." "$d/.config/"
+    grep -vE '^(API_BIND|API_AUTH_ENABLED|API_INSECURE_NO_AUTH|API_TRUSTED_PROXIES|API_IP_WHITELIST|API_PORT|DDNS_ENABLED|CF_DNS_API_TOKEN|TRAEFIK_DOMAIN|DDNS_INTERVAL|METRICS_ENABLED|AUTOMATIONS_ENABLED)=' "$ROOT/.env.example" > "$d/.env"
+    printf 'API_PORT=%s\nAPI_BIND=127.0.0.1\nAPI_AUTH_ENABLED=false\nMETRICS_ENABLED=false\nAUTOMATIONS_ENABLED=true\nDDNS_ENABLED=false\nDDNS_INTERVAL=300\nCF_DNS_API_TOKEN=smoke-not-a-token\nTRAEFIK_DOMAIN=smoke.test\nCF_API_BASE=http://127.0.0.1:9\n' "$port" >> "$d/.env"
+}
+# the answer of the listener on RIPPORT, and how long a restart takes to bring it back (seconds, or "never")
+_rip_ping() { curl -s -m 1 "http://127.0.0.1:$RIPPORT/ping" 2>/dev/null; }
+_rip_wait() { local i; for ((i = 0; i < ${1:-60}; i++)); do [[ "$(_rip_ping)" == *ok* ]] && return 0; sleep 0.25; done; return 1; }
+_rip_holders() { local p c=""; for p in $(ss -Hltnp "sport = :$RIPPORT" 2>/dev/null | grep -oE 'pid=[0-9]+' | cut -d= -f2 | sort -u); do c+="$(cat "/proc/$p/comm" 2>/dev/null) "; done; printf '%s' "$c" | tr ' ' '\n' | sort -u | tr '\n' ' ' | sed 's/ $//'; }
+# The plain case, on the default transport: no DDNS loop, a listener that restarts itself twice (an update, POST /system/restart)
+# and stops cleanly. A shutdown step that fails ends the whole process (the server runs with errexit) and nothing comes back.
+if command -v socat >/dev/null 2>&1 && command -v ss >/dev/null 2>&1; then
+    RIP="$WORK/rip-plain"; RIPPORT=$(_free_port); _rip_install "$RIP" "$RIPPORT"
+    setsid nohup "$RIP/.scripts/api-server.sh" --bind 127.0.0.1 --port "$RIPPORT" > "$RIP/logs/rip.log" 2>&1 < /dev/null &
+    _rip_wait 60
+    RIP_MAIN=$(cat "$RIP/.data/api-server.pid" 2>/dev/null)
+    check "restart in place: served through socat"   socat "$(sed 's/\x1b\[[0-9;]*m//g' "$RIP/logs/rip.log" | awk '/Transport/{print $2; exit}')"
+    for _n in 1 2; do
+        kill -USR1 "$RIP_MAIN"; sleep 0.5
+        _rip_wait 60
+        check "restart in place: the API answers again (restart $_n)" yes "$([[ "$(_rip_ping)" == *ok* ]] && echo yes || echo no)"
+        check "restart in place: the same process lives on ($_n)"     yes "$(kill -0 "$RIP_MAIN" 2>/dev/null && echo yes || echo no)"
+    done
+    check "restart in place: the pid file is kept"     "$RIP_MAIN" "$(cat "$RIP/.data/api-server.pid" 2>/dev/null)"
+    check "restart in place: only socat holds the port" socat "$(_rip_holders)"
+    "$RIP/.scripts/api-server.sh" --stop >/dev/null 2>&1
+    for _i in $(seq 1 30); do kill -0 "$RIP_MAIN" 2>/dev/null || break; sleep 0.25; done
+    check "stop: the process ends"                     no "$(kill -0 "$RIP_MAIN" 2>/dev/null && echo yes || echo no)"
+    check "stop: the pid file is removed (the shutdown ran to its end)" no "$([[ -e "$RIP/.data/api-server.pid" ]] && echo yes || echo no)"
+    check "stop: the port is free"                     "" "$(ss -Hltn "sport = :$RIPPORT" 2>/dev/null)"
+    RIP_MAIN=""
+else
+    echo "  skip the plain restart test (socat or ss not installed)"
+fi
+# the real listener on the ncat transport (hosts without socat): the DDNS loop that a settings change starts from a
+# request must not hold the port, and the in-place restart must come back
+if command -v ncat >/dev/null 2>&1 && command -v ss >/dev/null 2>&1; then
+    RIP="$WORK/rip"; RIPPORT=$(_free_port); _rip_install "$RIP" "$RIPPORT"; mkdir -p "$RIP/shim"
+    # a PATH without socat: the API then serves through ncat, as it does on a host that has no socat
+    IFS=: read -ra _pd <<< "$PATH"
+    for ((_i=${#_pd[@]}-1; _i>=0; _i--)); do for _f in "${_pd[_i]}"/*; do [[ -x "$_f" && ! -d "$_f" ]] && ln -sf "$_f" "$RIP/shim/${_f##*/}"; done; done
+    command rm -f "$RIP/shim/socat"
+    PATH="$RIP/shim" setsid nohup "$RIP/.scripts/api-server.sh" --bind 127.0.0.1 --port "$RIPPORT" > "$RIP/logs/rip.log" 2>&1 < /dev/null &
+    _rip_wait 60
+    RIP_MAIN=$(cat "$RIP/.data/api-server.pid" 2>/dev/null)
+    check "ncat restart: served through ncat"   ncat "$(sed 's/\x1b\[[0-9;]*m//g' "$RIP/logs/rip.log" | awk '/Transport/{print $2; exit}')"
+    curl -s -m 10 -X POST -H 'Content-Type: application/json' -d '{"DDNS_ENABLED":"true"}' "http://127.0.0.1:$RIPPORT/config" >/dev/null
+    sleep 2
+    RIP_DDNS=$(cat "$RIP/.data/ddns.pid" 2>/dev/null)
+    check "ncat restart: DDNS started by the request" yes "$([[ -n "$RIP_DDNS" ]] && kill -0 "$RIP_DDNS" 2>/dev/null && echo yes || echo no)"
+    check "ncat restart: only ncat holds the port" ncat "$(_rip_holders)"
+    RIP_DDNS_OLD="$RIP_DDNS"
+    kill -USR1 "$RIP_MAIN"; sleep 0.5
+    _rip_wait 60
+    check "ncat restart: the API answers again"  yes "$([[ "$(_rip_ping)" == *ok* ]] && echo yes || echo no)"
+    check "ncat restart: same process, alive"    yes "$(kill -0 "$RIP_MAIN" 2>/dev/null && echo yes || echo no)"
+    check "ncat restart: the old DDNS loop ended" no "$(kill -0 "$RIP_DDNS_OLD" 2>/dev/null && echo yes || echo no)"
+    sleep 1
+    RIP_DDNS=$(cat "$RIP/.data/ddns.pid" 2>/dev/null)
+    check "ncat restart: a new DDNS loop runs"   yes "$([[ -n "$RIP_DDNS" && "$RIP_DDNS" != "$RIP_DDNS_OLD" ]] && kill -0 "$RIP_DDNS" 2>/dev/null && echo yes || echo no)"
+    check "ncat restart: only ncat holds the port after it" ncat "$(_rip_holders)"
+    kill "$RIP_MAIN" 2>/dev/null; kill "$RIP_DDNS" 2>/dev/null
+    for _i in $(seq 1 20); do [[ -z "$(ss -Hltn "sport = :$RIPPORT" 2>/dev/null)" ]] && break; sleep 0.25; done
+    check "ncat restart: the port is free after stopping" "" "$(ss -Hltn "sport = :$RIPPORT" 2>/dev/null)"
+    RIP_MAIN="" RIP_DDNS=""
+else
+    echo "  skip ncat restart test (ncat or ss not installed)"
+fi
+
+echo "Image updates: the containers left on the old copy are recreated, the schedule runs the same"
+# A pull moves the tag to the new image and docker's ancestor filter follows it, so the containers left on the old copy
+# were never found and "Recreate containers" did nothing. A stateful fake docker stands in for the daemon.
+IMG_DIR="$WORK/fakebin-img"; IMG_ST="$IMG_DIR/state"; mkdir -p "$IMG_ST" "$WORK/Stacks/imgstack"
+printf 'services:\n  app:\n    image: ghcr.io/x/app:latest\n  web:\n    image: nginx\n' > "$WORK/Stacks/imgstack/docker-compose.yml"
+cat > "$IMG_DIR/docker" <<'FAKE'
+#!/bin/bash
+ST="$(dirname "$0")/state"
+norm() { local r="$1"; r="${r#docker.io/}"; r="${r#index.docker.io/}"; r="${r#library/}"; [[ "${r##*/}" == *[:@]* ]] || r+=":latest"; printf '%s' "$r"; }
+img_id() { awk -F'\t' -v r="$(norm "$1")" '$1 == r {print $2; exit}' "$ST/images"; }
+set_id() { awk -F'\t' -v OFS='\t' -v r="$1" -v n="$2" '$1 == r {$2 = n} {print}' "$ST/images" > "$ST/images.tmp" && mv "$ST/images.tmp" "$ST/images"; }
+short() { local i="${1#sha256:}"; printf '%s' "${i:0:12}"; }
+case "$1" in
+    pull)
+        ref="$2"
+        case "$ref" in
+            local/*) echo "Error response from daemon: pull access denied for $ref, repository does not exist or may require 'docker login'" >&2; exit 1 ;;
+            broken/*) echo "Error response from daemon: connection reset by peer" >&2; exit 1 ;;
+        esac
+        printf '%s\n' "$ref" >> "$ST/pulls.log"
+        n=$(norm "$ref")
+        if grep -qxF "$n" "$ST/newer" 2>/dev/null; then
+            set_id "$n" "sha256:new-$(printf '%s' "$n" | cksum | cut -d' ' -f1)"
+            grep -vxF "$n" "$ST/newer" > "$ST/newer.tmp"; mv "$ST/newer.tmp" "$ST/newer"
+            echo "Status: Downloaded newer image for $ref"
+        else
+            echo "Status: Image is up to date for $ref"
+        fi ;;
+    image)
+        if [[ "$2" == inspect ]]; then id=$(img_id "${@: -1}"); [[ -n "$id" ]] || exit 1; printf '%s\n' "$id"; fi ;;
+    images)
+        if [[ "$*" == *--no-trunc* ]]; then
+            cat "$ST/images"
+        else
+            while IFS=$'\t' read -r ref id; do
+                printf '%s\t%s\t%s\t100MB\t2026-09-28 00:00:00 +0000 UTC\n' "${ref%:*}" "${ref##*:}" "$(short "$id")"
+            done < "$ST/images"
+        fi ;;
+    ps)
+        if [[ "$*" == *"ancestor="* ]]; then
+            # as the real docker: the name is followed to the image it points to NOW, so only containers on that image match
+            anc="${*#*ancestor=}"; anc="${anc%% *}"; cur=$(img_id "$anc")
+            while IFS='|' read -r cid name ref have rest; do [[ "$have" == "$cur" ]] && printf '%s\n' "${cid:0:12}"; done < "$ST/containers"
+        elif [[ "$*" == *"--format"* ]]; then
+            # as the real docker: a container whose tag has moved on is named by its image id
+            while IFS='|' read -r cid name ref have proj svc wd cfg; do
+                cur=$(img_id "$ref"); shown=$ref; [[ "$cur" == "$have" ]] || shown=$(short "$have")
+                printf '%s\t%s\t%s\n' "$shown" "$name" "$proj"
+            done < "$ST/containers"
+        else
+            cut -d'|' -f1 "$ST/containers" | cut -c1-12
+        fi ;;
+    inspect)
+        shift
+        fmt=""; if [[ "$1" == "--format" ]]; then fmt="$2"; shift 2; fi
+        for want in "$@"; do
+            line=$(awk -F'|' -v w="$want" 'index($1, w) == 1 || $2 == w {print; exit}' "$ST/containers")
+            if [[ -z "$line" ]]; then [[ "$fmt" == "{{.State.Status}}" ]] && { echo missing; exit 1; }; continue; fi
+            IFS='|' read -r cid name ref have proj svc wd cfg <<< "$line"
+            case "$fmt" in
+                '{{.Id}}|{{.Name}}|'*) printf '%s|/%s|%s|%s|%s|%s|%s|%s\n' "$cid" "$name" "$ref" "$have" "$proj" "$svc" "$wd" "$cfg" ;;
+                '{{.Name}}|{{.Config.Image}}|{{.Image}}|'*) printf '/%s|%s|%s|%s|%s|%s\n' "$name" "$ref" "$have" "$svc" "$wd" "$cfg" ;;
+                '{{.Config.Image}}') printf '%s\n' "$ref" ;;
+                '{{.State.Status}}') echo running ;;
+            esac
+        done ;;
+    *) exit 0 ;;
+esac
+FAKE
+cat > "$IMG_DIR/compose" <<'FAKE'
+#!/bin/bash
+# docker compose -f FILE [--env-file F] up -d --force-recreate --no-deps SERVICE: the service's container runs the tag's current image
+ST="$(dirname "$0")/state"
+echo "$*" >> "$ST/compose.log"
+file=""; svc=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -f) file="$2"; shift 2 ;;
+        --env-file) shift 2 ;;
+        up|-d|--force-recreate|--no-deps) shift ;;
+        *) svc="$1"; shift ;;
+    esac
+done
+wd=$(dirname "$file")
+norm() { local r="$1"; r="${r#docker.io/}"; r="${r#index.docker.io/}"; r="${r#library/}"; [[ "${r##*/}" == *[:@]* ]] || r+=":latest"; printf '%s' "$r"; }
+while IFS='|' read -r cid name ref have proj s w cfg; do
+    if [[ "$s" == "$svc" && "$w" == "$wd" ]]; then
+        have=$(awk -F'\t' -v r="$(norm "$ref")" '$1 == r {print $2; exit}' "$ST/images")
+    fi
+    printf '%s|%s|%s|%s|%s|%s|%s|%s\n' "$cid" "$name" "$ref" "$have" "$proj" "$s" "$w" "$cfg"
+done < "$ST/containers" > "$ST/containers.tmp"
+mv "$ST/containers.tmp" "$ST/containers"
+FAKE
+chmod +x "$IMG_DIR/docker" "$IMG_DIR/compose"
+# the registry has a newer copy of app; app-1 (Compose) and app-2 (started by hand) run the old one; web was created from plain "nginx"
+_img_reset() {
+    printf 'ghcr.io/x/app:latest\tsha256:app-old\nnginx:latest\tsha256:nginx-cur\nlocal/tool:latest\tsha256:tool-cur\n' > "$IMG_ST/images"
+    printf 'ghcr.io/x/app:latest\n' > "$IMG_ST/newer"
+    printf '%s\n' "c1aaaaaaaaaa1|app-1|ghcr.io/x/app:latest|sha256:app-old|imgstack|app|$WORK/Stacks/imgstack|" \
+                  "c2bbbbbbbbbb2|app-2|ghcr.io/x/app:latest|sha256:app-old||||" \
+                  "c3cccccccccc3|web|nginx|sha256:nginx-cur|imgstack|web|$WORK/Stacks/imgstack|" \
+                  "c4dddddddddd4|tool|local/tool:latest|sha256:tool-cur||||" > "$IMG_ST/containers"
+    : > "$IMG_ST/compose.log"; : > "$IMG_ST/pulls.log"
+}
+img_request() { PATH="$IMG_DIR:$PATH" DOCKER_COMPOSE_CMD="$IMG_DIR/compose" API_RESPONSE_CACHE=false auth_request "$@"; }
+_img_field() { jq -r --arg i "$1" --arg f "${2:-containers_outdated}" '.images[] | select(.image == $i) | .[$f]'; }
+
+_img_reset
+check "image list: nothing outdated before the pull" "" "$(img_request GET /images/check-updates | body_of | _img_field ghcr.io/x/app:latest)"
+R=$(img_request POST /images/update '{"image":"ghcr.io/x/app:latest","recreate":true}')
+check "image update: answers"                      200 "$(printf '%s' "$R" | status_of)"
+check "image update: the Compose container is recreated" '["app-1"]' "$(printf '%s' "$R" | body_of | jq -c '.containers_restarted')"
+check "image update: one outside Compose is reported" '["app-2"]' "$(printf '%s' "$R" | body_of | jq -c '.containers_skipped')"
+check "image update: nothing failed"               '[]' "$(printf '%s' "$R" | body_of | jq -c '.containers_failed')"
+check "image update: compose recreated the service" yes "$(grep -q -- "up -d --force-recreate --no-deps app" "$IMG_ST/compose.log" && echo yes || echo no)"
+check "image update: a service on a current image is left alone" 1 "$(wc -l < "$IMG_ST/compose.log" | tr -d ' ')"
+check "image list: the container started by hand still runs the old copy" app-2 "$(img_request GET /images/check-updates | body_of | _img_field ghcr.io/x/app:latest containers_outdated_manual)"
+check "image list: nothing left for DCS to recreate" "" "$(img_request GET /images/check-updates | body_of | _img_field ghcr.io/x/app:latest)"
+check "image list: a container created from nginx shows under nginx:latest" web "$(img_request GET /images/check-updates | body_of | _img_field nginx:latest containers)"
+# pull only: the containers stay, and the list says so
+_img_reset
+R=$(img_request POST /images/update '{"image":"ghcr.io/x/app:latest","recreate":false}')
+check "pull only: nothing recreated"               '[]' "$(printf '%s' "$R" | body_of | jq -c '.containers_restarted')"
+check "pull only: compose untouched"               0 "$(wc -l < "$IMG_ST/compose.log" | tr -d ' ')"
+check "pull only: the Compose container is listed as outdated" "app-1" "$(img_request GET /images/check-updates | body_of | _img_field ghcr.io/x/app:latest)"
+check "pull only: so is the one started by hand, apart" "app-2" "$(img_request GET /images/check-updates | body_of | _img_field ghcr.io/x/app:latest containers_outdated_manual)"
+# what the old code left behind: the tag moved on a pull, the containers did not follow. Updating again puts it right
+R=$(img_request POST /images/update '{"image":"ghcr.io/x/app:latest"}')
+check "leftover: the containers on the old copy are recreated now" '["app-1"]' "$(printf '%s' "$R" | body_of | jq -c '.containers_restarted')"
+# a container created from "nginx" belongs to the image "nginx:latest"
+_img_reset; printf 'nginx:latest\n' > "$IMG_ST/newer"
+R=$(img_request POST /images/update '{"image":"nginx:latest"}')
+check "nginx = nginx:latest: the container is recreated" '["web"]' "$(printf '%s' "$R" | body_of | jq -c '.containers_restarted')"
+_img_reset
+R=$(img_request POST /images/update '{"image":"broken/pull:latest"}')
+check "a failed pull is an error"                  500 "$(printf '%s' "$R" | status_of)"
+# the unattended job (what the image-update schedule starts)
+_img_reset
+printf 'c5eeeeeeeeee5|bad|broken/pull:latest|sha256:bad-cur||||\n' >> "$IMG_ST/containers"; printf 'broken/pull:latest\tsha256:bad-cur\n' >> "$IMG_ST/images"
+printf 'nginx:latest\n' >> "$IMG_ST/newer"
+OUT=$(PATH="$IMG_DIR:$PATH" DOCKER_COMPOSE_CMD="$IMG_DIR/compose" "$API" --image-update 2>&1)
+check "job: the image with a newer copy is updated" yes "$(grep -q 'ghcr.io/x/app:latest: updated, 1 container(s) recreated' <<< "$OUT" && echo yes || echo no)"
+check "job: the container created from nginx is recreated" yes "$(grep -q 'nginx: updated, 1 container(s) recreated' <<< "$OUT" && echo yes || echo no)"
+check "job: a local-only image is left alone"      yes "$(grep -q 'local/tool:latest: not pullable' <<< "$OUT" && echo yes || echo no)"
+check "job: a failed pull is reported"             yes "$(grep -q 'broken/pull:latest: pull failed' <<< "$OUT" && echo yes || echo no)"
+check "job: history entry of the images"           images "$(jq -r '.[-1].type' "$WORK/.api-auth/update-history.json" 2>/dev/null)"
+check "job: a failed pull makes the run failed"    failed "$(jq -r '.[-1].result' "$WORK/.api-auth/update-history.json" 2>/dev/null)"
+_img_reset; : > "$IMG_ST/newer"
+OUT=$(PATH="$IMG_DIR:$PATH" DOCKER_COMPOSE_CMD="$IMG_DIR/compose" "$API" --image-update 2>&1)
+check "job: everything current is a quiet ok"      ok "$(jq -r '.[-1].result' "$WORK/.api-auth/update-history.json" 2>/dev/null)"
+check "job: nothing recreated when all is current" 0 "$(wc -l < "$IMG_ST/compose.log" | tr -d ' ')"
+_img_reset
+OUT=$(PATH="$IMG_DIR:$PATH" DOCKER_COMPOSE_CMD="$IMG_DIR/compose" "$API" --image-update --pull-only 2>&1)
+check "job pull only: says so"                     yes "$(grep -q 'recreate containers: false' <<< "$OUT" && echo yes || echo no)"
+check "job pull only: compose untouched"           0 "$(wc -l < "$IMG_ST/compose.log" | tr -d ' ')"
+check "job pull only: the containers stay on the old copy" "app-1" "$(img_request GET /images/check-updates | body_of | _img_field ghcr.io/x/app:latest)"
+# the schedule
+check "schedule: image-update accepted"            200 "$(auth_request POST /schedules '{"name":"images nightly","schedule":"0 3 * * *","action":"image-update","target":""}' | status_of)"
+check "schedule: image-update pull-only accepted"  200 "$(auth_request POST /schedules '{"name":"images pull","schedule":"0 4 * * *","action":"image-update","target":"pull"}' | status_of)"
+check "schedule: image-update bad target"          400 "$(auth_request POST /schedules '{"name":"images bad","schedule":"0 3 * * *","action":"image-update","target":"bogus"}' | status_of)"
+check "schedule: viewer cannot create it"          403 "$(viewer_request POST /schedules '{"name":"v","schedule":"@daily","action":"image-update","target":""}' | status_of)"
+_img_reset
+: > "$WORK/logs/image-update.log"
+ISID=$(auth_request GET /schedules | body_of | jq -r '.schedules[]? | select(.action=="image-update" and .target=="") | .id' | head -1)
+check "schedule: run now starts the job"           true "$(img_request POST "/schedules/$ISID/run" | body_of | jq -r '.success')"
+for _i in $(seq 1 40); do grep -q 'image-update: done' "$WORK/logs/image-update.log" 2>/dev/null && break; sleep 0.5; done
+check "schedule: the job ran to the end"           yes "$(grep -q 'image-update: done' "$WORK/logs/image-update.log" && echo yes || echo no)"
+check "schedule: the job recreated the container"  yes "$(grep -q 'ghcr.io/x/app:latest: updated, 1 container(s) recreated' "$WORK/logs/image-update.log" && echo yes || echo no)"
+for _sid in $(auth_request GET /schedules | body_of | jq -r '.schedules[]? | select(.action=="image-update") | .id'); do auth_request DELETE "/schedules/$_sid" >/dev/null; done
 
 echo "Round 2: prune safety, power watch, recovery bundles, new schedule actions, deploy switches"
 mkdir -p "$WORK/fakebin"

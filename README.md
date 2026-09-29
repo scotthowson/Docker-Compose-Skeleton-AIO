@@ -416,6 +416,11 @@ to your notification channels and listed on the Updates page. Framework files yo
 are never replaced unattended — the Updates page asks you first. (A script whose only difference is
 the executable bit — `setup.sh` sets it on every one — is not an edit.)
 
+Images update on their own too: an `image-update` schedule (the Updates page has the dropdown; target
+`pull` pulls without recreating) pulls the image of every running container and recreates the ones
+that run an older copy, then reports through the notification channels. `GET /images/check-updates`
+lists the containers left on an older copy per image (`containers_outdated`).
+
 ### Proxmox
 
 ![DCS on Proxmox](docs/proxmox-architecture.png)

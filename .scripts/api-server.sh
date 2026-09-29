@@ -126,6 +126,8 @@ POWER_STATE_FILE="${BASE_DIR}/.data/power.json"
 POWER_PID_FILE="${BASE_DIR}/.data/power.pid"
 SELF_UPDATE_LOCK="${BASE_DIR}/.data/self-update.lock"
 SELF_UPDATE_LOG="${BASE_DIR}/logs/self-update.log"
+IMAGE_UPDATE_LOCK="${BASE_DIR}/.data/image-update.lock"
+IMAGE_UPDATE_LOG="${BASE_DIR}/logs/image-update.log"
 API_LOG_FILE="${BASE_DIR}/logs/api-server.log"
 
 # Authentication configuration
@@ -260,6 +262,8 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
             --setup-mode) SETUP_MODE=true; shift ;;
             --self-update) SELF_UPDATE_JOB=true; shift ;;
             --images)  SELF_UPDATE_IMAGES=true; shift ;;
+            --image-update) IMAGE_UPDATE_JOB=true; shift ;;
+            --pull-only) IMAGE_UPDATE_PULL_ONLY=true; shift ;;
             --join-hub)
                 FLEET_CLI="join"; FLEET_CLI_HUB="${2:-}"; FLEET_CLI_TOKEN="${3:-}"
                 shift 3 2>/dev/null || shift $#
@@ -316,6 +320,60 @@ _api_port_listeners() {
         pids=$(lsof -ti "tcp:${port}" -sTCP:LISTEN 2>/dev/null | tr '\n' ' ')
     fi
     printf '%s' "${pids% }"
+}
+
+# Every request handler is a child of the listener and inherits its descriptors; ncat keeps its listening socket
+# open in each of them. A helper that a request leaves running (the DDNS loop that a settings change or the wizard
+# starts, a stream, an update job) would then hold the port after the listener is gone, and the API could not start
+# again ("port 9876 is already in use by PID ...: sleep 300"). A handler needs the connection (0, 1, 2) and bash's
+# own copy of the script (255), nothing else.
+_api_close_inherited_fds() {
+    local p fd
+    for p in /proc/self/fd/*; do
+        fd="${p##*/}"
+        [[ "$fd" =~ ^[0-9]+$ ]] || continue
+        (( fd > 2 && fd < 255 )) || continue
+        eval "exec ${fd}>&-" 2>/dev/null || true
+    done
+}
+
+# The port is still held when this listener starts. This process replaced an older listener (an update or
+# POST /system/restart re-executes the API in place, same PID), and what holds the port is what that one left
+# behind: it has not finished closing (wait a moment), or a helper that one of its request handlers started still
+# runs with the listening socket it inherited (before 3.9.9 every helper kept it: the DDNS loop's 300 s sleep was
+# enough to keep the API from coming back after an update). Such a helper is a shell utility in this service's own
+# cgroup and is ended; another program on the port, or another installation's listener, is left alone.
+# Returns 0 when the port is free afterwards.
+_api_reclaim_port() {
+    local port="$1" i h comm mycg hcg
+    local -a ended=()
+    for i in $(seq 1 15); do
+        [[ -z "$(_api_port_listeners "$port")" ]] && return 0
+        sleep 0.2
+    done
+    mycg=$(cat "/proc/${BASHPID:-$$}/cgroup" 2>/dev/null || true)
+    for h in $(_api_port_listeners "$port"); do
+        [[ "$h" == "$$" || "$h" == "${BASHPID:-$$}" ]] && continue
+        hcg=$(cat "/proc/$h/cgroup" 2>/dev/null || true)
+        [[ -n "$mycg" && "$hcg" == "$mycg" ]] || continue
+        comm=$(cat "/proc/$h/comm" 2>/dev/null || true)
+        case "$comm" in
+            sleep|api-server.sh|bash|sh|dash|docker|curl|jq|awk|gawk|sed|cat|tail|timeout|ssh|openssl|git|wget) ;;
+            *) continue ;;
+        esac
+        kill -TERM "$h" 2>/dev/null && ended+=("$h:$comm")
+    done
+    [[ ${#ended[@]} -gt 0 ]] || return 1
+    for i in $(seq 1 15); do
+        [[ -z "$(_api_port_listeners "$port")" ]] && break
+        sleep 0.2
+    done
+    if [[ -n "$(_api_port_listeners "$port")" ]]; then
+        for h in "${ended[@]}"; do kill -KILL "${h%%:*}" 2>/dev/null || true; done
+        sleep 0.5
+    fi
+    printf '  Freed port %s: ended %d helper(s) left over from the previous listener (%s)\n' "$port" "${#ended[@]}" "${ended[*]}"
+    [[ -z "$(_api_port_listeners "$port")" ]]
 }
 
 if [[ "$STOP_SERVER" == "true" ]]; then
@@ -9106,6 +9164,8 @@ _api_update_switch() {
         return 1
     fi
     UPD_REPLACED=(${UPD_FW_CONFLICT[@]+"${UPD_FW_CONFLICT[@]}"})
+    # git wrote api-server.sh anew and it took the directory's label (SELinux): systemd would not start it again
+    _selinux_relabel_code
     if [[ -d "$UPD_BACKUP_DIR" && -z "$(ls -A "$UPD_BACKUP_DIR" 2>/dev/null)" ]]; then
         rmdir "$UPD_BACKUP_DIR" 2>/dev/null || true
         UPD_BACKUP_DIR=""
@@ -9547,6 +9607,93 @@ _self_update_launch() {
 }
 
 _self_update_notify() { _notify_send "$1" "$2" "${3:-default}" "${4:-arrows_counterclockwise}" "dcs_update" >/dev/null 2>&1 || true; }
+
+# ── Unattended image updates: the "image-update" schedule ──
+# Start the job detached from the listener (a schedule tick must not wait minutes for pulls).
+# $1: "false" to pull only. Returns 1 when one is running.
+_image_update_launch() {
+    local -a args=(--image-update)
+    [[ "${1:-true}" == "false" ]] && args+=(--pull-only)
+    if [[ -f "$IMAGE_UPDATE_LOCK" ]] && command -v flock >/dev/null 2>&1; then
+        if ! flock -n "$IMAGE_UPDATE_LOCK" true 2>/dev/null; then return 1; fi
+    fi
+    mkdir -p "$BASE_DIR/logs" 2>/dev/null
+    local self
+    self="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+    setsid nohup "$self" "${args[@]}" >> "$IMAGE_UPDATE_LOG" 2>&1 < /dev/null &
+    disown
+    return 0
+}
+
+# The image references the running containers were created from, each once
+_images_running_refs() {
+    local ids
+    ids=$(docker ps -q 2>/dev/null)
+    [[ -n "$ids" ]] || return 0
+    # shellcheck disable=SC2086  # one argument per container id
+    docker inspect --format '{{.Config.Image}}' $ids 2>/dev/null | sort -u
+}
+
+_image_update_history_add() {
+    # RESULT MESSAGE
+    local entry
+    entry=$(jq -nc --arg ts "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" --arg result "$1" --arg message "$2" \
+        '{type: "images", timestamp: $ts, result: $result, message: $message, from: "", to: "", channel: ""}')
+    [[ -f "$UPDATE_HISTORY_FILE" ]] || echo "[]" > "$UPDATE_HISTORY_FILE"
+    _api_jq_update_file "$UPDATE_HISTORY_FILE" --argjson e "$entry" '. + [$e] | .[-100:]' >/dev/null 2>&1 || true
+}
+
+# The job: pull every image a running container was created from (a pull of an unchanged image is a manifest check) and
+# recreate the containers that run an older copy. $1: "false" to leave the containers alone.
+_image_update_job() {
+    local recreate="${1:-true}" lp ref before after n_re
+    lp="[$(date '+%F %T')] image-update:"
+    mkdir -p "$BASE_DIR/.data" "$BASE_DIR/logs" 2>/dev/null
+    exec 9>"$IMAGE_UPDATE_LOCK"
+    if ! flock -n 9; then echo "$lp another image update is running"; return 0; fi
+    local -a changed=() failures=()
+    local recreated=0 failed=0 checked=0
+    echo "$lp start (recreate containers: $recreate)"
+    while IFS= read -r ref; do
+        # containers created from an image id or a pinned digest have nothing to update
+        [[ -n "$ref" && "$ref" != -* && "$ref" != sha256:* && "$ref" != *@sha256:* ]] || continue
+        checked=$((checked + 1))
+        before=$(docker image inspect --format '{{.Id}}' "$ref" 2>/dev/null || true)
+        if ! _image_update_one "$ref" "$recreate"; then
+            case "$IU_PULL_ERROR" in
+                *"pull access denied"*|*"repository does not exist"*|*"unauthorized"*|*"requested access to the resource is denied"*|*"not found"*)
+                    echo "$lp $ref: not pullable (built locally or private), left alone"; continue ;;
+            esac
+            failures+=("$ref"); echo "$lp $ref: pull failed: ${IU_PULL_ERROR:0:200}"; continue
+        fi
+        after=$(docker image inspect --format '{{.Id}}' "$ref" 2>/dev/null || true)
+        n_re=${#IU_RESTARTED[@]}
+        recreated=$((recreated + n_re)); failed=$((failed + ${#IU_FAILED[@]}))
+        if [[ "$before" != "$after" || $n_re -gt 0 || ${#IU_FAILED[@]} -gt 0 ]]; then
+            changed+=("$ref")
+            echo "$lp $ref: updated, ${n_re} container(s) recreated${IU_FAILED[*]:+, not running afterwards: ${IU_FAILED[*]}}${IU_SKIPPED[*]:+, not managed by Compose: ${IU_SKIPPED[*]}}"
+        fi
+    done < <(_images_running_refs)
+    local msg result="ok" list=""
+    if [[ ${#changed[@]} -eq 0 && ${#failures[@]} -eq 0 ]]; then
+        msg="All $checked image(s) in use are up to date"
+    else
+        list=$(printf '%s, ' "${changed[@]}" | sed 's/, $//')
+        msg="${#changed[@]} image(s) updated${list:+ ($list)}, $recreated container(s) recreated"
+        [[ "$recreate" == "false" ]] && msg="${#changed[@]} image(s) pulled${list:+ ($list)}; the containers were left on their old copy"
+        [[ $failed -gt 0 ]] && { msg+="; $failed did not come back up"; result="failed"; }
+        [[ ${#failures[@]} -gt 0 ]] && { msg+="; ${#failures[@]} pull(s) failed (${failures[*]})"; result="failed"; }
+        [[ "$result" == "ok" ]] && result="updated"
+    fi
+    echo "$lp done: $msg"
+    _image_update_history_add "$result" "$msg"
+    if [[ "$result" == "failed" ]]; then
+        _self_update_notify "DCS image update needs a look" "$msg" high "warning"
+    elif [[ "$result" == "updated" ]]; then
+        _self_update_notify "DCS images updated" "$msg" default "package"
+    fi
+    return 0
+}
 
 # ISO time of the newest update this install took (the history's last updated/rolled-back entry), or ""
 _self_update_last_updated() {
@@ -10063,6 +10210,12 @@ _ddns_update_loop() {
     local log_file="$BASE_DIR/.api-auth/ddns.log"
 
     [[ -z "$cf_token" || -z "$domain" ]] && return
+    # This runs as a background job of the server, which has errexit on: one failed curl (Cloudflare unreachable
+    # while the network comes up) would end the loop without a word. It retries instead.
+    set +e
+    # sleep runs as a job so that stopping the loop ends it at once instead of leaving a 300 s sleep behind
+    local _sleep_pid=""
+    trap 'kill "${_sleep_pid:-}" 2>/dev/null; exit 0' TERM INT
 
     # Get zone ID
     local zone_id=""
@@ -10082,7 +10235,8 @@ _ddns_update_loop() {
         if [[ -z "$zone_id" ]]; then
             printf '[%s] DDNS: could not resolve Cloudflare zone for %s (%s) — retrying in %ss\n' "$(date -Iseconds)" "$domain" \
                 "$(printf '%s' "$zr" | jq -r '.errors[0].message // "no response"' 2>/dev/null)" "$interval" >> "$log_file"
-            sleep "$interval"
+            sleep "$interval" & _sleep_pid=$!
+            wait "$_sleep_pid" || true
             continue
         fi
         printf '%s\n%s\n' "$domain" "$zone_id" > "$zone_cache" 2>/dev/null
@@ -10201,7 +10355,8 @@ _ddns_update_loop() {
             fi
         fi
 
-        sleep "$interval"
+        sleep "$interval" & _sleep_pid=$!
+        wait "$_sleep_pid" || true
     done
 }
 
@@ -10547,11 +10702,35 @@ _images_local_json() {
 
     # One pass over all containers: image -> "name1,name2" and image -> stack
     local -A image_containers=() image_stack=()
+    local _imgn
     while IFS=$'\t' read -r _img _cname _proj; do
         [[ -z "$_img" || -z "$_cname" ]] && continue
-        image_containers["$_img"]+="${image_containers[$_img]:+,}$_cname"
-        [[ -z "${image_stack[$_img]:-}" && -n "$_proj" ]] && image_stack["$_img"]="$_proj"
+        _imgn=$(_image_ref_norm "$_img")
+        image_containers["$_imgn"]+="${image_containers[$_imgn]:+,}$_cname"
+        [[ -z "${image_stack[$_imgn]:-}" && -n "$_proj" ]] && image_stack["$_imgn"]="$_proj"
     done < <(timeout 10 docker ps -a --format '{{.Image}}\t{{.Names}}\t{{.Label "com.docker.compose.project"}}' 2>/dev/null)
+
+    # Running containers that were created from a tag and still run an older image than the tag points to now (a pull moved it):
+    # image reference -> "name1,name2". docker ps names such a container by its image ID, so the map above never sees it.
+    local -A image_outdated=() image_outdated_manual=() _ref_id=()
+    local _oref _oid _ocid _ocref _ohave _oids _osvc _owd _ocfg
+    while IFS=$'\t' read -r _oref _oid; do
+        [[ -n "$_oref" && "$_oref" != "<none>:<none>" ]] && _ref_id["$(_image_ref_norm "$_oref")"]="$_oid"
+    done < <(timeout 10 docker images --no-trunc --format '{{.Repository}}:{{.Tag}}\t{{.ID}}' 2>/dev/null)
+    _oids=$(timeout 10 docker ps -q 2>/dev/null)
+    if [[ -n "$_oids" && ${#_ref_id[@]} -gt 0 ]]; then
+        # shellcheck disable=SC2086  # one argument per container id
+        while IFS='|' read -r _ocid _ocref _ohave _osvc _owd _ocfg; do
+            [[ -n "$_ocid" ]] || continue
+            _oref=$(_image_ref_norm "$_ocref")
+            [[ -n "${_ref_id[$_oref]:-}" && "${_ref_id[$_oref]}" != "$_ohave" ]] || continue
+            if [[ -n "$_osvc" && ( -n "$_owd" || -n "$_ocfg" ) ]]; then
+                image_outdated["$_oref"]+="${image_outdated[$_oref]:+,}${_ocid#/}"
+            else
+                image_outdated_manual["$_oref"]+="${image_outdated_manual[$_oref]:+,}${_ocid#/}"
+            fi
+        done < <(timeout 10 docker inspect --format '{{.Name}}|{{.Config.Image}}|{{.Image}}|{{index .Config.Labels "com.docker.compose.service"}}|{{index .Config.Labels "com.docker.compose.project.working_dir"}}|{{index .Config.Labels "com.docker.compose.project.config_files"}}' $_oids 2>/dev/null)
+    fi
 
     local now_epoch
     now_epoch=$(date +%s)
@@ -10584,11 +10763,11 @@ _images_local_json() {
         fi
 
         # Containers using this image and the stack they belong to (from the map above)
-        local containers="${image_containers[$full_image]:-}"
-        local stack="${image_stack[$full_image]:-}"
+        local containers="${image_containers[$(_image_ref_norm "$full_image")]:-}"
+        local stack="${image_stack[$(_image_ref_norm "$full_image")]:-}"
         [[ "$stack" == "<no value>" ]] && stack=""
 
-        entries+=("{\"image\": \"$(_api_json_escape "$full_image")\", \"repository\": \"$(_api_json_escape "$repo")\", \"tag\": \"$(_api_json_escape "$tag")\", \"age_days\": $age_days, \"staleness\": \"$staleness\", \"update_available\": $update_available, \"containers\": \"$(_api_json_escape "$containers")\", \"stack\": \"$(_api_json_escape "$stack")\", \"size\": \"$(_api_json_escape "$size")\"}")
+        entries+=("{\"image\": \"$(_api_json_escape "$full_image")\", \"repository\": \"$(_api_json_escape "$repo")\", \"tag\": \"$(_api_json_escape "$tag")\", \"age_days\": $age_days, \"staleness\": \"$staleness\", \"update_available\": $update_available, \"containers\": \"$(_api_json_escape "$containers")\", \"containers_outdated\": \"$(_api_json_escape "${image_outdated[$(_image_ref_norm "$full_image")]:-}")\", \"containers_outdated_manual\": \"$(_api_json_escape "${image_outdated_manual[$(_image_ref_norm "$full_image")]:-}")\", \"stack\": \"$(_api_json_escape "$stack")\", \"size\": \"$(_api_json_escape "$size")\"}")
     done < <(docker images --format "{{.Repository}}\t{{.Tag}}\t{{.ID}}\t{{.Size}}\t{{.CreatedAt}}" 2>/dev/null)
 
     local json
@@ -10688,6 +10867,79 @@ _images_registry_json() {
 }
 handle_images_check_updates_post() { _api_success "$(_images_registry_json)"; }
 
+# A pull moves the tag to the new image, and docker's `ancestor` filter follows the tag: it lists the containers that
+# already run the NEW image and never the ones left behind on the old one, so nothing was recreated. These helpers go
+# by the image a container was created from (its configured reference) and the image it actually runs.
+
+# nginx, library/nginx and docker.io/library/nginx:latest are one image
+_image_ref_norm() {
+    local r="$1"
+    r="${r#docker.io/}"; r="${r#index.docker.io/}"; r="${r#library/}"
+    [[ "${r##*/}" == *[:@]* ]] || r+=":latest"
+    printf '%s' "$r"
+}
+
+# Running containers created from image reference $1 that still run an older image than that reference points to now,
+# one "id|name|project|service|working dir|compose files" line each (the Compose fields are empty for a container that
+# Compose does not manage)
+_images_outdated_running() {
+    local want norm ids cid cname cref have proj svc wd cfg
+    want=$(docker image inspect --format '{{.Id}}' "$1" 2>/dev/null) || return 0
+    [[ -n "$want" ]] || return 0
+    norm=$(_image_ref_norm "$1")
+    ids=$(docker ps -q 2>/dev/null)
+    [[ -n "$ids" ]] || return 0
+    # shellcheck disable=SC2086  # one argument per container id
+    while IFS='|' read -r cid cname cref have proj svc wd cfg; do
+        [[ -n "$cid" && "$have" != "$want" ]] || continue
+        [[ "$(_image_ref_norm "$cref")" == "$norm" ]] || continue
+        printf '%s|%s|%s|%s|%s|%s\n' "$cid" "${cname#/}" "$proj" "$svc" "$wd" "$cfg"
+    done < <(docker inspect --format '{{.Id}}|{{.Name}}|{{.Config.Image}}|{{.Image}}|{{index .Config.Labels "com.docker.compose.project"}}|{{index .Config.Labels "com.docker.compose.service"}}|{{index .Config.Labels "com.docker.compose.project.working_dir"}}|{{index .Config.Labels "com.docker.compose.project.config_files"}}' $ids 2>/dev/null)
+}
+
+# Recreate the running Compose services of image $1 that still run an older copy of it. Containers that are not
+# Compose-managed are left alone and reported: without a compose file they cannot be recreated with their settings.
+# Fills IU_RESTARTED / IU_SKIPPED / IU_FAILED (container names) and IU_STACKS (stacks under Stacks/ touched).
+_image_recreate_outdated() {
+    local image_name="$1" cid cname proj svc wd cfg _env_file _state
+    while IFS='|' read -r cid cname proj svc wd cfg; do
+        [[ -n "$cid" ]] || continue
+        # working_dir label gives the compose file directory (v2+), fall back to config_files (v1)
+        [[ -z "$wd" && -n "$cfg" ]] && wd=$(dirname "${cfg%%,*}")
+        if [[ -n "$svc" && -n "$wd" && -f "$wd/docker-compose.yml" ]]; then
+            # Recreate via docker compose (it picks the new image up) and report honestly whether the service runs afterwards
+            _env_file=""
+            [[ -f "$wd/.env" ]] && _env_file="$wd/.env"
+            _compose_with_secrets "$wd/docker-compose.yml" "$_env_file" up -d --force-recreate --no-deps "$svc" >/dev/null 2>&1 || true
+            sleep 1
+            _state=$(docker inspect --format '{{.State.Status}}' "$cname" 2>/dev/null || echo "missing")
+            if [[ "$_state" == "running" ]]; then IU_RESTARTED+=("$cname"); else IU_FAILED+=("$cname"); fi
+            [[ "$wd" == "$COMPOSE_DIR"/* ]] && IU_STACKS["$(basename "$wd")"]=1
+        else
+            IU_SKIPPED+=("$cname")
+        fi
+    done < <(_images_outdated_running "$image_name")
+}
+
+# Pull IMAGE and, unless RECREATE is "false", recreate the running Compose services that still run an older copy of it.
+# Sets IU_PULL_ERROR ("" on success) and the IU_* lists of _image_recreate_outdated. Returns 1 when the pull failed.
+_image_update_one() {
+    local image_name="$1" recreate="${2:-true}" pull_output
+    IU_PULL_ERROR="" IU_RESTARTED=() IU_SKIPPED=() IU_FAILED=()
+    declare -gA IU_STACKS=()
+    pull_output=$(timeout 600 docker pull "$image_name" 2>&1) || { IU_PULL_ERROR="$pull_output"; return 1; }
+
+    # The tag's newest digest is now local: the cached registry verdict for this
+    # image is "up to date" until the next registry check says otherwise
+    local _cache_file="$BASE_DIR/.data/image-update-cache.json"
+    mkdir -p "$BASE_DIR/.data" 2>/dev/null
+    [[ -s "$_cache_file" ]] || printf '{}' > "$_cache_file"
+    _api_jq_update_file "$_cache_file" --arg i "$image_name" '.[$i] = false' || true
+
+    [[ "$recreate" == "true" ]] && _image_recreate_outdated "$image_name"
+    return 0
+}
+
 # POST /images/{image}/update — Pull an image and recreate the Compose services that use it
 handle_image_update() {
     local image_name="$1"
@@ -10710,59 +10962,18 @@ handle_image_update() {
     local recreate=true
     [[ -n "${2:-}" ]] && recreate=$(printf '%s' "$2" | jq -r 'if .recreate == false then "false" else "true" end' 2>/dev/null || echo true)
 
-    # Pull the new image
-    local pull_output
-    pull_output=$(timeout 600 docker pull "$image_name" 2>&1) || {
-        _api_error 500 "Failed to pull image: $pull_output"
+    # Pull the new image, then recreate what still runs the old copy
+    _image_update_one "$image_name" "$recreate" || {
+        _api_error 500 "Failed to pull image: $IU_PULL_ERROR"
         return
     }
-
-    # The tag's newest digest is now local: the cached registry verdict for this
-    # image is "up to date" until the next registry check says otherwise
-    local _cache_file="$BASE_DIR/.data/image-update-cache.json"
-    mkdir -p "$BASE_DIR/.data" 2>/dev/null
-    [[ -s "$_cache_file" ]] || printf '{}' > "$_cache_file"
-    _api_jq_update_file "$_cache_file" --arg i "$image_name" '.[$i] = false' || true
-
-    # Find containers using this image and recreate them with the new image
-    # docker restart alone does NOT use the newly pulled image — must recreate.
-    # Containers that are not Compose-managed are left alone and reported:
-    # without a compose file they cannot be recreated with their settings.
     local -a restarted=() skipped=() _iu_failed=()
     local -A touched_stacks=()
-    local containers=""
-    [[ "$recreate" == "true" ]] && containers=$(docker ps -q --filter "ancestor=$image_name" 2>/dev/null)
-    for cid in $containers; do
-        local cname svc_name compose_project
-        cname=$(docker inspect --format '{{.Name}}' "$cid" 2>/dev/null | sed 's|^/||')
-        svc_name=$(docker inspect --format '{{index .Config.Labels "com.docker.compose.service"}}' "$cid" 2>/dev/null)
-        # working_dir label gives the compose file directory (v2+), fall back to config_files
-        compose_project=$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project.working_dir"}}' "$cid" 2>/dev/null)
-        if [[ -z "$compose_project" ]]; then
-            # Fallback: extract directory from config_files label (v1 compat)
-            local _cfg_files
-            _cfg_files=$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project.config_files"}}' "$cid" 2>/dev/null)
-            [[ -n "$_cfg_files" ]] && compose_project=$(dirname "${_cfg_files%%,*}")
-        fi
-
-        if [[ -n "$svc_name" && -n "$compose_project" && -f "$compose_project/docker-compose.yml" ]]; then
-            # Recreate via docker compose — picks up the new image properly —
-            # and report honestly whether the service is running afterwards
-            local _env_file="" _state=""
-            [[ -f "$compose_project/.env" ]] && _env_file="$compose_project/.env"
-            _compose_with_secrets "$compose_project/docker-compose.yml" "$_env_file" up -d --force-recreate --no-deps "$svc_name" >/dev/null 2>&1 || true
-            sleep 1
-            _state=$(docker inspect --format '{{.State.Status}}' "$cname" 2>/dev/null || echo "missing")
-            if [[ "$_state" == "running" ]]; then
-                restarted+=("\"$(_api_json_escape "$cname")\"")
-            else
-                _iu_failed+=("\"$(_api_json_escape "$cname")\"")
-            fi
-            [[ "$compose_project" == "$COMPOSE_DIR"/* ]] && touched_stacks["$(basename "$compose_project")"]=1
-        else
-            skipped+=("\"$(_api_json_escape "$cname")\"")
-        fi
-    done
+    local _n
+    for _n in ${IU_RESTARTED[@]+"${IU_RESTARTED[@]}"}; do restarted+=("\"$(_api_json_escape "$_n")\""); done
+    for _n in ${IU_SKIPPED[@]+"${IU_SKIPPED[@]}"}; do skipped+=("\"$(_api_json_escape "$_n")\""); done
+    for _n in ${IU_FAILED[@]+"${IU_FAILED[@]}"}; do _iu_failed+=("\"$(_api_json_escape "$_n")\""); done
+    for _n in "${!IU_STACKS[@]}"; do touched_stacks["$_n"]=1; done
 
     # Plugins learn about the update the same way they do for stack updates
     local _ts
@@ -22983,6 +23194,12 @@ _api_validate_schedule_target() {
                 return 1
             fi
             ;;
+        image-update)
+            if [[ -n "$target" && "$target" != "pull" ]]; then
+                _api_error 400 "image-update takes no target, or \"pull\" to pull newer images without recreating their containers"
+                return 1
+            fi
+            ;;
         *)
             _api_error 400 "Unknown schedule action: $action"
             return 1
@@ -23179,6 +23396,13 @@ _schedule_run_action() {
                 output="Self-update job started in the background (logs/self-update.log); the outcome goes to your notification channels and the Updates page"
             else
                 output="A self-update job is already running" && success="false"
+            fi
+            ;;
+        image-update)
+            if _image_update_launch "$([[ "$target" == "pull" ]] && echo false || echo true)"; then
+                output="Image update job started in the background (logs/image-update.log); the outcome goes to your notification channels and the Updates page"
+            else
+                output="An image update is already running" && success="false"
             fi
             ;;
         recovery)
@@ -26201,11 +26425,20 @@ start_server() {
     echo "  ${_A_BOLD}${_A_BLUE}${border}${_A_RST}"
     echo ""
 
+    # SELinux: the entry scripts get their bin_t label back before anything can fail. An update that ran on older code
+    # may have replaced api-server.sh without it, and systemd cannot start a service from a user_home_t file (203/EXEC).
+    _selinux_relabel_code >/dev/null 2>&1 || true
+
     # Refuse to start on a port something else already owns (another DCS
     # installation, an unrelated service): a bind failure inside socat would
-    # only show up as a dead API from the UI's side.
+    # only show up as a dead API from the UI's side. What the listener this one replaced left
+    # behind is not "something else": that is taken back first.
     local _holders _h
     _holders=$(_api_port_listeners "$API_PORT")
+    if [[ -n "$_holders" ]]; then
+        _api_reclaim_port "$API_PORT" || true
+        _holders=$(_api_port_listeners "$API_PORT")
+    fi
     if [[ -n "$_holders" ]]; then
         for _h in $_holders; do
             echo "  ERROR: port ${API_PORT} is already in use by PID ${_h}: $(tr '\0' ' ' < "/proc/${_h}/cmdline" 2>/dev/null | cut -c1-80)" >&2
@@ -26315,9 +26548,6 @@ start_server() {
         echo "  Metrics collector started (interval: ${_m_interval}s)"
     fi
 
-    # A listener that just re-executed on new code (an update round, a self-update): the entry scripts get their SELinux
-    # label back now, before any reboot — the update itself ran on the old code, which may not have done it
-    _selinux_relabel_code >/dev/null 2>&1 || true
     # theme files an older DCS wrote under a plugin name this Traefik does not know (the route answered 404);
     # in the background: a broken route is probed again after Traefik reloads
     ( _theme_files_repair >/dev/null 2>&1 ) </dev/null >/dev/null 2>&1 &
@@ -26394,6 +26624,9 @@ start_server() {
 
 # Stop the listener and the background loops started by start_server
 _api_shutdown_children() {
+    # runs from signal traps of a shell with errexit on: no step of it may end the process (a restart that dies half way
+    # leaves no API at all)
+    set +e
     echo ""
     echo "  Shutting down API server..."
     local pids
@@ -26406,6 +26639,14 @@ _api_shutdown_children() {
         self_re=$(printf '%s' "$self_path" | sed 's/[][\.*^$+?(){}|]/\\&/g')
         pkill -TERM -f -- "${self_re} --handle-request$" 2>/dev/null || true
     fi
+    # The DDNS loop is no job of this process when a settings change or the wizard started it from a request: it (and
+    # its sleep) would run on, next to the loop of the listener that replaces this one
+    local _dp
+    _dp=$(cat "$DDNS_PID_FILE" 2>/dev/null || true)
+    if [[ "$_dp" =~ ^[0-9]+$ ]] && tr '\0' ' ' < "/proc/${_dp}/cmdline" 2>/dev/null | grep -q 'api-server\.sh'; then
+        pkill -TERM -P "$_dp" 2>/dev/null || true
+        kill -TERM "$_dp" 2>/dev/null || true
+    fi
     rm -f "$DDNS_PID_FILE" 2>/dev/null
 }
 
@@ -26413,6 +26654,7 @@ _api_shutdown_children() {
 # port is waited for, then the script re-executes itself with its original
 # arguments — same PID, so a systemd unit does not even notice.
 _api_reexec() {
+    set +e
     echo ""
     echo "  Restarting API server in place ..."
     _api_shutdown_children
@@ -26422,6 +26664,7 @@ _api_reexec() {
         [[ -z "$(_api_port_listeners "$API_PORT")" ]] && break
         sleep 0.1
     done
+    [[ -n "$(_api_port_listeners "$API_PORT")" ]] && { _api_reclaim_port "$API_PORT" || true; }
     rm -f "$API_PID_FILE" "$API_CAPS_FILE"
     self="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
     exec "$self" ${_API_ARGV[@]+"${_API_ARGV[@]}"}
@@ -26439,6 +26682,13 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
         exit $?
     fi
 
+    # Unattended image updates (the image-update schedule): pull what changed, recreate what runs the old copy
+    if [[ "${IMAGE_UPDATE_JOB:-false}" == "true" ]]; then
+        set +e
+        _image_update_job "$([[ "${IMAGE_UPDATE_PULL_ONLY:-false}" == "true" ]] && echo false || echo true)"
+        exit $?
+    fi
+
     # Fleet commands used by setup.sh (and by hand): join a hub, mint a join code
     if [[ -n "${FLEET_CLI:-}" ]]; then
         set +e
@@ -26450,6 +26700,7 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     if [[ "$HANDLE_REQUEST" == "true" ]]; then
         # Disable errexit for request handling — we handle errors via JSON responses
         set +e
+        _api_close_inherited_fds
         handle_request
         exit 0
     fi

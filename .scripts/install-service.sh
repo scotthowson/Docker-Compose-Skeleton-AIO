@@ -72,6 +72,20 @@ echo -e "  Run as user:    ${BOLD}$DCS_USER${RST}"
 echo -e "  API bind:       ${BOLD}$API_BIND${RST}"
 echo ""
 
+# SELinux: an update (git, the Update button, a code bundle) replaces the entry scripts and a new file takes the directory's label,
+# user_home_t, which systemd cannot start a service from (203/EXEC, "Permission denied"). The unit puts bin_t back before every start:
+# "+" runs the command as root, "-" ignores a failure. Systemd older than 231 does not know the "+" prefix and gets no such line.
+# chcon rather than restorecon: it works with or without the persistent fcontext rule set further down.
+API_PRE=""
+STACKS_PRE=""
+if command -v getenforce >/dev/null 2>&1 && [[ "$(getenforce 2>/dev/null)" != "Disabled" ]] && command -v chcon >/dev/null 2>&1; then
+    _sd_ver=$(systemctl --version 2>/dev/null | awk 'NR==1 {print $2}')
+    if [[ "$_sd_ver" =~ ^[0-9]+$ ]] && (( _sd_ver >= 231 )); then
+        API_PRE="ExecStartPre=+-$(command -v chcon) -t bin_t $BASE_DIR/.scripts/api-server.sh"
+        STACKS_PRE="ExecStartPre=+-$(command -v chcon) -t bin_t $BASE_DIR/start.sh"
+    fi
+fi
+
 # ── API Server Service ──
 # The API server runs in the foreground and stops cleanly on SIGTERM, so a
 # simple service is all that is needed (no PID file, no ExecStop).
@@ -90,6 +104,7 @@ User=$DCS_USER
 Group=$DCS_GROUP
 SupplementaryGroups=docker
 WorkingDirectory=$BASE_DIR
+$API_PRE
 ExecStart=$BASE_DIR/.scripts/api-server.sh --bind $API_BIND
 KillMode=mixed
 Restart=on-failure
@@ -132,6 +147,7 @@ User=$DCS_USER
 Group=$DCS_GROUP
 SupplementaryGroups=docker
 WorkingDirectory=$BASE_DIR
+$STACKS_PRE
 # --boot: no banners, continue past a failed stack, then verify Traefik's
 # routes and restart it once if they are dead (the after-power-loss case)
 ExecStart=$BASE_DIR/start.sh --boot

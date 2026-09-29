@@ -7,14 +7,45 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- **An update was held back because `setup.sh` had made a script executable.** Setup runs `chmod +x` over
-  every script; two libraries (`.lib/envfile.sh`, `.lib/setup-checks.sh`) are tracked as 644, so every
-  install that had run setup listed them as edited framework files. The first release to change one of them
-  would then be refused ("local changes to framework files would be overwritten", 409), the unattended update
-  would wait for consent about edits nobody had made, and the Updates page showed them as "edited on this
-  server". A file whose only difference is the executable bit is no longer a local change: the update check
-  leaves it out, the update goes through and sets the bit again afterwards. A real edit to the same file is
-  still caught.
+- **The Update button could leave the API dead on Fedora (SELinux enforcing).** Three things had to go wrong, and did:
+  1. *The label.* git writes `api-server.sh` anew on an update and the file takes the directory's label (`user_home_t`);
+     systemd cannot start a service from that (`203/EXEC`, "Permission denied"). The unattended update and the code
+     bundle put `bin_t` back afterwards, the Update button and a rollback did not. Every code switch now does, the API
+     does it first thing at start, and the service units (`dcs-api`, `dcs-stacks`) restore it before every start
+     (`ExecStartPre`, after `install-service.sh` has run once more) — also after a `git pull` by hand.
+  2. *A helper holding the port.* With the `ncat` transport (hosts without `socat`) every request handler inherited the
+     listening socket, so anything a request left running — the DDNS loop that the wizard or a settings change starts,
+     its 300 s `sleep` — kept port 9876 bound after the listener was gone. The API re-executed after the update, found
+     "port 9876 is already in use by PID …: sleep 300" and quit; systemd then tried to start it and met the label.
+     Handlers now close every descriptor but the connection; the DDNS loop is stopped through its pid file when the
+     listener stops and its sleeps end with it; and a listener that starts on a port still held by what the previous one
+     left behind (a shell utility in its own service) ends those helpers instead of giving up.
+  3. *A loop that died silently.* The DDNS loop started by the server itself inherited `set -e`: one failed request to
+     Cloudflare during boot ended it without a word. It retries now, as its own comment says.
+- **"Recreate containers" recreated nothing.** The containers to recreate were found with
+  `docker ps --filter ancestor=<image>` *after* the pull, and that filter follows the tag to the image it points to now —
+  it lists the containers already on the new image and never the ones left on the old one. Every update reported success
+  with `containers_restarted: []`, the registry check then said "Latest", and the containers stayed on the old copy until a
+  stack was started by hand. Containers are now found by the image they were created from (`nginx`, `library/nginx` and
+  `nginx:latest` are one) and by the image they run, so an update recreates exactly those on an older copy — also when an
+  earlier run only pulled or ran on an older version. `GET /images/check-updates` lists them per image
+  (`containers_outdated`), `POST /images/update` recreates them, and the Updates page shows them ("old copy" chips, a
+  "Recreate" button and a banner).
+- **An update was held back because `setup.sh` had made a script executable.** Setup runs `chmod +x` over every script; two
+  libraries (`.lib/envfile.sh`, `.lib/setup-checks.sh`) are tracked as 644, so every install that had run setup listed them
+  as edited framework files. The first release to change one of them would be refused ("local changes to framework files
+  would be overwritten", 409), the unattended update would wait for consent about edits nobody had made, and the Updates
+  page showed them as "edited on this server". A file whose only difference is the executable bit is no longer a local
+  change: the update check leaves it out, the update goes through and sets the bit again afterwards. A real edit to the
+  same file is still caught.
+
+### Added
+
+- **Automatic image updates.** A new schedule action `image-update` (target empty: pull and recreate, `pull`: pull only)
+  starts a detached job that pulls the image of every running container and recreates those on an older copy, with a lock,
+  a log (`logs/image-update.log`), a line in the Updates page's unattended list and a notification when something changed
+  or failed. The Updates page has a dropdown for it (off, every night, every Sunday, the 1st of the month, at 03:00) for
+  the servers its "Images on" chips select — everywhere, the hub, or one VM.
 
 ## [3.9.8] - 2026-09-29
 

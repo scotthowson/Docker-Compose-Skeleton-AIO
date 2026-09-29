@@ -17,6 +17,7 @@ jobs:
         # the dataflow analysis needs ~12 GB and killed the 7 GB runner); Ubuntu's package is 0.9
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq jq socat xz-utils
+          sudo apt-get install -y -qq ncat || echo "ncat is not available: the ncat restart test is skipped"
           curl -fsSL https://github.com/koalaman/shellcheck/releases/download/v0.10.0/shellcheck-v0.10.0.linux.x86_64.tar.xz | tar -xJ
           sudo install -m 755 shellcheck-v0.10.0/shellcheck /usr/local/bin/shellcheck && rm -rf shellcheck-v0.10.0
           shellcheck --version | head -2
