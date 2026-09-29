@@ -517,6 +517,7 @@ case "$*" in
   "inspect --type container Authelia") [[ -f "$(dirname "$0")/.authelia" ]] && exit 0 || exit 1 ;;
   "inspect --type container Never") exit 1 ;;
   "inspect Sablier") [[ -f "$(dirname "$0")/.nosablier" ]] && exit 1 || exit 0 ;;
+  "inspect -f {{.State.Running}} Homarr") echo true ;;
   *) exit 0 ;;
 esac
 FAKE
@@ -555,6 +556,53 @@ check "on demand: GET says off"             false "$(sab_request GET /containers
 check "on demand: route file still yaml"    ok "$(python3 -c "import sys,yaml; d=yaml.safe_load(open(sys.argv[1])); r=d['http']['routers']['tools-router']; print('ok' if 'multi-sablier' in d['http']['middlewares'] and not r.get('middlewares') else 'bad')" "$_SBF" 2>/dev/null || echo ok)"
 check "on demand: no empty middlewares key" 0 "$(awk '/^      middlewares:[ ]*$/ { getline n; if (n !~ /^        - /) c++ } END { print c+0 }' "$_SBF")"
 mv -f "$_SBF.orig" "$_SBF"; rm -f "$_SBD/ittools-sablier.yml"
+# a theme.park theme on a container's route (the catalogue seeded; the fake docker says the container exists)
+printf '%s\n' '{"apps":{"sonarr":["sonarr-4k-logo","sonarr-darker"],"radarr":[]},"themes":["dark","nord"],"community":["catppuccin-mocha"]}' > "$WORK/.data/themepark.json"
+printf 'http:\n  routers:\n    sonarr-router:\n      rule: "Host(`sonarr.example.test`)"\n      service: "sonarr"\n      middlewares:\n        - "traefik-chain"\n        - "compress-gzip"\n  services:\n    sonarr:\n      loadBalancer:\n        servers:\n          - url: "http://Sonarr:8989"\n' > "$_SBD/sonarr.yml"
+_TS=$(sab_request GET /containers/Sonarr/theme | body_of)
+check "theme: app recognised"             "true sonarr" "$(jq -r '"\(.supported) \(.app)"' <<< "$_TS" 2>/dev/null)"
+check "theme: route found"                "true sonarr.example.test" "$(jq -r '"\(.routed) \(.host)"' <<< "$_TS" 2>/dev/null)"
+check "theme: catalogue offered"          "2 1 2" "$(jq -r '"\(.catalog.themes | length) \(.catalog.community | length) \(.catalog.addons | length)"' <<< "$_TS" 2>/dev/null)"
+check "theme: off at first"               false "$(jq -r '.enabled' <<< "$_TS" 2>/dev/null)"
+check "theme: other apps not offered"     false "$(sab_request GET /containers/IT-Tools/theme | body_of | jq -r '.supported' 2>/dev/null)"
+check "theme: unknown theme refused"      400 "$(sab_request POST /containers/Sonarr/theme '{"enabled":true,"theme":"nope"}' | status_of)"
+check "theme: unknown add-on refused"     400 "$(sab_request POST /containers/Sonarr/theme '{"enabled":true,"theme":"nord","addons":["radarr-4k-logo"]}' | status_of)"
+check "theme: darker needs the base"      400 "$(sab_request POST /containers/Sonarr/theme '{"enabled":true,"theme":"nord","addons":["sonarr-darker"]}' | status_of)"
+check "theme: viewer may not theme"       403 "$(viewer_request POST /containers/Sonarr/theme '{"enabled":true,"theme":"nord"}' | status_of)"
+check "theme: applied"                    true "$(sab_request POST /containers/Sonarr/theme '{"enabled":true,"theme":"Nord","addons":["sonarr-4k-logo"]}' | body_of | jq -r '.enabled' 2>/dev/null)"
+check "theme: middleware written"         "nord" "$(sed -nE 's/^[[:space:]]+theme: ([a-z-]+)$/\1/p' "$_SBD/sonarr-theme.yml" 2>/dev/null)"
+check "theme: last in the chain"          '"sonarr-theme"' "$(awk '/^      middlewares:/ { on=1; next } on && /^        - / { l=$2; next } on { on=0 } END { print l }' "$_SBD/sonarr.yml")"
+check "theme: plugin declared"            1 "$(grep -c 'packruler/traefik-themepark' "$_TAD/Traefik/traefik.yml")"
+check "theme: read back"                  "true nord sonarr-4k-logo" "$(sab_request GET /containers/Sonarr/theme | body_of | jq -r '"\(.enabled) \(.theme) \(.addons | join(","))"' 2>/dev/null)"
+check "theme: a community theme"          catppuccin-mocha "$(sab_request POST /containers/Sonarr/theme '{"enabled":true,"theme":"catppuccin-mocha"}' | body_of | jq -r '.theme' 2>/dev/null)"
+check "theme: still named once"           1 "$(grep -c '"sonarr-theme"' "$_SBD/sonarr.yml")"
+check "theme: taken off"                  false "$(sab_request POST /containers/Sonarr/theme '{"enabled":false}' | body_of | jq -r '.enabled' 2>/dev/null)"
+check "theme: nothing left behind"        "0 no" "$(grep -c 'sonarr-theme' "$_SBD/sonarr.yml") $([[ -f "$_SBD/sonarr-theme.yml" ]] && echo yes || echo no)"
+check "theme: the chain kept"             '"traefik-chain" "compress-gzip"' "$(awk '/^      middlewares:/ { on=1; next } on && /^        - / { printf "%s%s", (n++ ? " " : ""), $2; next } on { on=0 }' "$_SBD/sonarr.yml")"
+# the hub adds a VM route's theme when it writes the VM routes
+check "theme: VM route themed on the hub" '["traefik-chain","tp-media-vm-sonarr-lab-test"] nord' "$(FLEET_THEMES_FILE=<(printf '%s' '{"media-vm|sonarr.lab.test":{"app":"sonarr","theme":"nord","addons":[]}}') _lib _fleet_themes_apply '{"http":{"routers":{"media-vm-sonarr-dcs":{"rule":"Host(`sonarr.lab.test`)","middlewares":["traefik-chain"]},"other-sonarr-dcs":{"rule":"Host(`sonarr.lab.test`)"}},"services":{}}}' | jq -c '[.http.routers["media-vm-sonarr-dcs"].middlewares, .http.middlewares["tp-media-vm-sonarr-lab-test"].plugin.themepark.theme] | "\(.[0] | tojson) \(.[1])"' -r 2>/dev/null)"
+check "theme: another VM's route untouched" null "$(FLEET_THEMES_FILE=<(printf '%s' '{"media-vm|sonarr.lab.test":{"app":"sonarr","theme":"nord","addons":[]}}') _lib _fleet_themes_apply '{"http":{"routers":{"other-sonarr-dcs":{"rule":"Host(`sonarr.lab.test`)"}},"services":{}}}' | jq -c '.http.routers["other-sonarr-dcs"].middlewares' 2>/dev/null)"
+rm -f "$_SBD/sonarr.yml" "$_SBD/sonarr-theme.yml" "$WORK/.data/themepark.json"
+# a container on the Homarr dashboard (the fake docker says the container and a Homarr exist; no port → the app library)
+_HC=$(sab_request GET /containers/IT-Tools/homarr | body_of)
+check "homarr card: address from the route" "https://tools.example.test route" "$(jq -r '"\(.target.url) \(.target.source)"' <<< "$_HC" 2>/dev/null)"
+check "homarr card: Homarr seen, library"   "true library" "$(jq -r '"\(.homarr.active) \(.homarr.mode)"' <<< "$_HC" 2>/dev/null)"
+check "homarr card: not added yet"          false "$(jq -r '.added' <<< "$_HC" 2>/dev/null)"
+check "homarr card: a name to show"         yes "$([[ -n "$(jq -r '.target.name // empty' <<< "$_HC" 2>/dev/null)" ]] && echo yes || echo no)"
+check "homarr card: unknown container"      404 "$(auth_request GET /containers/nope-zz/homarr | status_of)"
+check "homarr card: viewer may look"        404 "$(viewer_request GET /containers/nope-zz/homarr | status_of)"
+check "homarr card: viewer may not add"     403 "$(viewer_request POST /containers/IT-Tools/homarr | status_of)"
+if command -v sqlite3 >/dev/null 2>&1; then
+    _HDB="$WORK/Stacks/zz-proxy/App-Data/Homarr/appdata/db"; mkdir -p "$_HDB"
+    sqlite3 "$_HDB/db.sqlite" "CREATE TABLE app (id TEXT PRIMARY KEY, name TEXT, description TEXT, icon_url TEXT, href TEXT, ping_url TEXT);"
+    check "homarr card: added to the library"   "true library" "$(sab_request POST /containers/IT-Tools/homarr | body_of | jq -r '"\(.added) \(.result.mode)"' 2>/dev/null)"
+    check "homarr card: the app is there"       "https://tools.example.test" "$(sqlite3 "$_HDB/db.sqlite" "SELECT href FROM app;" 2>/dev/null)"
+    check "homarr card: seen as added"          "true https://tools.example.test" "$(sab_request GET /containers/IT-Tools/homarr | body_of | jq -r '"\(.added) \(.app.href)"' 2>/dev/null)"
+    check "homarr card: never added twice"      "true 1" "$(sab_request POST /containers/IT-Tools/homarr | body_of | jq -r '.already' 2>/dev/null) $(sqlite3 "$_HDB/db.sqlite" "SELECT COUNT(*) FROM app;" 2>/dev/null)"
+    rm -rf "$WORK/Stacks/zz-proxy/App-Data/Homarr"
+else
+    check "homarr card: no database, a reason"  502 "$(sab_request POST /containers/IT-Tools/homarr | status_of)"
+fi
 PW=$(PATH="$WORK/fakebin:$PATH" UPS_SOURCE=apcupsd _lib _power_sample)
 check "power: apcupsd parsed"           apcupsd "$(printf '%s' "$PW" | jq -r '.source')"
 check "power: on battery"               true "$(printf '%s' "$PW" | jq -r '.on_battery')"
@@ -855,6 +903,15 @@ check "fleet: proxy passes status"      404 "$(auth_request GET "/fleet/members/
 check "fleet: proxy keeps query"        yes "$(auth_request GET "/fleet/members/$MID/api/templates?category=media" | body_of | jq -e '.templates | type == "array"' >/dev/null 2>&1 && echo yes || echo no)"
 check "fleet: proxy blocks auth"        400 "$(auth_request GET "/fleet/members/$MID/api/auth/users" | status_of)"
 check "fleet: proxy unknown member"     404 "$(auth_request GET "/fleet/members/nobody/api/stacks" | status_of)"
+check "homarr card: a VM's container asked"  404 "$(auth_request GET "/containers/nope-zz/homarr?member=$MID" | status_of)"
+check "homarr card: unknown VM"              404 "$(auth_request GET "/containers/nope-zz/homarr?member=nobody" | status_of)"
+check "homarr card: bad VM id"               400 "$(auth_request GET "/containers/nope-zz/homarr?member=Bad_Id" | status_of)"
+check "homarr card: never forwarded"         1 "$(_lib _fleet_forward_if_remote GET /containers/IT-Tools/homarr ''; echo $?)"
+check "theme: never forwarded"               1 "$(_lib _fleet_forward_if_remote GET /containers/IT-Tools/theme ''; echo $?)"
+printf '%s' '{"members":[{"id":"vm-a","name":"vm-a","vmid":7,"url":"http://10.9.8.7:9876","reachable":true,"containers":[{"name":"web","ports":"0.0.0.0:8080->80/tcp"}]}]}' > "$WORK/snap-test.json"
+check "containers: a VM's row says where it is" "vm-a 10.9.8.7" "$(FLEET_SNAPSHOT="$WORK/snap-test.json" _lib _fleet_remote_containers_json | jq -r '.[0] | "\(.member) \(.member_host)"' 2>/dev/null)"
+rm -f "$WORK/snap-test.json"
+check "theme: a VM container asked"          false "$(auth_request GET "/containers/nope-zz/theme?member=$MID" | body_of | jq -r '.routed' 2>/dev/null)"
 check "fleet: viewer may read proxy"    200 "$(viewer_request GET "/fleet/members/$MID/api/stacks" | status_of)"
 check "fleet: viewer proxy inner denied" 403 "$(viewer_request GET "/fleet/members/$MID/api/secrets" | status_of)"
 check "fleet: viewer cannot post proxy" 403 "$(viewer_request POST "/fleet/members/$MID/api/stacks/demo/restart" '{}' | status_of)"

@@ -81,6 +81,7 @@ doc_path() {
     local p="$1"
     case "$p" in
         "/routes/*/*")                  p="/routes/{stack}/{service}" ;;
+        "/plugins/*/cards/*/source")    p="/plugins/{plugin}/cards/{card}/source" ;;
         "/plugins/*/cards/*")           p="/plugins/{plugin}/cards/{card}" ;;
         "/plugins/*/hooks/*/test")      p="/plugins/{plugin}/hooks/{hook}/test" ;;
         "/plugins/*/hooks/*/update")    p="/plugins/{plugin}/hooks/{hook}/update" ;;

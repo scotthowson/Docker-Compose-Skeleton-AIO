@@ -3,6 +3,47 @@
 All notable changes to Docker Compose Skeleton AIO are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [3.9.5] - 2026-09-29
+
+### Added
+
+- **Add to Homarr from the Containers page.** A container's page shows, under its health
+  badge, **Add to Homarr** when it is not on the dashboard yet and **✓ Added** when it is —
+  the same registration the deploy sheet's switch makes: the app with its template's name and
+  icon at its HTTPS route (or a published port), plus a tile on the home board when Homarr's
+  API key is stored (the app library without it). `GET/POST /containers/{name}/homarr`; on a
+  hub a VM's container is added to the hub's Homarr (`?member=`: the address from the VM, a
+  host the hub renamed for a twin used; a VM on an older DCS answers from its routes).
+- **theme.park themes for the apps that support them.** A **Theme** button next to Start on
+  demand, for the 54 apps theme.park themes (Sonarr, Radarr, Prowlarr, Lidarr, Bazarr,
+  qBittorrent, Plex, Jellyfin, Tautulli, Overseerr, Uptime Kuma, Portainer, Dozzle…): the 11
+  official themes, the 30 community ones (Catppuccin, Rose Pine, Blackberry…) and the app's
+  add-ons (4K logos, darker…). DCS writes the theme.park Traefik middleware onto the
+  container's route, last in its chain, and declares the plugin in Traefik's static config
+  when it is missing (one Traefik restart); nothing inside the container changes and taking it
+  off is instant. On a hub a VM's container is themed by the hub's Traefik, which serves the
+  VM's routes: the hub keeps the choice (`.data/fleet-themes.json`) and adds the middleware
+  when it writes the VM routes. `GET/POST /containers/{name}/theme`; the catalogue comes from
+  theme-park.dev once a day, with a copy shipped for servers that cannot reach it.
+- A VM's container rows carry `member_host`, the VM's address: Diagnostics' port map opens a
+  VM's published port on the VM (it opened the hub's address) and says which VM it is.
+
+### Fixed
+
+- **Serving a container normally again left Sablier's session behind**: Sablier stopped the
+  container when the session ran out although the middleware was gone (Homarr went down on
+  the lab 15 minutes after an on-demand test). Switching on-demand off now drops the
+  container's session (Sablier saves its sessions on a graceful stop; the entry is removed and
+  Sablier started again) and starts the container when it was asleep.
+- `GET /homarr/status` said "without an API key" when Homarr was merely stopped; it says
+  stopped now, and a container's Homarr card only counts a running Homarr.
+- Start on demand is no longer offered for a VM's containers: the hub's Traefik serves a VM's
+  routes and Sablier cannot wake a container in a VM from there.
+- Lists that keyed rows by a bare container or stack name on a hub (Diagnostics' health
+  matrix and port map, the stack list, the deploy sheet's stack picker) key them by VM and
+  name: two VMs running a "Homepage" each dropped one of them.
+- The API reference names the plugin card path's parameters.
+
 ## [3.9.4] - 2026-09-28
 
 ### Added

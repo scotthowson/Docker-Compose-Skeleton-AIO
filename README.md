@@ -2,7 +2,7 @@
   <img src="https://img.shields.io/badge/bash-4.0+-4EAA25?style=flat-square&logo=gnubash&logoColor=white" alt="Bash 4+" />
   <img src="https://img.shields.io/badge/docker-compose_v2-2496ED?style=flat-square&logo=docker&logoColor=white" alt="Docker Compose v2" />
   <img src="https://img.shields.io/badge/templates-151-34d399?style=flat-square" alt="151 templates" />
-  <img src="https://img.shields.io/badge/API_endpoints-327-06b6d4?style=flat-square" alt="327 API endpoints" />
+  <img src="https://img.shields.io/badge/API_endpoints-331-06b6d4?style=flat-square" alt="331 API endpoints" />
   <a href="https://github.com/scotthowson/Docker-Compose-Skeleton-AIO/actions/workflows/ci.yml"><img src="https://github.com/scotthowson/Docker-Compose-Skeleton-AIO/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
   <img src="https://img.shields.io/badge/license-MIT-f472b6?style=flat-square" alt="MIT" />
 </p>
@@ -74,7 +74,7 @@ Browser ──► DCS-UI (container, :3000) ──/api/──► api-server.sh (
   Immich, Vaultwarden, the *arr apps…; `"auth": "bypass"` in their `template.json`), and the
   deploy sheet's per-route switch decides otherwise. Services deployed before Authelia go behind
   it when it arrives.
-- **A real API** — 327 endpoints covering stacks, containers, images, networks, volumes, logs,
+- **A real API** — 331 endpoints covering stacks, containers, images, networks, volumes, logs,
   templates, routes, DNS, plugins, schedules, secrets, backups, snapshots, metrics, notifications,
   webhooks, automations, system updates and the web terminal. See [docs/API.md](docs/API.md).
 - **Security by default** — accounts are mandatory on any non-loopback bind, a fresh install only
@@ -327,6 +327,23 @@ long. The same button, or the **on demand** badge in the list, brings the settin
 change them or to serve the container normally again. Health, Uptime and the container list
 show such containers as **on demand** instead of stopped, and they raise no "container
 stopped" notification.
+
+### Themes for your apps (theme.park)
+
+For the apps [theme.park](https://theme-park.dev) themes — the *arr family, qBittorrent,
+Plex, Jellyfin, Tautulli, Overseerr, Uptime Kuma, Portainer, Dozzle and more — a container's
+page has a **Theme** button: pick one of the official or community themes (Nord, Dracula,
+Catppuccin, Rose Pine…) and the app's add-ons, and DCS puts the theme.park Traefik middleware
+on its route. The theme reaches the app wherever it is opened through that route; nothing
+inside the container changes, and **Remove theme** gives the app its own look back. In a
+Proxmox fleet the hub's Traefik themes a VM's apps the same way.
+
+### Homarr from the Containers page
+
+A container's page shows **Add to Homarr** under its health badge when the app is not on your
+Homarr yet, and **✓ Added** when it is: the same registration the deploy sheet's switch
+makes, with the template's name and icon, and a tile on the home board once Homarr's API key
+is stored (Server Config → Integrations).
 
 ### Intrusion detection (CrowdSec)
 

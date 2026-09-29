@@ -4,7 +4,7 @@ Generated from the router in `.scripts/api-server.sh` by `.scripts/api-docs.sh` 
 Run `.scripts/api-docs.sh` after adding or changing a route; CI fails when this file is stale.
 
 The API listens on `API_BIND:API_PORT` (default `0.0.0.0:9876`) and answers JSON.
-Every endpoint below is `327` in total.
+Every endpoint below is `331` in total.
 
 ## Access levels
 
@@ -154,6 +154,8 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | GET | `/containers/{container}/stats` | user | Live CPU, memory, network and block I/O of a container |
 | GET | `/containers/{container}/logs` | user | Recent log lines of a container (tail 1–9999, default 100) |
 | GET | `/containers/{container}/sablier` | user | The container's on-demand settings: whether Sablier starts it on the first request, the idle time, the waiting page, its name and whether details show (read from the Sablier middleware on its route, wherever a deploy put it), whether Traefik routes it and Sablier is deployed, and group when a hand-written block wakes it with others |
+| GET | `/containers/{container}/homarr` | user | Is this container on the Homarr dashboard: Homarr here (board with an API key, library without, none), the address DCS would put there (its HTTPS route, else a published port), the name and icon from its template, and the app when added; ?member=id on a hub answers for a VM's container (the address from the VM, Homarr from the hub) |
+| GET | `/containers/{container}/theme` | user | The theme.park theme on this container's pages: whether theme.park has themes for its app, whether a Traefik route serves it (the theme reaches the app through it), the theme and add-ons on now, and the themes and add-ons to choose from; ?member=id on a hub answers for a VM's container (its route from the VM, the theme applied by the hub's Traefik) |
 | GET | `/containers/{container}/processes` | user | Process list inside a container |
 | GET | `/containers/{container}/reset` | admin | Preview a nuke & reinstall: stack, service, image, App-Data folders that would be emptied (with sizes), named volumes, and folders kept because another container shares them |
 | GET | `/containers/{container}` | user | Container detail |
@@ -164,6 +166,8 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | POST | `/containers/{container}/remove` | admin | Start, stop, restart, recreate (Compose-managed only) or remove a container |
 | POST | `/containers/{container}/reset` | admin | Nuke & reinstall {confirm: "<container>", wipe_app_data: true, wipe_volumes: false, pull: true}: remove the container, move its App-Data folders to App-Data/.trash, drop its own named volumes when asked, pull and create it again from the compose file |
 | POST | `/containers/{container}/exec` | admin | Run a command inside a container (30 s limit) |
+| POST | `/containers/{container}/homarr` | admin | Put this container on the Homarr dashboard now: an app with its template's name and icon, plus a tile on the home board when an API key is stored (the app library alone without one); already there answers already: true; ?member=id on a hub adds a VM's container to the hub's Homarr |
+| POST | `/containers/{container}/theme` | admin | Put a theme.park theme on this container's pages {enabled: true, theme, addons?} (a Traefik middleware on its route; the plugin is declared in Traefik's static config when missing) or take it off {enabled: false}; ?member=id on a hub themes a VM's route in the hub's Traefik |
 | POST | `/containers/{container}/sablier` | admin | Start this container on demand through Sablier (enabled: true) or serve it normally again {enabled, session?, theme?, display_name?, show_details?}: writes the Traefik middleware on its route (a block a template deploy put there is rewritten with the new settings) or removes it |
 | POST | `/containers/{container}/env` | admin | Change a Compose-managed container's environment in its stack {set{}, unset[], recreate} |
 | POST | `/containers/{container}/rename` | admin | Rename a container |
@@ -362,7 +366,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | GET | `/plugins` | user | Scan .plugins/ directory, return plugin manifest data |
 | GET | `/plugins/cards` | user | List all available plugin cards across all enabled plugins |
 | GET | `/plugins/catalog` | user | Plugins available to install, with their manifest and installed state |
-| GET | `/plugins/{plugin}/cards/*/source` | admin | The card's manifest and raw HTML, for editing |
+| GET | `/plugins/{plugin}/cards/{card}/source` | admin | The card's manifest and raw HTML, for editing |
 | GET | `/plugins/{plugin}/cards/{card}` | user | Return card HTML content as JSON |
 | GET | `/plugins/{plugin}/hooks/{hook}` | admin | Read hook script content |
 | GET | `/plugins/{plugin}/hooks` | admin | List all hooks with metadata |

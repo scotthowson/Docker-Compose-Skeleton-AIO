@@ -359,6 +359,11 @@ Some things go further than a merged list:
   rate limit, 60 s limit and audit log as the hub's own terminal; the prompt says where each
   command ran. A VM you made yourself needs the hub's public key
   (`.data/fleet-ssh/id_ed25519.pub`) in its DCS account's `authorized_keys` first.
+- **Homarr and themes for a VM's apps.** A VM's container page offers **Add to Homarr** (the
+  hub's Homarr gets the app at the host the hub's Traefik serves it on) and, for the apps
+  theme.park themes, **Theme** — the hub keeps the choice and adds the theme.park middleware to
+  that VM route when it writes `fleet-members.yml`. Start on demand stays with the hub's own
+  containers: Sablier cannot wake a container inside a VM from the hub.
 - **Themes and Homarr.** Themes (Settings → Appearance) live on the hub and every dashboard
   follows the one set for everyone; Homarr on the hub gets a tile for every routed app, the
   VMs' included, once its API key is stored (Server Config → Integrations, or
@@ -536,6 +541,7 @@ A member is another machine, so the hub treats everything it sends as data:
 | GET | `/backups?fleet=1` | as the plain endpoint — the members' rows merged in (`member`, `member_name`, `vmid`); `GET /containers` on a hub carries them always |
 | GET | `/stream?fleet=1` / `?member=id` | user — the hub's SSE stream with every VM's docker events (or one VM's) |
 | GET | `/maintenance/report`, `/maintenance/orphans`, `/maintenance/disk` with `?fleet=1` | user — the hub's and every VM's maintenance picture in one answer each: numbers and sizes added up, rows tagged, `members[]` per DCS (30 s cache) |
+| GET / POST | `/containers/{name}/homarr?member=id`, `/containers/{name}/theme?member=id` | user to look, admin to change — a VM's container on the hub's Homarr; a theme.park theme on its route in the hub's Traefik (kept in `.data/fleet-themes.json`) |
 | GET / POST | `/fleet/members/{id}/terminal`, `/fleet/members/{id}/terminal/exec` | admin — can the hub open a shell in this VM (its ssh key, a live test); run a command there `{terminal_token, command, cwd?}` with the hub's own Terminal session, guarded, rate-limited and audited like the host terminal |
 | POST | `/fleet/hub/domain` | admin, on a member — the hub hands the member the fleet's proxy domain `{domain, force}`; kept when the member has one of its own |
 | POST | `/fleet/routes` | admin, on a member that runs a Traefik — the hub hands it everyone else's routes for that Traefik (`fleet-members.yml`) |
