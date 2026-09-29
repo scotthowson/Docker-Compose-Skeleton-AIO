@@ -175,6 +175,36 @@ _cs_covers() {
 # Do two networks share an address? (one covers the other)
 _cs_overlaps() { _cs_covers "$1" "$2" || _cs_covers "$2" "$1"; }
 
+# The same questions asked thousands of times (an import checks every entry against the private ranges and the protected addresses) without starting a process:
+# _cs_prep turns an address or network into hex digits (CS_PH: 8 for IPv4, 32 for IPv6) and a prefix length (CS_PB), _cs_cover_hex compares two such pairs.
+CS_PH=""; CS_PB=0
+_cs_prep() {
+    local t="$1" a="${1%%/*}" o1 o2 o3 o4
+    if _cs_is_v4 "$a"; then
+        IFS=. read -r o1 o2 o3 o4 <<< "$a"
+        printf -v CS_PH '%02x%02x%02x%02x' "$o1" "$o2" "$o3" "$o4"
+    else
+        CS_PH=$(_cs_v6_expand "$a") || return 1
+    fi
+    if [[ "$t" == */* ]]; then
+        CS_PB="${t#*/}"; [[ "$CS_PB" =~ ^(0|[1-9][0-9]{0,2})$ ]] || return 1
+    else
+        CS_PB=$(( ${#CS_PH} * 4 ))
+    fi
+    (( CS_PB <= ${#CS_PH} * 4 ))
+}
+# _cs_cover_hex HEX_A BITS_A HEX_B BITS_B — does network A cover B? Same family only (the hex lengths differ between IPv4 and IPv6); the answer _cs_covers gives
+_cs_cover_hex() {
+    local ha="$1" ab="$2" hb="$3" bb="$4" full rem
+    (( ${#ha} == ${#hb} && ab <= bb )) || return 1
+    full=$(( ab / 4 )); rem=$(( ab % 4 ))
+    [[ "${ha:0:full}" == "${hb:0:full}" ]] || return 1
+    if (( rem > 0 )); then
+        (( ((0x${ha:full:1} ^ 0x${hb:full:1}) >> (4 - rem)) == 0 )) || return 1
+    fi
+    return 0
+}
+
 # What a ban must never touch: LAN, loopback, link-local, CGNAT, the unspecified addresses
 _CS_PRIVATE_NETS=(10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 127.0.0.0/8 169.254.0.0/16 100.64.0.0/10 0.0.0.0/8 fc00::/7 fe80::/10 ::1/128 ::/128)
 _cs_is_private() {
@@ -219,7 +249,7 @@ _cs_duration_seconds() {
 _cs_clean_reason() {
     local r="$1"
     r="${r//[$'\r\n\t']/ }"
-    r=$(printf '%s' "$r" | tr -d '\000-\010\013\014\016-\037\177')
+    if [[ "$r" =~ [^[:print:]] ]]; then r=$(printf '%s' "$r" | tr -d '\000-\010\013\014\016-\037\177'); fi   # (only text with something unprintable in it needs the filter)
     r="${r#"${r%%[![:space:]]*}"}"; r="${r%"${r##*[![:space:]]}"}"
     printf '%s' "${r:0:200}"
 }
@@ -823,24 +853,41 @@ _cs_protected_addresses() {
 }
 
 # _cs_ban_guard VALUE — the self-lockout guard for a normalised target. Returns 1 with CS_GUARD_CODE / CS_GUARD_MSG set when it must not be banned.
-# (the protected addresses are collected once per request: an import checks thousands of entries)
+# (the private ranges and the protected addresses are collected and turned into hex once per request: an import checks thousands of entries)
 CS_GUARD_CODE=""; CS_GUARD_MSG=""; CS_PROT_LOADED=0; CS_PROT_LINES=""
+CS_PRIV_H=(); CS_PRIV_B=(); CS_PROT_C=(); CS_PROT_A=(); CS_PROT_H=(); CS_PROT_B=()
+_cs_guard_load() {
+    local n code addr
+    CS_PROT_LINES=$(_cs_protected_addresses); CS_PROT_LOADED=1
+    CS_PRIV_H=(); CS_PRIV_B=(); CS_PROT_C=(); CS_PROT_A=(); CS_PROT_H=(); CS_PROT_B=()
+    for n in "${_CS_PRIVATE_NETS[@]}"; do
+        if _cs_prep "$n"; then CS_PRIV_H+=("$CS_PH"); CS_PRIV_B+=("$CS_PB"); fi
+    done
+    while IFS=$'\t' read -r code addr; do
+        [[ -n "$addr" ]] || continue
+        if _cs_prep "$addr"; then CS_PROT_C+=("$code"); CS_PROT_A+=("$addr"); CS_PROT_H+=("$CS_PH"); CS_PROT_B+=("$CS_PB"); fi
+    done <<< "$CS_PROT_LINES"
+}
 _cs_ban_guard() {
-    local v="$1" bits="" code addr
+    local v="$1" bits="" code addr i vh vb
     CS_GUARD_CODE=""; CS_GUARD_MSG=""
-    if (( CS_PROT_LOADED == 0 )); then CS_PROT_LINES=$(_cs_protected_addresses); CS_PROT_LOADED=1; fi
+    if (( CS_PROT_LOADED == 0 )); then _cs_guard_load; fi
     if [[ "$v" == */* ]]; then
         bits="${v#*/}"
         if { _cs_is_v4 "${v%%/*}" && (( bits < 8 )); } || { ! _cs_is_v4 "${v%%/*}" && (( bits < 16 )); }; then
             CS_GUARD_CODE=too_broad; CS_GUARD_MSG="$v is far too wide a range: it would ban a large part of the internet. Use a narrower network (a /8 or smaller for IPv4, a /16 or smaller for IPv6)."; return 1
         fi
     fi
-    if _cs_is_private "$v"; then
-        CS_GUARD_CODE=private; CS_GUARD_MSG="$v is a private, loopback or link-local address. The Traefik bouncer trusts your LAN, so this ban could never block anything and could confuse other tools."; return 1
-    fi
-    while IFS=$'\t' read -r code addr; do
-        [[ -n "$addr" ]] || continue
-        if _cs_overlaps "$v" "$addr"; then
+    _cs_prep "$v" || return 0         # something that is no address or network covers nothing (the callers have normalised it already)
+    vh="$CS_PH"; vb="$CS_PB"
+    for i in "${!CS_PRIV_H[@]}"; do
+        if _cs_cover_hex "${CS_PRIV_H[i]}" "${CS_PRIV_B[i]}" "$vh" "$vb"; then
+            CS_GUARD_CODE=private; CS_GUARD_MSG="$v is a private, loopback or link-local address. The Traefik bouncer trusts your LAN, so this ban could never block anything and could confuse other tools."; return 1
+        fi
+    done
+    for i in "${!CS_PROT_H[@]}"; do
+        if _cs_cover_hex "$vh" "$vb" "${CS_PROT_H[i]}" "${CS_PROT_B[i]}" || _cs_cover_hex "${CS_PROT_H[i]}" "${CS_PROT_B[i]}" "$vh" "$vb"; then
+            code="${CS_PROT_C[i]}"; addr="${CS_PROT_A[i]}"
             case "$code" in
                 own) CS_GUARD_MSG="$v is your own address ($addr): banning it would lock you out of the sites behind Traefik." ;;
                 server) CS_GUARD_MSG="$v covers this server's own address ($addr): the server would ban itself." ;;
@@ -849,7 +896,7 @@ _cs_ban_guard() {
             esac
             CS_GUARD_CODE="$code"; return 1
         fi
-    done <<< "$CS_PROT_LINES"
+    done
     return 0
 }
 
@@ -1174,27 +1221,40 @@ handle_crowdsec_decisions_import() {
     (( n >= 1 )) || { _api_error 400 "No addresses found in the content"; return; }
     (( n <= 2000 )) || { _api_error 400 "At most 2000 entries per import (this has $n)"; return; }
     _cs_target || return
-    local active; active=$(_cs_decision_rows | jq -r '.[] | select(.simulated | not) | .value' 2>/dev/null)
+    # thousands of entries are checked here: everything below is plain shell without a process per entry (an address lookup, the guard on hex digits), the JSON is built in two passes at the end
+    local -A active=() seen=() durs=()
+    local v
+    while IFS= read -r v; do [[ -z "$v" ]] || active[$v]=1; done < <(_cs_decision_rows | jq -r '.[] | select(.simulated | not) | .value' 2>/dev/null)
     local -a good=() skipped=()
-    local -A seen=()
-    local value dur reason type line=0 tgt scope val norm
+    local value dur reason type line=0 tgt scope val norm US=$'\x1f'
     while IFS=$'\x1f' read -r value dur reason type; do
         line=$(( line + 1 ))
-        tgt=$(_cs_norm_target "$value") || { skipped+=("$(jq -nc --argjson l "$line" --arg v "${value:0:80}" '{line: $l, value: $v, reason: "invalid", message: "not an IP address or network"}')"); continue; }
-        scope="${tgt%%$'\t'*}"; val="${tgt#*$'\t'}"
-        if [[ -n "${seen[$val]:-}" ]]; then skipped+=("$(jq -nc --argjson l "$line" --arg v "$val" '{line: $l, value: $v, reason: "duplicate", message: "listed twice"}')"); continue; fi
+        if _cs_is_v4 "$value"; then
+            scope=Ip; val="$value"
+        else
+            tgt=$(_cs_norm_target "$value") || { skipped+=("$line$US${value:0:80}${US}invalid${US}not an IP address or network"); continue; }
+            scope="${tgt%%$'\t'*}"; val="${tgt#*$'\t'}"
+        fi
+        if [[ -n "${seen[$val]:-}" ]]; then skipped+=("$line$US$val${US}duplicate${US}listed twice"); continue; fi
         seen[$val]=1
-        [[ "${type,,}" == ban || -z "$type" ]] || { skipped+=("$(jq -nc --argjson l "$line" --arg v "$val" --arg t "${type:0:20}" '{line: $l, value: $v, reason: "type", message: ("only bans can be imported, not " + $t)}')"); continue; }
-        if [[ -n "$dur" ]]; then norm=$(_cs_norm_duration "$dur") || { skipped+=("$(jq -nc --argjson l "$line" --arg v "$val" --arg d "${dur:0:30}" '{line: $l, value: $v, reason: "duration", message: ("invalid duration " + $d)}')"); continue; }
+        if [[ -n "$type" && "${type,,}" != ban ]]; then skipped+=("$line$US$val${US}type${US}only bans can be imported, not ${type:0:20}"); continue; fi
+        if [[ -n "$dur" ]]; then
+            norm="-"
+            if [[ "$dur" =~ ^[0-9smhdwSMHDW\ ]{1,24}$ ]]; then      # (the same length written twice is worked out once; anything with other characters cannot be a duration)
+                if [[ -z "${durs[$dur]:-}" ]]; then durs[$dur]=$(_cs_norm_duration "$dur") || durs[$dur]="-"; fi
+                norm="${durs[$dur]}"
+            fi
+            if [[ "$norm" == "-" ]]; then skipped+=("$line$US$val${US}duration${US}invalid duration ${dur:0:30}"); continue; fi
         else norm="$defdur"; fi
-        if grep -qxF -- "$val" <<< "$active"; then skipped+=("$(jq -nc --argjson l "$line" --arg v "$val" '{line: $l, value: $v, reason: "already_banned", message: "already banned"}')"); continue; fi
-        if ! _cs_ban_guard "$val"; then skipped+=("$(jq -nc --argjson l "$line" --arg v "$val" --arg c "$CS_GUARD_CODE" --arg m "$CS_GUARD_MSG" '{line: $l, value: $v, reason: $c, message: $m}')"); continue; fi
-        reason=$(_cs_clean_reason "$reason"); [[ -n "$reason" ]] || reason="$defreason"
-        good+=("$(jq -nc --arg v "$val" --arg s "$scope" --arg d "$norm" --arg r "$reason" '{value: $v, scope: ($s | ascii_downcase), duration: $d, reason: $r, type: "ban"}')")
+        if [[ -n "${active[$val]:-}" ]]; then skipped+=("$line$US$val${US}already_banned${US}already banned"); continue; fi
+        if ! _cs_ban_guard "$val"; then skipped+=("$line$US$val$US$CS_GUARD_CODE$US$CS_GUARD_MSG"); continue; fi
+        if [[ -n "$reason" ]]; then reason=$(_cs_clean_reason "$reason"); fi
+        [[ -n "$reason" ]] || reason="$defreason"
+        good+=("$val$US$scope$US$norm$US$reason")
     done < <(jq -r '.[] | [.value, .duration, .reason, .type] | join("\u001f")' <<< "$entries")
     local imported=0 chunk out i=0 allowlisted=0 failed=""
     while (( i < ${#good[@]} )); do
-        chunk=$(printf '%s\n' "${good[@]:i:400}" | jq -sc .)
+        chunk=$(printf '%s\n' "${good[@]:i:400}" | jq -Rsc 'split("\n") | map(select(length > 0) | split("\u001f") | {value: .[0], scope: (.[1] | ascii_downcase), duration: .[2], reason: .[3], type: "ban"})')
         if _cs_pipe out "$chunk" decisions import -i - --format json; then
             imported=$(( imported + $(printf '%s\n' "$out" | sed -n 's/.*Imported \([0-9][0-9]*\) decisions.*/\1/p' | tail -n 1 | grep -E '^[0-9]+$' || echo 0) ))
             allowlisted=$(( allowlisted + $(printf '%s\n' "$out" | grep -c 'is allowlisted by') ))
@@ -1207,8 +1267,9 @@ handle_crowdsec_decisions_import() {
     _cs_cache_clear
     _api_audit_log "${CLIENT_IP:-unknown}" "CROWDSEC_IMPORT" "${AUTH_USERNAME:-}" "$imported of $n imported (${#skipped[@]} skipped)"
     if [[ -n "$failed" && $imported -eq 0 ]]; then _api_error 502 "CrowdSec refused the import: $failed"; return; fi
-    _api_success "$( ( [[ ${#skipped[@]} -gt 0 ]] && printf '%s\n' "${skipped[@]}" || true ) | jq -sc --argjson n "$n" --argjson im "$imported" --argjson al "$allowlisted" --arg fmt "$fmt" --arg f "$failed" \
-        '{success: ($f == ""), format: $fmt, total: $n, imported: $im, skipped: length, allowlisted: $al, skipped_entries: (.[0:200]), error: (if $f == "" then null else $f end)}')"
+    _api_success "$( ( [[ ${#skipped[@]} -gt 0 ]] && printf '%s\n' "${skipped[@]}" || true ) | jq -Rsc --argjson n "$n" --argjson im "$imported" --argjson al "$allowlisted" --arg fmt "$fmt" --arg f "$failed" \
+        '(split("\n") | map(select(length > 0) | split("\u001f") | {line: (.[0] | tonumber), value: .[1], reason: .[2], message: .[3]})) as $sk
+        | {success: ($f == ""), format: $fmt, total: $n, imported: $im, skipped: ($sk | length), allowlisted: $al, skipped_entries: ($sk[0:200]), error: (if $f == "" then null else $f end)}')"
 }
 
 # =============================================================================

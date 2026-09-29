@@ -1209,7 +1209,7 @@ _cs_plugin_home() {
 # _cs_plugin_list_ok JSON_ARRAY MAX — every entry an address or a network, none so wide that nothing would be checked (or believed). The normalised array is CS_LIST_OUT; return 1 with CS_CFG_ERR set.
 CS_LIST_OUT="[]"
 _cs_plugin_list_ok() {
-    local in="$1" max="$2" v t bits out=() n=0
+    local in="$1" max="$2" v t bits entries=() n=0
     [[ "$(jq -r 'type' <<< "$in" 2>/dev/null)" == array ]] || { CS_CFG_ERR="must be a list of addresses or networks"; return 1; }
     while IFS= read -r v; do
         [[ -n "$v" ]] || continue
@@ -1220,9 +1220,9 @@ _cs_plugin_list_ok() {
             bits="${v#*/}"
             if { _cs_is_v4 "${v%%/*}" && (( bits < 8 )); } || { ! _cs_is_v4 "${v%%/*}" && (( bits < 16 )); }; then CS_CFG_ERR="$v is far too wide a network"; return 1; fi
         fi
-        out+=("$v")
+        entries+=("$v")
     done < <(jq -r '.[] | tostring' <<< "$in")
-    if (( ${#out[@]} )); then CS_LIST_OUT=$(printf '%s\n' "${out[@]}" | awk 'NF && !seen[$0]++' | jq -Rsc 'split("\n") | map(select(length > 0))'); else CS_LIST_OUT="[]"; fi
+    if (( ${#entries[@]} )); then CS_LIST_OUT=$(printf '%s\n' "${entries[@]}" | awk 'NF && !seen[$0]++' | jq -Rsc 'split("\n") | map(select(length > 0))'); else CS_LIST_OUT="[]"; fi
 }
 
 # _cs_plugin_validate SETTINGS_JSON — the merged, normalised settings in CS_PLUGIN_OUT; returns 1 with CS_CFG_ERR set
