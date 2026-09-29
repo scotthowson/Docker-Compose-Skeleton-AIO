@@ -849,6 +849,14 @@ check "proxmox: browser address cleaned" https://pve.lan:8006 "$(_lib _pve_norm_
 auth_request POST /config "{\"PROXMOX_URL\":\"http://127.0.0.1:$_PVE_PORT/#v1:0:18\"}" >/dev/null
 check "proxmox: saved address cleaned"  "http://127.0.0.1:$_PVE_PORT" "$(grep -m1 '^PROXMOX_URL=' "$WORK/.env" | cut -d= -f2- | tr -d "\"'")"
 check "proxmox: reachable after the save" true "$(auth_request GET /proxmox/status | body_of | jq -r '.reachable' 2>/dev/null)"
+check "setup defaults: the link is known" true "$(request GET /setup/defaults '' "${NOAUTH[@]}" | body_of | jq -r '.system.proxmox.linked' 2>/dev/null)"
+check "setup defaults: linked means hub"  hub "$(request GET /setup/defaults '' "${NOAUTH[@]}" | body_of | jq -r '.system.fleet_role' 2>/dev/null)"
+_envset FLEET_ROLE member
+check "setup defaults: setup.sh's role"   member "$(request GET /setup/defaults '' "${NOAUTH[@]}" | body_of | jq -r '.system.fleet_role' 2>/dev/null)"
+_envdel FLEET_ROLE
+check "setup defaults: the account's group" "$(id -g "$(id -un)")" "$(request GET /setup/defaults '' "${NOAUTH[@]}" | body_of | jq -r '.system.pgid' 2>/dev/null)"
+check "provision defaults: the node's size" "16 64" "$(auth_request GET /fleet/provision/defaults | body_of | jq -r '"\(.capacity.cores) \(.capacity.memory_gb)"' 2>/dev/null)"
+check "provision defaults: firewall state" yes "$(auth_request GET /fleet/provision/defaults | body_of | jq -e '.hub_firewall | has("active") and has("open")' >/dev/null 2>&1 && echo yes || echo no)"
 check "proxmox: vm detail"              media-vm "$(auth_request GET /proxmox/vms/pve/qemu/100 | body_of | jq -r '.name' 2>/dev/null)"
 check "proxmox: bad type refused"       400 "$(auth_request GET /proxmox/vms/pve/disk/100 | status_of)"
 check "proxmox: bad action refused"     400 "$(auth_request POST /proxmox/vms/pve/lxc/200/explode '{}' | status_of)"
@@ -1438,6 +1446,7 @@ check "start.sh: the hub's own stack is"    1 "$(_owned demo)"
 check "provision: member marked built"  true "$(auth_request GET /fleet/members | body_of | jq -r '.members[] | select(.name == "smoke-photos") | .provisioned' 2>/dev/null)"
 check "provision: admin password kept"  yes "$(_lib secrets_exists FLEET_MEMBER_SMOKE_PHOTOS_ADMIN_PASSWORD && echo yes || echo no)"
 check "provision: audited"              yes "$(grep -q 'fleet_vm_ready' "$WORK/.data/audit.jsonl" 2>/dev/null && echo yes || echo no)"
+check "provision: the VM knows its role" member "$(grep -m1 '^FLEET_ROLE=' "$VMWORK/.env" 2>/dev/null | cut -d= -f2)"
 _MADM=$(auth_request GET /fleet/members | body_of | jq -r '.members[] | select(.name == "smoke-photos") | .url' 2>/dev/null)
 check "member: unattended setup complete" true "$(curl -s -m 5 "$_MADM/setup/status" | jq -r '.initialized' 2>/dev/null)"
 check "member: API only, one stack"     smoke-photos "$(curl -s -m 5 -X POST "$_MADM/auth/login" -H 'Content-Type: application/json' -d "{\"username\":\"admin\",\"password\":\"$(_lib secrets_get FLEET_MEMBER_SMOKE_PHOTOS_ADMIN_PASSWORD)\"}" | jq -r '.token' 2>/dev/null | xargs -I{} curl -s -m 5 "$_MADM/stacks" -H 'Authorization: Bearer {}' | jq -r '.stacks | map(.name) | join(",")' 2>/dev/null)"
@@ -1756,6 +1765,41 @@ check "setup: self-signed certificate seen"  1 "$(_sc _pve_tls_verifies "https:/
 check "setup: a full token lacks nothing"    "" "$(_sc _pve_missing_privs "https://127.0.0.1:$_SCP" 'dcs@pve!dcs' "$_SCS")"
 check "setup: a bare token lacks the three"  "VM.Audit VM.PowerMgmt Sys.Audit" "$(_sc _pve_missing_privs "https://127.0.0.1:$((_SCP + 1))" 'dcs@pve!dcs' "$_SCS")"
 kill "$_SCPID" "$_SCPID2" 2>/dev/null; wait "$_SCPID" "$_SCPID2" 2>/dev/null || true
+
+echo "The hub's firewall (firewalld stand-ins)"
+_FWB="$WORK/fw-bin"; _FWZ="$WORK/fw-zones"; mkdir -p "$_FWB" "$_FWZ"
+cat > "$_FWB/systemctl" <<'FW'
+#!/bin/bash
+[[ "$*" == "is-active --quiet firewalld" ]] && { [[ "${FAKE_FW:-on}" == on ]]; exit $?; }
+exit 1
+FW
+cat > "$_FWB/firewall-cmd" <<'FW'
+#!/bin/bash
+case "$*" in
+  --get-zone-of-interface=*|--get-default-zone) echo "${FAKE_FW_ZONE:-FedoraServer}" ;;
+  *--query-port=*) case "${FAKE_FW_Q:-deny}" in yes) echo yes ;; no) echo no; exit 1 ;; *) echo "Authorization failed." >&2; exit 11 ;; esac ;;
+esac
+FW
+printf '#!/bin/bash\nexit 1\n' > "$_FWB/sudo"
+chmod +x "$_FWB"/*
+printf '<?xml version="1.0" encoding="utf-8"?>\n<zone>\n  <short>Public</short>\n  <service name="ssh"/>\n  <service name="dhcpv6-client"/>\n  <service name="cockpit"/>\n  <forward/>\n</zone>\n' > "$_FWZ/FedoraServer.xml"
+printf '<?xml version="1.0" encoding="utf-8"?>\n<zone>\n  <service name="ssh"/>\n  <port protocol="tcp" port="1025-65535"/>\n</zone>\n' > "$_FWZ/FedoraWorkstation.xml"
+# (through _lib: the API sourced from a script of another name, so it does not start its listener)
+# shellcheck disable=SC2163  # "$@" holds NAME=value pairs to export
+_fw() { ( export PATH="$_FWB:$PATH" FIREWALLD_ZONES_DIR="$_FWZ" DCS_API_EFFECTIVE_PORT=9876 "$@"; _lib _hub_firewall_json ) | jq -r '"\(.active) \(.open) \(.certain) \(.zone)"'; }
+check "firewall: none running"           "false null false " "$(_fw FAKE_FW=off)"
+check "firewall: firewalld says open"    "true true true FedoraServer" "$(_fw FAKE_FW_Q=yes)"
+check "firewall: firewalld says closed"  "true false true FedoraServer" "$(_fw FAKE_FW_Q=no)"
+check "firewall: a plain user reads the zone" "true false false FedoraServer" "$(_fw FAKE_FW_Q=deny)"
+check "firewall: a zone that opens high ports" "true true false FedoraWorkstation" "$(_fw FAKE_FW_Q=deny FAKE_FW_ZONE=FedoraWorkstation)"
+check "firewall: the fix names the zone" yes "$( ( export PATH="$_FWB:$PATH" FIREWALLD_ZONES_DIR="$_FWZ" DCS_API_EFFECTIVE_PORT=9876; _lib _hub_firewall_hint ) | grep -q -- '--zone=FedoraServer --add-port=9876/tcp' && echo yes || echo no)"
+
+echo "Factory reset (last: it removes the accounts)"
+cp "$ROOT/.env.example" "$WORK/.env.example"   # what the reset copies back over .env
+_envset FLEET_ROLE hub
+check "factory reset: done"              200 "$(auth_request POST /auth/factory-reset '{"confirm":"FACTORY_RESET"}' | status_of)"
+check "factory reset: .env from the example" yes "$(grep -q '^PROXMOX_URL=$' "$WORK/.env" && echo yes || echo no)"
+check "factory reset: the hub stays a hub" hub "$(grep -m1 '^FLEET_ROLE=' "$WORK/.env" | cut -d= -f2)"
 
 echo
 printf '%d passed, %d failed\n' "$PASS" "$FAIL"

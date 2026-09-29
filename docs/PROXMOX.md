@@ -87,7 +87,10 @@ Proxmox still uses its self-signed certificate) to `.env`. Say `n` to do it late
 
 **The setup wizard** — the *Server* step shows a **Proxmox** section, opened automatically on a
 Proxmox guest with the detected URL filled in. *Test connection* checks the token before you
-continue; the review page lists the result.
+continue; the review page lists the result. On a hub (*Hub* chosen in `./setup.sh`, kept as
+`FLEET_ROLE` in `.env`) the section says so, and a link setup saved is filled in and tested as
+soon as you have signed in — the secret stays on the server (leave its field empty to keep it),
+and the *Stacks* step starts with every stack as a VM.
 
 **Server Config → Proxmox** — on an existing install: URL (`https://pve.example.com:8006`),
 token ID, secret, *Verify certificate* (off for the self-signed one), an optional *Only this
@@ -601,7 +604,7 @@ Command line, on any DCS: `.scripts/api-server.sh --join-hub URL CODE [NAME]`, `
 | *The API token lacks permission* (403) | Give `VM.Audit`, `VM.PowerMgmt`, `Sys.Audit` on `/` to the user (privilege separation off) or to the token itself. |
 | *did not answer* | Wrong URL or port (the web UI's, `:8006`), a firewall in front of it, or certificate verification on with the self-signed certificate — switch it off, or install a real certificate on Proxmox. *HTTP 301* from a setup before 3.9.7: the address was `http://`; Proxmox wants `https://…:8006` (3.9.7 switches it by itself). |
 | Setup stops on *Docker is not running* or *may not use Docker* | A fresh server: Docker installed but not started (Fedora does not start it), or your user outside the `docker` group. Setup offers both fixes and carries on; by hand: `sudo systemctl enable --now docker`, `sudo usermod -aG docker $USER`, log out and back in (or `newgrp docker`), then `./setup.sh` again. |
-| A hub on Fedora (set up by hand): the VMs cannot join, *the hub does not answer* | firewalld blocks the API port. Setup offers to open it; by hand: `sudo firewall-cmd --permanent --add-port=9876/tcp && sudo firewall-cmd --reload`. |
+| A hub on Fedora (set up by hand): a build stops at **Install** with *could not fetch the DCS bundle* or *this VM cannot reach the hub*, or the VMs cannot join | firewalld on the hub blocks the API port the VMs fetch DCS from and join on. The wizard and *New VM* warn about it before a build. Setup offers to open it; by hand: `sudo firewall-cmd --permanent --add-port=9876/tcp && sudo firewall-cmd --reload`, then *Retry*. |
 | Fedora: containers cannot write their `App-Data`, Traefik cannot read the Docker socket | Fedora's own Docker package (moby-engine) confines containers with SELinux. Setup offers to run them the way Docker CE does (`--selinux-enabled` off in `/etc/sysconfig/docker`, then `sudo systemctl restart docker`); SELinux stays on for the rest of the system. Or keep it and add `:z` to every volume. |
 | The dashboard is gone after a reboot of the hub | The API ran from setup, outside systemd. `sudo .scripts/install-service.sh` installs the boot services (setup 3.9.7 offers it). |
 | Guests missing | *Only this node* is set, or they are templates (never listed). |

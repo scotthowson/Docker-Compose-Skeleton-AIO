@@ -5001,10 +5001,13 @@ handle_auth_factory_reset() {
         done
     fi
 
-    # Reset .env to defaults — copy .env.example back to .env
-    local env_reset="false"
+    # Reset .env to defaults — copy .env.example back to .env. The fleet role setup.sh recorded stays
+    # (it is this machine's place in a fleet, not a setting or a credential: the wizard opens as a hub's again)
+    local env_reset="false" kept_role=""
+    kept_role=$(grep -m1 -E '^FLEET_ROLE=(hub|member|standalone)$' "$BASE_DIR/.env" 2>/dev/null | cut -d= -f2) || kept_role=""
     if [[ -f "$BASE_DIR/.env.example" ]]; then
         cp -f "$BASE_DIR/.env.example" "$BASE_DIR/.env"
+        [[ -n "$kept_role" ]] && printf 'FLEET_ROLE=%s\n' "$kept_role" >> "$BASE_DIR/.env"
         env_reset="true"
     elif [[ -f "$BASE_DIR/.env" ]]; then
         # No .env.example — fallback to just removing DOCKER_STACKS
@@ -19117,6 +19120,52 @@ FLEET_REG_ERR=""
 FLEET_JOIN_OUT=""
 FLEET_JOIN_ERR=""
 
+# The role of this DCS in a fleet: the one chosen in setup.sh (FLEET_ROLE in .env), else what the
+# fleet state says (joined to a hub: member; members, or a Proxmox link: hub)
+_fleet_role_hint() {
+    case "${FLEET_ROLE:-}" in hub|member|standalone) printf '%s' "$FLEET_ROLE"; return 0 ;; esac
+    if jq -e '.hub != null' "$FLEET_FILE" >/dev/null 2>&1; then printf member
+    elif jq -e '(.members // []) | length > 0' "$FLEET_FILE" >/dev/null 2>&1 || _pve_configured; then printf hub
+    else printf standalone; fi
+}
+# firewalld on this machine (Fedora, AlmaLinux and friends) and the API port the VMs fetch DCS from and
+# join on: {active, port, zone, open, certain}. firewalld answers a port query only to root (or to sudo -n);
+# a plain user reads the zone as the distribution ships it (/usr/lib/firewalld/zones — a change made in
+# /etc/firewalld is root's to read), so "open: false, certain: false" means "closed unless opened by hand".
+_hub_firewall_json() {
+    local port="${DCS_API_EFFECTIVE_PORT:-${API_PORT:-9876}}" zone="" q="" open="null" certain=false iface xml range lo hi
+    [[ "$port" =~ ^[0-9]+$ ]] || port=9876
+    if ! command -v firewall-cmd >/dev/null 2>&1 || ! systemctl is-active --quiet firewalld 2>/dev/null; then
+        printf '{"active":false,"port":%s,"zone":"","open":null,"certain":false}' "$port"; return 0
+    fi
+    # the zone of the interface the VMs come in on (the default route's), else the default zone
+    # (firewall-cmd exits non-zero for "no", "no zone" and a refused query: none of that may end the caller)
+    iface=$(ip -4 route show default 2>/dev/null | awk '{for (i = 1; i < NF; i++) if ($i == "dev") { print $(i + 1); exit }}') || iface=""
+    if [[ -n "$iface" ]]; then zone=$(timeout 5 firewall-cmd --get-zone-of-interface="$iface" 2>/dev/null) || zone=""; fi
+    if [[ ! "$zone" =~ ^[A-Za-z0-9_.-]+$ ]]; then zone=$(timeout 5 firewall-cmd --get-default-zone 2>/dev/null) || zone=""; fi
+    [[ "$zone" =~ ^[A-Za-z0-9_.-]+$ ]] || zone=""
+    if [[ -n "$zone" ]]; then
+        q=$(timeout 5 firewall-cmd --zone="$zone" --query-port="$port/tcp" 2>/dev/null) || true
+        if [[ "$q" != yes && "$q" != no ]]; then q=$(timeout 5 sudo -n firewall-cmd --zone="$zone" --query-port="$port/tcp" 2>/dev/null) || true; fi
+        case "$q" in yes) open=true; certain=true ;; no) open=false; certain=true ;; esac
+        xml="${FIREWALLD_ZONES_DIR:-/usr/lib/firewalld/zones}/$zone.xml"
+        if [[ "$open" == null && -r "$xml" ]]; then
+            open=false
+            if grep -Eq '<zone[^>]*target="(ACCEPT|accept)"' "$xml"; then open=true; fi
+            while IFS= read -r range; do
+                lo="${range%-*}"; hi="${range#*-}"
+                if [[ "$lo" =~ ^[0-9]+$ && "$hi" =~ ^[0-9]+$ ]] && (( port >= lo && port <= hi )); then open=true; fi
+            done < <(grep -oE '<port [^>]*port="[0-9-]+"[^>]*protocol="tcp"|<port [^>]*protocol="tcp"[^>]*port="[0-9-]+"' "$xml" | grep -oE 'port="[0-9-]+"' | tr -d 'port="' || true)
+        fi
+    fi
+    jq -nc --argjson p "$port" --argjson o "$open" --argjson c "$certain" --arg z "$zone" '{active: true, port: $p, zone: $z, open: $o, certain: $c}'
+}
+_hub_firewall_hint() {   # the fix, when firewalld on this hub blocks (or, as shipped, would block) the API port; empty otherwise
+    local fw; fw=$(_hub_firewall_json)
+    jq -e '.active and .open == false' <<< "$fw" >/dev/null 2>&1 || return 0
+    jq -r '(if .certain then "firewalld on this hub blocks port \(.port)/tcp" else "firewalld on this hub keeps port \(.port)/tcp closed unless it was opened by hand" end)
+        + ", which the VMs fetch DCS from and join on: sudo firewall-cmd --permanent\(if .zone != "" then " --zone=" + .zone else "" end) --add-port=\(.port)/tcp && sudo firewall-cmd --reload (on the hub)"' <<< "$fw"
+}
 _fleet_load() {
     local j=""
     [[ -s "$FLEET_FILE" ]] && j=$(jq -c . "$FLEET_FILE" 2>/dev/null)
@@ -21218,10 +21267,13 @@ _fleet_ip_next() {
 # What the wizard prefills: node, storages, bridge, the hub's network, the image, the admin name
 # GET /fleet/provision/defaults — Suggested values for creating VMs: node, storages, bridge, an address range next to the hub, the cloud image, the admin name (admin)
 handle_fleet_provision_defaults() {
-    local node="" storages='[]' res ip cidr gw gw0 dns start admin hubip bridge bip
+    local node="" storages='[]' res ip cidr gw gw0 dns start admin hubip bridge bip capacity='{"cores":0,"memory_gb":0}'
     if _pve_configured; then
         _pve_call res GET /nodes
         _pve_explain "$res" && node=$(jq -r --arg want "${PROXMOX_NODE:-}" '(if $want != "" then [.data[] | select(.node == $want)] else [.data[] | select(.status == "online")] end) | .[0].node // empty' <<< "$res")
+        # the node's size: a VM's size choices stop at what the host has
+        [[ -n "$node" ]] && capacity=$(jq -c --arg n "$node" '[.data[] | select(.node == $n)][0] | {cores: (.maxcpu // 0), memory_gb: (((.maxmem // 0) / 1073741824) | floor)}' <<< "$res" 2>/dev/null)
+        [[ "$capacity" == \{* ]] || capacity='{"cores":0,"memory_gb":0}'
         if [[ -n "$node" ]]; then
             _pve_call res GET "/nodes/$node/storage"
             _pve_explain "$res" && storages=$(jq -c '[.data[] | select(.enabled != 0) | {storage, type, content: ((.content // "") | split(",")), avail: (.avail // 0), total: (.total // 0), images: (((.content // "") | split(",")) | index("images") != null), dir: (.type == "dir"), import_ready: (.type == "dir" and (((.content // "") | split(",")) | index("import") != null))}]' <<< "$res")
@@ -21248,8 +21300,8 @@ handle_fleet_provision_defaults() {
     admin=$(_fleet_hub_admin)
     local imgs; imgs=$(_fleet_images_json "$node" "$storages"); [[ "$imgs" == \{* ]] || imgs='{"catalogue":[],"on_proxmox":{"imports":[],"isos":[]}}'
     _api_success "$(jq -nc --arg node "$node" --argjson st "$storages" --argjson images "$imgs" --arg hub "$hubip" --arg bridge "$bridge" --argjson cidr "$cidr" --arg gw "$gw" --arg dns "$dns" --arg start "$start" \
-        --arg img "$FLEET_IMAGE_URL" --arg file "$FLEET_IMAGE_FILE" --arg admin "$admin" --arg tz "${TZ:-UTC}" --arg url "$(_fleet_self_url)" --arg dom "${PROXY_DOMAIN:-}" --argjson linked "$(_pve_configured && echo true || echo false)" \
-        '{proxmox_linked: $linked, node: $node, storages: $st,
+        --arg img "$FLEET_IMAGE_URL" --arg file "$FLEET_IMAGE_FILE" --arg admin "$admin" --arg tz "${TZ:-UTC}" --arg url "$(_fleet_self_url)" --arg dom "${PROXY_DOMAIN:-}" --argjson linked "$(_pve_configured && echo true || echo false)" --argjson fw "$(_hub_firewall_json)" --argjson cap "$capacity" \
+        '{proxmox_linked: $linked, hub_firewall: $fw, capacity: $cap, node: $node, storages: $st,
           storage: (([$st[] | select(.images)] | map(.storage) | (if index("local-lvm") then "local-lvm" elif index("local-zfs") then "local-zfs" else .[0] end)) // ""),
           image_storage: (([$st[] | select(.dir)] | map(.storage) | (if index("local") then "local" else .[0] end)) // ""),
           bridge: $bridge, hub_ip: $hub, cidr: $cidr, gateway: $gw, dns: $dns, ip_start: $start, image_url: $img, image_file: $file, images: $images,
@@ -21573,7 +21625,15 @@ _fleet_job_run() {
     _fleet_ssh "$ip" 'f=$(mktemp /tmp/dcs-bootstrap.XXXXXX) && cat > "$f" && bash "$f" </dev/null; rc=$?; rm -f "$f"; exit $rc' < "$script" 2>&1 | while IFS= read -r line; do _job_log "$id" "$line"; done
     rc=${PIPESTATUS[0]}
     rm -f "$script"
-    if [[ $rc -ne 0 ]]; then _job_fail "$id" bootstrap "the bootstrap on $ip exited with $rc (the log above says where)"; return 1; fi
+    if [[ $rc -ne 0 ]]; then
+        local fwhint why="the log above says where"
+        fwhint=$(_hub_firewall_hint)
+        if [[ -n "$fwhint" && "$jkind" != bake ]]; then
+            _job_log "$id" "✗ $fwhint — then Retry"
+            why="firewalld on the hub blocks its API port; the log above has the fix"
+        fi
+        _job_fail "$id" bootstrap "the bootstrap on $ip exited with $rc ($why)"; return 1
+    fi
     _job_step "$id" bootstrap "done" "$([[ "$jkind" == bake ]] && echo "tools, Docker, agent" || echo "DCS installed")"
     if [[ "$jkind" == bake ]]; then
         # the template VM sealed itself and is powering off; the hub makes sure, then turns it into a Proxmox template
@@ -21871,7 +21931,8 @@ handle_setup_defaults() {
     sys_hostname="$(hostname 2>/dev/null || echo 'unknown')"
     sys_tz="$(timedatectl show -p Timezone --value 2>/dev/null || echo 'UTC')"
     sys_puid="$(id -u 2>/dev/null || echo '1000')"
-    sys_pgid="$(id -g 2>/dev/null || echo '1000')"
+    # the account's own group, not the one a login switched to (newgrp docker makes docker the current group)
+    sys_pgid="$(id -g "$(id -un 2>/dev/null)" 2>/dev/null || id -g 2>/dev/null || echo '1000')"
     sys_docker="$(docker version --format '{{.Server.Version}}' 2>/dev/null || echo 'unknown')"
     sys_compose="$($DOCKER_COMPOSE_CMD version --short 2>/dev/null || echo 'unknown')"
 
@@ -21880,7 +21941,9 @@ handle_setup_defaults() {
     if docker info >/dev/null 2>&1; then docker_ok="true"; fi
 
     local pve_env; pve_env=$(_pve_detect_environment 2>/dev/null); [[ "$pve_env" == \{* ]] || pve_env='{}'
-    _api_success "{\"defaults\": $defaults_json, \"stacks\": $stacks_json, \"system\": {\"hostname\": \"$(_api_json_escape "$sys_hostname")\", \"timezone\": \"$(_api_json_escape "$sys_tz")\", \"puid\": $sys_puid, \"pgid\": $sys_pgid, \"docker_version\": \"$(_api_json_escape "$sys_docker")\", \"compose_version\": \"$(_api_json_escape "$sys_compose")\", \"docker_available\": $docker_ok, \"proxmox\": $pve_env}}"
+    # linked: setup.sh (or an earlier run of the wizard) saved a Proxmox link — the wizard shows it once signed in
+    pve_env=$(jq -c --argjson l "$(_pve_configured && echo true || echo false)" '. + {linked: $l}' <<< "$pve_env" 2>/dev/null) || pve_env='{}'
+    _api_success "{\"defaults\": $defaults_json, \"stacks\": $stacks_json, \"system\": {\"hostname\": \"$(_api_json_escape "$sys_hostname")\", \"timezone\": \"$(_api_json_escape "$sys_tz")\", \"puid\": $sys_puid, \"pgid\": $sys_pgid, \"docker_version\": \"$(_api_json_escape "$sys_docker")\", \"compose_version\": \"$(_api_json_escape "$sys_compose")\", \"docker_available\": $docker_ok, \"proxmox\": $pve_env, \"fleet_role\": \"$(_fleet_role_hint)\"}}"
 }
 
 # POST /setup/configure — Requires auth token, only when not initialized.

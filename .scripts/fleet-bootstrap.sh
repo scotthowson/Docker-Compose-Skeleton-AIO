@@ -35,6 +35,12 @@ if ! curl -sS -m 12 -o /dev/null https://deb.debian.org/ 2>/dev/null && ! curl -
     die "the VM cannot reach the internet: the gateway ${gw:-?} $gwok, DNS ${dns:-?} — check the bridge, the address range, the gateway and the DNS given for the VMs (the hub reaches this VM over ssh, so the bridge itself works)"
 fi
 
+# the hub serves DCS and takes the join on its API port: a VM that cannot reach it stops here, with the reason
+if [[ "${DCS_BAKE:-false}" != "true" ]]; then
+    hub_err=$(curl -sS -m 10 -o /dev/null "$DCS_HUB_URL/ping" 2>&1) || die "this VM cannot reach the hub at $DCS_HUB_URL (${hub_err#curl: }) — a firewall on the hub blocks its API port. On a Fedora or AlmaLinux hub: sudo firewall-cmd --permanent --add-port=${DCS_HUB_URL##*:}/tcp && sudo firewall-cmd --reload, then Retry"
+    say "The hub answers at $DCS_HUB_URL"
+fi
+
 # a VM cloned from a baked template has all of this already: nothing to install, nothing to wait for
 baked=false
 if have curl && have git && have jq && have socat && have openssl && have python3 && have docker && sg docker -c "docker compose version" >/dev/null 2>&1; then

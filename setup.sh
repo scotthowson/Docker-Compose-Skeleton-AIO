@@ -34,7 +34,8 @@ APP_DATA_DIR="${APP_DATA_DIR:-./App-Data}"
 
 # Detect current user (never hardcode)
 CURRENT_USER="$(whoami)"
-CURRENT_GROUP="$(id -gn)"
+# the account's own group: after "newgrp docker" the login's current group is docker
+CURRENT_GROUP="$(id -gn "$CURRENT_USER" 2>/dev/null || id -gn)"
 
 # =============================================================================
 # SIMPLE COLOR OUTPUT (no dependency on the full logger)
@@ -381,6 +382,7 @@ if [[ -z "$FLEET_ROLE" && -t 0 && "$UNATTENDED" != "true" && ! -f "$BASE_DIR/.ap
         *) FLEET_ROLE="standalone" ;;
     esac
 fi
+FLEET_ROLE_CHOSEN=false; [[ -n "$FLEET_ROLE" ]] && FLEET_ROLE_CHOSEN=true
 [[ -n "$FLEET_ROLE" ]] || FLEET_ROLE="standalone"
 case "$FLEET_ROLE" in
     hub)    _ok "Role: hub — Proxmox is linked here and the other VMs join this DCS" ;;
@@ -404,6 +406,12 @@ elif [[ -f "$BASE_DIR/.env.example" ]]; then
 else
     _fail ".env.example not found -- cannot create .env"
     _info "Create .env manually based on the project documentation"
+fi
+
+# The role chosen above stays in .env (FLEET_ROLE): the wizard opens as a hub's or a member's
+# (a re-run, where nothing was asked, leaves it as it is)
+if [[ "$FLEET_ROLE_CHOSEN" == "true" && -f "$BASE_DIR/.env" ]]; then
+    _env_set FLEET_ROLE "$FLEET_ROLE"
 fi
 
 # Unattended: the values the caller passed go into .env now, so the stack
@@ -830,16 +838,18 @@ fi
 if [[ "$UNATTENDED" != "true" && ( "$_fw_role" == "hub" || "$_fw_role" == "member" ) ]] \
    && command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld 2>/dev/null; then
     _fw_port="${API_PORT:-9876}"
-    if [[ "$(firewall-cmd --query-port="$_fw_port/tcp" 2>/dev/null)" == "yes" ]]; then
+    # firewalld answers a port query only to root: a plain user gets "Authorization failed", so no answer means "not known"
+    _fw_q=$(firewall-cmd --query-port="$_fw_port/tcp" 2>/dev/null) || true
+    if [[ "$_fw_q" == "yes" ]]; then
         _ok "firewalld: port $_fw_port/tcp is open for the fleet"
-    elif _ask_yes "firewalld blocks port $_fw_port/tcp, which the hub and its VMs talk on. Open it (sudo firewall-cmd --permanent --add-port=$_fw_port/tcp)?"; then
+    elif _ask_yes "firewalld is on: open port $_fw_port/tcp, which the hub and its VMs talk on (sudo firewall-cmd --permanent --add-port=$_fw_port/tcp)?"; then
         if _sudo firewall-cmd --permanent --add-port="$_fw_port/tcp" >/dev/null && _sudo firewall-cmd --reload >/dev/null; then
             _ok "firewalld: port $_fw_port/tcp open"
         else
             _warn "firewalld: port $_fw_port/tcp could not be opened — sudo firewall-cmd --permanent --add-port=$_fw_port/tcp && sudo firewall-cmd --reload"
         fi
     else
-        _warn "firewalld blocks port $_fw_port/tcp, which the fleet needs: sudo firewall-cmd --permanent --add-port=$_fw_port/tcp && sudo firewall-cmd --reload"
+        _warn "firewalld: the fleet needs port $_fw_port/tcp open — sudo firewall-cmd --permanent --add-port=$_fw_port/tcp && sudo firewall-cmd --reload"
     fi
 fi
 

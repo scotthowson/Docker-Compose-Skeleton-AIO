@@ -27,9 +27,29 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   same run under the new group, without logging out. Missing jq, socat or curl are named and
   offered for install with the system's package manager. When Docker still needs a hand, setup
   says to run `./setup.sh` again (`./start.sh` does not finish a first setup).
+- **The wizard did not know it was on the hub.** Choosing *Hub* in `./setup.sh` and linking
+  Proxmox there left the wizard blank and acting like a standalone server. Setup now records the
+  role (`FLEET_ROLE` in `.env`) and the API reports it with the saved link (`GET /setup/defaults`
+  → `system.fleet_role`, `system.proxmox.linked`). The wizard (UI 3.9.8) opens the Proxmox section
+  as the hub's, fills in the link setup saved once you are signed in (the secret stays on the
+  server: leave its field empty to keep it), tests it by itself, and the stacks start out as VMs;
+  *Join a DCS hub* no longer shows on a hub. A factory reset keeps the role (credentials still go).
+- **A VM build stopped at *Install* with "could not fetch the DCS bundle from the hub".** firewalld
+  on a Fedora hub blocks port 9876, which every new VM fetches DCS from and joins on. The
+  bootstrap now asks the hub first and stops at once with the fix; the hub names its firewall in
+  the failure; the wizard and *New VM* warn before a build, with the command to copy
+  (`GET /fleet/provision/defaults` → `hub_firewall`: firewalld answers port queries only to
+  root, so a plain user's check reads the zone as Fedora ships it and says "unless opened by hand").
+- **The wizard offered the docker group as PGID** after `newgrp docker` (and setup gave the files
+  to that group): both now use the account's own group.
 
 ### Added
 
+- **Sizing a VM** (UI 3.9.8): *Small*, *Medium*, *Large* and *X-Large*, and a − / + stepper for
+  cores, memory and disk that walks through the usual sizes (the number can still be typed) —
+  instead of three tiny number boxes. Nothing goes past the Proxmox node (`capacity` in
+  `GET /fleet/provision/defaults`) or below a 10 GB disk, and the wizard sets the plan's totals
+  against the node's cores and memory.
 - **The token's privileges are checked when the link is made**: a token that works but lacks
   `VM.Audit`, `VM.PowerMgmt` or `Sys.Audit` on `/` (Privilege Separation ticked and no role for
   the token itself) is named right away, with the fix.
@@ -41,8 +61,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   for the rest of the system); the first setup offers the boot service
   (`.scripts/install-service.sh`), so DCS comes back after a reboot.
 - Smoke suite: the setup checks against a stand-in that answers like Proxmox on 8006 (HTTPS
-  with a self-signed certificate, plain HTTP redirected), the secret prompt through a pty, and
-  the API's address clean-up.
+  with a self-signed certificate, plain HTTP redirected), the secret prompt through a pty, the
+  API's address clean-up, the role and the link in the setup answer, the hub's firewall through
+  firewalld stand-ins, and a factory reset that keeps the role.
 
 ## [3.9.6] - 2026-09-29
 
