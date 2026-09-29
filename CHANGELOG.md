@@ -3,6 +3,44 @@
 All notable changes to Docker Compose Skeleton AIO are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [3.9.8] - 2026-09-29
+
+### Fixed
+
+- **A VM request that was refused halfway left the first stacks queued.** `POST /fleet/provision`
+  checked and queued one stack at a time, so a refusal on the third (a guest on Proxmox already
+  carrying its name, a stack that runs on the hub) returned an error with the first two already on
+  disk. They blocked every retry ("a VM for … is already queued") and were picked up the next time
+  any build started the runner. The whole request is now checked first and queued afterwards; a
+  refused request leaves nothing behind. A stack listed twice, or one address given to two VMs, is
+  refused as well (409).
+
+- **Deploying a template into a VM with "Protect with Authelia" failed** ("Protecting a route needs
+  Authelia: deploy the Authelia template first"): the choice was forwarded to the VM, which has no
+  Authelia. Authelia and Traefik are the hub's — its Traefik serves the VM's routes — so the hub now
+  keeps the choice (which routes of which VM sit behind its Authelia, `.data/fleet-auth.json`), applies it
+  whenever it writes the VM's routes, and sends the VM a plain deploy. A template that brings its own
+  clients stays open by default, as before. Start on demand is the hub's too (Sablier wakes the hub's
+  containers only): asking for it on a VM stack is refused with that reason, and the deploy sheet does not
+  offer it for one.
+- **The Stacks card said 18 while 9 were running.** The hub's stack count added the stack folders left
+  behind on the hub by stacks that moved into VMs (10 folders) to the VMs' own stacks (8): those stacks
+  counted twice. `GET /status` no longer counts a folder whose stack a VM runs; a stack the hub runs
+  itself (in `DOCKER_STACKS`, or with containers up) always counts.
+- **A stack removed on the wizard's stack page came back as "stopped".** Setup only dropped it from the
+  managed list and kept the folder (the repository ships one per stack). The wizard sends the stacks
+  the person removed (`remove_stacks` in `POST /setup/configure`) and the folders go, like Delete on the
+  Stacks page — unless containers run from one or its App-Data holds data, which is kept and reported.
+
+### Added
+
+- `GET /fleet/provision/defaults` lists the guests Proxmox already has (`guests`: name, VMID, type,
+  node, state; templates apart). The setup wizard (UI 3.9.9) marks a stack whose name is taken —
+  "VM 101 exists" — leaves just that one out of the build with a note, and builds the rest.
+- Smoke suite 1050: a refused request queues nothing (later stack refused, stack listed twice, one
+  address for two VMs), the guests in the defaults, a VM deploy's Authelia choice (kept, applied, cleared,
+  refused without Authelia), the stack count with a leftover folder, and the wizard's removed stacks.
+
 ## [3.9.7] - 2026-09-29
 
 ### Fixed

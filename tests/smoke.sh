@@ -1405,6 +1405,16 @@ check "provision: bad name refused"     400 "$(auth_request POST /fleet/provisio
 check "provision: local stack refused"  409 "$(auth_request POST /fleet/provision '{"node":"pve","storage":"local-lvm","gateway":"192.0.2.1","ip_start":"192.0.2.50","vms":[{"stack":"demo"}]}' | status_of)"
 check "provision: same-named guest refused" 409 "$(auth_request POST /fleet/provision '{"node":"pve","storage":"local-lvm","gateway":"192.0.2.1","ip_start":"192.0.2.60","vms":[{"stack":"networking-security"}]}' | status_of)"
 check "provision: twin guest named"     yes "$(auth_request POST /fleet/provision '{"node":"pve","storage":"local-lvm","gateway":"192.0.2.1","ip_start":"192.0.2.60","vms":[{"stack":"networking-security"}]}' | body_of | grep -q 'qemu 101 on pve' && echo yes)"
+# a request is refused whole: the stacks listed before the bad one are not left queued (they blocked every retry)
+_PVJ="$WORK/.data/fleet-jobs"; _pvj() { find "$_PVJ" -name "*$1*" 2>/dev/null | wc -l; }; _PVB='"node":"pve","storage":"local-lvm","gateway":"192.0.2.1","ip_start":"192.0.2.60"'
+check "provision: a later refusal is a 409"     409 "$(auth_request POST /fleet/provision "{$_PVB,\"vms\":[{\"stack\":\"zz-first\"},{\"stack\":\"networking-security\"}]}" | status_of)"
+check "provision: …and queues nothing"           0 "$(_pvj zz-first)"
+check "provision: …no address kept for it"       0 "$(grep -c 'zz-first' "$WORK/.data/fleet.json" 2>/dev/null)"
+check "provision: a stack listed twice"        409 "$(auth_request POST /fleet/provision "{$_PVB,\"vms\":[{\"stack\":\"zz-dup\"},{\"stack\":\"zz-dup\"}]}" | status_of)"
+check "provision: …queues nothing either"        0 "$(_pvj zz-dup)"
+check "provision: one address for two VMs"     409 "$(auth_request POST /fleet/provision "{$_PVB,\"vms\":[{\"stack\":\"zz-a\",\"ip\":\"192.0.2.77\"},{\"stack\":\"zz-b\",\"ip\":\"192.0.2.77\"}]}" | status_of)"
+check "provision: …queues nothing as well"       0 "$(( $(_pvj zz-a) + $(_pvj zz-b) ))"
+check "provision defaults: the guests Proxmox has" yes "$(auth_request GET /fleet/provision/defaults | body_of | jq -e '(.guests | map(.name)) as $g | ($g | index("networking-security") != null) and ($g | index("template-debian") == null)' >/dev/null 2>&1 && echo yes || echo no)"
 # what counts as the hub's own stack: DOCKER_STACKS or containers up — not a folder the repository ships
 mkdir -p "$WORK/Stacks/leftover" && printf 'services:\n  x:\n    image: alpine\n' > "$WORK/Stacks/leftover/docker-compose.yml"
 check "hub stack: in DOCKER_STACKS"     0 "$(_lib _fleet_stack_is_hub demo; echo $?)"
@@ -1642,7 +1652,28 @@ check "rebuild: viewer denied"               403 "$(viewer_request POST /traefik
 _FC=$(PATH="$WORK/fakebin:$PATH" _lib _routes_apply_local_chain '{"http":{"routers":{"m1-routed-tpl-dcs":{"rule":"Host(`a.smoke.test`)","service":"m1-routed-tpl-dcs"},"m1-bypass-tpl-dcs":{"rule":"Host(`b.smoke.test`)","service":"m1-bypass-tpl-dcs"}},"services":{}}}')
 check "fleet chain: protected router"        'traefik-chain compress-gzip authelia-forwardauth' "$(printf '%s' "$_FC" | jq -r '.http.routers["m1-routed-tpl-dcs"].middlewares | join(" ")')"
 check "fleet chain: bypass router open"      'traefik-chain compress-gzip' "$(printf '%s' "$_FC" | jq -r '.http.routers["m1-bypass-tpl-dcs"].middlewares | join(" ")')"
+# a template deployed into a VM through the hub: Authelia is the hub's — the choice is kept here, the VM gets a plain deploy
+_lib _fleet_update '.members += [{id: "zz-vm", name: "zz-vm", url: "http://127.0.0.1:9", username: "dcs-hub", role: "admin", source: "manual", added_by: "smoke", added_at: 0, vmid: null, node: null, stacks: []}]'
+_MP=/fleet/members/zz-vm/api/templates/routed-tpl/deploy; _FAJ="$WORK/.data/fleet-auth.json"
+_fa() { jq -r --arg k "$1" '.[$k] | tostring' "$_FAJ" 2>/dev/null; }
+_fchain() { PATH="$WORK/fakebin:$PATH" _lib _routes_apply_local_chain "{\"http\":{\"routers\":{\"$1\":{\"rule\":\"Host(\`a.smoke.test\`)\",\"service\":\"x\"}},\"services\":{}}}" | jq -r --arg k "$1" '.http.routers[$k].middlewares | join(" ")'; }
+fake_request POST "$_MP" '{"target_stack":"zz-vm","authelia_services":["routed-tpl"]}' >/dev/null
+check "vm deploy: protection kept on the hub"     true "$(_fa zz-vm-routed-tpl-dcs)"
+check "vm deploy: the route is behind Authelia"   'traefik-chain compress-gzip authelia-forwardauth' "$(_fchain zz-vm-routed-tpl-dcs)"
+fake_request POST "$_MP" '{"target_stack":"zz-vm","authelia_services":[]}' >/dev/null
+check "vm deploy: an explicit none is kept"       false "$(_fa zz-vm-routed-tpl-dcs)"
+check "vm deploy: that route stays open"          'traefik-chain compress-gzip' "$(_fchain zz-vm-routed-tpl-dcs)"
+fake_request POST "$_MP" '{"target_stack":"zz-vm"}' >/dev/null
+check "vm deploy: no choice, back to the default" null "$(_fa zz-vm-routed-tpl-dcs)"
+check "vm deploy: default is protected"          'traefik-chain compress-gzip authelia-forwardauth' "$(_fchain zz-vm-routed-tpl-dcs)"
+PATH="$WORK/fakebin:$PATH" _lib _fleet_auth_set zz-vm bypass-tpl true
+check "vm deploy: a bypass template asked for it" 'traefik-chain compress-gzip authelia-forwardauth' "$(_fchain zz-vm-bypass-tpl-dcs)"
+PATH="$WORK/fakebin:$PATH" _lib _fleet_auth_set zz-vm bypass-tpl clear
+check "vm deploy: …and back to open"              'traefik-chain compress-gzip' "$(_fchain zz-vm-bypass-tpl-dcs)"
+check "vm deploy: on demand is the hub's"         409 "$(fake_request POST "$_MP" '{"target_stack":"zz-vm","on_demand_services":["routed-tpl"]}' | status_of)"
 rm -f "$WORK/fakebin/.authelia"
+check "vm deploy: no Authelia on the hub"         409 "$(fake_request POST "$_MP" '{"target_stack":"zz-vm","authelia_services":["routed-tpl"]}' | status_of)"
+_lib _fleet_update '.members |= map(select(.id != "zz-vm"))'; rm -f "$_FAJ"
 # the engine card: what this server reports (no update is started here — it would run apt on the machine)
 _EN=$(fake_request GET /system/docker-engine)
 check "engine: answers"                      200 "$(printf '%s' "$_EN" | status_of)"
@@ -1805,6 +1836,40 @@ check "firewall: firewalld says closed"  "true false true FedoraServer" "$(_fw F
 check "firewall: a plain user reads the zone" "true false false FedoraServer" "$(_fw FAKE_FW_Q=deny)"
 check "firewall: a zone that opens high ports" "true true false FedoraWorkstation" "$(_fw FAKE_FW_Q=deny FAKE_FW_ZONE=FedoraWorkstation)"
 check "firewall: the fix names the zone" yes "$( ( export PATH="$_FWB:$PATH" FIREWALLD_ZONES_DIR="$_FWZ" DCS_API_EFFECTIVE_PORT=9876; _lib _hub_firewall_hint ) | grep -q -- '--zone=FedoraServer --add-port=9876/tcp' && echo yes || echo no)"
+
+echo "Stack counts on a hub: a folder left behind by a stack that moved into a VM is not one of the hub's"
+_stt() { API_RESPONSE_CACHE=false auth_request GET /status | body_of | jq -r '.stacks.total'; }
+_ST0=$(_stt)
+mkdir -p "$WORK/Stacks/zz-left" && printf 'services:\n  x:\n    image: alpine:3\n' > "$WORK/Stacks/zz-left/docker-compose.yml"
+check "status: a plain folder counts"                "$((_ST0 + 1))" "$(_stt)"
+_lib _fleet_update '.members += [{id: "zz-cnt", name: "zz-cnt", url: "http://127.0.0.1:9", username: "dcs-hub", role: "admin", source: "manual", added_by: "smoke", added_at: 0, vmid: null, node: null, stacks: []}]'
+check "status: …a VM that runs other stacks changes nothing" "$((_ST0 + 1))" "$(_stt)"
+_lib _fleet_update '(.members[] | select(.id == "zz-cnt") | .stacks) += ["zz-left"]'
+check "status: …not once a VM runs that stack"       "$_ST0" "$(_stt)"
+_lib _fleet_update '(.members[] | select(.id == "zz-cnt") | .stacks) -= ["zz-left"]'
+check "status: …and again when no VM does"           "$((_ST0 + 1))" "$(_stt)"
+_lib _fleet_update '.members |= map(select(.id != "zz-cnt"))'
+rm -rf "$WORK/Stacks/zz-left"
+
+echo "Setup wizard: the stacks the person removed"
+SCFG="$WORK-scfg"; mkdir -p "$SCFG/.scripts" "$SCFG/.lib" "$SCFG/.config" "$SCFG/.data" "$SCFG/logs" "$SCFG/.api-auth" "$SCFG/.templates"
+cp "$ROOT/.scripts/api-server.sh" "$SCFG/.scripts/"; cp "$ROOT/VERSION" "$SCFG/"; cp -r "$ROOT/.lib/." "$SCFG/.lib/"; cp -r "$ROOT/.config/." "$SCFG/.config/"
+grep -vE '^(API_BIND|API_AUTH_ENABLED|API_INSECURE_NO_AUTH|API_TRUSTED_PROXIES|API_IP_WHITELIST|API_PORT)=' "$ROOT/.env.example" > "$SCFG/.env"; printf 'API_PORT=9876\nMETRICS_ENABLED=false\n' >> "$SCFG/.env"
+for _n in zz-keep zz-drop zz-data; do mkdir -p "$SCFG/Stacks/$_n/App-Data"; printf 'services:\n  x:\n    image: alpine:3\n' > "$SCFG/Stacks/$_n/docker-compose.yml"; done
+: > "$SCFG/Stacks/zz-data/App-Data/keep.txt"
+mkdir -p "$SCFG/Stacks/zz-placeholder/App-Data"; printf 'services:\n  # nothing yet\n' > "$SCFG/Stacks/zz-placeholder/docker-compose.yml"
+_SCB='{"username":"admin","password":"correct horse battery"}'
+_SCTOK=$(printf 'POST /auth/setup HTTP/1.1\r\nContent-Length: %d\r\n\r\n%s' "${#_SCB}" "$_SCB" | env "${AUTH[@]}" "$SCFG/.scripts/api-server.sh" --handle-request 2>/dev/null | body_of | jq -r '.token // empty')
+_scfg() { local b="$1"; printf 'POST /setup/configure HTTP/1.1\r\nAuthorization: Bearer %s\r\nContent-Length: %d\r\n\r\n%s' "$_SCTOK" "${#b}" "$b" | env "${AUTH[@]}" "$SCFG/.scripts/api-server.sh" --handle-request 2>/dev/null; }
+_SCR=$(_scfg '{"env_vars":{"TZ":"UTC"},"stacks":["zz-keep"],"remove_stacks":["zz-drop","zz-data","zz-keep","../etc","Bad Name"]}')
+check "wizard: configure answers"                    200 "$(printf '%s' "$_SCR" | status_of)"
+check "wizard: a removed stack's folder goes"        no "$([[ -d "$SCFG/Stacks/zz-drop" ]] && echo yes || echo no)"
+check "wizard: …and is reported"                     yes "$(printf '%s' "$_SCR" | body_of | jq -e '.stacks_removed | index("zz-drop") != null' >/dev/null 2>&1 && echo yes || echo no)"
+check "wizard: a stack holding data is kept"         yes "$([[ -f "$SCFG/Stacks/zz-data/App-Data/keep.txt" ]] && echo yes || echo no)"
+check "wizard: …and reported, once"                  1 "$(printf '%s' "$_SCR" | body_of | jq -r '[.stacks_warned[] | select(. == "zz-data")] | length' 2>/dev/null)"
+check "wizard: a listed stack is never removed"      yes "$([[ -d "$SCFG/Stacks/zz-keep" ]] && echo yes || echo no)"
+check "wizard: an empty placeholder is still tidied" no "$([[ -d "$SCFG/Stacks/zz-placeholder" ]] && echo yes || echo no)"
+rm -rf "$SCFG"
 
 echo "Factory reset (last: it removes the accounts)"
 cp "$ROOT/.env.example" "$WORK/.env.example"   # what the reset copies back over .env
