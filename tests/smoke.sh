@@ -2929,6 +2929,15 @@ cst_bans_refusals() {
     cst_use rnobody; cst_is "bans/refuse: nobody" 401
     cst_call admin GET '/crowdsec/decisions?limit=1'
     cst_j "bans/refuse: nothing was banned by any of them" '.count' 12
+    # the language of the server does not change what an address is (in en_US.UTF-8 a bash range like [a-f] also matches ä)
+    if locale -a 2>/dev/null | grep -qi '^en_US\.utf-\?8$'; then
+        cst_call admin POST /crowdsec/decisions '{"value":"2a00::ä"}' LC_ALL=en_US.UTF-8
+        cst_is "bans/refuse: an IPv6 address with an accented letter, on a server that speaks en_US" 400
+        cst_call admin POST /crowdsec/decisions '{"value":"2a00:١::1"}' LC_ALL=en_US.UTF-8
+        cst_is "bans/refuse: …and one with an Arabic-Indic digit" 400
+        cst_call admin GET '/crowdsec/decisions?limit=1'
+        cst_j "bans/refuse: …nothing was banned" '.count' 12
+    fi
     # the guard is not fooled by another spelling of the same address (::ffff:a.b.c.d is the IPv4 address a.b.c.d to CrowdSec)
     cst_q mown admin POST /crowdsec/decisions '{"value":"::ffff:203.0.113.99"}' SOCAT_PEERADDR=203.0.113.99
     cst_q mhex admin POST /crowdsec/decisions '{"value":"::ffff:cb00:7163"}' SOCAT_PEERADDR=203.0.113.99
@@ -3027,17 +3036,22 @@ cst_bans_add() {
     check "bans/add: a ban that was refused is not" "$i" "$(cst_audit_n '"action":"auth.crowdsec_ban"')"
 }
 
+cst_part_large() {
+    echo "CrowdSec page: thousands of bans"
+    cst_bans_large
+}
+
 cst_bans_lift() {
     local ids i
     cst_world data traefik --traefik
     cst_call admin DELETE /crowdsec/decisions/91.240.118.11
     cst_is "bans/lift: an address" 200
     cst_j "bans/lift" '.success' true '.value' 91.240.118.11 '.scope' Ip '.deleted >= 1' true
+    cst_call admin GET '/crowdsec/decisions?q=91.240.118.11'
+    cst_j "bans/lift: …the list has no ban on it any more" '.count' 0
     cst_call admin DELETE /crowdsec/decisions/91.240.118.11
     cst_is "bans/lift: twice" 200
     cst_j "bans/lift: …the second time nothing is left" '.deleted' 0 '.message | test("No active ban")' true
-    cst_call admin GET '/crowdsec/decisions?q=91.240.118.11'
-    cst_j "bans/lift: …and the list has no ban on it" '.count' 0
     cst_call admin DELETE /crowdsec/decisions/192.0.2.128/25
     cst_j "bans/lift: a network, with the slash in the path" '.scope' Range '.value' 192.0.2.128/25 '.deleted' 1
     cst_call admin DELETE /crowdsec/decisions/192.0.2.66
@@ -3223,7 +3237,7 @@ cst_bans_export() {
     local i n
     cst_world data traefik --traefik
     n=0
-    for i in "=cmd|calc!A0" "+SUM(1+1)" "-2+3 say \"hi\", ok" "@HYPERLINK(\"x\")" "5 eggs" "plain text"; do
+    for i in "=cmd|calc!A0" "+SUM(1+1)" "-2+3 say \"hi\", ok" "@HYPERLINK(\"x\")" "5 eggs" "plain text" '=HYPERLINK("http://x")'; do
         n=$(( n + 1 ))
         cst_call admin POST /crowdsec/decisions "$(jq -nc --arg r "$i" --arg v "198.18.$n.1" '{value: $v, reason: $r, duration: "2h"}')"
     done
@@ -3242,16 +3256,16 @@ cst_bans_export() {
     cst_run
     cst_use csv
     cst_is "bans/export: csv" 200
-    cst_j "bans/export: csv" '.format' csv '.count' 18 '.content | split("\n") | length' 19 '.content | split("\n")[0]' '"value","scope","type","duration","reason","origin","country","as","expires_at"'
+    cst_j "bans/export: csv" '.format' csv '.count' 19 '.content | split("\n") | length' 20 '.content | split("\n")[0]' '"value","scope","type","duration","reason","origin","country","as","expires_at"'
     cst_t "bans/export: the file is named after the day" '.filename | test("^crowdsec-bans-[0-9]{4}-[0-9]{2}-[0-9]{2}\\.csv$")'
-    check "bans/export: every row has nine cells" "19 9" "$(jq -r .content <<< "$CST_BODY" | python3 -c 'import csv,sys; r=list(csv.reader(sys.stdin)); print(len(r), set(map(len, r)).pop() if len({len(x) for x in r}) == 1 else "mixed")')"
-    check "bans/export: a cell a spreadsheet would run as a formula is defused" "'=cmd|calc!A0 '+SUM(1+1) '-2+3 say \"hi\", ok '@HYPERLINK(\"x\") 5 eggs plain text" \
-        "$(jq -r .content <<< "$CST_BODY" | python3 -c 'import csv,sys; r={x[0]: x[4] for x in csv.reader(sys.stdin)}; print(" ".join(r["198.18.%d.1" % i] for i in range(1, 7)))')"
+    check "bans/export: every row has nine cells" "20 9" "$(jq -r .content <<< "$CST_BODY" | python3 -c 'import csv,sys; r=list(csv.reader(sys.stdin)); print(len(r), set(map(len, r)).pop() if len({len(x) for x in r}) == 1 else "mixed")')"
+    check "bans/export: a cell a spreadsheet would run as a formula is defused" "'=cmd|calc!A0 '+SUM(1+1) '-2+3 say \"hi\", ok '@HYPERLINK(\"x\") 5 eggs plain text '=HYPERLINK(\"http://x\")" \
+        "$(jq -r .content <<< "$CST_BODY" | python3 -c 'import csv,sys; r={x[0]: x[4] for x in csv.reader(sys.stdin)}; print(" ".join(r["198.18.%d.1" % i] for i in range(1, 8)))')"
     cst_use csv-de;     cst_j "bans/export: the list's filters apply (country)" '.count' 2
-    cst_use csv-manual; cst_j "bans/export: …(origin, simulated)" '.count' 9
+    cst_use csv-manual; cst_j "bans/export: …(origin, simulated)" '.count' 10
     cst_use csv-q;      cst_j "bans/export: …(q)" '.count' 2
     cst_use json
-    cst_j "bans/export: json" '.format' json '.count' 18 '.content | fromjson | length' 18 '.content | fromjson | map(.value) | index("198.18.1.1") != null' true \
+    cst_j "bans/export: json" '.format' json '.count' 19 '.content | fromjson | length' 19 '.content | fromjson | map(.value) | index("198.18.1.1") != null' true \
         '.filename | endswith(".json")' true
     cst_t "bans/export: json rows carry what the csv has" '.content | fromjson | all(has("value") and has("scope") and has("type") and has("duration") and has("reason") and has("origin") and has("expires_at"))'
     cst_t "bans/export: json is not defused (it is data, not a sheet)" '.content | fromjson | map(select(.value == "198.18.1.1"))[0].reason == "=cmd|calc!A0"'
@@ -3272,6 +3286,40 @@ cst_part_bans() {
     cst_bans_lift
     cst_bans_import
     cst_bans_export
+}
+
+# a server with thousands of bans: nothing that reads the whole list may hand it to a command line (an argument is limited to 128 KB)
+cst_bans_large() {
+    local i n body
+    cst_world data traefik --traefik
+    for n in 0 1; do
+        body=$(for (( i = 0; i < 1300; i++ )); do printf '91.%d.%d.%d\n' $(( 200 + n )) $(( i / 250 )) $(( i % 250 + 1 )); done | jq -Rs '{format: "values", duration: "6h", reason: "large test", content: .}')
+        cst_call admin POST /crowdsec/decisions/import "$body"
+        cst_j "large/import $(( n + 1 )): 1300 addresses" '.imported' 1300 '.skipped' 0 '.success' true
+    done
+    cst_q status admin GET /crowdsec/status
+    cst_q list admin GET '/crowdsec/decisions?limit=2000'
+    cst_q csv admin GET /crowdsec/decisions/export
+    cst_q json admin GET '/crowdsec/decisions/export?format=json'
+    cst_q alerts admin GET /crowdsec/alerts
+    cst_q alerts7 admin GET '/crowdsec/alerts?window=7d&limit=1000'
+    cst_q metrics admin GET '/crowdsec/metrics?window=7d'
+    cst_q ip admin GET '/crowdsec/decisions?q=91.201.4.250'
+    cst_run
+    cst_use status;  cst_is "large/status: 2600 bans and it still answers" 200
+    cst_j "large/status" '.state' healthy '.counts.decisions_active >= 2500' true '.decisions | length' 50
+    cst_use list;    cst_is "large/list" 200
+    cst_j "large/list" '.total >= 2500' true '.count >= 2500' true '.decisions | length' 2000
+    cst_use csv;     cst_is "large/export: csv of everything" 200
+    cst_j "large/export csv" '.count >= 2500' true '.content | length > 131072' true '(.content | split("\n") | length) == (.count + 1)' true
+    cst_use json;    cst_is "large/export: json of everything" 200
+    cst_j "large/export json" '.count >= 2500' true '(.content | fromjson | length) == .count' true
+    cst_use alerts;  cst_is "large/alerts" 200
+    cst_j "large/alerts: the imports are alerts of their own, and their bans are known" '.alerts | map(select(.source.value == "192.0.2.66"))[0].banned' true
+    cst_use alerts7; cst_is "large/alerts: a week" 200
+    cst_use metrics; cst_is "large/metrics" 200
+    cst_j "large/metrics: the bans are counted" '.totals.banned_now >= 2500' true
+    cst_use ip;      cst_j "large/list: one of them by its address" '.count' 1 '.decisions[0].scenario' 'large test'
 }
 
 # ---- alerts, the numbers behind the charts -------------------------------------------------------------------------------------------
@@ -3335,6 +3383,7 @@ cst_part_alerts() {
     cst_use q;        cst_j "alerts: q=" '.count' 3 '.alerts | map(.id) | join(",")' 16,11,5
     cst_use sim-yes;  cst_j "alerts: simulated=yes" '.count' 1 '.alerts[0].id' 19
     cst_use sim-no;   cst_j "alerts: simulated=no" '.count' 15
+    cst_use w24h;     cst_j "alerts/facets: a scenario carries its words" '.facets.scenarios | map(select(.value == "crowdsecurity/http-probing"))[0].label' 'Web probing' '.facets.scenarios | all(.label | length > 0)' true
     cst_use fscen;    cst_j "alerts/facets: a scenario filter keeps the list of scenarios whole" '.count' 3 '.facets.scenarios | length' 10 '.facets.countries | map("\(.value):\(.count)") | sort | join(",")' BG:1,LT:1,NL:1
     cst_use fcountry; cst_j "alerts/facets: a country filter keeps the list of countries whole" '.count' 3 '.facets.countries | length' 9 '.facets.scenarios | map("\(.value):\(.count)") | sort | join(",")' \
         crowdsecurity/CVE-2017-9841:1,crowdsecurity/http-backdoors-attempts:1,crowdsecurity/http-bad-user-agent:1
@@ -3415,7 +3464,10 @@ cst_allowlist_native() {
     cst_call admin POST /crowdsec/allowlist '{"value":"2A00:1450:4001:0:0:0:0:1"}'
     cst_j "allowlist/add: IPv6, written short" '.value' 2a00:1450:4001::1 '.kind' ip '.removed_bans' 0
     cst_call admin POST /crowdsec/allowlist '{"value":"2A00:1450:4001::1"}'
-    cst_is "allowlist/add: the same again is not an error" 200
+    cst_is "allowlist/add: the same again is a conflict, not a second entry" 409
+    cst_j "allowlist/add: …with its reason" '.reason' already_allowed
+    cst_call admin POST /crowdsec/allowlist '{"value":"203.0.113.9"}'
+    cst_is "allowlist/add: an entry that came with the install, again" 409
     cst_call admin POST /crowdsec/allowlist '{"value":"198.18.5.5/24"}'
     cst_j "allowlist/add: a network loses its host bits" '.value' 198.18.5.0/24
     cst_call admin POST /crowdsec/allowlist '{"value":"8.0.0.0/8"}'
@@ -3428,6 +3480,12 @@ cst_allowlist_native() {
     cst_j "allowlist/add: a comment is cut to 200 characters" '.comment | length' 200
     cst_call admin GET /crowdsec/allowlist
     cst_j "allowlist/native: after adding" '.count' 12 '.lists[0].items' 11 '.entries | map(select(.value == "2a00:1450:4001::1")) | length' 1 '.entries | map(select(.value == "192.0.2.10"))[0].comment' 'office pc'
+    # -- CrowdSec's list itself cannot be read: that is an error, not an empty allowlist
+    cst_mock --mock-set lapi_down=1
+    cst_call admin GET /crowdsec/allowlist
+    cst_is "allowlist: when CrowdSec's list cannot be read it says so" 502
+    cst_t "allowlist: …and why" '.message | test("answer: .+")'
+    cst_mock --mock-set lapi_down=0
     # -- refusals, all at once
     local -a addbad=('{"value":"0.0.0.0/0"}' '{"value":"::/0"}' '{"value":"8.0.0.0/7"}' '{"value":"2000::/3"}' '{"value":"::/1"}' '{"value":"2a00::/15"}' '{"value":"nope"}' '{"value":""}' '{}' '{"value":12345}'
                      '{"value":"198.18.9.11","expires":"nope"}' '{"value":"198.18.9.11","expires":"30s"}' '{"value":"198.18.9.11","expires":"+7d"}' '{"value":"198.18.9.11","expires":"1 year"}'
@@ -3501,7 +3559,8 @@ cst_allowlist_parser() {
     cst_call admin POST /crowdsec/allowlist '{"value":"2A00:1450:4001:0:0:0:0:5"}'
     cst_j "allowlist/parser: add an IPv6 address" '.value' 2a00:1450:4001::5
     cst_call admin POST /crowdsec/allowlist '{"value":"192.0.2.66"}'
-    cst_is "allowlist/parser: the same again" 200
+    cst_is "allowlist/parser: the same again is a conflict" 409
+    cst_j "allowlist/parser: …with its reason" '.reason' already_allowed
     cst_call admin POST /crowdsec/allowlist '{"value":"192.0.2.128/25","expires":"7d"}'
     cst_is "allowlist/parser: an expiry is not possible here" 400
     cst_call admin POST /crowdsec/allowlist '{"value":"0.0.0.0/0"}'
@@ -3800,6 +3859,7 @@ cst_hub_read() {
     cst_use coll;   cst_j "hub/available: collections" '.type' collections '.count' 171 '.total' 171 '.items | length' 5 '.items[0].installed' true '.items | map(select(.name == "crowdsecurity/sshd"))[0].update' true
     cst_use parsers; cst_j "hub/available: parsers matching a word" '.count' 3 '.total' 166 '.items | map(.name | test("nginx")) | all' true
     cst_use scen;   cst_j "hub/available: scenarios" '.count' 786 '.items | length' 1
+    cst_t "hub/available: an update is only offered for what is installed" '.items | all((.update | not) or .installed)'
     cst_use qinj;   cst_j "hub/available: a search text is only text" '.count' 0
     cst_use qhuge;  cst_is "hub/available: a 10 kB search text is cut, not refused" 200
     cst_use qcase;  cst_t "hub/available: the search ignores case" '.count > 0'
@@ -3823,6 +3883,12 @@ cst_hub_change() {
     cst_call admin POST /crowdsec/hub/remove '{"type":"collections","name":"crowdsecurity/nginx"}'
     cst_is "hub/remove: a collection" 200
     cst_j "hub/remove" '.action' remove '.message | test("crowdsecurity/nginx removed")' true
+    cst_call admin POST /crowdsec/hub/remove '{"type":"scenarios","name":"crowdsecurity/ssh-bf"}'
+    cst_is "hub/remove: a scenario that an installed collection needs stays" 409
+    cst_j "hub/remove: …and the answer says so" '.reason' still_installed '.message | test("still installed")' true
+    cst_call admin POST /crowdsec/hub/remove '{"type":"collections","name":"crowdsecurity/sshd"}'
+    cst_is "hub/remove: so does a collection that another one includes" 409
+    check "hub/remove: …the audit log has none of the two (nothing was removed)" 0 "$(grep -c '"action":"auth.crowdsec_hub".*remove .* crowdsecurity/ssh' "$CST/.data/audit.jsonl")"
     cst_call admin GET /crowdsec/hub
     cst_j "hub/remove: gone with what it brought" '.counts.collections' 6 '.counts.scenarios' 53 '.counts.parsers' 11
     cst_call admin POST /crowdsec/hub/install '{"type":"parsers","name":"crowdsecurity/nginx-logs"}'
@@ -4630,6 +4696,56 @@ cst_part_notify() {
     cst_notify_safety
     cst_notify_template
     cst_notify_golden
+    cst_notify_redeploy
+}
+
+# the deploy of the crowdsec template puts its own profiles.yaml and Discord file into CrowdSec; when the page manages those files it leaves them alone
+cst_deploy() {   # cst_deploy 'VARIABLES' — the hook that runs after a template deploy, against the stand-in; its own log is $CST/deploy.log
+    local vars="$1"
+    : > "$CST/deploy.log"
+    ( set --; export PATH="$CST/bin:$PATH" DOCKER_COMPOSE_CMD="docker compose" API_RATE_LIMIT=0; [[ -z "$CST_LOC" ]] || export LC_ALL="$CST_LOC"
+      # shellcheck disable=SC1090
+      source "$CST_API" >/dev/null 2>&1
+      _crowdsec_post_deploy "$CST/.templates/crowdsec" networking-security "$CST/Stacks/networking-security" "$vars" "$CST/deploy.log" ) >/dev/null 2>"$CST/deploy.err"
+}
+
+cst_notify_redeploy() {
+    local live http h0 p0 vars
+    live=$(CST_LIVE profiles.yaml); http=$(CST_LIVE notifications/http.yaml)
+    vars="DISCORD_WEBHOOK_URL=$CST_HOOK"$'\n'"ENABLE_TRAEFIK_BOUNCER=true"
+    # -- a fresh install: the shipped profiles and Discord file go in, with the webhook and the domain
+    cst_world data traefik --traefik
+    cst_deploy "$vars"
+    check "redeploy/fresh: the shipped Discord file is put in, with the webhook and the domain" "1 1 0" "$(grep -cF -- "$CST_HOOK" "$http") $(grep -c 'lab.example.test' "$http") $(grep -c '__WEBHOOK__\|__DOMAIN__' "$http")"
+    check "redeploy/fresh: …and the shipped profiles, that send every decision to it" "yes" "$(grep -q 'http_default' "$live" && ! grep -q '^# Managed by DCS' "$live" && echo yes || echo no)"
+    check "redeploy/fresh: it says so in its log" "yes" "$(grep -q 'alerts go to Discord' "$CST/deploy.log" && echo yes || echo no)"
+    check "redeploy/fresh: the Traefik bouncer is registered" "yes" "$(grep -q 'bouncer registered' "$CST/deploy.log" && echo yes || echo no)"
+    # -- no webhook known: the two files stay as they are
+    cst_world data traefik --traefik
+    h0=$(cat "$http"); p0=$(cat "$live")
+    cst_deploy "ENABLE_TRAEFIK_BOUNCER=false"
+    check "redeploy/no webhook: the files stay as they were" "$h0 $p0" "$(cat "$http") $(cat "$live")"
+    # -- files the page wrote are the person's settings: a re-deploy keeps them
+    cst_world data traefik --traefik
+    cst_call admin PUT /crowdsec/notifications "{\"webhook_url\":\"$CST_HOOK\",\"settings\":{\"enabled\":true,\"identity\":{\"name\":\"Door Guard\"},\"message\":{\"title\":\"Mine: {label}\"}}}"
+    cst_call admin PUT /crowdsec/settings '{"profile":{"duration":"7h"}}'
+    cst_is "redeploy/managed: the page's settings are saved" 200
+    h0=$(cat "$http"); p0=$(cat "$live")
+    cst_deploy "DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/222222222222222222/AnotherFakeTokenForTheTests00"$'\n'"ENABLE_TRAEFIK_BOUNCER=true"
+    check "redeploy/managed: both files are byte for byte what the page wrote" "$h0 $p0" "$(cat "$http") $(cat "$live")"
+    check "redeploy/managed: …and the deploy says why it left them" "yes" "$(grep -q 'managed on the CrowdSec page' "$CST/deploy.log" && echo yes || echo no)"
+    check "redeploy/managed: the message is still the person's" "Mine: {label}" "$(sed -n 2p "$http" | sed 's/^# dcs-notify: //' | jq -r '.settings.message.title')"
+    # -- one of the two is enough
+    cst_world data traefik --traefik
+    cst_call admin PUT /crowdsec/settings '{"profile":{"duration":"7h"}}'
+    h0=$(cat "$http"); p0=$(cat "$live")
+    cst_deploy "$vars"
+    check "redeploy/managed profiles only: the Discord file is left alone too" "$h0 $p0" "$(cat "$http") $(cat "$live")"
+    cst_world data traefik --traefik
+    cst_call admin PUT /crowdsec/notifications "{\"webhook_url\":\"$CST_HOOK\",\"settings\":{\"enabled\":false}}"
+    h0=$(cat "$http"); p0=$(cat "$live")
+    cst_deploy "$vars"
+    check "redeploy/managed Discord file only: the profiles are left alone too" "$h0 $p0" "$(cat "$http") $(cat "$live")"
 }
 
 # ---- who may do what, what is written down, and what happens to hostile text --------------------------------------------------------
@@ -4709,6 +4825,11 @@ cst_security_roles() {
     cst_q nr8 admin TRACE /crowdsec/status
     cst_q nr9 admin GET /crowdsec/hub/install
     cst_q nr10 admin GET /crowdsec/bouncers/x
+    cst_q nr11 admin GET '/crowdsec/status?a=1&&b=2'
+    cst_q nr12 admin GET '/crowdsec/decisions?&'
+    cst_q nr13 admin GET '/crowdsec/decisions?=x&limit=1'
+    cst_q nr14 admin GET '/crowdsec/alerts?limit=1&'
+    cst_q nr15 admin GET '/crowdsec/decisions?limit'
     cst_run
     cst_use nr1; cst_is "security: an unknown CrowdSec route" 404
     cst_use nr2; cst_is "security: POST on a read-only route" 404
@@ -4720,6 +4841,11 @@ cst_security_roles() {
     cst_use nr8; cst_is "security: TRACE" 405
     cst_use nr9; cst_is "security: GET on an action route" 404
     cst_use nr10; cst_is "security: GET on a bouncer" 404
+    cst_use nr11; cst_is "security: an empty pair in the query (a=1&&b=2) is skipped" 200
+    cst_use nr12; cst_is "security: a query that is only an ampersand" 200
+    cst_use nr13; cst_is "security: a parameter without a name" 200
+    cst_use nr14; cst_is "security: a query that ends with an ampersand" 200
+    cst_use nr15; cst_is "security: a name without a value is an empty value (limit= is not a number)" 400
 }
 
 # every mutation is written down, with who did it and from where
@@ -4760,7 +4886,7 @@ cst_security_audit() {
 # hostile text in every place the page lets a person type or send something
 cst_security_injection() {
     local pwn="$CST/pwn" i j slot path body method p mark words want
-    local -a desc=()
+    local -a desc=() amp=()
     cst_world data traefik --traefik
     rm -f "$pwn"
     mark=$(cst_argv_n)
@@ -4778,14 +4904,15 @@ cst_security_injection() {
         for (( p = 0; p < ${#pp[@]}; p++ )); do
             # every payload goes to the first four slots (the ones that name a thing), five of them to each of the others
             (( i < 4 || (p + i) % 3 == 0 )) || continue
-            cst_q "p$(( ++j ))" admin "$method" "${path%%@*}${pp[$p]}${path#*@}"; desc[j]="$method ${path%%@*}${pp[$p]:0:40}${path#*@}"
+            cst_q "p$(( ++j ))" admin "$method" "${path%%@*}${pp[$p]}${path#*@}"; desc[j]="$method ${path%%@*}${pp[$p]:0:40}${path#*@}"; amp[j]="${pp[$p]:0:1}"
         done
     done
     cst_run
     local nbad=0 st
     for (( i = 1; i <= j; i++ )); do
         st="${CST_RST[p$i]}"
-        [[ "$st" == 400 || "$st" == 404 ]] || { nbad=$(( nbad + 1 )); printf '       (unexpected "%s" for %s)\n' "$st" "${desc[i]}"; }
+        # (a payload that starts with & only ends the parameter before it: what is left of the query is fine, and the rest is a parameter nobody reads)
+        [[ "$st" == 400 || "$st" == 404 || ( "${amp[i]}" == '&' && "$st" == 200 ) ]] || { nbad=$(( nbad + 1 )); printf '       (unexpected "%s" for %s)\n' "$st" "${desc[i]}"; }
     done
     check "injection/path: $j hostile path segments and query values are refused (400 or 404)" 0 "$nbad"
 
@@ -5003,7 +5130,7 @@ mapped: a network of them is an IPv4 network ⇒ Range|1.2.3.0/24 ⇒ out _cs_no
 mapped: …a wider one ⇒ Range|1.2.0.0/16 ⇒ out _cs_norm_target ::ffff:1.2.3.9/112
 mapped: all of them is everything (the guard refuses that) ⇒ Range|0.0.0.0/0 ⇒ out _cs_norm_target ::ffff:0:0/96
 mapped: not mapped (::fffe) ⇒ Ip|::fffe:102:304 ⇒ out _cs_norm_target ::fffe:1.2.3.4
-mapped: not mapped (one group of the zeros is not) ⇒ Ip|::1:ffff:102:304 ⇒ out _cs_norm_target 0:0:0:1:ffff:1.2.3.4
+mapped: not mapped (one group of the zeros is not) ⇒ Ip|::1:ffff:102:304 ⇒ out _cs_norm_target 0:0:0:0:1:ffff:1.2.3.4
 mapped: a wider network than /96 is still IPv6 ⇒ Range|::/64 ⇒ out _cs_norm_target ::ffff:1.2.3.4/64
 EOF
     # -- one address inside another
@@ -5283,8 +5410,8 @@ cst_main() {
     local -a names=()
     echo "CrowdSec page"
     mkdir -p "$CST_ROOT"
-    local -a lanes=("a:status allowlist alerts units" "b:bans" "c:settings" "d:notify" "e:services hub" "f:security")
-    [[ "${SMOKE_CS_LANES:-}" != 1 ]] || lanes=("all:status bans alerts allowlist services hub settings notify security units")
+    local -a lanes=("a:status allowlist alerts units" "b:bans" "c:settings" "d:notify" "e:services hub" "f:security" "g:large")
+    [[ "${SMOKE_CS_LANES:-}" != 1 ]] || lanes=("all:status bans alerts allowlist services hub settings notify security units large")
     for lane in "${lanes[@]}"; do
         name="${lane%%:*}"; want=""
         for part in ${lane#*:}; do
