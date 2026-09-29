@@ -3,6 +3,32 @@
 All notable changes to Docker Compose Skeleton AIO are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [3.9.6] - 2026-09-29
+
+### Fixed
+
+- **Applying a theme turned the app into a 404** on a server whose Traefik already declared
+  theme.park under its own name ("theme-park"): DCS saw the plugin declared and wrote its
+  middleware as `plugin: themepark`, which that Traefik does not know — it refused the
+  middleware and disabled the whole router, so Plex, Sonarr and the rest answered "404 page not
+  found" until the theme was removed. DCS now reads the name Traefik knows each plugin by from
+  its static config (`moduleName`/`modulename` in any case) and uses it for theme.park,
+  Sablier and the CrowdSec bouncer, on the hub's own routes and on the VM routes it serves.
+- **Every theme change is checked through Traefik**: the route is asked before and after
+  (Traefik reloads its files within two seconds); a change that turns it into a 404 is undone
+  exactly — the files as they were — and the dashboard says why. A plugin declared after
+  Traefik started gets one restart first. A theme can no longer leave an app down.
+- **The theme files 3.9.5 wrote are repaired** when the API starts (in the background) and
+  before every theme change: a DCS theme file whose route answers 404 under an old plugin name
+  gets the declared one, kept only when the route answers again; a route that works is left as
+  it is, and a user's own files are never touched.
+- **Themes written by hand are recognised**: a theme.park middleware in the route (a
+  `sonarr-dark` with `theme-park: {app, theme, addons}`) shows as the container's current
+  theme, "from your route"; applying a theme from DCS takes its place on that route (its
+  definition stays in the file) instead of stacking a second theme on top.
+- A Traefik plugin is never declared a second time under another name (a duplicate key would
+  stop Traefik from starting).
+
 ## [3.9.5] - 2026-09-29
 
 ### Added

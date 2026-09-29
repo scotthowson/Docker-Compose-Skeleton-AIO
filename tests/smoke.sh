@@ -582,6 +582,59 @@ check "theme: the chain kept"             '"traefik-chain" "compress-gzip"' "$(a
 # the hub adds a VM route's theme when it writes the VM routes
 check "theme: VM route themed on the hub" '["traefik-chain","tp-media-vm-sonarr-lab-test"] nord' "$(FLEET_THEMES_FILE=<(printf '%s' '{"media-vm|sonarr.lab.test":{"app":"sonarr","theme":"nord","addons":[]}}') _lib _fleet_themes_apply '{"http":{"routers":{"media-vm-sonarr-dcs":{"rule":"Host(`sonarr.lab.test`)","middlewares":["traefik-chain"]},"other-sonarr-dcs":{"rule":"Host(`sonarr.lab.test`)"}},"services":{}}}' | jq -c '[.http.routers["media-vm-sonarr-dcs"].middlewares, .http.middlewares["tp-media-vm-sonarr-lab-test"].plugin.themepark.theme] | "\(.[0] | tojson) \(.[1])"' -r 2>/dev/null)"
 check "theme: another VM's route untouched" null "$(FLEET_THEMES_FILE=<(printf '%s' '{"media-vm|sonarr.lab.test":{"app":"sonarr","theme":"nord","addons":[]}}') _lib _fleet_themes_apply '{"http":{"routers":{"other-sonarr-dcs":{"rule":"Host(`sonarr.lab.test`)"}},"services":{}}}' | jq -c '.http.routers["other-sonarr-dcs"].middlewares' 2>/dev/null)"
+# Traefik knows theme.park by the name its static config declares (Scott's "theme-park", modulename in lower
+# case): DCS's middleware must use it — under another name Traefik refuses the middleware and the router answers 404
+printf '%s\n' '{"apps":{"sonarr":["sonarr-4k-logo","sonarr-text-logo"]},"themes":["dark","nord","spacegray"],"community":[]}' > "$WORK/.data/themepark.json"
+_TY2="$_TAD/Traefik/traefik.yml"; cp "$_TY2" "$_TY2.orig"
+sed -i -E 's/^    themepark:[[:space:]]*$/    theme-park:/; s#^      moduleName: "github.com/packruler/traefik-themepark"#      modulename: "github.com/packruler/traefik-themepark"#' "$_TY2"
+check "plugin name: read from the static config" theme-park "$(_lib _traefik_plugin_name github.com/packruler/traefik-themepark)"
+check "plugin name: sablier as declared"         sablier "$(_lib _traefik_plugin_name github.com/acouvreur/sablier)"
+check "plugin name: undeclared is nothing"       "" "$(_lib _traefik_plugin_name github.com/none/none)"
+printf 'http:\n  routers:\n    sonarr-router:\n      rule: "Host(`sonarr.example.test`)"\n      service: "sonarr"\n      middlewares:\n        - "traefik-chain"\n        - "compress-gzip"\n        - "sonarr-dark"\n  services:\n    sonarr:\n      loadBalancer:\n        servers:\n          - url: "http://Sonarr:8989"\n  middlewares:\n    sonarr-dark:\n      plugin:\n        theme-park:\n          app: sonarr\n          theme: spacegray\n          addons:\n            - sonarr-text-logo\n' > "$_SBD/sonarr.yml"
+_TS2=$(sab_request GET /containers/Sonarr/theme | body_of)
+check "theme: hand-written one seen"          "true false sonarr-dark spacegray" "$(jq -r '"\(.enabled) \(.managed) \(.middleware) \(.theme)"' <<< "$_TS2" 2>/dev/null)"
+check "theme: its add-ons read"               sonarr-text-logo "$(jq -r '.addons | join(",")' <<< "$_TS2" 2>/dev/null)"
+check "theme: plugin name reported"           theme-park "$(jq -r '.plugin' <<< "$_TS2" 2>/dev/null)"
+check "theme: applied under that name"        true "$(sab_request POST /containers/Sonarr/theme '{"enabled":true,"theme":"nord"}' | body_of | jq -r '.enabled' 2>/dev/null)"
+check "theme: middleware uses theme-park"     1 "$(grep -c '^        theme-park:$' "$_SBD/sonarr-theme.yml" 2>/dev/null)"
+check "theme: no second declaration"          1 "$(grep -c 'packruler/traefik-themepark' "$_TY2")"
+check "theme: the hand-written one gives way" '"traefik-chain" "compress-gzip" "sonarr-theme"' "$(awk '/^      middlewares:/ { on=1; next } on && /^        - / { printf "%s%s", (n++ ? " " : ""), $2; next } on { on=0 }' "$_SBD/sonarr.yml")"
+check "theme: its definition stays"           1 "$(grep -c '^    sonarr-dark:$' "$_SBD/sonarr.yml")"
+check "theme: DCS's own now"                  "true true sonarr-theme" "$(sab_request GET /containers/Sonarr/theme | body_of | jq -r '"\(.enabled) \(.managed) \(.middleware)"' 2>/dev/null)"
+sab_request POST /containers/Sonarr/theme '{"enabled":false}' >/dev/null
+check "theme: taken off, nothing left"        "0 0 no" "$(grep -c 'sonarr-theme' "$_SBD/sonarr.yml") $(grep -c '"sonarr-dark"' "$_SBD/sonarr.yml") $([[ -f "$_SBD/sonarr-theme.yml" ]] && echo yes || echo no)"
+# the files 3.9.5 wrote under "themepark" while Traefik declares "theme-park" (the route answered 404) are
+# repaired, and the hand-written middleware beside DCS's comes off that route; a user's own file is left alone
+printf 'http:\n  middlewares:\n    sonarr-theme:\n      plugin:\n        themepark:\n          app: sonarr\n          theme: dark\n' > "$_SBD/sonarr-theme.yml"
+sed -i 's/^        - "compress-gzip"$/        - "compress-gzip"\n        - "sonarr-dark"\n        - "sonarr-theme"/' "$_SBD/sonarr.yml"
+printf 'http:\n  middlewares:\n    extra:\n      plugin:\n        themepark:\n          app: sonarr\n          theme: dark\n' > "$_SBD/mine-theme.yml"; _MINE=$(md5sum < "$_SBD/mine-theme.yml")
+check "repair: two changes"                   2 "$(_lib _theme_files_repair)"
+check "repair: the plugin name fixed"         1 "$(grep -c '^        theme-park:$' "$_SBD/sonarr-theme.yml")"
+check "repair: one theme on the route"        '"traefik-chain" "compress-gzip" "sonarr-theme"' "$(awk '/^      middlewares:/ { on=1; next } on && /^        - / { printf "%s%s", (n++ ? " " : ""), $2; next } on { on=0 }' "$_SBD/sonarr.yml")"
+check "repair: nothing more to do"            0 "$(_lib _theme_files_repair)"
+check "repair: a user's own file untouched"   yes "$([[ "$(md5sum < "$_SBD/mine-theme.yml")" == "$_MINE" ]] && echo yes || echo no)"
+# the repair touches only a broken route: one that answers keeps the name it has (the declared one may not be loaded
+# yet), and a rewrite Traefik still refuses is put back
+printf 'http:
+  middlewares:
+    sonarr-theme:
+      plugin:
+        themepark:
+          app: sonarr
+          theme: dark
+' > "$_SBD/sonarr-theme.yml"
+check "repair: a working route left alone"    "0 1" "$(_lib eval '_traefik_probe() { echo 200; }; _theme_files_repair') $(grep -c '^        themepark:$' "$_SBD/sonarr-theme.yml")"
+check "repair: a rewrite that fails is undone" "0 1" "$(_lib eval '_traefik_probe() { echo 404; }; THEME_REPAIR_WAIT=0; _theme_files_repair') $(grep -c '^        themepark:$' "$_SBD/sonarr-theme.yml")"
+rm -f "$WORK/probe-count"
+check "repair: a rewrite that works is kept"  "1 1" "$(_lib eval '_traefik_probe() { local c; c=$(cat "$WORK/probe-count" 2>/dev/null || echo 0); echo $((c + 1)) > "$WORK/probe-count"; [[ $c -eq 0 ]] && echo 404 || echo 200; }; THEME_REPAIR_WAIT=0; _theme_files_repair') $(grep -c '^        theme-park:$' "$_SBD/sonarr-theme.yml")"
+rm -f "$WORK/probe-count"
+check "theme: a VM route themed under that name" theme-park "$(FLEET_THEMES_FILE=<(printf '%s' '{"media-vm|sonarr.lab.test":{"app":"sonarr","theme":"nord","addons":[]}}') _lib _fleet_themes_apply '{"http":{"routers":{"media-vm-sonarr-dcs":{"rule":"Host(`sonarr.lab.test`)"}},"services":{}}}' | jq -r '.http.middlewares[].plugin | keys[0]' 2>/dev/null)"
+# the check after a change: a 404 that was not there before is Traefik refusing the middleware
+check "verify: nothing to compare without Traefik" 0 "$(_lib eval 'THEME_VERIFY_WAITS=0; _theme_verify sonarr.example.test 000; echo $?')"
+check "verify: a new 404 is a refusal"        1 "$(_lib eval '_traefik_probe() { echo 404; }; THEME_VERIFY_WAITS=0; _theme_verify sonarr.example.test 200 && echo 0 || echo $?')"
+check "verify: an answering app is fine"      0 "$(_lib eval '_traefik_probe() { echo 302; }; THEME_VERIFY_WAITS="0 0"; _theme_verify sonarr.example.test 200; echo $?')"
+check "verify: an app that answers 404 itself" 0 "$(_lib eval '_traefik_probe() { echo 404; }; THEME_VERIFY_WAITS=0; _theme_verify sonarr.example.test 404; echo $?')"
+mv -f "$_TY2.orig" "$_TY2"; rm -f "$_SBD/mine-theme.yml"
 rm -f "$_SBD/sonarr.yml" "$_SBD/sonarr-theme.yml" "$WORK/.data/themepark.json"
 # a container on the Homarr dashboard (the fake docker says the container and a Homarr exist; no port → the app library)
 _HC=$(sab_request GET /containers/IT-Tools/homarr | body_of)
