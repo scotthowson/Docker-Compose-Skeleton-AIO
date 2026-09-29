@@ -9941,10 +9941,15 @@ _run_host() {
     _sdv=$(systemctl --version 2>/dev/null | awk 'NR==1 {print $2}')
     if [[ -d /run/systemd/system ]] && command -v systemd-run >/dev/null 2>&1 && [[ "$_sdv" =~ ^[0-9]+$ ]] && (( _sdv >= 236 )); then
         _unit="dcs-hostrun-$$-$RANDOM"
+        local _args=("$@") _log _first
         shift 2
-        _run_privileged "$_pw" "$_user" systemd-run --quiet --wait --collect --unit "$_unit" "$@" || _rc=$?
+        _first=$(_run_privileged "$_pw" "$_user" systemd-run --quiet --wait --collect --unit "$_unit" "$@") || _rc=$?
         _run_privileged "$_pw" "$_user" journalctl --sync >/dev/null 2>&1 || true   # the unit's last lines may still be on their way to the journal
-        _run_privileged "$_pw" "$_user" journalctl --no-pager -o cat -u "$_unit.service" 2>/dev/null | grep -v -F "$_unit.service: " || true
+        _log=$(_run_privileged "$_pw" "$_user" journalctl --no-pager -o cat -u "$_unit.service" 2>/dev/null) || _log=""
+        # a unit that left nothing in the journal never ran (no bus in a container, a manager too old): run the command here, as before
+        if (( _rc != 0 )) && [[ -z "$_log" ]]; then _run_privileged "${_args[@]}"; return $?; fi
+        [[ -z "$_first" ]] || printf '%s\n' "$_first"
+        [[ -z "$_log" ]] || printf '%s\n' "$_log" | grep -v -F "$_unit.service: " || true
         return $_rc
     fi
     _run_privileged "$@"

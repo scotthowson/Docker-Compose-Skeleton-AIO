@@ -2230,6 +2230,18 @@ check "os update (arch): pacman's own database left alone" 0 "$(grep -c ' /var/l
 check "os update (arch): the private copy is removed"    0 "$(find "$_AT" -mindepth 1 | wc -l)"
 command rm -rf "$_PB"
 command rm -rf "$_AB" "$_AT" "$_AF" "$_AL"
+# _run_host (updates): the manager runs the command and its output comes from the journal; where it cannot start a unit, the command runs here
+_HB="$WORK/hostrun-bin"; mkdir -p "$_HB"
+printf '#!/bin/bash\n[[ "$1" == -n ]] && shift\nexec "$@"\n' > "$_HB/sudo"
+printf '#!/bin/bash\necho "Failed to start transient service unit: no bus" >&2; exit 1\n' > "$_HB/systemd-run"
+printf '#!/bin/bash\nexit 0\n' > "$_HB/journalctl"; chmod +x "$_HB"/*
+check "host run: no unit could start, the command runs here"   direct-run "$(PATH="$_HB:$PATH" _lib _run_host '' '' echo direct-run)"
+printf '#!/bin/bash\nexit 0\n' > "$_HB/systemd-run"
+printf '#!/bin/bash\n[[ "$*" == *--sync* ]] && exit 0\necho "from the journal"\n' > "$_HB/journalctl"
+check "host run: the unit's output is the journal's"           "from the journal" "$(PATH="$_HB:$PATH" _lib _run_host '' '' echo never-printed)"
+printf '#!/bin/bash\nexit 3\n' > "$_HB/systemd-run"
+check "host run: the unit's exit status is kept"               3 "$(PATH="$_HB:$PATH" _lib eval '_run_host "" "" true >/dev/null || echo $?')"
+command rm -rf "$_HB"
 # a machine without the hostname and crontab commands: Arch's minimal image has no hostname, and none of the DCS VM images has cron
 _NB="$WORK/nocmd-bin"; mkdir -p "$_NB"; ln -sf /usr/bin/* /bin/* "$_NB"/ 2>/dev/null || true; command rm -f "$_NB/hostname" "$_NB/crontab"
 command rm -f "$WORK/.data/cache/"*.http
