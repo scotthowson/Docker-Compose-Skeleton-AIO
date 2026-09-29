@@ -568,7 +568,7 @@ _cs_gather() {
         | ($bo[0] // []) as $bouncers
         | ($bouncers | map(select(.name == $bname)) | .[0] // null) as $dcsb
         | ($hb[0] // {}) as $hub
-        | { rows: $rows,
+        | { rows: $rows[0:50],
             version_number: $ver,
             allowlist_mechanism: $mech,
             counts: { decisions: ($rows | length), decisions_active: ($rows | map(select(.simulated | not)) | length), simulated: ($rows | map(select(.simulated)) | length),
@@ -987,11 +987,17 @@ handle_crowdsec_decisions_export() {
     if [[ "$fmt" == json ]]; then
         content=$(jq '[ .[] | {value, scope, type, duration, reason: .scenario, origin, country, as_number, as_name, expires_at} ]' <<< "$rows")
     else
-        content=$(jq -r '(["value","scope","type","duration","reason","origin","country","as","expires_at"] | @csv),
-            (.[] | [.value, .scope, .type, .duration, .scenario, .origin, .country, (if .as_number != "" then "AS" + .as_number + " " + .as_name else "" end), .expires_at] | @csv)' <<< "$rows")
+        # a cell that starts with = + - @ (or a tab or CR) would be run as a formula by a spreadsheet: an apostrophe keeps it text
+        content=$(jq -r 'def cell: if type == "string" and test("^[=+@\\t\\r-]") then "\u0027" + . else . end;
+            (["value","scope","type","duration","reason","origin","country","as","expires_at"] | @csv),
+            (.[] | [.value, .scope, .type, .duration, .scenario, .origin, .country, (if .as_number != "" then "AS" + .as_number + " " + .as_name else "" end), .expires_at] | map(cell) | @csv)' <<< "$rows")
     fi
-    _api_success "$(jq -nc --arg f "$fmt" --arg name "crowdsec-bans-$(date -u +%Y-%m-%d).$fmt" --argjson n "$n" --arg c "$content" --argjson now "$(date +%s)" \
-        '{format: $f, filename: $name, count: $n, content: $c, generated_at: $now}')"
+    # (the content can be far larger than one command-line argument may be: it goes in on stdin)
+    local out
+    out=$(printf '%s' "$content" | jq -Rsc --arg f "$fmt" --arg name "crowdsec-bans-$(date -u +%Y-%m-%d).$fmt" --argjson n "$n" --argjson now "$(date +%s)" \
+        '{format: $f, filename: $name, count: $n, content: ., generated_at: $now}' 2>/dev/null)
+    [[ "$out" == \{* ]] || { _api_error 500 "Could not build the export"; return; }
+    _api_success "$out"
 }
 
 # CSV (with a header line) → one "\037"-joined line per row, quotes and doubled quotes honoured
@@ -1148,9 +1154,10 @@ handle_crowdsec_alerts() {
     raw=$(_cs_alerts_raw "$w") || { _api_error 502 "CrowdSec did not answer: $(_cs_errline)"; return; }
     rows=$(_cs_decision_rows 2>/dev/null | jq -c '[.[] | select(.simulated | not) | .value]' 2>/dev/null); [[ "$rows" == \[* ]] || rows='[]'
     _api_success "$(jq -c --arg q "$q" --arg scenario "$scenario" --arg country "${country^^}" --arg ip "$ip" --arg sim "$sim" --arg w "$w" --argjson limit "$limit" --argjson offset "$offset" \
-        --argjson banned "$rows" --argjson asof "$(date +%s)" --argjson ret "$(_cs_retention_days)" "$_CS_JQ_DEFS$_CS_JQ_LABELS"'
+        --slurpfile banned_f <(printf '%s' "$rows") --argjson asof "$(date +%s)" --argjson ret "$(_cs_retention_days)" "$_CS_JQ_DEFS$_CS_JQ_LABELS"'
         def facet(f): group_by(f) | map({value: (.[0] | f), count: length}) | sort_by(-.count);
         (. // []) as $all
+        | ($banned_f[0] | map({key: ., value: true}) | from_entries) as $banned
         | ($q | ascii_downcase) as $ql
         # each facet is counted with every filter except its own, so choosing a scenario does not empty the list of scenarios
         | def ok_scenario: ($scenario == "" or .scenario == $scenario);
@@ -1158,7 +1165,7 @@ handle_crowdsec_alerts() {
         def ok_rest: ($ip == "" or .source.value == $ip)
                 and ($sim == "any" or (if $sim == "yes" then .simulated else (.simulated | not) end))
                 and ($ql == "" or ((.source.value + " " + .scenario + " " + .label + " " + .source.country + " " + .source.as_name + " " + .message) | ascii_downcase | contains($ql)));
-        [ $all[] | . as $raw | alert_row | . + {kind: ($raw.kind // ""), label: ($raw | alert_label), family: ($raw | alert_family), banned: ((.source.value as $v | $banned | index($v)) != null)} ] as $rows
+        [ $all[] | . as $raw | alert_row | . + {kind: ($raw.kind // ""), label: ($raw | alert_label), family: ($raw | alert_family), banned: ($banned[.source.value] // false)} ] as $rows
         | ($rows | map(select(ok_rest and ok_scenario and ok_country))) as $f
         | ($f | sort_by(.id) | reverse) as $ordered
         | ($rows | map(select(ok_rest and ok_scenario))) as $for_countries
