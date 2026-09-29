@@ -2335,6 +2335,7 @@ CST_ENV=(DOCKER_COMPOSE_CMD="docker compose" API_RATE_LIMIT=0 DCS_API_EFFECTIVE_
 CST_LOC=""; locale -a 2>/dev/null | grep -qiE '^c\.utf-?8$' && CST_LOC="C.UTF-8"
 [[ -z "$CST_LOC" ]] || CST_ENV+=(LC_ALL="$CST_LOC")
 CST_ADM=""; CST_VWR=""; CST_RAW=""; CST_ST=""; CST_BODY=""
+CST_PWN="/tmp/cst-pwn-$$"          # what the hostile text asks a command to make: short (the length of a path must not decide whether a text is refused), and never there
 CST_QN=0; declare -A CST_QLABEL=() CST_RST=() CST_RBODY=()
 export CST_RUN_BIN CST_RUN_API CST_RUN_Q CST_RUN_LOC
 
@@ -2480,7 +2481,7 @@ SH
 
 cst_teardown() {
     if [[ -n "${RIP_CS:-}" ]]; then kill "$RIP_CS" 2>/dev/null; wait "$RIP_CS" 2>/dev/null; RIP_CS=""; fi
-    rm -rf "$CST"
+    rm -rf "$CST" "$CST_PWN"
 }
 
 # ---- requests ---------------------------------------------------------------------------------------------------------------------
@@ -4358,16 +4359,16 @@ cst_plugin_refuse() {
         'client list only blanks ⇒ {"settings":{"client_trusted_ips":["   "]}} ⇒ not an IP address or network'
         'client list a comment ⇒ {"settings":{"client_trusted_ips":["1.2.3.4 # mine"]}} ⇒ not an IP address or network'
         'client list a line of YAML ⇒ {"settings":{"client_trusted_ips":["10.0.0.1\n    evil: true"]}} ⇒ not an IP address or network'
-        'client list a command substitution ⇒ {"settings":{"client_trusted_ips":["$(touch '"$CST"'/pwned-plugin)"]}} ⇒ not an IP address or network'
-        'client list backticks ⇒ {"settings":{"client_trusted_ips":["`touch '"$CST"'/pwned-plugin`"]}} ⇒ not an IP address or network'
-        'client list a second command ⇒ {"settings":{"client_trusted_ips":["1.2.3.4;touch '"$CST"'/pwned-plugin"]}} ⇒ not an IP address or network'
+        'client list a command substitution ⇒ {"settings":{"client_trusted_ips":["$(touch '"$CST_PWN"')"]}} ⇒ not an IP address or network'
+        'client list backticks ⇒ {"settings":{"client_trusted_ips":["`touch '"$CST_PWN"'`"]}} ⇒ not an IP address or network'
+        'client list a second command ⇒ {"settings":{"client_trusted_ips":["1.2.3.4;touch '"$CST_PWN"'"]}} ⇒ not an IP address or network'
         'client list a quote and a colon ⇒ {"settings":{"client_trusted_ips":["\"1.2.3.4\": {a: b}"]}} ⇒ not an IP address or network'
         "client list 65 entries ⇒ {\"settings\":{\"client_trusted_ips\":$many65}} ⇒ at most 64 entries"
         'forwarded list a string ⇒ {"settings":{"forwarded_headers_trusted_ips":"1.2.3.4"}} ⇒ forwarded_headers_trusted_ips: must be a list'
         'forwarded list null ⇒ {"settings":{"forwarded_headers_trusted_ips":null}} ⇒ forwarded_headers_trusted_ips: must be a list'
         'forwarded list a /33 ⇒ {"settings":{"forwarded_headers_trusted_ips":["1.2.3.4/33"]}} ⇒ forwarded_headers_trusted_ips: not an IP address or network'
         'forwarded list everything ⇒ {"settings":{"forwarded_headers_trusted_ips":["0.0.0.0/0"]}} ⇒ far too wide'
-        'forwarded list a command ⇒ {"settings":{"forwarded_headers_trusted_ips":["$(touch '"$CST"'/pwned-plugin)"]}} ⇒ not an IP address or network'
+        'forwarded list a command ⇒ {"settings":{"forwarded_headers_trusted_ips":["$(touch '"$CST_PWN"')"]}} ⇒ not an IP address or network'
         "forwarded list 129 entries ⇒ {\"settings\":{\"forwarded_headers_trusted_ips\":$many129}} ⇒ at most 128 entries"
     )
     for i in "${!cases[@]}"; do
@@ -4395,7 +4396,7 @@ cst_plugin_refuse() {
     cst_use "pr$i_long"; cst_t "plugin/refuse: a long name is cut in the message" '.message | length < 80'
     check "plugin/refuse: the middleware file is byte for byte what it was" "$sha0" "$(sha1sum < "$mw")"
     check "plugin/refuse: …no file was made anywhere (a backup, a state file, a temporary one, the result of a command)" "$n0" "$(cst_files)"
-    check "plugin/refuse: …no command in a value ran" no "$([[ -e "$CST/pwned-plugin" ]] && echo yes || echo no)"
+    check "plugin/refuse: …no command in a value ran" no "$([[ -e "$CST_PWN" ]] && echo yes || echo no)"
     cst_call admin GET /crowdsec/plugin
     cst_j "plugin/refuse: …and the settings are the ones there were" '.managed' false '.settings.mode' live '.backups' '[]'
 }
@@ -5459,7 +5460,7 @@ cst_notify_safety() {
     # -- through the whole pipeline, as far as the stand-in's template check allows (it stops at the first }} it sees, even inside a string: those are read below)
     cst_call admin PUT /crowdsec/notifications "{\"webhook_url\":\"$CST_HOOK\",\"settings\":{\"enabled\":true}}"
     python3 "$CST/tplscan.py" < "$http" > "$CST/base-scan.json"
-    cst_call admin PUT /crowdsec/notifications "$(jq -nc --arg p "$CST/pwn" '{settings: {
+    cst_call admin PUT /crowdsec/notifications "$(jq -nc --arg p "$CST_PWN" '{settings: {
         identity: {name: "Guard \"1\" \\ $(id) `id`"},
         message: {title: "\"q\" \\ $(touch \($p)) `touch \($p)` ; && | {{ .Nope {x {{ end {{ define \"x\"",
                   description: "line \"one\"\nurl: http://evil.example\n- name: evil\n{{ printf \"%s\" .Nope $(touch \($p))\n\\n \\\\ \\\"",
@@ -5470,17 +5471,17 @@ cst_notify_safety() {
     python3 "$CST/tplscan.py" < "$http" > "$CST/scan.json"
     check "notify/safety: the template is made of the same tokens as the default one" "0 [] $(jq -r '.top | join(",")' "$CST/base-scan.json")" \
         "$(jq -r --slurpfile b "$CST/base-scan.json" '"\(.tokens - $b[0].tokens | length) \(.bad | tojson) \(.top | join(","))"' "$CST/scan.json")"
-    check "notify/safety: nothing was run, nothing was created" "no no" "$([[ -e "$CST/pwn" ]] && echo yes || echo no) $([[ -n "$(find "$CST" "$CST/fake/rootfs" -maxdepth 1 -name 'pwn*' 2>/dev/null)" ]] && echo yes || echo no)"
+    check "notify/safety: nothing was run, nothing was created" "no no" "$([[ -e "$CST_PWN" ]] && echo yes || echo no) $([[ -n "$(find "$CST" "$CST/fake/rootfs" -maxdepth 1 -name 'pwn*' 2>/dev/null)" ]] && echo yes || echo no)"
     check "notify/safety: the file has no line of its own from the text (a key, a comment)" 0 "$(grep -c '^\(url: http://evil\|- name: evil\)' "$http")"
     check "notify/safety: …one url line, the webhook" "url: $CST_HOOK" "$(grep '^url:' "$http")"
     check "notify/safety: the header is one line of JSON that holds exactly what was typed" "yes" "$(sed -n 2p "$http" | sed 's/^# dcs-notify: //' | jq -e '.settings.message.description | startswith("line \"one\"\nurl: http://evil.example\n- name: evil")' >/dev/null 2>&1 && echo yes || echo no)"
     check "notify/safety: …and no line of the file starts with the typed text" 0 "$(grep -c '^\(line "one"\|v `id`\)' "$http")"
     cst_call admin GET /crowdsec/notifications
-    cst_j "notify/safety: the text comes back as typed" '.settings.message.footer' '$(touch '"$CST"'/pwn) \ " ` {domain}' '.settings.message.fields[0].name' 'n "q" $(id)' '.settings.mention.text' $'$(touch '"$CST"$'/pwn) "x" \\ `y`\nsecond line'
+    cst_j "notify/safety: the text comes back as typed" '.settings.message.footer' '$(touch '"$CST_PWN"') \ " ` {domain}' '.settings.message.fields[0].name' 'n "q" $(id)' '.settings.mention.text' $'$(touch '"$CST_PWN"$') "x" \\ `y`\nsecond line'
     cst_call admin POST /crowdsec/notifications/test '{"sample":"probe","include_mention":true}'
     cst_is "notify/safety: the message is sent" 200
     check "notify/safety: …and is valid JSON with the text in it" "yes" "$(cst_disc_last | jq -e '.embeds[0].footer.text | startswith("$(touch")' >/dev/null 2>&1 && echo yes || echo no)"
-    check "notify/safety: …still nothing created" no "$([[ -e "$CST/pwn" ]] && echo yes || echo no)"
+    check "notify/safety: …still nothing created" no "$([[ -e "$CST_PWN" ]] && echo yes || echo no)"
     # -- unicode
     cst_call admin PUT /crowdsec/notifications "$(jq -nc '{settings: {message: {title: "🛡️ Überfall — 攻撃 ‮rtl​zero-width́", description: "日本語\nעברית\n👨‍👩‍👧 ⚠️", footer: "©®™ ñ", fields: [{name: "ключ", value: "значение", inline: true}]}, identity: {name: "Wächter 🛡️"}}}')"
     cst_is "notify/safety: letters of every kind" 200
@@ -5777,7 +5778,7 @@ cst_security_audit() {
 
 # hostile text in every place the page lets a person type or send something
 cst_security_injection() {
-    local pwn="$CST/pwn" i j slot path body method p mark words want
+    local pwn="$CST_PWN" i j slot path body method p mark words want
     local -a desc=() amp=()
     cst_world data traefik --traefik
     rm -f "$pwn"
