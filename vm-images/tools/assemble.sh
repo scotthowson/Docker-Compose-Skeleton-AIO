@@ -23,7 +23,7 @@ rm -f "$W/rootfs/.dockerenv"
 
 K=$(ls "$W"/rootfs/boot/vmlinuz-* 2>/dev/null | sort -V | tail -1); [[ -n "$K" ]] || die "no kernel in /boot"
 KV=${K##*/vmlinuz-}
-[[ -f "$W/rootfs/boot/initrd.img-$KV" ]] || die "no initramfs for $KV"
+[[ -f "$W/rootfs/boot/initrd.img-$KV" || -f "$W/rootfs/boot/initramfs-$KV.img" ]] || die "no initramfs for $KV"
 echo "assemble: kernel $KV"
 
 # what mounts: the root by label, growing with the disk; the ESP stays unmounted unless asked for
@@ -33,24 +33,18 @@ LABEL=DCS-ESP /boot/efi vfat umask=0077,noauto,nofail 0 2
 FSTAB
 mkdir -p "$W/rootfs/boot/efi" "$W/rootfs/boot/grub"
 
-# the boot loader settings live in the image (/etc/default/grub.d/dcs.cfg), so update-grub in the VM and this first grub.cfg agree
-GRUB_CMDLINE_LINUX=""; GRUB_CMDLINE_LINUX_DEFAULT=""; GRUB_SERIAL_COMMAND="serial --unit=0 --speed=115200"
-# shellcheck disable=SC1090
-. "$W/rootfs/etc/default/grub.d/dcs.cfg"
-CMDLINE="root=LABEL=dcs-root ro $GRUB_CMDLINE_LINUX_DEFAULT $GRUB_CMDLINE_LINUX"
-cat > "$W/rootfs/boot/grub/grub.cfg" <<CFG
-set default=0
-set timeout=0
-if $GRUB_SERIAL_COMMAND; then
-    terminal_input serial console
-    terminal_output serial console
+# the first grub.cfg comes from the image's own generator, from the settings in /etc/default/grub.d (the same ones update-grub and
+# the Fedora kernel-install plugin use in the running VM)
+DCS_ROOT="$W/rootfs" bash "$W/rootfs/usr/local/sbin/dcs-grubcfg" || die "dcs-grubcfg failed"
+
+# SELinux distributions (Fedora): every file gets the label the policy in the image says it has, written as extended attributes that
+# mke2fs -d carries into the file system; the image then boots enforcing without a relabel of its own. Needs CAP_SYS_ADMIN in the
+# tools container (build.sh passes it).
+FC="$W/rootfs/etc/selinux/targeted/contexts/files/file_contexts"
+if [[ -f "$FC" ]]; then
+    echo "assemble: SELinux labels from the image's own policy"
+    setfiles -r "$W/rootfs" -F "$FC" "$W/rootfs" 2>"$W/setfiles.err" || { cat "$W/setfiles.err" >&2; die "setfiles failed (the tools container needs --cap-add SYS_ADMIN)"; }
 fi
-menuentry 'DCS' {
-    search --no-floppy --label --set=root dcs-root
-    linux /boot/vmlinuz-$KV $CMDLINE
-    initrd /boot/initrd.img-$KV
-}
-CFG
 
 echo "assemble: root file system image"
 ROOT_MB=$((DISK_MB - ESP_MB - 3))

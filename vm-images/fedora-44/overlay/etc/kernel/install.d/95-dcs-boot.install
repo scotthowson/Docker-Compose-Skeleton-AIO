@@ -1,0 +1,11 @@
+#!/bin/bash
+# kernel-install plugin of a DCS VM (runs after dracut has made the initramfs): the GRUB of an image reads /boot/vmlinuz-<version>
+# and /boot/grub/grub.cfg, so a kernel that dnf installs is copied there and the file is written again
+COMMAND="${1:-}"; KV="${2:-}"
+case "$COMMAND" in
+    add)    [[ -f "/lib/modules/$KV/vmlinuz" ]] && install -m 0755 "/lib/modules/$KV/vmlinuz" "/boot/vmlinuz-$KV" ;;
+    remove) rm -f "/boot/vmlinuz-$KV" "/boot/initramfs-$KV.img" ;;
+    *)      exit 0 ;;
+esac
+/usr/local/sbin/dcs-grubcfg || true
+exit 0

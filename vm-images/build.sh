@@ -42,7 +42,7 @@ echo "   $(docker image inspect "dcs-vm-$DISTRO-$ROLE:local" --format '{{.Size}}
 
 echo "== disk"
 cid=$(docker create "dcs-vm-$DISTRO-$ROLE:local" /bin/true); docker export "$cid" -o "$WORK/in/rootfs.tar"; docker rm "$cid" >/dev/null
-docker run --rm --tmpfs /tmp:size=9g -v "$WORK/in":/in:ro -v "$OUT":/out dcs-vm-tools:local assemble.sh "$NAME" "$SIZE" | sed 's/^/   /'
+docker run --rm --cap-add SYS_ADMIN --tmpfs /tmp:size=9g -v "$WORK/in":/in:ro -v "$OUT":/out dcs-vm-tools:local assemble.sh "$NAME" "$SIZE" | sed 's/^/   /'
 echo "   $OUT/$NAME.qcow2"
 
 if [[ $TEST == 1 ]]; then

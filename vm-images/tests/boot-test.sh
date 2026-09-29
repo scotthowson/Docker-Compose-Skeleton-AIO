@@ -14,11 +14,11 @@
 # =============================================================================
 set -u
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-IMG=""; RAM=2048; CPUS=2; GROW=8; KEEP=0; NET=1; HOLD=0; FW=bios; CUT=1; ROLE=node; FORCE_CUT=0
+IMG=""; RAM=2048; CPUS=2; GROW=8; KEEP=0; NET=1; HOLD=0; FW=bios; CUT=1; ROLE=node; FORCE_CUT=0; UUID=""
 while [[ $# -gt 0 ]]; do case "$1" in
     --ram) RAM=$2; shift 2 ;; --cpus) CPUS=$2; shift 2 ;; --grow-to) GROW=$2; shift 2 ;;
     --keep) KEEP=1; shift ;; --no-net) NET=0; shift ;; --hold) HOLD=1; KEEP=1; CUT=0; shift ;;
-    --firmware) FW=$2; shift 2 ;; --no-power-cut) CUT=0; shift ;; --power-cut) FORCE_CUT=1; shift ;; --role) ROLE=$2; shift 2 ;;
+    --firmware) FW=$2; shift 2 ;; --no-power-cut) CUT=0; shift ;; --power-cut) FORCE_CUT=1; shift ;; --role) ROLE=$2; shift 2 ;; --uuid) UUID=$2; shift 2 ;;
     -h|--help) sed -n "2,13p" "$0"; exit 0 ;; *) IMG=$1; shift ;;
 esac; done
 USAGE="usage: $0 IMAGE.qcow2 [--role node|hub] [--firmware bios|uefi] [--ram MB] [--cpus N] [--grow-to GB] [--keep] [--hold] [--no-net] [--no-power-cut]"
@@ -102,7 +102,7 @@ boot_vm() {
     # shellcheck disable=SC2054  # the commas are QEMU's option syntax, not array separators
     if [[ $FW == uefi ]]; then machine="q35,accel=$ACCEL"; fwargs=(-drive if=pflash,format=raw,readonly=on,file="$CODE" -drive if=pflash,format=raw,file="$T/$name.vars"); else machine="pc,accel=$ACCEL"; fi
     T0=$(now_ms)
-    qemu-system-x86_64 -name "dcs-boot-test-$name" -machine "$machine" -cpu $CPU -smp "$CPUS" -m "$RAM" "${fwargs[@]}" \
+    qemu-system-x86_64 -name "dcs-boot-test-$name" ${UUID:+-uuid "$UUID"} -machine "$machine" -cpu $CPU -smp "$CPUS" -m "$RAM" "${fwargs[@]}" \
         -device virtio-scsi-pci,id=scsi0 -drive file="$disk",if=none,id=d0,format=qcow2,discard=unmap -device scsi-hd,drive=d0,bus=scsi0.0,bootindex=1 \
         -drive file="$T/seed.iso",if=none,id=ci,media=cdrom,readonly=on,format=raw -device ide-cd,drive=ci \
         -netdev user,id=n0,hostfwd=tcp:127.0.0.1:$PORT-:22,hostfwd=tcp:127.0.0.1:$P_UI-:3000,hostfwd=tcp:127.0.0.1:$P_API-:9876 -device virtio-net-pci,netdev=n0,mac=$MAC \
@@ -167,7 +167,7 @@ if [[ $ROLE == hub ]]; then
     chk "the dashboard container runs"                       "${SSH[@]}" 'docker ps --format "{{.Names}}" | grep -qx DCS-UI'
     UIOK=0; for _ in $(seq 1 30); do curl -fsS -m 3 -o /dev/null "http://127.0.0.1:$P_UI/" 2>/dev/null && { UIOK=1; break; }; sleep 2; done
     chk "the dashboard answers from outside the VM (port 3000)" [ "$UIOK" = 1 ]
-    chk "the wizard is waiting for its first admin"          [ "$(curl -fsS -m 5 "http://127.0.0.1:$P_API/setup/status" 2>/dev/null | jq -r '.initialized // .setup_complete // "?"' 2>/dev/null)" = false ]
+    chk "the wizard is waiting for its first admin"          [ "$(curl -fsS -m 5 "http://127.0.0.1:$P_API/setup/status" 2>/dev/null | jq -r '(.initialized == false) and (.needs_admin == true)' 2>/dev/null)" = true ]
     chk "the console banner names the dashboard"             "${SSH[@]}" 'grep -q Dashboard /etc/issue.d/30-dcs-hub.issue'
     chk "the hub role is set"                                "${SSH[@]}" 'grep -q "^FLEET_ROLE=hub" ~/.Docker-Compose-Skeleton-AIO/.env'
     FACTS=$("${SSH[@]}" "bash -s" < "$HERE/facts.sh" 2>/dev/null)   # the numbers of a hub at work

@@ -1,9 +1,9 @@
 # =============================================================================
-# DCS VM images — Debian 13 (trixie): a single-purpose Docker host, nothing else.
+# DCS VM images — Ubuntu 26.04 LTS (resolute): a single-purpose Docker host, nothing else.
 # Two targets: `node` (what the hub clones for every stack) and `hub` (node + the DCS checkout and its first start).
 # This builds the root file system; ../build.sh turns it into a bootable disk.
 # =============================================================================
-FROM debian:trixie-slim AS node
+FROM ubuntu:26.04 AS node
 ARG DEBIAN_FRONTEND=noninteractive
 ENV LANG=C.UTF-8
 
@@ -17,8 +17,8 @@ RUN set -eux; \
     apt-get update; \
     apt-get install -y ca-certificates curl gnupg; \
     install -m 0755 -d /etc/apt/keyrings; \
-    curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc; \
-    echo "deb [signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian trixie stable" > /etc/apt/sources.list.d/docker.list; \
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc; \
+    echo "deb [signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu resolute stable" > /etc/apt/sources.list.d/docker.list; \
     apt-get update
 
 # The kernel first (its hooks must not meet a half-installed boot loader), with a compact initramfs
@@ -26,7 +26,7 @@ COPY common/overlay/etc/initramfs-tools/modules /etc/initramfs-tools/modules
 RUN set -eux; \
     apt-get install -y initramfs-tools zstd; \
     sed -i 's/^COMPRESS=.*/COMPRESS=zstd/; s/^MODULES=.*/MODULES=list/' /etc/initramfs-tools/initramfs.conf; \
-    apt-get install -y linux-image-cloud-amd64
+    apt-get install -y linux-image-virtual
 
 # The system: systemd with its own networking, ssh, sudo, the tools DCS itself runs on, the guest agent
 RUN set -eux; apt-get install -y \

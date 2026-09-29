@@ -20,6 +20,13 @@ if [[ -d /opt/dcs && ! -e "$dir" ]]; then
 fi
 [[ -x "$dir/setup.sh" ]] || { log "no DCS checkout in $dir"; exit 1; }
 
+# the VM's SMBIOS id is root-only in sysfs: keep a copy the API's user can read (the hub finds its own Proxmox VM by it).
+# The folder is the user's whatever happens to the copy: setup.sh writes its pid file there.
+mkdir -p "$dir/.data"
+tr -d ' \n' < /sys/class/dmi/id/product_uuid > "$dir/.data/product_uuid" 2>/dev/null || rm -f "$dir/.data/product_uuid"
+chown -R "$user:$(id -gn "$user")" "$dir/.data"
+command -v restorecon >/dev/null 2>&1 && restorecon -R "$dir" 2>/dev/null   # SELinux: a moved tree keeps its old labels
+
 log "starting DCS $(cat "$dir/VERSION" 2>/dev/null) as a hub for $user (the dashboard image is pulled the first time)"
 # no prompts, no account: the wizard in the browser makes the first admin and links Proxmox
 if ! runuser -u "$user" -- env HOME="$home" DCS_UNATTENDED=true DCS_FLEET_ROLE=hub bash -c "cd '$dir' && ./setup.sh"; then
