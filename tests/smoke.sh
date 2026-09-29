@@ -4012,6 +4012,7 @@ cst_mw_key() { sed -n 's/^ *crowdsecLapiKey: *//p' "$1" | tr -d '"'; }          
 # cst_tf_set BLOCK — the "experimental:" section of Traefik's static config becomes BLOCK (nothing: it is taken out); the file stays older than Traefik's start
 cst_tf_set() {
     local tf; tf="$(cst_tr)/traefik.yml"
+    cp -f "$ROOT/.templates/traefik/config/traefik.yml" "$tf"          # (always from the shipped file, whatever an earlier call made of it)
     awk -v blk="$1" '/^experimental:/ { if (blk != "") print blk; skip = 1; next } skip && /^[^ \t#]/ { skip = 0 } !skip { print }' "$tf" > "$tf.new" && mv -f "$tf.new" "$tf"
     touch -d '30 days ago' "$tf"; cst_uncache
 }
