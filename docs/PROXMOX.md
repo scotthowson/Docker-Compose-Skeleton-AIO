@@ -308,12 +308,12 @@ build; *New VM* can pick a different one per VM.
 
 (A purpose-built DCS image is already what a bake makes, so it is never baked.)
 
-A build from a cloud image spends most of its 85 seconds installing packages and Docker. Tick
+A build from a cloud image spends most of its minute and a half installing packages and Docker. Tick
 **Bake a DCS template first** in the VM settings (on by default) and the hub does that work
 once: it builds one VM from the chosen image, installs the tools, Docker and the guest agent,
 seals it (`cloud-init clean`, a fresh machine id and host keys) and turns it into a Proxmox
 **template** tagged `dcs;template`. Every VM for that image is then a **full clone** of the
-template plus its own cloud-init: the build takes about 40 seconds and only the fresh DCS code
+template plus its own cloud-init: the build takes about half a minute and only the fresh DCS code
 from the hub, the setup and the join run inside. The picker lists baked templates first; a
 template stays for the next builds, and one bake serves the wizard's whole layout. `GET
 /fleet/templates` lists them, `POST /fleet/templates` bakes one by hand, `DELETE
@@ -440,7 +440,7 @@ For a fresh Proxmox host, this is the entire path — no terminal on the VMs, no
    each becomes its own VM, named like the stack. Sizes and the operating system are prefilled;
    change them if you like.
 4. Press **Complete setup**. The hub bakes a DCS template once, then clones a VM per stack; each
-   card on the screen shows the build step by step. A VM takes about 25 seconds from a template.
+   card on the screen shows the build step by step. A VM takes about half a minute from a template.
 5. When the cards are green, the dashboard opens: the Stacks page lists every VM as a stack, the
    Containers page every container with its VM, and the Updates, Health, Images and the other
    pages show *Everywhere*.

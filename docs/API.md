@@ -416,7 +416,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | GET | `/fleet/join-tokens` | admin | The join codes that are still valid (admin) |
 | GET | `/fleet/provision/defaults` | admin | Suggested values for creating VMs: node and its size, storages, bridge, an address range next to the hub, the cloud image, the admin name, the guests Proxmox already has (a stack cannot get a VM named like one), the stacks that already run on this server (they stay on it) and whether the hub's firewalld keeps the API port closed (admin) |
 | GET | `/fleet/jobs` | admin | VMs being created (and the ones that finished or failed), newest first |
-| GET | `/fleet/templates` | admin | The DCS templates the hub baked (VMs cloned from one build in about 40 s) |
+| GET | `/fleet/templates` | admin | The DCS templates the hub baked (VMs cloned from one build in about half a minute) |
 | GET | `/fleet/versions` | admin | The hub's DCS version next to every member's, asked live; behind = members on another version, plus the last update round and whether one is queued for after the hub's restart |
 | GET | `/fleet/jobs/{id}` | admin | One VM job with its steps and log |
 | GET | `/proxmox/capabilities` | admin | What the API token may do on /: the privileges that creating VMs needs, and which are missing (POST with {url, token_id, token_secret, verify_tls} before the link is saved) |
