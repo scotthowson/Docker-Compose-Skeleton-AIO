@@ -1187,7 +1187,7 @@ handle_crowdsec_alerts() {
         | ($f | sort_by(.id) | reverse) as $ordered
         | ($rows | map(select(ok_rest and ok_scenario))) as $for_countries
         | { alerts: ($ordered[$offset:($offset + $limit)] | map(del(.meta))), count: ($f | length), total: ($all | length), window: $w, offset: $offset, limit: $limit, as_of: $asof, retention_days: $ret,
-            facets: { scenarios: ($rows | map(select(ok_rest and ok_country)) | facet(.scenario)),
+            facets: { scenarios: ($rows | map(select(ok_rest and ok_country)) | group_by(.scenario) | map({value: .[0].scenario, label: .[0].label, count: length}) | sort_by(-.count)),
                       countries: ($for_countries | map(select(.source.country != "")) | facet(.source.country)),
                       unknown_country: ($for_countries | map(select(.source.country == "")) | length) } }' <<< "$raw")"
 }
@@ -1285,7 +1285,7 @@ handle_crowdsec_allowlist() {
     _cs_target || return
     local mech raw='[]' native trusted state='{}' home="" envs client="${CLIENT_IP:-}"
     mech=$(_cs_allowlist_mechanism)
-    [[ "$mech" == native ]] && { raw=$(_cs_json allowlists 8 allowlists list 2>/dev/null) || raw='[]'; }
+    if [[ "$mech" == native ]]; then raw=$(_cs_json allowlists 8 allowlists list) || { _api_error 502 "CrowdSec did not answer: $(_cs_errline)"; return; }; fi
     native=$(jq -c --arg mine "$CROWDSEC_ALLOWLIST_NAME" "$_CS_JQ_ALLOW"' allow_entries($mine)' <<< "$raw" 2>/dev/null); [[ "$native" == \[* ]] || native='[]'
     trusted=$(_cs_trusted_entries)
     [[ -f "$CROWDSEC_SYNC_STATE" ]] && state=$(jq -c . "$CROWDSEC_SYNC_STATE" 2>/dev/null); [[ "$state" == \{* ]] || state='{}'
@@ -1354,12 +1354,18 @@ handle_crowdsec_allowlist_add() {
         if [[ "$(jq -r --arg n "$CROWDSEC_ALLOWLIST_NAME" 'map(select(.name == $n)) | length' <<< "$lists" 2>/dev/null)" != 1 ]]; then
             _cs_run out allowlists create "$CROWDSEC_ALLOWLIST_NAME" -d "Managed from the CrowdSec page of DCS" || { _api_error 502 "Could not create the allowlist: $(_cs_errline)"; return; }
         fi
+        if jq -e --arg n "$CROWDSEC_ALLOWLIST_NAME" --arg v "$val" 'map(select(.name == $n)) | (.[0].items // []) | map(.value) | index($v) != null' >/dev/null 2>&1 <<< "$lists"; then
+            _api_response 409 "$(jq -nc --arg v "$val" '{error: true, code: 409, reason: "already_allowed", message: ($v + " is already on the allowlist")}')"; return
+        fi
         local -a args=(allowlists add "$CROWDSEC_ALLOWLIST_NAME" "$val" "--comment=$comment")
         [[ -n "$exp_norm" ]] && args+=("--expiration=$exp_norm")
         if ! _cs_run out "${args[@]}"; then _api_error 502 "CrowdSec refused the entry: $(_cs_errline)"; return; fi
         removed=$(printf '%s\n%s\n' "$CS_ERR" "$out" | sed -n 's/^[^0-9]*\([0-9][0-9]*\) decisions\{0,1\} deleted by allowlists.*/\1/p' | tail -n 1); removed="${removed:-0}"
     else
         [[ -z "$exp_norm" ]] || { _api_error 400 "Expiry needs CrowdSec 1.6.8 or newer; this one only supports the permanent trusted list"; return; }
+        if _cs_trusted_entries | jq -e --arg v "$val" 'map(.value) | index($v) != null' >/dev/null 2>&1; then
+            _api_response 409 "$(jq -nc --arg v "$val" '{error: true, code: 409, reason: "already_allowed", message: ($v + " is already on the allowlist")}')"; return
+        fi
         _cs_trust_add "$val" "$comment"
         removed=$(_cs_unban_covered "$val")
     fi
@@ -1615,7 +1621,7 @@ handle_crowdsec_hub() {
         raw=$(_cs_json "hub_available_$kind" 120 "$kind" list -a) || { _api_error 502 "CrowdSec did not answer: $(_cs_errline)"; return; }
         _api_success "$(jq -c --arg k "$kind" --arg q "$q" --argjson limit "$limit" '
             (.[$k] // []) as $all | ($q | ascii_downcase) as $ql
-            | [ $all[] | {name, description: (.description // ""), version: (.local_version // ""), installed: ((.status // "") | startswith("enabled")), update: ((.status // "") | contains("update-available"))}
+            | [ $all[] | {name, description: (.description // ""), version: (.local_version // ""), installed: ((.status // "") | startswith("enabled")), update: (((.status // "") | startswith("enabled")) and ((.status // "") | contains("update-available")))}
                 | select($ql == "" or ((.name + " " + .description) | ascii_downcase | contains($ql))) ] as $f
             | {type: $k, items: ($f | sort_by([(.installed | not), .name]) | .[0:$limit]), count: ($f | length), total: ($all | length)}' <<< "$raw")"
         return
@@ -1668,8 +1674,21 @@ _cs_hub_change() {
         if [[ "$e" == *"can't find"* || "$e" == *"not found"* ]]; then _api_error 404 "$name is not in the hub"; else _api_error 502 "CrowdSec refused: $e"; fi
         return
     fi
-    _cs_hub_reload
+    # cscli exits 0 when it did nothing (an item another collection still needs stays installed): look at the result
+    local said="$CS_ERR$out" after here=no
+    if _cs_run after "$kind" list -o json; then
+        jq -e --arg k "$kind" --arg n "$name" '(.[$k] // []) | map(select(.name == $n and ((.status // "") | startswith("enabled")))) | length > 0' >/dev/null 2>&1 <<< "$after" && here=yes
+    else
+        here=unknown
+    fi
     _cs_cache_clear
+    if [[ "$verb" == remove && "$here" == yes ]]; then
+        local why; why=$(printf '%s\n' "$said" | grep -i -E 'cannot|can.t|used by|required|depend|still' | head -n 1 | cut -c1-200)
+        _api_response 409 "$(jq -nc --arg n "$name" --arg w "$why" '{error: true, code: 409, reason: "still_installed", message: ($n + " is still installed: CrowdSec keeps it because another installed collection needs it. Remove that collection instead." + (if $w != "" then " (" + $w + ")" else "" end))}')"
+        return
+    fi
+    if [[ "$verb" == install && "$here" == no ]]; then _api_error 502 "CrowdSec did not install $name"; return; fi
+    _cs_hub_reload
     ev="CROWDSEC_HUB"
     _api_audit_log "${CLIENT_IP:-unknown}" "$ev" "${AUTH_USERNAME:-}" "$verb $kind $name"
     _api_success "$(jq -nc --arg v "$verb" --arg k "$kind" --arg n "$name" '{success: true, action: $v, type: $k, name: $n, message: ($n + (if $v == "install" then " installed" else " removed" end) + " and CrowdSec reloaded")}')"
