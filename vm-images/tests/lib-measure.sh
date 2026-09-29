@@ -7,7 +7,7 @@ measure_print() {
     echo
     echo "== measured"
     printf "  %-22s %s\n" "system" "$(fact os) · kernel $(fact kernel)"
-    [[ -n "$t_ssh" ]] && printf "  %-22s %s\n" "boot to ssh" "$(awk "BEGIN {printf \"%.1f s\", $t_ssh/1000}") (guest: $(fact boot))"
+    [[ -n "$t_ssh" ]] && printf "  %-22s %s\n" "boot to ssh" "$(awk "BEGIN {printf \"%.1f s\", $t_ssh/1000}") (guest: $(fact boot); multi-user after $(fact target))"
     printf "  %-22s %s\n" "memory in use" "$(fact mem_used) MB (without the file cache) of $(fact mem_total) MB · $(fact procs) processes"
     printf "  %-22s %s\n" "biggest processes" "$(fact top)"
     printf "  %-22s %s\n" "disk" "$(fact root_used_mb) MB used of $(fact root_gb) GB${img:+ · image file $(du -h "$img" | cut -f1)}"

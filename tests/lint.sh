@@ -35,6 +35,29 @@ fi
 echo "API reference freshness"
 ./.scripts/api-docs.sh --check || rc=1
 
+# One list of VM images (vm-images/images.json) feeds the build, CI, the Proxmox importer, the API catalogue and the documentation:
+# a distribution added to one and forgotten in another is a lint error, not a surprise at release time
+echo "VM images: one list everywhere"
+if [[ -f vm-images/images.json ]]; then
+    mapfile -t IMG_IDS < <(jq -r '.images[].id' vm-images/images.json)
+    for id in "${IMG_IDS[@]}"; do
+        [[ -f "vm-images/$id/Dockerfile" ]] || { echo "  vm-images/images.json lists $id, but vm-images/$id/Dockerfile does not exist"; rc=1; }
+        grep -q -i -w -- "$id" docs/VM-IMAGES.md 2>/dev/null || { echo "  docs/VM-IMAGES.md does not mention $id"; rc=1; }
+        grep -q -i -w -- "$id" vm-images/README.md || { echo "  vm-images/README.md does not mention $id"; rc=1; }
+    done
+    for d in vm-images/*/Dockerfile; do
+        id=$(basename "$(dirname "$d")")
+        [[ "$id" == tools ]] && continue   # the disk assembly tools are not an image
+        printf '%s\n' "${IMG_IDS[@]}" | grep -qx -- "$id" || { echo "  $d exists, but $id is not in vm-images/images.json"; rc=1; }
+    done
+    jq -e '.default as $d | any(.images[]; .id == $d)' vm-images/images.json >/dev/null || { echo "  vm-images/images.json: the default is not in the list"; rc=1; }
+    want=$(printf '%s ' "${IMG_IDS[@]}" | sed 's/ $//')
+    have=$(sed -n 's/^KNOWN_DISTROS="\(.*\)"$/\1/p' vm-images/proxmox/dcs-proxmox.sh)
+    [[ "$want" == "$have" ]] || { echo "  vm-images/proxmox/dcs-proxmox.sh knows [$have], vm-images/images.json lists [$want]"; rc=1; }
+    api_ids=$(bash -c 'set --; source .scripts/api-server.sh >/dev/null 2>&1; _fleet_dcs_images_json x | jq -r "map(.id | ltrimstr(\"dcs-\")) | sort | join(\" \")"' 2>/dev/null)
+    [[ "$api_ids" == "$(printf '%s\n' "${IMG_IDS[@]}" | sort | tr '\n' ' ' | sed 's/ $//')" ]] || { echo "  the API catalogue offers [$api_ids], vm-images/images.json lists [$want]"; rc=1; }
+fi
+
 if docker compose version >/dev/null 2>&1; then
     echo "Compose validation: stacks"
     for d in Stacks/*/; do
@@ -65,7 +88,7 @@ else
 fi
 
 echo "JSON files"
-for f in .config/schema.json .config/template-gallery.json .templates/*/template.json .plugins/*/plugin.json .plugins/*/cards/*/card.json .api-auth/*.json; do
+for f in vm-images/images.json .config/schema.json .config/template-gallery.json .templates/*/template.json .plugins/*/plugin.json .plugins/*/cards/*/card.json .api-auth/*.json; do
     [[ -f "$f" ]] || continue
     jq -e . "$f" >/dev/null 2>&1 || { echo "  invalid JSON: $f"; rc=1; }
 done

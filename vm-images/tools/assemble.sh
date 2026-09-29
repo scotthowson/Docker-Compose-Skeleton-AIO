@@ -24,7 +24,16 @@ rm -f "$W/rootfs/.dockerenv"
 K=$(ls "$W"/rootfs/boot/vmlinuz-* 2>/dev/null | sort -V | tail -1); [[ -n "$K" ]] || die "no kernel in /boot"
 KV=${K##*/vmlinuz-}
 [[ -f "$W/rootfs/boot/initrd.img-$KV" || -f "$W/rootfs/boot/initramfs-$KV.img" ]] || die "no initramfs for $KV"
-echo "assemble: kernel $KV"
+echo "assemble: kernel $(ls "$W/rootfs/usr/lib/modules" 2>/dev/null | sort -V | tail -1 | grep . || echo "$KV")"
+
+# The image is built by the package manager, so /etc and /var are up to date with /usr: the stamps say so. Without them systemd
+# runs every ConditionNeedsUpdate= unit (hwdb, ldconfig, sysusers, catalog) once, at the first boot of every VM cloned from the image.
+# The stamp is one second newer than /usr (systemd asks whether /usr is newer than the stamp).
+usr_s=$(stat -c %Y "$W/rootfs/usr"); stamp_s=$((usr_s + 1))
+for d in etc var; do
+    printf '# This file was created by systemd-update-done. The timestamp below is the modification time of /usr/ for which the update of this directory was completed.\nTIMESTAMP_NSEC=%d000000000\n' "$stamp_s" > "$W/rootfs/$d/.updated"
+    touch -d "@$stamp_s" "$W/rootfs/$d/.updated"
+done
 
 # what mounts: the root by label, growing with the disk; the ESP stays unmounted unless asked for
 cat > "$W/rootfs/etc/fstab" <<FSTAB

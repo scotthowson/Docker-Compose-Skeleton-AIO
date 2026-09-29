@@ -6,7 +6,7 @@
 #   ./dcs-proxmox.sh hub  debian-13   [options]   creates and starts a hub VM (tags dcs;hub)
 #   ./dcs-proxmox.sh node ubuntu-26.04 --template  a template the hub clones for its stacks (tags dcs;template)
 #
-# ROLE    hub | node          DISTRO   debian-13 | ubuntu-26.04 | fedora-44
+# ROLE    hub | node          DISTRO   debian-13 | ubuntu-26.04 | fedora-44 | arch   (images.json in the release lists them)
 # --vmid ID            default: the next free id
 # --name NAME          default: dcs-hub / dcs-node-DISTRO
 # --storage STORAGE    where the disk goes (default: local-lvm when it exists)
@@ -17,6 +17,7 @@
 # --ssh-key FILE       public key(s) for it (default: /root/.ssh/*.pub of this host)
 # --password           ask for a password too (the VM works with the key alone)
 # --firmware bios|uefi default: bios (SeaBIOS)
+# --boot-menu          keep Proxmox's boot menu (it waits about 2.6 s for an ESC key at every boot; by default this script turns that off)
 # --template           make a template instead of a VM
 # --no-start           do not start the VM
 # --file PATH          use this image file (default: download from the release)
@@ -30,23 +31,29 @@ say()  { printf '\033[1;36m→\033[0m %s\n' "$*"; }
 ok()   { printf '\033[1;32m✓\033[0m %s%s\n' "$([[ ${DRY:-0} == 1 ]] && echo '(dry run, nothing done) ')" "$*"; }
 warn() { printf '\033[1;33m!\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31m✗\033[0m %s\n' "$*" >&2; exit 1; }
-usage() { sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+usage() { sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 
 [[ $# -ge 1 && ( "$1" == -h || "$1" == --help ) ]] && usage 0
 [[ $# -ge 2 ]] || usage 2
 ROLE=$1; DISTRO=$2; shift 2
 [[ "$ROLE" == hub || "$ROLE" == node ]] || die "the role is hub or node, not '$ROLE'"
-case "$DISTRO" in debian-13|ubuntu-26.04|fedora-44) ;; *) die "the distribution is debian-13, ubuntu-26.04 or fedora-44, not '$DISTRO'" ;; esac
+# The images this script knows. A release may carry more: its images.json lists them, and a distribution missing here is looked up there
+# (tests/lint.sh keeps this list equal to vm-images/images.json).
+KNOWN_DISTROS="debian-13 ubuntu-26.04 fedora-44 arch"
+if [[ " $KNOWN_DISTROS " != *" $DISTRO "* ]]; then
+    RELEASE_LIST=$(curl -fsSL "${DCS_RELEASE_URL:-https://github.com/scotthowson/dcs-orchestrator/releases/latest/download}/images.json" 2>/dev/null | grep -o '"id": *"[^"]*"' | sed 's/.*: *"//; s/"$//' | tr '\n' ' ') || RELEASE_LIST=""
+    [[ " $KNOWN_DISTROS $RELEASE_LIST " == *" $DISTRO "* ]] || die "the distribution is one of: ${RELEASE_LIST:-$KNOWN_DISTROS}, not '$DISTRO'"
+fi
 
 VMID=""; NAME=""; STORAGE=""; BRIDGE=vmbr0; CORES=2; MEM=""; DISK=""; IP=""; GW=""; DNS=""; CIUSER=dcs; SSHKEY=""; ASKPW=0
-FW=bios; TEMPLATE=0; START=1; FILE=""; BASE="$RELEASE_URL"; DRY=0
+FW=bios; TEMPLATE=0; START=1; FILE=""; BASE="$RELEASE_URL"; DRY=0; BOOTMENU=0
 while [[ $# -gt 0 ]]; do case "$1" in
     --vmid) VMID=$2; shift 2 ;; --name) NAME=$2; shift 2 ;; --storage) STORAGE=$2; shift 2 ;; --bridge) BRIDGE=$2; shift 2 ;;
     --cores) CORES=$2; shift 2 ;; --memory) MEM=$2; shift 2 ;; --disk) DISK=$2; shift 2 ;;
     --ip) IP=$2; shift 2 ;; --gateway) GW=$2; shift 2 ;; --dns) DNS=$2; shift 2 ;; --user) CIUSER=$2; shift 2 ;;
     --ssh-key) SSHKEY=$2; shift 2 ;; --password) ASKPW=1; shift ;; --firmware) FW=$2; shift 2 ;;
     --template) TEMPLATE=1; START=0; shift ;; --no-start) START=0; shift ;;
-    --file) FILE=$2; shift 2 ;; --base-url) BASE=${2%/}; shift 2 ;; --dry-run) DRY=1; shift ;;
+    --file) FILE=$2; shift 2 ;; --base-url) BASE=${2%/}; shift 2 ;; --dry-run) DRY=1; shift ;; --boot-menu) BOOTMENU=1; shift ;;
     -h|--help) usage 0 ;; *) die "unknown option: $1 (see --help)" ;;
 esac; done
 [[ "$FW" == bios || "$FW" == uefi ]] || die "--firmware is bios or uefi"
@@ -123,6 +130,9 @@ CREATE=(qm create "$VMID" --name "$NAME" --tags "$TAGS" --ostype l26 --memory "$
         --net0 "virtio,bridge=$BRIDGE" --serial0 socket --agent enabled=1 --onboot "$([[ $ROLE == hub && $TEMPLATE == 0 ]] && echo 1 || echo 0)"
         --ide2 "$STORAGE:cloudinit" --ciuser "$CIUSER" --ipconfig0 "$([[ -n $IP ]] && echo "ip=$IP,gw=$GW" || echo ip=dhcp)")
 [[ $FW == uefi ]] && CREATE+=(--machine q35 --bios ovmf --efidisk0 "$STORAGE:1,efitype=4m,pre-enrolled-keys=0")
+# Proxmox starts every VM with -boot menu=on: SeaBIOS and OVMF then wait about 2.6 s for an ESC key nobody presses, at every boot.
+# The rest of the option is Proxmox's own setting; only root may set 'args', which is who runs this script.
+[[ $BOOTMENU == 0 ]] && CREATE+=(--args "-boot menu=off,strict=on,reboot-timeout=1000")
 [[ -n "$DNS" ]] && CREATE+=(--nameserver "$DNS")
 [[ -n "$KEYFILE" ]] && CREATE+=(--sshkeys "$KEYFILE")
 [[ -n "$PW" ]] && CREATE+=(--cipassword "$PW")

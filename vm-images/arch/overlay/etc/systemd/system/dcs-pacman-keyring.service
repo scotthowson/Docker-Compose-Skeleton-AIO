@@ -1,0 +1,10 @@
+[Unit]
+Description=DCS: the pacman keyring of this VM (once, low priority)
+# every VM makes its own master key; the image carries none. The marker is written last, so a power cut half way starts it again.
+ConditionPathExists=!/var/lib/dcs-init/pacman-keyring
+
+[Service]
+Type=oneshot
+Nice=19
+IOSchedulingClass=idle
+ExecStart=/bin/bash -c 'rm -rf /etc/pacman.d/gnupg && pacman-key --init && pacman-key --populate archlinux && mkdir -p /var/lib/dcs-init && : > /var/lib/dcs-init/pacman-keyring && sync'

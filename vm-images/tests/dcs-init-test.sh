@@ -27,6 +27,7 @@ check "matched by MAC"                "MACAddress=bc:24:11:71:6f:be" "$(grep '^M
 check "address with prefix"           "Address=192.168.2.100/24" "$(grep '^Address=' "$N")"
 check "gateway"                       "Gateway=192.168.2.1" "$(grep '^Gateway=' "$N")"
 check "no DHCP when static"           0 "$(grep -c '^DHCP=' "$N")"
+check "IPv4 only: no IPv6 link-local" "LinkLocalAddressing=no" "$(grep '^LinkLocalAddressing=' "$N")"
 check "dns server"                    "nameserver 192.168.2.1" "$(grep '^nameserver' "$R/etc/resolv.conf")"
 check "search domain"                 "search howson.dev" "$(grep '^search' "$R/etc/resolv.conf")"
 check "the user is remembered"            dcs "$(cat "$R/var/lib/dcs-init/user")"
@@ -51,6 +52,7 @@ R=$T/dhcp; run "$R" dhcp >/dev/null
 N=$(ls "$R"/etc/systemd/network/10-dcs-*.network | head -1)
 check "dhcp requested"                "DHCP=ipv4" "$(grep '^DHCP=' "$N")"
 check "no static address"             0 "$(grep -c '^Address=' "$N")"
+check "IPv4 DHCP only: no IPv6 link-local" "LinkLocalAddressing=no" "$(grep '^LinkLocalAddressing=' "$N")"
 check "lower-case mac"                "MACAddress=bc:24:11:aa:bb:cc" "$(grep '^MACAddress=' "$N")"
 check "two keys"                      2 "$(grep -c -E '^ssh-(ed25519|rsa) ' "$R/home/dcs/.ssh/authorized_keys")"
 check "two dns servers"               "nameserver 9.9.9.9 nameserver 1.1.1.1" "$(grep '^nameserver' "$R/etc/resolv.conf" | tr '\n' ' ' | sed 's/ $//')"
@@ -65,6 +67,15 @@ check "second card /26"               "Address=172.16.4.9/26" "$(grep -h '^Addre
 check "second card has no gateway"    1 "$(grep -L '^Gateway=' "$R"/etc/systemd/network/10-dcs-*.network | wc -l)"
 check "one search line, both domains" "search lab.test corp.test" "$(grep '^search' "$R/etc/resolv.conf")"
 check "a single search line"          1 "$(grep -c '^search' "$R/etc/resolv.conf")"
+
+echo "dcs-init: a seed that asks for IPv6 keeps it"
+R=$T/v6; run "$R" ipv6 >/dev/null
+check "one file per card"             2 "$(ls "$R"/etc/systemd/network/10-dcs-*.network | wc -l)"
+check "dhcp4 + dhcp6: both"           "DHCP=yes" "$(grep -h '^DHCP=' "$R/etc/systemd/network/10-dcs-0.network")"
+check "dhcp6 card keeps IPv6 link-local" 0 "$(grep -c '^LinkLocalAddressing=' "$R/etc/systemd/network/10-dcs-0.network")"
+check "static6 card keeps IPv6 link-local" 0 "$(grep -c '^LinkLocalAddressing=' "$R/etc/systemd/network/10-dcs-1.network")"
+check "static6: the prefix length is kept" "Address=fd00:1::9/64" "$(grep -h '^Address=fd00' "$R/etc/systemd/network/10-dcs-1.network")"
+check "static6: the gateway"          "Gateway=fd00:1::1" "$(grep -h '^Gateway=fd00' "$R/etc/systemd/network/10-dcs-1.network")"
 
 echo
 printf '%d passed, %d failed\n' "$PASS" "$FAIL"

@@ -15,11 +15,11 @@
 # =============================================================================
 set -u
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-IMG=""; RAM=2048; CPUS=2; GROW=8; KEEP=0; NET=1; HOLD=0; FW=bios; CUT=1; ROLE=node; FORCE_CUT=0; UUID=""
+IMG=""; RAM=2048; CPUS=2; GROW=8; KEEP=0; NET=1; HOLD=0; FW=bios; CUT=1; ROLE=node; FORCE_CUT=0; UUID=""; SEEDBUS=ide
 while [[ $# -gt 0 ]]; do case "$1" in
     --ram) RAM=$2; shift 2 ;; --cpus) CPUS=$2; shift 2 ;; --grow-to) GROW=$2; shift 2 ;;
     --keep) KEEP=1; shift ;; --no-net) NET=0; shift ;; --hold) HOLD=1; KEEP=1; CUT=0; shift ;;
-    --firmware) FW=$2; shift 2 ;; --no-power-cut) CUT=0; shift ;; --power-cut) FORCE_CUT=1; shift ;; --role) ROLE=$2; shift 2 ;; --uuid) UUID=$2; shift 2 ;;
+    --firmware) FW=$2; shift 2 ;; --no-power-cut) CUT=0; shift ;; --power-cut) FORCE_CUT=1; shift ;; --role) ROLE=$2; shift 2 ;; --uuid) UUID=$2; shift 2 ;; --seed-bus) SEEDBUS=$2; shift 2 ;;
     -h|--help) sed -n "2,13p" "$0"; exit 0 ;; *) IMG=$1; shift ;;
 esac; done
 USAGE="usage: $0 IMAGE.qcow2 [--role node|hub] [--firmware bios|uefi] [--ram MB] [--cpus N] [--grow-to GB] [--keep] [--hold] [--no-net] [--no-power-cut]"
@@ -42,6 +42,10 @@ if [[ $FW == uefi ]]; then
 fi
 
 T=$(mktemp -d /tmp/dcs-boot.XXXXXX); PASS=0; FAIL=0; QPID=""
+# The disk is read the way Proxmox reads it: uncompressed (the image file is zstd-compressed for the download; QEMU decompresses reads
+# in its main loop and the guest's first second of reads stalls, which is not what a Proxmox VM does with the imported copy)
+qemu-img convert -f qcow2 -O qcow2 "$IMG" "$T/base.qcow2" || { echo "cannot read $IMG" >&2; rm -rf "$T"; exit 2; }
+BASE="$T/base.qcow2"
 cleanup() { [[ $HOLD == 1 ]] && return; [[ -n "$QPID" ]] && kill -0 "$QPID" 2>/dev/null && kill "$QPID" 2>/dev/null; [[ $KEEP == 1 ]] && echo "kept: $T" || rm -rf "$T"; }
 trap cleanup EXIT
 ok()  { PASS=$((PASS+1)); printf "  ok    %s\n" "$*"; }
@@ -92,12 +96,14 @@ free_port() { local p; for p in $(seq "$1" "$(( $1 + 100 ))"); do (echo >/dev/tc
 P_UI=$(free_port 23000); P_API=$(free_port $((P_UI + 1)))
 SSH=(ssh -i "$T/key" -p "$PORT" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=2 -o BatchMode=yes dcs@127.0.0.1)
 
+# the cloud-init drive: an IDE CD-ROM the way Proxmox attaches it by default (ide2), or a SCSI one on the disk'\''s virtio-scsi controller (scsi1)
+if [[ $SEEDBUS == scsi ]]; then SEEDDEV=scsi-cd; SEEDBUSARG="bus=scsi0.0"; else SEEDDEV=ide-cd; SEEDBUSARG=""; fi
 # boot_vm NAME — a throwaway disk on top of the image (larger, so the first boot has to grow into it) and QEMU on it;
 # the same NAME again boots the same disk. Sets QPID and T0.
 boot_vm() {
     local name=$1 disk="$T/$1.qcow2" machine fwargs=()
     if [[ ! -f "$disk" ]]; then
-        qemu-img create -q -f qcow2 -b "$IMG" -F qcow2 "$disk" "${GROW}G"
+        qemu-img create -q -f qcow2 -b "$BASE" -F qcow2 "$disk" "${GROW}G"
         [[ $FW == uefi ]] && cp "$VARS" "$T/$name.vars"
     fi
     # shellcheck disable=SC2054  # the commas are QEMU's option syntax, not array separators
@@ -105,7 +111,7 @@ boot_vm() {
     T0=$(now_ms)
     qemu-system-x86_64 -name "dcs-boot-test-$name" ${UUID:+-uuid "$UUID"} -machine "$machine" -cpu $CPU -smp "$CPUS" -m "$RAM" "${fwargs[@]}" \
         -device virtio-scsi-pci,id=scsi0 -drive file="$disk",if=none,id=d0,format=qcow2,discard=unmap -device scsi-hd,drive=d0,bus=scsi0.0,bootindex=1 \
-        -drive file="$T/seed.iso",if=none,id=ci,media=cdrom,readonly=on,format=raw -device ide-cd,drive=ci \
+        -drive file="$T/seed.iso",if=none,id=ci,media=cdrom,readonly=on,format=raw -device "$SEEDDEV",drive=ci${SEEDBUSARG:+,$SEEDBUSARG} \
         -netdev user,id=n0,hostfwd=tcp:127.0.0.1:$PORT-:22,hostfwd=tcp:127.0.0.1:$P_UI-:3000,hostfwd=tcp:127.0.0.1:$P_API-:9876 -device virtio-net-pci,netdev=n0,mac=$MAC \
         -device virtio-balloon-pci -device virtio-rng-pci \
         -chardev socket,id=qga0,path="$T/qga.sock",server=on,wait=off -device virtio-serial-pci -device virtserialport,chardev=qga0,name=org.qemu.guest_agent.0 \
@@ -141,6 +147,9 @@ chk "Docker Engine answers ($(get docker))"    [ "$(get docker)" != none ] && [ 
 chk "Docker Compose answers ($(get compose))"  [ "$(get compose)" != none ] && [ -n "$(get compose)" ]
 chk "no failed units${FACTS:+ ($(get failed))}" [ -z "$(get failed | tr -d " ")" ]
 chk "the guest agent runs"                     [ "$(get agent)" = active ]
+chk "ssh takes keys only, root cannot log in"  [ "$(get ssh_keys_only)" = yes ]
+chk "ssh has the one ed25519 host key"         [ "$(get ssh_hostkeys | tr -d " ")" = ssh_host_ed25519_key ]
+chk "the root account has no password"         [ "$(get root_locked)" = L ]
 chk "the disk grew into the larger virtual disk (${GROW} GB → $(get root_gb) GB)" [ "$(get root_gb)" -ge $((GROW - 1)) ]
 if [[ $NET == 1 ]]; then
     HW=$("${SSH[@]}" "timeout 120 docker run --rm ${DCS_TEST_REGISTRY:-}hello-world 2>&1 | grep -c 'Hello from Docker'" 2>/dev/null)
@@ -190,7 +199,7 @@ if [[ $CUT == 1 ]]; then
     if boot_vm cut && wait_ssh; then
         kill -9 "$QPID" 2>/dev/null; wait_gone=0; while kill -0 "$QPID" 2>/dev/null && (( wait_gone++ < 40 )); do sleep 0.1; done
         if boot_vm cut && wait_ssh; then
-            CUTFACTS=$("${SSH[@]}" "echo host=\$(hostname); echo ip=\$(ip -4 -o addr show eth0 | awk '{print \$4}'); sudo sshd -t && echo sshd=ok" 2>/dev/null)
+            CUTFACTS=$("${SSH[@]}" "echo host=\$(uname -n); echo ip=\$(ip -4 -o addr show eth0 | awk '{print \$4}'); sudo sshd -t && echo sshd=ok" 2>/dev/null)
             chk "after a power cut at the first boot: the host name is still the seed's"  grep -q '^host=bootcheck$' <<<"$CUTFACTS"
             chk "after a power cut at the first boot: the address is still the seed's"    grep -q '^ip=10.0.2.15/24$' <<<"$CUTFACTS"
             chk "after a power cut at the first boot: ssh has its host keys"              grep -q '^sshd=ok$' <<<"$CUTFACTS"

@@ -18,6 +18,15 @@ STATE=$R/var/lib/dcs-init
 SEED=${DCS_SEED_DIR:-$R/run/dcs-seed}
 NETDIR=$R/etc/systemd/network
 log() { echo "dcs-init: $*"; }
+# The VM's own ssh host key: one ed25519 key (every client since 2014 speaks it; a RSA key would take 0.2-0.8 s to make at every first boot).
+# sshd_config.d/10-dcs.conf tells sshd to use only this one.
+hostkeys() {
+    local k=$R/etc/ssh/ssh_host_ed25519_key
+    find "$R/etc/ssh" -maxdepth 1 -name 'ssh_host_*' -size 0 -delete 2>/dev/null
+    [[ -s $k ]] && return 0
+    rm -f "$k" "$k.pub"
+    ssh-keygen -q -t ed25519 -N '' -f "$k" >/dev/null 2>&1 || true
+}
 
 mkdir -p "$STATE" "$SEED" "$R/etc/sudoers.d"
 
@@ -34,7 +43,7 @@ if [[ -z "${DCS_SEED_DIR:-}" ]]; then
         if [[ ! -e "$STATE/instance-id" ]]; then
             mkdir -p "$NETDIR"
             printf '[Match]\nName=eth0 en* ens* eno*\n\n[Network]\nDHCP=yes\n' > "$NETDIR/10-dcs.network"
-            find "$R/etc/ssh" -maxdepth 1 -name 'ssh_host_*' -size 0 -delete 2>/dev/null; ssh-keygen -A >/dev/null 2>&1 || true
+            hostkeys
             sync
         fi
         exit 0
@@ -71,7 +80,7 @@ host=$(val hostname); fqdn=$(val fqdn)
 [[ -n "$fqdn" ]] || fqdn=$host
 mkdir -p "$R/etc"
 echo "$host" > "$R/etc/hostname"
-$TEST || hostname "$host" 2>/dev/null || true
+$TEST || { echo "$host" > /proc/sys/kernel/hostname 2>/dev/null || hostname "$host" 2>/dev/null || true; }   # the kernel's name now (Arch has no hostname binary)
 {
     echo "127.0.0.1 localhost"
     echo "127.0.1.1 $fqdn $host"
@@ -100,7 +109,7 @@ $TEST || chown "$user:$user" "$home/.ssh/authorized_keys" 2>/dev/null
 chmod 600 "$home/.ssh/authorized_keys"
 pw=$(val password)
 if ! $TEST && [[ -n "$pw" && "$pw" == \$* ]]; then usermod -p "$pw" "$user" 2>/dev/null || true; fi
-$TEST || { find "$R/etc/ssh" -maxdepth 1 -name 'ssh_host_*' -size 0 -delete 2>/dev/null; ssh-keygen -A >/dev/null 2>&1 || true; }
+$TEST || hostkeys
 
 # --- network: version 1 config -> systemd-networkd + resolv.conf -------------------------------------------
 NC="$SEED/network-config"
@@ -111,6 +120,7 @@ if [[ -s "$NC" ]]; then
         BEGIN { nic = 0 }
         function q(s) { gsub(/^[[:space:]]+|[[:space:]]+$/, "", s); gsub(/^["\x27]|["\x27]$/, "", s); return s }
         function prefix(mask,   n, i, p, bits, b) {
+            if (mask !~ /[.]/) return mask + 0                      # already a prefix length (IPv6: 64)
             n = split(mask, o, "."); bits = 0
             for (i = 1; i <= n; i++) { b = o[i] + 0; while (b > 0) { bits += b % 2; b = int(b / 2) } }
             return bits
@@ -122,14 +132,18 @@ if [[ -s "$NC" ]]; then
             if (dhcp) printf "DHCP=%s\n", dhcp > f
             if (addr != "") printf "Address=%s/%s\n", addr, plen > f
             if (gw != "") printf "Gateway=%s\n", gw > f
+            # An IPv4-only card gets no IPv6 link-local address: its duplicate-address check keeps network-online.target (and Docker,
+            # which waits for it) back for one to two seconds at every boot. A seed with an IPv6 subnet keeps the defaults.
+            if (!v6) printf "LinkLocalAddressing=no\n" > f
             close(f); nic++
         }
-        /^[[:space:]]*- type: physical/ { flush(); mac = ""; addr = ""; gw = ""; plen = 24; dhcp = ""; sect = "phys"; next }
+        /^[[:space:]]*- type: physical/ { flush(); mac = ""; addr = ""; gw = ""; plen = 24; dhcp = ""; v6 = 0; sect = "phys"; next }
         /^[[:space:]]*- type: nameserver/ { flush(); mac = ""; sect = "ns"; next }
         sect == "phys" && /mac_address:/ { sub(/.*mac_address:/, ""); mac = tolower(q($0)); next }
         sect == "phys" && /- type: dhcp4/ { dhcp = "ipv4"; next }
-        sect == "phys" && /- type: dhcp6/ { dhcp = (dhcp == "ipv4" ? "yes" : "ipv6"); next }
-        sect == "phys" && /address:/ { sub(/.*address:/, ""); addr = q($0); next }
+        sect == "phys" && /- type: dhcp6/ { dhcp = (dhcp == "ipv4" ? "yes" : "ipv6"); v6 = 1; next }
+        sect == "phys" && /- type: (static6|ipv6)/ { v6 = 1; next }
+        sect == "phys" && /address:/ { sub(/.*address:/, ""); addr = q($0); if (addr ~ /:/) v6 = 1; next }
         sect == "phys" && /netmask:/ { sub(/.*netmask:/, ""); plen = prefix(q($0)); next }
         sect == "phys" && /gateway:/ { sub(/.*gateway:/, ""); gw = q($0); next }
         END { flush() }

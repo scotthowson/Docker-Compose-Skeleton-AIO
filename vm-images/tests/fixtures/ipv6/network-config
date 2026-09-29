@@ -1,0 +1,22 @@
+version: 1
+config:
+    - type: physical
+      name: eth0
+      mac_address: 'bc:24:11:66:66:66'
+      subnets:
+      - type: dhcp4
+      - type: dhcp6
+    - type: physical
+      name: eth1
+      mac_address: 'bc:24:11:77:77:77'
+      subnets:
+      - type: static
+        address: '10.1.1.9'
+        netmask: '255.255.255.0'
+      - type: static6
+        address: 'fd00:1::9'
+        netmask: '64'
+        gateway: 'fd00:1::1'
+    - type: nameserver
+      address:
+      - '9.9.9.9'

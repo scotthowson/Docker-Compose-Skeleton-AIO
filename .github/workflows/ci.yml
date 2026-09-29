@@ -49,5 +49,8 @@ jobs:
       - name: VM images — the first-boot script against the seeds Proxmox writes
         run: vm-images/tests/dcs-init-test.sh
 
+      - name: VM images — the boot menu writer against every distribution's kernel names
+        run: vm-images/tests/dcs-grubcfg-test.sh
+
       - name: Setup dry run
         run: ./setup.sh --dry-run

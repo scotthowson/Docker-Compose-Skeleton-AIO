@@ -1,0 +1,40 @@
+{
+  "schema": 1,
+  "default": "debian-13",
+  "roles": ["node", "hub"],
+  "images": [
+    {
+      "id": "debian-13",
+      "name": "Debian 13",
+      "release": "trixie",
+      "family": "apt",
+      "summary": "the default, the smallest and quickest to start",
+      "kernel": "Debian's cloud kernel"
+    },
+    {
+      "id": "ubuntu-26.04",
+      "name": "Ubuntu 26.04 LTS",
+      "release": "resolute",
+      "family": "apt",
+      "summary": "long-term support, the most familiar",
+      "kernel": "Ubuntu's virtual kernel"
+    },
+    {
+      "id": "fedora-44",
+      "name": "Fedora 44",
+      "release": "44",
+      "family": "dnf",
+      "summary": "SELinux enforcing, the newest packages of the three release distributions",
+      "kernel": "Fedora's kernel"
+    },
+    {
+      "id": "arch",
+      "name": "Arch Linux",
+      "release": "rolling",
+      "family": "pacman",
+      "rolling": true,
+      "summary": "rolling: the newest kernel and Docker on the day the image is built",
+      "kernel": "Arch's linux"
+    }
+  ]
+}

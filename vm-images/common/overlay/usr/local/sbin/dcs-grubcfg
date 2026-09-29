@@ -12,7 +12,18 @@ for f in "$R"/etc/default/grub.d/*.cfg; do [[ -f "$f" ]] && . "$f"; done
 CMDLINE="root=LABEL=dcs-root ro $GRUB_CMDLINE_LINUX_DEFAULT $GRUB_CMDLINE_LINUX"
 OUT="$R/boot/grub/grub.cfg"; mkdir -p "$R/boot/grub"
 
-kernels=(); while IFS= read -r k; do kernels+=("${k##*/vmlinuz-}"); done < <(ls -1 "$R"/boot/vmlinuz-* 2>/dev/null | sort -V -r)
+# The newest kernel first. Debian, Ubuntu and Fedora put the version in the file name (vmlinuz-6.12.48+deb13-cloud-amd64); Arch names the
+# kernel package (vmlinuz-linux, vmlinuz-linux-lts): its version is the name of the directory under /usr/lib/modules whose pkgbase is that name.
+sortkey() {
+    local n=$1 d
+    if [[ $n == [0-9]* ]]; then echo "$n"; return; fi
+    for d in "$R"/usr/lib/modules/*/pkgbase; do
+        [[ -f $d && "$(cat "$d" 2>/dev/null)" == "$n" ]] && { basename "$(dirname "$d")"; return; }
+    done
+    echo "$n"
+}
+kernels=(); while IFS= read -r k; do kernels+=("${k#*|}"); done < <(
+    for f in "$R"/boot/vmlinuz-*; do [[ -f $f ]] || continue; n=${f##*/vmlinuz-}; printf '%s|%s\n' "$(sortkey "$n")" "$n"; done | sort -V -r -t'|' -k1,1)
 [[ ${#kernels[@]} -gt 0 ]] || { echo "dcs-grubcfg: no kernel in $R/boot" >&2; exit 1; }
 
 {

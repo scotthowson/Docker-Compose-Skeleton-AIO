@@ -1,0 +1,13 @@
+# After a kernel package (and after mkinitcpio's own hook, which copies the kernel to /boot and builds the initramfs):
+# /boot/grub/grub.cfg is written again for the kernels in /boot. The boot loader itself sits outside the root file system.
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Operation = Remove
+Type = Path
+Target = usr/lib/modules/*/vmlinuz
+
+[Action]
+Description = DCS: writing /boot/grub/grub.cfg
+When = PostTransaction
+Exec = /usr/local/sbin/dcs-grubcfg

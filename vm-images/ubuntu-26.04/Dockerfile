@@ -52,7 +52,7 @@ RUN set -eux; \
         systemctl enable "$u" >/dev/null 2>&1 || { echo "cannot enable $u" >&2; systemctl enable "$u"; exit 1; }; \
         systemctl is-enabled "$u" >/dev/null 2>&1 || [ "$u" = systemd-repart.service ] || { echo "$u is not enabled" >&2; exit 1; }; \
     done; \
-    systemctl mask apt-daily.timer apt-daily-upgrade.timer systemd-binfmt.service proc-sys-fs-binfmt_misc.automount >/dev/null 2>&1; \
+    systemctl mask apt-daily.timer apt-daily-upgrade.timer systemd-binfmt.service proc-sys-fs-binfmt_misc.automount var-lib-machines.mount >/dev/null 2>&1; \
     ln -sf /usr/share/zoneinfo/UTC /etc/localtime; echo UTC > /etc/timezone; \
     echo "LANG=C.UTF-8" > /etc/default/locale; \
     : > /etc/machine-id; : > /etc/motd; \

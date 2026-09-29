@@ -48,7 +48,7 @@ RUN set -eux; \
         systemctl enable "$u" >/dev/null 2>&1 || { echo "cannot enable $u" >&2; systemctl enable "$u"; exit 1; }; \
     done; \
     (systemctl enable systemd-timesyncd.service || systemctl enable chronyd.service) >/dev/null 2>&1; \
-    systemctl mask systemd-binfmt.service proc-sys-fs-binfmt_misc.automount dnf-makecache.timer >/dev/null 2>&1; \
+    systemctl mask systemd-binfmt.service proc-sys-fs-binfmt_misc.automount dnf-makecache.timer var-lib-machines.mount sshd-keygen@rsa.service sshd-keygen@ecdsa.service >/dev/null 2>&1; \
     ln -sf /usr/share/zoneinfo/UTC /etc/localtime; echo 'LANG=C.UTF-8' > /etc/locale.conf; \
     : > /etc/machine-id; : > /etc/motd; rm -f /etc/ssh/ssh_host_*; \
     sed -i 's/^SELINUX=.*/SELINUX=enforcing/' /etc/selinux/config

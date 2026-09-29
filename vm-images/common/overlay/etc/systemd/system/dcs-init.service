@@ -2,7 +2,7 @@
 Description=DCS first-boot setup from the Proxmox cloud-init drive
 DefaultDependencies=no
 After=local-fs.target systemd-udevd.service
-Before=network-pre.target systemd-networkd.service ssh.service sysinit.target
+Before=network-pre.target systemd-networkd.service ssh.service sshd.service sysinit.target
 Wants=network-pre.target
 
 [Service]

@@ -1,0 +1,10 @@
+[Unit]
+Description=DCS: the pacman keyring of this VM, a minute after the boot (not part of it)
+ConditionPathExists=!/var/lib/dcs-init/pacman-keyring
+
+[Timer]
+OnBootSec=60
+AccuracySec=5
+
+[Install]
+WantedBy=timers.target
