@@ -32,10 +32,13 @@ mkdir -p "$STATE" "$SEED" "$R/etc/sudoers.d"
 
 # --- the seed: a CD-ROM labelled cidata (Proxmox names it so) ---------------------------------------
 if [[ -z "${DCS_SEED_DIR:-}" ]]; then
-    dev=""
-    for _ in $(seq 1 60); do
+    dev=""; cd_seen=false
+    for i in $(seq 1 60); do
         dev=$(blkid -L cidata 2>/dev/null || true)
         [[ -n "$dev" ]] && break
+        compgen -G '/sys/block/sr*' >/dev/null && cd_seen=true
+        # no optical drive at all after 3 s: this VM has no cloud-init drive, so do not wait the whole 15 s for one
+        [[ $i -ge 12 && $cd_seen == false ]] && break
         sleep 0.25
     done
     if [[ -z "$dev" ]] || ! mount -t iso9660 -o ro "$dev" "$SEED" 2>/dev/null; then

@@ -1,0 +1,8 @@
+#!/bin/sh
+# initramfs hook of a DCS VM (Debian, Ubuntu): the initramfs finds the root file system by its label and mounts it. The 13 MB hardware
+# database that udev's own hook copies into it is not needed for that; without it the image is 3 to 4 MB smaller, and so is what GRUB reads.
+PREREQ="udev"
+prereqs() { echo "$PREREQ"; }
+case "$1" in prereqs) prereqs; exit 0 ;; esac
+rm -f "${DESTDIR}/usr/lib/udev/hwdb.bin" "${DESTDIR}/lib/udev/hwdb.bin" "${DESTDIR}/etc/udev/hwdb.bin"
+exit 0

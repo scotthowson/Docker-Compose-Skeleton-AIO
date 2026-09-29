@@ -147,6 +147,8 @@ chk "Docker Engine answers ($(get docker))"    [ "$(get docker)" != none ] && [ 
 chk "Docker Compose answers ($(get compose))"  [ "$(get compose)" != none ] && [ -n "$(get compose)" ]
 chk "no failed units${FACTS:+ ($(get failed))}" [ -z "$(get failed | tr -d " ")" ]
 chk "the guest agent runs"                     [ "$(get agent)" = active ]
+chk "the VGA console (noVNC) has a login prompt" [ "$(get getty_vga)" = active ]
+chk "the kernel logged no errors"              [ "$(get kernel_errors)" = 0 ]
 chk "ssh takes keys only, root cannot log in"  [ "$(get ssh_keys_only)" = yes ]
 chk "ssh has the one ed25519 host key"         [ "$(get ssh_hostkeys | tr -d " ")" = ssh_host_ed25519_key ]
 chk "the root account has no password"         [ "$(get root_locked)" = L ]

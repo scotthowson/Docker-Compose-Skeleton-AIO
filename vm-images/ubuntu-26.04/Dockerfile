@@ -22,7 +22,7 @@ RUN set -eux; \
     apt-get update
 
 # The kernel first (its hooks must not meet a half-installed boot loader), with a compact initramfs
-COPY common/overlay/etc/initramfs-tools/modules /etc/initramfs-tools/modules
+COPY common/overlay/etc/initramfs-tools/ /etc/initramfs-tools/
 RUN set -eux; \
     apt-get install -y initramfs-tools zstd; \
     sed -i 's/^COMPRESS=.*/COMPRESS=zstd/; s/^MODULES=.*/MODULES=list/' /etc/initramfs-tools/initramfs.conf; \
@@ -48,7 +48,7 @@ RUN echo 'GRUB_CMDLINE_LINUX="${GRUB_CMDLINE_LINUX} apparmor=1 security=apparmor
 RUN set -eux; \
     chmod 755 /usr/local/sbin/dcs-init; chmod 440 /etc/sudoers.d/* 2>/dev/null || true; \
     for u in dcs-init.service systemd-networkd.service systemd-timesyncd.service systemd-repart.service ssh.service \
-             qemu-guest-agent.service docker.service containerd.service fstrim.timer serial-getty@ttyS0.service; do \
+             qemu-guest-agent.service docker.service containerd.service fstrim.timer serial-getty@ttyS0.service getty@tty1.service; do \
         systemctl enable "$u" >/dev/null 2>&1 || { echo "cannot enable $u" >&2; systemctl enable "$u"; exit 1; }; \
         systemctl is-enabled "$u" >/dev/null 2>&1 || [ "$u" = systemd-repart.service ] || { echo "$u is not enabled" >&2; exit 1; }; \
     done; \

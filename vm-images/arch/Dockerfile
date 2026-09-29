@@ -36,7 +36,7 @@ RUN set -eux; \
     chmod 755 /usr/local/sbin/dcs-init; chmod 440 /etc/sudoers.d/* 2>/dev/null || true; \
     rm -rf /etc/initramfs-tools; \
     for u in dcs-init.service dcs-pacman-keyring.timer systemd-networkd.service systemd-timesyncd.service systemd-repart.service sshd.service \
-             qemu-guest-agent.service docker.service containerd.service fstrim.timer serial-getty@ttyS0.service; do \
+             qemu-guest-agent.service docker.service containerd.service fstrim.timer serial-getty@ttyS0.service getty@tty1.service; do \
         systemctl enable "$u" >/dev/null 2>&1 || { echo "cannot enable $u" >&2; systemctl enable "$u"; exit 1; }; \
         systemctl is-enabled "$u" >/dev/null 2>&1 || [ "$u" = systemd-repart.service ] || { echo "$u is not enabled" >&2; exit 1; }; \
     done; \
@@ -46,12 +46,17 @@ RUN set -eux; \
     rm -f /etc/ssh/ssh_host_*
 
 # Leave nothing behind that the running VM does not need: the package cache, the sync databases (pacman -Sy fetches them), the keyring
-# of the build (every VM makes its own: dcs-pacman-keyring.service), headers and introspection data no VM compiles against
+# of the build (every VM makes its own: dcs-pacman-keyring.service), headers and introspection data no VM compiles against, containerd's load
+# tester, Python's static library, and the kernel's second copy (mkinitcpio's hook keeps the one in /boot; a kernel package brings it back)
+# (Arch's pacman hook builds the hardware database when a package brings hwdb sources; the container image has none, and systemd 262's
+# imds generator complains about it at every boot.)
 RUN set -eux; \
+    systemd-hwdb --usr update; \
     pacman -Scc --noconfirm >/dev/null 2>&1 || true; \
     rm -rf /var/cache/pacman/pkg/* /var/lib/pacman/sync/* /etc/pacman.d/gnupg /var/log/* /tmp/* /root/.cache /var/lib/systemd/random-seed \
            /usr/include /usr/share/gir-1.0 /usr/lib/python3*/test /usr/lib/python3*/idlelib /usr/lib/python3*/tkinter /usr/lib/python3*/turtledemo \
-           /usr/lib/python3*/lib2to3
+           /usr/lib/python3*/lib2to3 /usr/lib/python3*/config-*/libpython*.a \
+           /usr/bin/containerd-stress /usr/lib/modules/*/vmlinuz /usr/lib/systemd/system-generators/systemd-ssh-generator
 
 # =============================================================================
 # The hub image: the same system, the DCS checkout (the build context "dcs") and the service that starts it at the

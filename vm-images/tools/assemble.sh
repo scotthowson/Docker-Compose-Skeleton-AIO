@@ -21,6 +21,11 @@ tar -xpf "$IN" -C "$W/rootfs" --numeric-owner
 # docker export adds its own runtime files; the VM sets these up itself at boot
 rm -f "$W/rootfs/.dockerenv"
 
+# The overlay comes from a git checkout: built on a machine whose umask is 002 its files and directories arrive group-writable, /usr and /etc
+# among them (CI's are not). sshd on Arch then refuses to run /usr/bin/userdbctl for AuthorizedKeysCommand, "bad ownership or modes for
+# directory /usr", at every login. No package ships a group-writable directory (or file) in these trees except the setgid and sticky ones.
+find "$W/rootfs/usr" "$W/rootfs/etc" "$W/rootfs/opt" "$W/rootfs/boot" -xdev \( -type d -o -type f \) -perm -g+w ! -perm -2000 ! -perm -1000 -exec chmod g-w {} +
+
 K=$(ls "$W"/rootfs/boot/vmlinuz-* 2>/dev/null | sort -V | tail -1); [[ -n "$K" ]] || die "no kernel in /boot"
 KV=${K##*/vmlinuz-}
 [[ -f "$W/rootfs/boot/initrd.img-$KV" || -f "$W/rootfs/boot/initramfs-$KV.img" ]] || die "no initramfs for $KV"
@@ -93,6 +98,7 @@ python3 "$HERE/grub-bios-embed.py" "$W/disk.raw" "$BIOS_START" "$BIOS_SECT" /usr
 [[ "${DCS_KEEP_RAW:-0}" == 1 ]] && cp --sparse=always "$W/disk.raw" "$OUT/$NAME.raw"
 
 echo "assemble: qcow2"
-qemu-img convert -f raw -O qcow2 -c -o compression_type=zstd "$W/disk.raw" "$OUT/$NAME.qcow2"
+# 1 MiB clusters: the compression sees more at a time (5 % smaller than the default 64 KiB); Proxmox converts the disk on import anyway
+qemu-img convert -f raw -O qcow2 -c -o compression_type=zstd,cluster_size=1048576 "$W/disk.raw" "$OUT/$NAME.qcow2"
 ( cd "$OUT" && sha256sum "$NAME.qcow2" > "$NAME.qcow2.sha256" )
 echo "assemble: done — $(du -h "$OUT/$NAME.qcow2" | cut -f1) qcow2, $(du -h "$W/disk.raw" | cut -f1) as a raw disk"

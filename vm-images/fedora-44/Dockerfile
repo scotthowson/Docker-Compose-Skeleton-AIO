@@ -42,9 +42,9 @@ RUN set -eux; dnf -y install docker-ce docker-ce-cli containerd.io docker-compos
 COPY common/overlay/ /tmp/overlay/
 RUN tar -C /tmp/overlay -cf - . | tar --keep-directory-symlink -C / -xf - && rm -rf /tmp/overlay
 RUN set -eux; \
-    chmod 755 /usr/local/sbin/dcs-init /usr/local/sbin/dcs-grubcfg; chmod 440 /etc/sudoers.d/* 2>/dev/null || true; \
+    chmod 755 /usr/local/sbin/dcs-init /usr/local/sbin/dcs-grubcfg; chmod 440 /etc/sudoers.d/* 2>/dev/null || true; rm -rf /etc/initramfs-tools; \
     for u in dcs-init.service systemd-networkd.service systemd-repart.service sshd.service qemu-guest-agent.service \
-             docker.service containerd.service fstrim.timer serial-getty@ttyS0.service; do \
+             docker.service containerd.service fstrim.timer serial-getty@ttyS0.service getty@tty1.service; do \
         systemctl enable "$u" >/dev/null 2>&1 || { echo "cannot enable $u" >&2; systemctl enable "$u"; exit 1; }; \
     done; \
     (systemctl enable systemd-timesyncd.service || systemctl enable chronyd.service) >/dev/null 2>&1; \
@@ -57,6 +57,7 @@ RUN set -eux; \
 RUN set -eux; \
     dnf clean all; rm -rf /var/cache/dnf /var/lib/dnf/repos /var/log/* /tmp/* /root/.cache /usr/share/doc /usr/share/man /usr/share/info /usr/share/locale \
         /usr/share/licenses 2>/dev/null || true; \
+    rm -f /usr/lib/systemd/system-generators/systemd-ssh-generator; \
     find /usr /var -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
 
 # =============================================================================
