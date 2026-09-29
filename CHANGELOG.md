@@ -8,11 +8,20 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - **Purpose-built VM images** (`vm-images/`, [docs/VM-IMAGES.md](docs/VM-IMAGES.md)). A hub image that boots straight into the
-  setup wizard and a node image the hub clones for every stack, for Debian 13, Ubuntu 26.04 LTS and Fedora 44 (SELinux
-  enforcing): a Docker host and nothing else, 250-440 MB to download, a fresh disk of 640-830 MB, ssh a few seconds after
-  power-on. One disk boots under BIOS and UEFI; `dcs-init` reads the Proxmox seed in place of cloud-init and survives a power
-  cut at its first boot; `dcs-proxmox.sh` turns a release image into a hub VM or a node template on the Proxmox host in one
-  command. `build.sh` builds and tests them (17 checks per node image, 22 per hub image) without root.
+  setup wizard and a node image the hub clones for every stack, for Debian 13, Ubuntu 26.04 LTS, Fedora 44 (SELinux
+  enforcing) and Arch Linux (rolling): a Docker host and nothing else, 240-470 MB to download, a fresh disk of 640-980 MB, ssh
+  about five seconds after `qm start` on Proxmox (1-2 s of userspace on KVM). One disk boots under BIOS and UEFI; `dcs-init` reads
+  the Proxmox seed in place of cloud-init and survives a power cut at its first boot; the Proxmox console shows a login (and a hub's
+  address); `dcs-proxmox.sh` turns a release image into a hub VM or a node template on the Proxmox host in one command. `build.sh`
+  builds and tests them without root: 22 checks per node image, 27 per hub image, on both firmwares.
+- **`vm-images/images.json` is the one list of images.** The build, the CI matrix, the Proxmox importer, the API's image catalogue and
+  the documentation read it or are checked against it; `tests/lint.sh` fails when a distribution is in one place and not in another.
+- **VMs start 2.6 s sooner.** Proxmox starts every VM with `-boot menu=on` and SeaBIOS as well as OVMF wait about 2.6 s for an ESC key,
+  at every boot. `dcs-proxmox.sh` switches it off (`--boot-menu` keeps it); the hub tries it on the VMs it builds (only `root@pam` may
+  set `args`: a token is refused once, the build's log says so and gives the `qm set` line), and a VM's *Info* sheet shows the state.
+- **Docker Engine on Arch.** The engine card and its update know Arch's `docker` package: the newest version is read from a private
+  copy of the sync databases (the system's own are never refreshed alone) and the update is a whole-system `pacman -Syu`, with the
+  engine restarted, or a reboot note when the kernel changed.
 - **The hub builds VMs from the purpose-built images.** The OS pickers (the wizard's VM step, *New VM stack*) list the DCS
   images first and recommend them; a VM from one is created straight from the imported image (nothing to install, so
   nothing to bake), and the hub has Proxmox check the download against the release's `SHA256SUMS`. The images come from the
@@ -33,8 +42,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 
 - **CI runs on Ubuntu 24.04 and 26.04** (what `ubuntu-latest` becomes on October 19, 2026) with Node 24 actions, checks the
-  first-boot script of the VM images, and a new workflow builds all six images, boots each on BIOS and UEFI under KVM and,
-  on a version tag, attaches them to the release with `SHA256SUMS` and `dcs-proxmox.sh`. A provisioning check that looked at
+  first-boot script and the boot menu writer of the VM images, and a new workflow (its matrix comes from `images.json`) builds all
+  eight images, boots each on BIOS and UEFI under KVM and, on a version tag, attaches them to the release with `SHA256SUMS`,
+  `images.json` and `dcs-proxmox.sh`. A provisioning check that looked at
   a stack before its VM had started it (one red run in twenty) now waits for it.
 - **The heartbeat answers in about 30 ms instead of 70.** `GET /ping` is answered before the ~26,000 lines of handlers are
   parsed (they were about 85 of every request's 105 ms), with the same response function, so the headers are the ones every
@@ -43,12 +53,28 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **The Health page read "Disk 0%" on a VM or an LXC.** `GET /system/metrics` and `GET /disks` left the root file system out, which is
+  all a VM has; they report it when there is no other.
+- **A fresh or rebooted server was a C or a B for days.** The uptime factor of the system health score is a step now (a day 100, an
+  hour 90, ten minutes 75), not a ramp over seven days.
+- **`api-server.sh --stop` could not stop a listener started with a relative path** (`.scripts/api-server.sh --bind …`, as CLAUDE.md
+  shows): it called the process foreign and left it running.
+- **`docker inspect` of a missing container** printed an empty line first on Docker 29, so `setup.sh` took a fresh machine for one
+  with an earlier install ("Containers from an earlier install", `--force-recreate`); `status.sh` and the API's alert check had the same fallback.
+- **The hub's own VM card said "No DCS linked".** It says *This hub* now.
 - **A stopped Docker no longer reads as "All Systems Healthy".** `docker ps` failing (the daemon stopped, the socket
   refused) was taken for an empty container list, so a host with no Docker at all scored 100/A. `GET /health` now says
   `critical` with `docker: {reachable: false, error}`, `GET /health/score` puts the stacks at 0 and caps the total at
   39 (F), and the fleet views do the same for every VM whose Docker does not answer.
 - **A VM that does not answer is no longer left out of the fleet's verdict.** `GET /health?fleet=1` counts it as
   `unreachable` and reports at least `degraded`; the fleet score is capped when a reachable VM has no Docker.
+- **A dashboard on another origin got a CORS error from a cached answer.** The response cache kept the headers of the request that
+  filled it, `Access-Control-Allow-Origin` included, and served them to whoever asked next. The cache now drops the stored CORS
+  lines and writes the ones for the request it answers.
+- **A container whose health check failed was listed as healthy.** `Up 2 hours (unhealthy)` contains "healthy", and that test came
+  first. "Unhealthy" is looked for first now. The uptime of a container is counted from when it started (`Up 3 hours`), not from when it was created.
+- **Two sign-ins at the same moment could lose a session.** Every change to `tokens.json` (storing a token, the clean-up of expired ones,
+  revoking a user's tokens) takes the same lock now; before, two requests could each read the file and one write undid the other.
 
 ## [3.9.9] - 2026-09-29
 

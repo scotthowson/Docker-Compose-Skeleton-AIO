@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1000" height="556" viewBox="0 0 1000 556" role="img" aria-labelledby="vi-title vi-desc">
   <title id="vi-title">Purpose-built VM images, new in 4.0</title>
-  <desc id="vi-desc">Two images. The node image is a Docker host and nothing else: Docker CE with Compose, the QEMU guest agent, ssh with keys only, a small first-boot service that reads the Proxmox cloud-init drive, BIOS and UEFI boot from one disk, and a disk that grows with the VM. The hub image is the node image plus DCS, which starts as a hub on the first boot. Debian 13 has both images; Ubuntu 26.04 has a node image; Fedora is planned. Debian 13 node: about 250 MB download, 640 MB on disk, 150 MB of memory idle with Docker running. Ubuntu 26.04 node: 388 MB, 817 MB, 156 MB. Measured on Proxmox 9.2.</desc>
+  <desc id="vi-desc">Two images. The node image is a Docker host and nothing else: Docker Engine with Compose, the QEMU guest agent, ssh with keys only, a small first-boot service that reads the Proxmox cloud-init drive, BIOS and UEFI boot from one disk, and a disk that grows with the VM. The hub image is the node image plus DCS, which starts as a hub on the first boot. Debian 13, Ubuntu 26.04, Fedora 44 and Arch Linux each have both images. Node images: Debian 236 MB download, 635 MB on disk, 140 MB of memory idle with Docker running; Ubuntu 373 MB, 815 MB, 190 MB; Fedora 383 MB, 829 MB, 210 MB; Arch Linux 419 MB, 975 MB, 180 MB.</desc>
   <style>
     .sans { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
@@ -29,7 +29,7 @@
     <text class="h" x="20" y="56">A Docker host and nothing else</text>
     <text class="p" x="20" y="76">Made for the VMs of a fleet.</text>
     <g class="li">
-      <circle cx="26" cy="102" r="3" fill="#22d3ee"/><text x="38" y="106.5">Docker CE with the Compose plugin, from Docker's repository</text>
+      <circle cx="26" cy="102" r="3" fill="#22d3ee"/><text x="38" y="106.5">Docker Engine with the Compose plugin</text>
       <circle cx="26" cy="126" r="3" fill="#22d3ee"/><text x="38" y="130.5">QEMU guest agent · ssh with keys only</text>
       <circle cx="26" cy="150" r="3" fill="#22d3ee"/><text x="38" y="154.5"><tspan class="mono" font-size="12" fill="#e6edf7">dcs-init</tspan> reads Proxmox's cloud-init drive:</text>
       <text x="38" y="172">host name, user, keys, network, DNS</text>
@@ -59,24 +59,31 @@
   <g class="sans">
     <text class="cap" x="32" y="356" fill="#8ea0bd">WHICH IMAGES EXIST</text>
     <!-- header row -->
-    <rect class="cell" x="32" y="368" width="150" height="36" rx="8"/>
-    <rect class="cell" x="190" y="368" width="254" height="36" rx="8"/><text class="th" x="206" y="391">Debian 13</text>
-    <rect class="cell" x="452" y="368" width="254" height="36" rx="8"/><text class="th" x="468" y="391">Ubuntu 26.04</text>
-    <rect class="cell" x="714" y="368" width="254" height="36" rx="8"/><text class="th" x="730" y="391">Fedora</text>
+    <rect class="cell" x="32" y="368" width="96" height="36" rx="8"/>
+    <rect class="cell" x="136" y="368" width="202" height="36" rx="8"/><text class="th" x="150" y="391">Debian 13</text>
+    <rect class="cell" x="346" y="368" width="202" height="36" rx="8"/><text class="th" x="360" y="391">Ubuntu 26.04</text>
+    <rect class="cell" x="556" y="368" width="202" height="36" rx="8"/><text class="th" x="570" y="391">Fedora 44</text>
+    <rect class="cell" x="766" y="368" width="202" height="36" rx="8"/><text class="th" x="780" y="391">Arch Linux</text>
     <!-- node row -->
-    <rect class="cell" x="32" y="412" width="150" height="54" rx="8"/><text class="th" x="48" y="444" fill="#22d3ee">Node</text>
-    <rect class="cell" x="190" y="412" width="254" height="54" rx="8" stroke="#22d3ee" stroke-opacity="0.45"/>
-    <text x="206" y="436" xml:space="preserve"><tspan class="num">~250 MB</tspan><tspan class="unit"> download · </tspan><tspan class="num">~640 MB</tspan><tspan class="unit"> disk</tspan></text>
-    <text x="206" y="455" xml:space="preserve"><tspan class="num">~150 MB</tspan><tspan class="unit"> RAM idle · ssh in seconds</tspan></text>
-    <rect class="cell" x="452" y="412" width="254" height="54" rx="8" stroke="#22d3ee" stroke-opacity="0.45"/>
-    <text x="468" y="436" xml:space="preserve"><tspan class="num">388 MB</tspan><tspan class="unit"> download · </tspan><tspan class="num">817 MB</tspan><tspan class="unit"> disk</tspan></text>
-    <text x="468" y="455" xml:space="preserve"><tspan class="num">156 MB</tspan><tspan class="unit"> RAM idle</tspan></text>
-    <rect class="cell" x="714" y="412" width="254" height="54" rx="8"/><text class="p" x="730" y="444">planned</text>
+    <rect class="cell" x="32" y="412" width="96" height="54" rx="8"/><text class="th" x="48" y="444" fill="#22d3ee">Node</text>
+    <rect class="cell" x="136" y="412" width="202" height="54" rx="8" stroke="#22d3ee" stroke-opacity="0.45"/>
+    <text x="150" y="436" xml:space="preserve"><tspan class="num">236 MB</tspan><tspan class="unit"> download</tspan></text>
+    <text x="150" y="455" xml:space="preserve"><tspan class="num">635 MB</tspan><tspan class="unit"> disk · </tspan><tspan class="num">140 MB</tspan><tspan class="unit"> RAM</tspan></text>
+    <rect class="cell" x="346" y="412" width="202" height="54" rx="8" stroke="#22d3ee" stroke-opacity="0.45"/>
+    <text x="360" y="436" xml:space="preserve"><tspan class="num">373 MB</tspan><tspan class="unit"> download</tspan></text>
+    <text x="360" y="455" xml:space="preserve"><tspan class="num">815 MB</tspan><tspan class="unit"> disk · </tspan><tspan class="num">190 MB</tspan><tspan class="unit"> RAM</tspan></text>
+    <rect class="cell" x="556" y="412" width="202" height="54" rx="8" stroke="#22d3ee" stroke-opacity="0.45"/>
+    <text x="570" y="436" xml:space="preserve"><tspan class="num">383 MB</tspan><tspan class="unit"> download</tspan></text>
+    <text x="570" y="455" xml:space="preserve"><tspan class="num">829 MB</tspan><tspan class="unit"> disk · </tspan><tspan class="num">210 MB</tspan><tspan class="unit"> RAM</tspan></text>
+    <rect class="cell" x="766" y="412" width="202" height="54" rx="8" stroke="#22d3ee" stroke-opacity="0.45"/>
+    <text x="780" y="436" xml:space="preserve"><tspan class="num">419 MB</tspan><tspan class="unit"> download</tspan></text>
+    <text x="780" y="455" xml:space="preserve"><tspan class="num">975 MB</tspan><tspan class="unit"> disk · </tspan><tspan class="num">180 MB</tspan><tspan class="unit"> RAM</tspan></text>
     <!-- hub row -->
-    <rect class="cell" x="32" y="474" width="150" height="40" rx="8"/><text class="th" x="48" y="499" fill="#34d399">Hub</text>
-    <rect class="cell" x="190" y="474" width="254" height="40" rx="8" stroke="#34d399" stroke-opacity="0.45"/><text class="li" x="206" y="499">node image + DCS</text>
-    <rect class="cell" x="452" y="474" width="254" height="40" rx="8"/><text class="p" x="468" y="499">planned</text>
-    <rect class="cell" x="714" y="474" width="254" height="40" rx="8"/><text class="p" x="730" y="499">planned</text>
+    <rect class="cell" x="32" y="474" width="96" height="40" rx="8"/><text class="th" x="48" y="499" fill="#34d399">Hub</text>
+    <rect class="cell" x="136" y="474" width="202" height="40" rx="8" stroke="#34d399" stroke-opacity="0.45"/><text class="li" x="150" y="499">node image + DCS</text>
+    <rect class="cell" x="346" y="474" width="202" height="40" rx="8" stroke="#34d399" stroke-opacity="0.45"/><text class="li" x="360" y="499">node image + DCS</text>
+    <rect class="cell" x="556" y="474" width="202" height="40" rx="8" stroke="#34d399" stroke-opacity="0.45"/><text class="li" x="570" y="499">node image + DCS</text>
+    <rect class="cell" x="766" y="474" width="202" height="40" rx="8" stroke="#34d399" stroke-opacity="0.45"/><text class="li" x="780" y="499">node image + DCS</text>
   </g>
-  <text class="sans unit" x="32" y="538">Measured on Proxmox 9.2. RAM idle: memory in use without the file cache, with Docker running.</text>
+  <text class="sans unit" x="32" y="538">Measured with the images' boot test and on Proxmox 9.2. RAM idle: memory in use without the file cache, with Docker running.</text>
 </svg>

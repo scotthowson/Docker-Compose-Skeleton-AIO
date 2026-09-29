@@ -52,5 +52,10 @@ jobs:
       - name: VM images — the boot menu writer against every distribution's kernel names
         run: vm-images/tests/dcs-grubcfg-test.sh
 
+      - name: Documentation — every link, image and anchor resolves; the template catalogue is current
+        run: |
+          python3 docs/tools/check-links.py
+          bash docs/tools/gen-templates.sh --check
+
       - name: Setup dry run
         run: ./setup.sh --dry-run

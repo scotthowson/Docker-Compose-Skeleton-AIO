@@ -195,10 +195,10 @@ walk you through it.
 ## 💿 VM images <sup>new in 4.0</sup>
 
 <p align="center">
-  <img src="docs/img/vm-images.svg" alt="Two purpose-built VM images: the hub image and the node image, for Debian 13 and Ubuntu 26.04, with Fedora planned" width="100%">
+  <img src="docs/img/vm-images.svg" alt="Two purpose-built VM images, the hub image and the node image, for Debian 13, Ubuntu 26.04, Fedora 44 and Arch Linux" width="100%">
 </p>
 
-DCS 4.0 brings its own VM images: small, single-purpose Docker hosts built from `vm-images/`.
+DCS 4.0 brings its own VM images (Debian 13, Ubuntu 26.04, Fedora 44 and Arch Linux): small, single-purpose Docker hosts built from `vm-images/`.
 
 - **Node image:** a ready Docker host for the VMs of a fleet. Docker CE with the Compose plugin, the QEMU guest
   agent, ssh with keys only, and a tiny first-boot service that reads the Proxmox cloud-init drive.
@@ -207,13 +207,17 @@ DCS 4.0 brings its own VM images: small, single-purpose Docker hosts built from 
 
 | Node image | Download | On disk | RAM idle, Docker running |
 |---|---|---|---|
-| Debian 13 | about 250 MB | about 640 MB | about 150 MB |
-| Ubuntu 26.04 | 388 MB | 817 MB | 156 MB |
+| Debian 13 | 236 MB | 635 MB | ~140 MB |
+| Ubuntu 26.04 LTS | 373 MB | 815 MB | ~190 MB |
+| Fedora 44 (SELinux enforcing) | 383 MB | 829 MB | ~210 MB |
+| Arch Linux (rolling) | 419 MB | 975 MB | ~180 MB |
 
-<sub>Measured on Proxmox 9.2. A Debian 13 node answers ssh a few seconds after power-on. Fedora images are planned.</sub>
+<sub>Measured with the images' own boot test (KVM) and on Proxmox 9.2, where each answers ssh about five seconds after `qm start`.
+The hub image adds DCS: about 47 MB more to download.</sub>
 
-Download links and a one-line importer are coming with 4.0. Until then you can build and import the hub
-image yourself: [Getting started → A](docs/GETTING-STARTED.md#a-the-hub-vm-image-on-proxmox).
+Every release carries the images, their checksums and `dcs-proxmox.sh`, which puts one on your Proxmox host in a single command
+(`bash dcs-proxmox.sh hub debian-13`). The details, and which distribution to pick: [VM images](docs/VM-IMAGES.md); the walk-through:
+[Getting started → A](docs/GETTING-STARTED.md#a-the-hub-vm-image-on-proxmox).
 
 ## 📚 Documentation
 
