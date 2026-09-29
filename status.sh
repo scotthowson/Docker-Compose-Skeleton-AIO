@@ -236,7 +236,7 @@ for stack in "${STACK_ORDER[@]}"; do
     stack_running=0
     if (( container_count > 0 )); then
         for cid in "${container_ids[@]}"; do
-            state="$(docker inspect --format '{{.State.Status}}' "$cid" 2>/dev/null || echo "unknown")"
+            state="$(docker inspect --format '{{.State.Status}}' "$cid" 2>/dev/null | grep . || echo "unknown")"
             [[ "$state" == "running" ]] && ((stack_running++))
         done
     fi
@@ -264,7 +264,7 @@ for stack in "${STACK_ORDER[@]}"; do
 
         for cid in "${container_ids[@]}"; do
             # Gather container info in one inspect call
-            info="$(docker inspect --format '{{.Name}}|{{.State.Status}}|{{.State.Health.Status}}|{{.State.StartedAt}}' "$cid" 2>/dev/null || echo "unknown|unknown|none|")"
+            info="$(docker inspect --format '{{.Name}}|{{.State.Status}}|{{.State.Health.Status}}|{{.State.StartedAt}}' "$cid" 2>/dev/null | grep . || echo "unknown|unknown|none|")"
 
             IFS='|' read -r c_name c_state c_health c_started <<< "$info"
 

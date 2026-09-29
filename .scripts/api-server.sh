@@ -10981,7 +10981,7 @@ _image_recreate_outdated() {
             [[ -f "$wd/.env" ]] && _env_file="$wd/.env"
             _compose_with_secrets "$wd/docker-compose.yml" "$_env_file" up -d --force-recreate --no-deps "$svc" >/dev/null 2>&1 || true
             sleep 1
-            _state=$(docker inspect --format '{{.State.Status}}' "$cname" 2>/dev/null || echo "missing")
+            _state=$(docker inspect --format '{{.State.Status}}' "$cname" 2>/dev/null | grep . || echo "missing")
             if [[ "$_state" == "running" ]]; then IU_RESTARTED+=("$cname"); else IU_FAILED+=("$cname"); fi
             [[ "$wd" == "$COMPOSE_DIR"/* ]] && IU_STACKS["$(basename "$wd")"]=1
         else

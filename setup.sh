@@ -980,7 +980,7 @@ _ensure_core_infra_running() {
     else
         _warn "Could not fetch the dashboard image (offline?) — using the one this machine has"
     fi
-    ui_status=$(docker inspect --format='{{.State.Status}}' DCS-UI 2>/dev/null || echo "not_found")
+    ui_status=$(docker inspect --format='{{.State.Status}}' DCS-UI 2>/dev/null | grep . || echo "not_found")
 
     local core_flags=()
     if [[ ! -f "$SETUP_COMPLETE_MARKER" ]] && { [[ "$ui_status" != "not_found" ]] || docker inspect skeleton-redis >/dev/null 2>&1; }; then
@@ -1004,7 +1004,7 @@ _ensure_core_infra_running() {
     if [[ "$ui_status" == "running" ]]; then
         # Already running — check health
         local health
-        health=$(docker inspect --format='{{.State.Health.Status}}' DCS-UI 2>/dev/null || echo "unknown")
+        health=$(docker inspect --format='{{.State.Health.Status}}' DCS-UI 2>/dev/null | grep . || echo "unknown")
         if [[ "$health" == "healthy" ]]; then
             _ok "DCS-UI is running and healthy"
             return 0
@@ -1031,7 +1031,7 @@ _ensure_core_infra_running() {
     local max_wait=90
     for i in $(seq 1 $max_wait); do
         local status
-        status=$(docker inspect --format='{{.State.Health.Status}}' DCS-UI 2>/dev/null || echo "not_found")
+        status=$(docker inspect --format='{{.State.Health.Status}}' DCS-UI 2>/dev/null | grep . || echo "not_found")
         case "$status" in
             healthy)
                 _ok "DCS-UI is healthy"
@@ -1059,7 +1059,7 @@ _ensure_core_infra_running() {
 
     # If we got here, it didn't become healthy in time — but it may still be starting
     local final_status
-    final_status=$(docker inspect --format='{{.State.Status}}' DCS-UI 2>/dev/null || echo "not_found")
+    final_status=$(docker inspect --format='{{.State.Status}}' DCS-UI 2>/dev/null | grep . || echo "not_found")
     if [[ "$final_status" == "running" ]]; then
         _info "DCS-UI is running but not yet healthy — it may still be starting"
         return 0
