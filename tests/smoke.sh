@@ -2315,8 +2315,13 @@ fi   # (end of the sections SMOKE_ONLY=crowdsec skips)
 # reaches a fake Discord on loopback (it refuses everything else), `hostname -I` answers a fixed address and `sleep` does not wait
 # (the stand-in keeps its own clock). The install these requests run against is a copy of the scripts in a directory of its own.
 #
-#   SMOKE_ONLY=crowdsec tests/smoke.sh                       just this section
-#   SMOKE_ONLY=crowdsec SMOKE_CS_PARTS="status bans" tests/smoke.sh   only some of its parts (see cst_main)
+#   SMOKE_ONLY=crowdsec tests/smoke.sh                       just this section (about a minute on 8 or more cores; the lanes below run side by side)
+#   SMOKE_ONLY=crowdsec SMOKE_CS_PARTS="status bans" tests/smoke.sh   only some of its parts: status allowlist alerts units bans settings notify services hub
+#                                                            security large plugin importbig (see cst_main for the lane each one runs in)
+#   SMOKE_CS_LANES=1     one lane, the parts in order, the output live (default: nine lanes at once, each one's output printed when all are done)
+#   SMOKE_CS_JOBS=N      how many requests of a batch are sent at once (default 4)
+#   SMOKE_JQ16=/path     a jq 1.6 to run the section's jq programs with (units part); without one that check is skipped
+#   SMOKE_CS_MOCK=/path  another stand-in for docker and cscli (default tests/mock-crowdsec.py)
 # =============================================================================
 CST_ROOT="$WORK-cs"; CST="$CST_ROOT"             # (each lane of the section has an install of its own below $CST_ROOT: see cst_main)
 CST_MOCK="${SMOKE_CS_MOCK:-$ROOT/tests/mock-crowdsec.py}"
@@ -2488,7 +2493,7 @@ cst_call() {
     shift 4 2>/dev/null || shift $#
     case "$role" in admin) hdr=$'Authorization: Bearer '"$CST_ADM"$'\r\n' ;; viewer) hdr=$'Authorization: Bearer '"$CST_VWR"$'\r\n' ;; esac
     CST_RAW=$(printf '%s %s HTTP/1.1\r\nHost: test\r\n%sContent-Length: %d\r\n\r\n%s' "$m" "$p" "$hdr" "$(printf '%s' "$b" | wc -c)" "$b" \
-        | timeout 180 env -u SOCAT_PEERADDR -u NCAT_REMOTE_ADDR -u DISCORD_WEBHOOK_URL -u CROWDSEC_TRUSTED_IPS PATH="$CST/bin:$PATH" "${CST_ENV[@]}" "$@" "$CST_API" --handle-request 2>>"$CST/api-stderr.log")
+        | timeout "${CST_TIMEOUT:-180}" env -u SOCAT_PEERADDR -u NCAT_REMOTE_ADDR -u DISCORD_WEBHOOK_URL -u CROWDSEC_TRUSTED_IPS PATH="$CST/bin:$PATH" "${CST_ENV[@]}" "$@" "$CST_API" --handle-request 2>>"$CST/api-stderr.log")
     CST_ST="${CST_RAW:9:3}"; CST_BODY="${CST_RAW#*$'\r\n\r\n'}"
 }
 
@@ -2561,6 +2566,9 @@ cst_world() {
     cst_stack "$stack"
     cst_mock --mock-init "$preset" "$@"
 }
+
+# the API's cached answers (the status 5 s, the routes 10 s …): gone
+cst_uncache() { rm -rf "$CST/.data/cache"; }
 
 # the stand-in itself, as the API would call it (docker exec CrowdSec cscli …)
 cst_dk() { "$CST/bin/docker" "$@"; }
@@ -3343,6 +3351,56 @@ cst_bans_large() {
     cst_use ip;      cst_j "large/list: one of them by its address" '.count' 1 '.decisions[0].scenario' 'large test'
 }
 
+# ---- a long import: 1300 and 2000 entries, the counts, and the entries that were left out and why ------------------------------------
+
+cst_import_big() {
+    local i body a0
+    cst_world data traefik --traefik
+    a0=$(cst_audit_n '"action":"auth.crowdsec_import"')
+    # -- 1300 addresses, all new: one request, every one of them banned
+    body=$(for (( i = 0; i < 1300; i++ )); do printf '91.200.%d.%d\n' $(( i / 250 )) $(( i % 250 + 1 )); done | jq -Rs '{format: "values", duration: "6h", reason: "large import one", content: .}')
+    CST_TIMEOUT=900 cst_call admin POST /crowdsec/decisions/import "$body"
+    cst_is "import/large: 1300 addresses" 200
+    cst_j "import/large: 1300 addresses" '.success' true '.format' values '.total' 1300 '.imported' 1300 '.skipped' 0 '.allowlisted' 0 '.skipped_entries' '[]' '.error' null
+    cst_call admin GET '/crowdsec/decisions?q=91.200.4.250'
+    cst_j "import/large: …the last of them is banned, with the reason given" '.count' 1 '.decisions[0].value' 91.200.4.250 '.decisions[0].scenario' 'large import one'
+    # -- 2000 entries, the most one request takes: 100 new, 100 that are no address, 100 that are in the list twice, 500 that are banned already, 1200 new
+    body=$({
+        for (( i = 1; i <= 100; i++ )); do printf '91.201.0.%d\n' "$i"; done
+        for (( i = 1; i <= 100; i++ )); do printf 'not-an-address-%d\n' "$i"; done
+        for (( i = 1; i <= 100; i++ )); do printf '91.201.0.%d\n' "$i"; done
+        for (( i = 0; i < 500; i++ )); do printf '91.200.%d.%d\n' $(( i / 250 )) $(( i % 250 + 1 )); done
+        for (( i = 0; i < 1200; i++ )); do printf '91.202.%d.%d\n' $(( i / 250 )) $(( i % 250 + 1 )); done
+    } | jq -Rs '{format: "values", duration: "6h", reason: "large import two", content: .}')
+    CST_TIMEOUT=900 cst_call admin POST /crowdsec/decisions/import "$body"
+    cst_is "import/large: 2000 entries, the most" 200
+    cst_j "import/large: 2000 entries: what was banned and what was left out" '.success' true '.total' 2000 '.imported' 1300 '.skipped' 700 '.allowlisted' 0 '.error' null
+    cst_j "import/large: …the entries that were left out are listed, 200 at most" '.skipped_entries | length' 200 '.skipped_entries[0] | "\(.line):\(.reason)"' 101:invalid '.skipped_entries[99] | "\(.line):\(.reason)"' 200:invalid \
+        '.skipped_entries[100] | "\(.line):\(.reason)"' 201:duplicate '.skipped_entries[199] | "\(.line):\(.reason)"' 300:duplicate '[.skipped_entries[] | .reason] | unique | join(",")' duplicate,invalid \
+        '.skipped_entries[0].value' not-an-address-1 '.skipped_entries[100].value' 91.201.0.1 '.skipped_entries | all(.message | length > 5)' true
+    check "import/large: …it is in the audit log, with the counts" "$(( a0 + 2 )) 1" "$(cst_audit_n '"action":"auth.crowdsec_import"') $(cst_audit_n '"action":"auth.crowdsec_import".*1300 of 2000 imported (700 skipped)')"
+    cst_uncache; cst_call admin GET /crowdsec/status
+    cst_j "import/large: 2600 bans and the status counts them" '.counts.decisions_active' 2611 '.counts.decisions' 2612 '.state' healthy
+    cst_call admin GET '/crowdsec/decisions?q=91.201.0.5&limit=100'
+    cst_j "import/large: an address that was in the list twice is banned once" '.decisions | map(select(.value == "91.201.0.5")) | length' 1 '.decisions | map(select(.value == "91.201.0.5"))[0].scenario' 'large import two'
+    cst_call admin GET '/crowdsec/decisions?q=91.200.0.1&limit=200'
+    cst_j "import/large: an address that was banned already keeps its first ban" '.decisions | map(select(.value == "91.200.0.1")) | length' 1 '.decisions | map(select(.value == "91.200.0.1"))[0].scenario' 'large import one'
+    cst_call admin GET '/crowdsec/decisions?q=91.202.4.200'
+    cst_j "import/large: the last of the 1200 new ones" '.count' 1 '.decisions[0].scenario' 'large import two'
+    # -- one more than the most
+    body=$(for (( i = 0; i < 2001; i++ )); do printf '91.203.%d.%d\n' $(( i / 250 )) $(( i % 250 + 1 )); done | jq -Rs '{format: "values", content: .}')
+    CST_TIMEOUT=900 cst_call admin POST /crowdsec/decisions/import "$body"
+    cst_is "import/large: 2001 entries" 400
+    cst_t "import/large: …the answer says how many there are" '.message | test("2000") and test("2001")'
+    cst_call admin GET '/crowdsec/decisions?q=91.203.0.1'
+    cst_j "import/large: …none of them was banned" '.count' 0
+}
+
+cst_part_importbig() {
+    echo "CrowdSec page: a long import"
+    cst_import_big
+}
+
 # ---- alerts, the numbers behind the charts -------------------------------------------------------------------------------------------
 
 cst_part_alerts() {
@@ -3480,7 +3538,7 @@ cst_allowlist_native() {
     cst_j "allowlist/add: …its ban is gone" '.count' 0
     check "allowlist/add: CrowdSec has it, with the comment" "office pc" "$(cst_cs allowlists inspect dcs -o json | jq -r '.items[] | select(.value == "192.0.2.10") | .description')"
     cst_call admin POST /crowdsec/allowlist '{"value":"192.0.2.0/24","comment":"lab net","expires":"7d"}'
-    cst_j "allowlist/add: a network for a week lifts every ban it covers" '.kind' range '.removed_bans' 2 '.expires_at | fromdateiso8601 | . > '"$now"' + 604000 and . < '"$now"' + 605200' true
+    cst_j "allowlist/add: a network for a week lifts every ban it covers" '.kind' range '.removed_bans' 2 '.expires_at | fromdateiso8601 | . - now | . > 603900 and . < 605200' true
     check "allowlist/add: CrowdSec has the expiry too" true "$(cst_cs allowlists inspect dcs -o json | jq -r --argjson now "$now" '.items[] | select(.value == "192.0.2.0/24") | (.expiration | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) > ($now + 600000)')"
     cst_call admin POST /crowdsec/allowlist '{"value":"2A00:1450:4001:0:0:0:0:1"}'
     cst_j "allowlist/add: IPv6, written short" '.value' 2a00:1450:4001::1 '.kind' ip '.removed_bans' 0
@@ -4006,7 +4064,6 @@ cst_part_hub() {
 
 cst_tr()  { printf '%s' "$CST/Stacks/networking-security/App-Data/Traefik"; }                 # Traefik's App-Data in the test install
 cst_mwf() { printf '%s' "$(cst_tr)/custom_routes/networking-security/crowdsec-bouncer.yml"; }  # the middleware file DCS writes when it registers the bouncer
-cst_uncache() { rm -rf "$CST/.data/cache"; }                                                   # the API's cached answers (status 5 s, routes 10 s)
 cst_mw_key() { sed -n 's/^ *crowdsecLapiKey: *//p' "$1" | tr -d '"'; }                        # the bouncer's key, as a middleware file has it
 
 # cst_tf_set BLOCK — the "experimental:" section of Traefik's static config becomes BLOCK (nothing: it is taken out); the file stays older than Traefik's start
@@ -4107,6 +4164,7 @@ cst_plugin_status() {
     cst_call admin POST /crowdsec/bouncers/register-traefik
     cst_is "plugin/status/undeclared: the fix" 200
     cst_t "plugin/status/undeclared: …says that Traefik was restarted to load the plugin" '.message | test("Traefik restarted to load the bouncer plugin")'
+    cst_t "plugin/status/undeclared: …in plain words (docker's own answer, the name of the container, is not in it)" '.message | test("Traefik Traefik") | not'
     check "plugin/status/undeclared: …the plugin is declared once, in the version the template pins" "1 v1.4.4" "$(grep -c 'moduleName: "github.com/maxlerebourg/crowdsec-bouncer-traefik-plugin"' "$(cst_tr)/traefik.yml") $(sed -n '/crowdsec-bouncer-traefik-plugin"/{n;s/.*version: "\(.*\)"/\1/p}' "$(cst_tr)/traefik.yml")"
     check "plugin/status/undeclared: …and Traefik was restarted once" 1 "$(cst_argv_since "$mark" | grep -c '^restart Traefik')"
     check "plugin/status/undeclared: …the other plugins are still there" 1 "$(grep -c 'PascalMinder/geoblock' "$(cst_tr)/traefik.yml")"
@@ -4345,7 +4403,7 @@ cst_plugin_refuse() {
 # ---- PUT /crowdsec/plugin: saving ---------------------------------------------------------------------------------------------------
 
 cst_plugin_apply() {
-    local mw rd bk k0 sha0 ino0 ino1 a0 i fake newbk
+    local mw rd bk k0 sha0 ino0 ino1 a0 i fake newbk ts0
     cst_plugin_world
     mw=$(cst_mwf); rd=${mw%/*}; bk="$CST/.data/crowdsec/backups"
     k0=$(cst_mw_key "$mw"); sha0=$(sha1sum < "$mw"); ino0=$(stat -c %i "$mw")
@@ -4353,7 +4411,7 @@ cst_plugin_apply() {
     # -- the first save takes the file over: a marker on top, the managed keys, everything else as it was
     cst_call admin PUT /crowdsec/plugin '{}'
     cst_is "plugin/save: even nothing asked for is a first save (the file becomes the page's)" 200
-    cst_j "plugin/save" '.success' true '.applied.changed' true '.managed' true '.plugin.managed' true '.applied.message | test("Saved")' true '.applied.backup | test("^plugin-[0-9]{8}T[0-9]{6}Z\\.yml$")' true \
+    cst_j "plugin/save" '.success' true '.applied.changed' true '.managed' true '.plugin.managed' true '.applied.message | test("Saved")' true '.applied.backup | test("^plugin-[0-9]{8}T[0-9]{6}Z(-[0-9]+)?\\.yml$")' true \
         '.settings.mode' live '.settings.trust_home' false
     check "plugin/save: the marker is the first line of the file" 1 "$(head -n 1 "$mw" | grep -c '^# dcs-plugin: {"v":1,"settings":{')"
     check "plugin/save: …and the only one" 1 "$(grep -c '^# dcs-plugin:' "$mw")"
@@ -4428,14 +4486,28 @@ cst_plugin_apply() {
     check "plugin/copies: …the copies of other files are not touched" yes "$([[ -e "$bk/profiles-20260101T000000Z.yml" ]] && echo yes || echo no)"
     cst_call admin GET /crowdsec/plugin
     cst_j "plugin/copies: the page lists them, the newest first" '.backups | length' 10 '.backups[0].name' "$newbk" '.backups | map(.created_at) == (map(.created_at) | sort | reverse)' true \
-        '.backups | all(.name | test("^plugin-[0-9]{8}T[0-9]{6}Z\\.yml$"))' true '.backups | all(.size > 0)' true '.backups | all(.created_at | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))' true
+        '.backups | all(.name | test("^plugin-[0-9]{8}T[0-9]{6}Z(-[0-9]+)?\\.yml$"))' true '.backups | all(.size > 0)' true '.backups | all(.created_at | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))' true
     check "plugin/copies: …names, times and sizes, no key" 0 "$(grep -cF -- "$k0" <<< "$CST_BODY")"
+    # -- a second save in the same second does not take the first one's copy: the name gets a number
+    rm -f "$bk"/plugin-*.yml
+    ts0=$(date -u +%s)
+    for i in $(seq 0 15); do
+        fake=$(date -u -d "@$(( ts0 + i ))" +"$bk/plugin-%Y%m%dT%H%M%SZ.yml")
+        printf 'a copy that must stay: %s\n' "$i" > "$fake"; touch -d "@$(( ts0 - 100 - i * 10 ))" "$fake"
+    done
+    sha0=$(sha1sum < "$mw")
+    cst_call admin PUT /crowdsec/plugin '{"settings":{"http_timeout":9}}'
+    newbk=$(jq -r '.applied.backup' <<< "$CST_BODY")
+    fake="$bk/${newbk%-*.yml}.yml"
+    check "plugin/copies: a copy with that name was there: the new one has a number, and holds the file as it was" "yes yes" \
+        "$([[ "$newbk" =~ ^plugin-[0-9]{8}T[0-9]{6}Z-[0-9]+\.yml$ ]] && echo yes || echo no) $([[ "$(sha1sum < "$bk/$newbk")" == "$sha0" ]] && echo yes || echo no)"
+    check "plugin/copies: …and the copy that was there is what it was" "a copy that must stay:" "$(cut -c1-22 "$fake")"
 }
 
 # ---- PUT /crowdsec/plugin: two changes at once, and a file that is not the one DCS wrote --------------------------------------------
 
 cst_plugin_files() {
-    local mw rd bk sha0 k0
+    local mw rd bk sha0 k0 n0
     cst_plugin_world
     mw=$(cst_mwf); rd=${mw%/*}; bk="$CST/.data/crowdsec/backups"; k0=$(cst_mw_key "$mw")
     # -- somebody else is saving right now: this one waits for the lock (8 s) and then says so; a reader does not wait at all
@@ -4464,11 +4536,12 @@ for l in open(p).read().split("\n"):
     out.append(" " * (n * 2) + l.lstrip(" ") if l.strip() and not l.startswith("#") else l)
 open(p, "w").write("\n".join(out))
 PY
-    sha0=$(sha1sum < "$mw"); chmod 600 "$mw"
+    sha0=$(sha1sum < "$mw"); chmod 600 "$mw"; n0=$(cst_count "$bk"/plugin-*.yml)
     cst_call admin PUT /crowdsec/plugin '{"settings":{"mode":"live"}}'
     cst_is "plugin/foreign: a file with the indentation doubled" 500
     cst_j "plugin/foreign: …refused as not written" '.error' true '.reason' write_failed '.message | test("did not read back")' true '.message | test("previous file was put back")' true
     check "plugin/foreign: …the file is what it was, private, and nothing is left beside it" "$sha0 600 0" "$(sha1sum < "$mw") $(stat -c %a "$mw") $(find "$rd" -name '*.dcs-new*' | wc -l | tr -d ' ')"
+    check "plugin/foreign: …and the copy made for the attempt is gone again" "$n0" "$(cst_count "$bk"/plugin-*.yml)"
     printf 'http:\n  middlewares:\n    x:\n      headers: {}\n' > "$mw"; sha0=$(sha1sum < "$mw")
     cst_call admin PUT /crowdsec/plugin '{"settings":{"mode":"live"}}'
     cst_is "plugin/foreign: a middleware file of something else" 500
@@ -5121,7 +5194,9 @@ cst_notify_validation() {
         cst_t "notify/preview: …and says why" ".error | test(\"${cases[$i]#*|}\")"
     done
     for i in "${!fine[@]}"; do cst_use "fine$i"; cst_j "notify/preview: ${fine[$i]:0:70} is valid" '.valid' true '.payload.embeds | length' 1; done
-    cst_use pvviewer; cst_is "notify/preview: a viewer may not (it reads alerts through the API)" 403
+    cst_use pvviewer; cst_is "notify/preview: a viewer may draw it (it only renders, it never sends)" 200
+    cst_j "notify/preview: …the viewer's drawing is valid" '.valid' true
+    cst_t "notify/preview: …and shows no webhook address" '(tostring | test("api/webhooks") | not)'
     cst_use pvnobody; cst_is "notify/preview: nobody" 401
     cst_use pvsample;  cst_is "notify/preview: an unknown sample" 400
     cst_use pvsample2; cst_is "notify/preview: a sample name with a semicolon" 400
@@ -5337,6 +5412,42 @@ cst_notify_takeover() {
     printf '%s\n' "$mine" > "$live"
     cst_call admin POST /crowdsec/notifications/reset
     cst_is "notify/reset: over profiles nobody at DCS wrote" 409
+    cst_j "notify/reset: …it says why" '.reason' custom_profile
+    for i in '{"take_over":"yes"}' '{"take_over":false}' '{"take_over":1}' 'nope' '[]'; do
+        cst_call admin POST /crowdsec/notifications/reset "$i"
+        cst_is "notify/reset: $i is not a yes" 409
+    done
+    check "notify/reset: …nothing was written" "$mine" "$(cat "$live")"
+    cst_call admin POST /crowdsec/notifications/reset '{"take_over":true}'
+    cst_is "notify/reset: with take_over" 200
+    cst_call admin GET /crowdsec/notifications
+    cst_j "notify/reset: …the profiles are DCS's now" '.state.profile_mode' dcs
+    check "notify/reset: …the old profiles are in the backups" "$mine" "$(cat "$CST/.data/crowdsec/backups/"profiles-*.yaml)"
+    cst_call viewer POST /crowdsec/notifications/reset '{"take_over":true}'
+    cst_is "notify/reset: a viewer may not, take_over or not" 403
+}
+
+# a failed post quotes the address it tried, and the token in it is a secret
+cst_notify_errors() {
+    local tok1="NOTAREALTOKEN_0123456789-abcdefghij" tok2="Another.Fake~Token-For_Tests00" s="$CST/fake/state.json" now l1 l2 l3
+    cst_world data traefik --traefik
+    cst_mock --mock-set discord=1
+    now=$(date +%s)
+    l1='time="2026-09-29T22:00:00Z" level=warning msg="notify attempt failed: rpc error: code = Unknown desc = Post \"https://discord.com/api/webhooks/111111111111111111/'"$tok1"'\": dial tcp: lookup discord.com: no such host" attempt=1 next=2s plugin=http_default'
+    l2='time="2026-09-29T22:00:07Z" level=error msg="delivery failed after retries: rpc error: code = Unknown desc = Post \"https://discord.com/api/webhooks/111111111111111111/'"$tok1"'\": dial tcp: lookup discord.com: no such host" plugin=http_default'
+    l3='time="2026-09-29T22:00:09Z" level=warning msg="notify attempt failed: rpc error: code = Unknown desc = Post \"https://discordapp.com/api/webhooks/222222222222222222/'"$tok2"'?wait=true\": context deadline exceeded" attempt=2 next=4s plugin=http_default'
+    jq --arg a "$l1" --arg b "$l2" --arg c "$l3" --argjson t "$now" '.logs += [[$t - 120, 2, $a], [$t - 60, 2, $b], [$t - 30, 2, $c]]' "$s" > "$s.new" && mv -f "$s.new" "$s"
+    cst_uncache
+    cst_call admin GET /crowdsec/notifications
+    cst_is "notify/errors: a delivery that failed" 200
+    cst_j "notify/errors: the failures are listed, the newest first" '.status.delivery_errors | length' 3 '.status.delivery_errors | map(.time) | join(",")' '2026-09-29T22:00:09Z,2026-09-29T22:00:07Z,2026-09-29T22:00:00Z'
+    cst_t "notify/errors: …what was tried is said, without the token" '.status.delivery_errors | all(.message | test("/api/webhooks/[0-9]+/••••"))'
+    check "notify/errors: …no token is anywhere in the answer" "0 0" "$(grep -cF -- "$tok1" <<< "$CST_BODY") $(grep -cF -- "$tok2" <<< "$CST_BODY")"
+    cst_t "notify/errors: …the rest of the address stays (the query)" '.status.delivery_errors[0].message | test("/api/webhooks/222222222222222222/••••\\?wait=true")'
+    cst_call viewer GET /crowdsec/notifications
+    check "notify/errors: a viewer sees the same, without the tokens" "3 0 0" "$(jq -r '.status.delivery_errors | length' <<< "$CST_BODY") $(grep -cF -- "$tok1" <<< "$CST_BODY") $(grep -cF -- "$tok2" <<< "$CST_BODY")"
+    cst_call admin GET /crowdsec/status
+    check "notify/errors: nor is a token in the status" "0 0" "$(grep -cF -- "$tok1" <<< "$CST_BODY") $(grep -cF -- "$tok2" <<< "$CST_BODY")"
 }
 
 # the text a template is made of when people type these into the message: none of it may become code
@@ -5461,6 +5572,7 @@ cst_part_notify() {
     cst_notify_validation
     cst_notify_apply
     cst_notify_takeover
+    cst_notify_errors
     cst_notify_safety
     cst_notify_template
     cst_notify_golden
@@ -5530,7 +5642,7 @@ CST_WRITES=(
     'DELETE /crowdsec/bouncers/x-bouncer -' 'POST /crowdsec/bouncers/register-traefik -' 'POST /crowdsec/service {"action":"reload"}' 'POST /crowdsec/hub/update -' 'POST /crowdsec/hub/upgrade -'
     'POST /crowdsec/hub/install {"type":"collections","name":"crowdsecurity/nginx"}' 'POST /crowdsec/hub/remove {"type":"collections","name":"crowdsecurity/nginx"}'
     'POST /crowdsec/simulation {"scenario":"crowdsecurity/ssh-bf","enabled":true}' 'PUT /crowdsec/settings {"profile":{"duration":"5h"}}' 'PUT /crowdsec/notifications {"settings":{"enabled":false}}'
-    'POST /crowdsec/notifications {"webhook":"https://discord.com/api/webhooks/111111111111111111/NOTAREALTOKEN_0123456789-abcdefghij"}' 'POST /crowdsec/notifications/preview {}'
+    'POST /crowdsec/notifications {"webhook":"https://discord.com/api/webhooks/111111111111111111/NOTAREALTOKEN_0123456789-abcdefghij"}'
     'POST /crowdsec/notifications/test {}' 'POST /crowdsec/notifications/reset -' 'POST /crowdsec/trust {"ip":"198.18.9.9"}' 'DELETE /crowdsec/trust/198.18.9.9 -'
     'PUT /crowdsec/plugin {"settings":{"mode":"stream"}}' 'POST /crowdsec/traefik/restart -' 'POST /fleet/routes {"http":{"routers":{}}}'
 )
@@ -5551,6 +5663,8 @@ cst_security_roles() {
         cst_q "wv$i" viewer "$m" "$p" "$b"
     done
     cst_q unbanme-v viewer POST /crowdsec/unban-me
+    cst_q pv-none none POST /crowdsec/notifications/preview '{}'
+    cst_q pv-viewer viewer POST /crowdsec/notifications/preview '{}'
     cst_run
     for i in "${!CST_READS[@]}"; do
         entry="${CST_READS[$i]}"
@@ -5564,6 +5678,9 @@ cst_security_roles() {
         cst_use "wv$i"; cst_is "security: a viewer may not ${entry}" 403
     done
     cst_use unbanme-v; cst_is "security: a viewer may ask to lift its own ban (unban-me: the role check lets it through; 400 as this caller has no public address)" 400
+    cst_use pv-none; cst_is "security: nobody may not POST /crowdsec/notifications/preview" 401
+    cst_use pv-viewer; cst_is "security: a viewer may draw the Discord preview (POST /crowdsec/notifications/preview: it only renders)" 200
+    cst_j "security: …and what it draws holds no webhook address" '(tostring | test("api/webhooks"))' false
     # the audit log holds nobody's refused attempt, and the session is not needed to be told twice
     check "security: refused requests left no CrowdSec line in the audit log" "$a0" "$(cst_audit_n '"action":"auth.crowdsec_')"
     # -- a bot account (the Discord bot): reads, lifts bans, nothing else
@@ -5584,6 +5701,7 @@ cst_security_roles() {
         cst_try "security: …and the routes" 200 viewer GET /routes
         cst_try "security: a bot may not change the plugin's settings" 403 viewer PUT /crowdsec/plugin '{"settings":{"mode":"stream"}}'
         cst_try "security: a bot may not restart Traefik" 403 viewer POST /crowdsec/traefik/restart
+        cst_try "security: a bot may not draw the Discord preview" 403 viewer POST /crowdsec/notifications/preview '{}'
         CST_VWR="$vwr_saved"
     else
         check "security: a bot account can be made" yes no
@@ -6186,8 +6304,8 @@ cst_main() {
     mkdir -p "$CST_ROOT"
     # the stand-in is a script of 7000 lines and every docker call of every request starts it: from its bytecode that costs a third
     python3 -c 'import py_compile, sys; py_compile.compile(sys.argv[1], cfile=sys.argv[2], doraise=True)' "$CST_MOCK" "$CST_ROOT/mock.pyc" 2>/dev/null && CST_MOCK_RUN="$CST_ROOT/mock.pyc"
-    local -a lanes=("a:status allowlist alerts units" "b:bans" "c:settings" "d:notify" "e:services hub" "f:security" "g:large" "h:plugin")
-    [[ "${SMOKE_CS_LANES:-}" != 1 ]] || lanes=("all:status bans alerts allowlist services hub settings notify security units large plugin")
+    local -a lanes=("a:status allowlist alerts units" "b:bans" "c:settings" "d:notify" "e:services hub" "f:security" "g:large" "h:plugin" "i:importbig")
+    [[ "${SMOKE_CS_LANES:-}" != 1 ]] || lanes=("all:status bans alerts allowlist services hub settings notify security units large plugin importbig")
     for lane in "${lanes[@]}"; do
         name="${lane%%:*}"; want=""
         for part in ${lane#*:}; do
