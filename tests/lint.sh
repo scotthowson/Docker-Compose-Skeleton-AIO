@@ -51,6 +51,7 @@ if [[ -f vm-images/images.json ]]; then
         printf '%s\n' "${IMG_IDS[@]}" | grep -qx -- "$id" || { echo "  $d exists, but $id is not in vm-images/images.json"; rc=1; }
     done
     jq -e '.default as $d | any(.images[]; .id == $d)' vm-images/images.json >/dev/null || { echo "  vm-images/images.json: the default is not in the list"; rc=1; }
+    jq -e 'all(.images[]; (.hardware // "") | length > 0)' vm-images/images.json >/dev/null || { echo "  vm-images/images.json: an image has no \"hardware\" line (the New VM sheet shows what the kernel drives)"; rc=1; }
     want=$(printf '%s ' "${IMG_IDS[@]}" | sed 's/ $//')
     have=$(sed -n 's/^KNOWN_DISTROS="\(.*\)"$/\1/p' vm-images/proxmox/dcs-proxmox.sh)
     [[ "$want" == "$have" ]] || { echo "  vm-images/proxmox/dcs-proxmox.sh knows [$have], vm-images/images.json lists [$want]"; rc=1; }

@@ -21049,7 +21049,7 @@ FLEET_IMAGE_FILE="${FLEET_IMAGE_FILE:-debian-13-genericcloud-amd64.qcow2}"
 _fleet_dcs_images_json() {
     local b="${1%/}" m="$BASE_DIR/vm-images/images.json"
     if [[ -s "$m" ]] && jq -e '(.images | type == "array" and length > 0) and all(.images[]; has("id") and has("name") and has("family"))' "$m" >/dev/null 2>&1; then
-        jq -c --arg b "$b" '.default as $d | [.images | sort_by(.id != $d)[] | {id: ("dcs-" + .id), label: ("DCS " + .name + " — purpose-built for the fleet, " + (.summary // "")), url: ($b + "/dcs-node-" + .id + ".qcow2"), file: ("dcs-node-" + .id + ".qcow2"), family: .family, prebuilt: true}]' "$m"
+        jq -c --arg b "$b" '.default as $d | [.images | sort_by(.id != $d)[] | {id: ("dcs-" + .id), label: ("DCS " + .name + " — purpose-built for the fleet, " + (.summary // "")), url: ($b + "/dcs-node-" + .id + ".qcow2"), file: ("dcs-node-" + .id + ".qcow2"), family: .family, prebuilt: true, hardware: (.hardware // "")}]' "$m"
     else
         jq -nc --arg b "$b" '[{id: "dcs-debian-13", label: "DCS Debian 13 — purpose-built for the fleet, the default", url: ($b + "/dcs-node-debian-13.qcow2"), file: "dcs-node-debian-13.qcow2", family: "apt", prebuilt: true}]'
     fi

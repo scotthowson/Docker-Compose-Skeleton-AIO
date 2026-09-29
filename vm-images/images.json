@@ -9,7 +9,8 @@
       "release": "trixie",
       "family": "apt",
       "summary": "the default, the smallest and quickest to start",
-      "kernel": "Debian's cloud kernel"
+      "kernel": "Debian's cloud kernel",
+      "hardware": "Virtual hardware only: to pass a GPU, a USB device or a network card through, choose Ubuntu, Fedora or Arch"
     },
     {
       "id": "ubuntu-26.04",
@@ -17,7 +18,8 @@
       "release": "resolute",
       "family": "apt",
       "summary": "long-term support, the most familiar",
-      "kernel": "Ubuntu's virtual kernel"
+      "kernel": "Ubuntu's virtual kernel",
+      "hardware": "The kernel has the drivers for real GPUs, USB devices and network cards, so passthrough works"
     },
     {
       "id": "fedora-44",
@@ -25,7 +27,8 @@
       "release": "44",
       "family": "dnf",
       "summary": "SELinux enforcing, the newest packages of the three release distributions",
-      "kernel": "Fedora's kernel"
+      "kernel": "Fedora's kernel",
+      "hardware": "The kernel has the drivers for real GPUs, USB devices and network cards, so passthrough works"
     },
     {
       "id": "arch",
@@ -34,7 +37,8 @@
       "family": "pacman",
       "rolling": true,
       "summary": "rolling: the newest kernel and Docker on the day the image is built",
-      "kernel": "Arch's linux"
+      "kernel": "Arch's linux",
+      "hardware": "The kernel has the drivers for real GPUs, USB devices and network cards, so passthrough works"
     }
   ]
 }

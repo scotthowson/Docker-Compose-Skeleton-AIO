@@ -108,7 +108,7 @@ the drivers of real devices. If you pass a device through to a VM, check this ta
 | Wi-Fi, Bluetooth, sound, TV tuners | – | ✓ | ✓ | ✓ |
 | VirtIO, `vfio`, WireGuard, Btrfs, XFS, NFS, SMB, overlayfs, netfilter | ✓ | ✓ | ✓ | ✓ |
 
-A Debian VM that needs one of these can switch kernels (`sudo apt install linux-image-amd64`, reboot); the image stays otherwise as it is.
+A Debian VM that needs one of these can switch kernels (`sudo apt install linux-image-amd64`, reboot); the image stays otherwise as it is. The *New VM* sheet of the dashboard shows the same fact under the operating system, from the `hardware` line of each image in `vm-images/images.json`.
 
 ### Faster boots on Proxmox
 
