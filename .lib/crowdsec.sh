@@ -476,6 +476,7 @@ _cs_plugin_declared() {
     awk -v mod="$_CS_PLUGIN_MODULE" '
         function indent(l) { match(l, /^[ \t]*/); return RLENGTH }
         function flush() { if (cur != "" && tolower(m) == tolower(mod)) { print cur "\t" v; found = 1 } cur = ""; m = ""; v = "" }
+        { sub(/\r$/, ""); sub(/[ \t]+#.*$/, "") }
         /^[ \t]*(#.*)?$/ { next }
         indent($0) == 0 { flush(); inx = ($0 ~ /^experimental:[ \t]*$/); inp = 0; next }
         inx && /^[ \t]+plugins:[ \t]*$/ { inp = 1; pind = indent($0); nind = 0; next }
@@ -1587,7 +1588,7 @@ _cs_bouncer_register() {
     echo "[dcs] Traefik bouncer registered; crowdsec-bouncer added to traefik-chain" >> "$log"
     # An install whose traefik.yml predates the plugin list would drop every route in the chain: declare the plugin and restart Traefik once
     if ! _traefik_ensure_plugin crowdsec-bouncer-traefik-plugin "github.com/maxlerebourg/crowdsec-bouncer-traefik-plugin" "v1.4.4"; then
-        docker restart Traefik >>"$log" 2>&1 && echo "[dcs] Traefik restarted to load the bouncer plugin" >> "$log"
+        docker restart Traefik >/dev/null 2>>"$log" && echo "[dcs] Traefik restarted to load the bouncer plugin" >> "$log"
     fi
     return 0
 }

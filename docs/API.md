@@ -271,7 +271,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | POST | `/crowdsec/trust` | admin | Add an address to the whitelist (body {ip}; defaults to the home public address and the caller) |
 | POST | `/crowdsec/unban-me` | user | Unban the caller: its client address and the home public address |
 | POST | `/crowdsec/notifications` | admin | Send CrowdSec's alerts to Discord: {webhook?, test?}. Turns the alerts on with the message settings in force (the shipped message on a fresh install), stores a webhook you pass, restarts CrowdSec and optionally posts a test message. |
-| POST | `/crowdsec/notifications/preview` | admin | Render the message for a sample alert (probe, ssh, exploit, manual, simulated) or a real one (alert_id) with the settings you are editing: {settings?, sample?, alert_id?} |
+| POST | `/crowdsec/notifications/preview` | user | Render the message for a sample alert (probe, ssh, exploit, manual, simulated) or a real one (alert_id) with the settings you are editing: {settings?, sample?, alert_id?} |
 | POST | `/crowdsec/notifications/test` | admin | Post a real sample message to Discord and say what Discord answered: {sample?, settings?, webhook_url?, include_mention?}; a test never pings anyone unless include_mention is true |
 | POST | `/crowdsec/notifications/reset` | admin | Back to the message CrowdSec ships with (title, text, fields, colours, delivery); the webhook and the on/off switch stay |
 | POST | `/crowdsec/decisions` | admin | Ban an address or a network: {value, duration (90m, 4h, 7d …) or permanent: true, reason}; refuses your own address, this server, the home address, private and far too wide networks |

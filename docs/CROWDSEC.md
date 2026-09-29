@@ -224,7 +224,7 @@ and read as unprotected too.
 
 ## API
 
-Viewers may `GET`; changes need an admin. The generated reference is [docs/API.md](API.md); the CrowdSec routes:
+Viewers may `GET` and may draw the Discord preview (it only renders, it never sends); changes need an admin. The generated reference is [docs/API.md](API.md); the CrowdSec routes:
 
 | Route | What |
 | --- | --- |

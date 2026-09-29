@@ -918,6 +918,8 @@ _cs_delivery_errors() {
     raw=$(timeout 15 docker logs --since 24h --tail 3000 "$CS_NAME" 2>&1 </dev/null | grep -E 'http-plugin|http_default|delivery failed|notify attempt failed|format alerts for notification' | grep -E 'level=(warning|error)' | tail -n 40)
     out=$(printf '%s\n' "$raw" | jq -Rsc '[ split("\n")[] | select(length > 0) | capture("^time=\"(?<t>[^\"]+)\" level=(?<l>[a-z]+) msg=\"(?<m>(?:\\\\.|[^\"\\\\])*)\"")? | {time: .t, message: (.m | gsub("\\\\\""; "\""))} ] | reverse | unique_by(.message) | sort_by(.time) | reverse | .[0:5]' 2>/dev/null)
     [[ "$out" == \[* ]] || out='[]'
+    # a failed post quotes the URL it tried: the token part of a webhook is a secret and never leaves here
+    out=$(jq -c 'map(.message |= gsub("(?<a>/api/webhooks/[0-9]+/)[A-Za-z0-9_.~-]+"; "\(.a)••••"))' <<< "$out" 2>/dev/null) || out='[]'
     printf '%s' "$out"
 }
 
@@ -1133,11 +1135,13 @@ handle_crowdsec_notify_test() {
 # POST /crowdsec/notifications/reset — Back to the message CrowdSec ships with (title, text, fields, colours, delivery); the webhook and the on/off switch stay
 handle_crowdsec_notify_reset() {
     _api_check_admin || { _api_error 403 "Admin access required"; return; }
+    local body="${1:-}" take=false
+    [[ "$body" == \{* ]] && [[ "$(jq -r 'if .take_over == true then "yes" else "no" end' <<< "$body" 2>/dev/null)" == yes ]] && take=true
     _cs_target || return
     _cs_profile_state
     local keep_enabled keep_webhook
     keep_enabled=$(jq -c '.enabled' <<< "$CS_NOTIFY_EFF"); keep_webhook=$(jq -c '.webhook' <<< "$CS_NOTIFY_EFF")
-    if _cs_notify_set_core "$(jq -nc --argjson d "$_CS_NOTIFY_DEFAULTS" --argjson e "$keep_enabled" --argjson w "$keep_webhook" '{settings: ($d | .enabled = $e | .webhook = $w)}')"; then
+    if _cs_notify_set_core "$(jq -nc --argjson d "$_CS_NOTIFY_DEFAULTS" --argjson e "$keep_enabled" --argjson w "$keep_webhook" --argjson t "$take" '{settings: ($d | .enabled = $e | .webhook = $w), take_over: $t}')"; then
         _api_success "$CS_RESULT"
     else _api_response "$CS_ERR_CODE" "$CS_ERR_BODY"; fi
 }
@@ -1292,6 +1296,7 @@ _cs_plugin_current() {
 # the plugin's settings, the defaults and the limits as one JSON object
 _cs_plugin_view() {
     local enf f cur lan home
+    _cs_probe
     enf=$(_cs_enforcement_json); f=$(jq -r '.middleware_file' <<< "$enf")
     lan=$(_cs_plugin_lan); home=$(_cs_plugin_home)
     if [[ -z "$f" ]]; then
@@ -1324,7 +1329,7 @@ _cs_plugin_backups_json() {
     for f in "$CS_BACKUP_DIR"/plugin-*.yml; do
         [[ -f "$f" ]] || continue
         n="${f##*/}"
-        jq -nc --arg n "$n" --arg t "${n#plugin-}" --argjson s "$(stat -c %s "$f" 2>/dev/null || echo 0)" '{name: $n, created_at: ($t | sub("\\.yml$"; "") | sub("^(?<d>[0-9]{4})(?<m>[0-9]{2})(?<dd>[0-9]{2})T(?<h>[0-9]{2})(?<mi>[0-9]{2})(?<s>[0-9]{2})Z$"; "\(.d)-\(.m)-\(.dd)T\(.h):\(.mi):\(.s)Z")), size: $s}'
+        jq -nc --arg n "$n" --arg t "${n#plugin-}" --argjson s "$(stat -c %s "$f" 2>/dev/null || echo 0)" '{name: $n, created_at: ($t | sub("\\.yml$"; "") | sub("^(?<d>[0-9]{4})(?<m>[0-9]{2})(?<dd>[0-9]{2})T(?<h>[0-9]{2})(?<mi>[0-9]{2})(?<s>[0-9]{2})Z(-[0-9]+)?$"; "\(.d)-\(.m)-\(.dd)T\(.h):\(.mi):\(.s)Z")), size: $s}'
     done | jq -sc 'sort_by(.created_at) | reverse | .[0:10]'
 }
 
@@ -1339,6 +1344,7 @@ _cs_plugin_write() {
     ts=$(date -u +%Y%m%dT%H%M%SZ); dir="${f%/*}"
     mkdir -p "$CS_BACKUP_DIR" 2>/dev/null; chmod 700 "$CS_BACKUP_DIR" 2>/dev/null
     bak="$CS_BACKUP_DIR/plugin-$ts.yml"
+    local n=1; while [[ -e "$bak" ]]; do n=$(( n + 1 )); bak="$CS_BACKUP_DIR/plugin-$ts-$n.yml"; done
     ( umask 077; cp -p "$f" "$bak" ) 2>/dev/null || { CS_CFG_ERR="could not keep a copy of the current file"; return 1; }
     tmp="$f.dcs-new"
     ( umask 077; printf '%s\n' "$new" > "$tmp" ) || { CS_CFG_ERR="could not write the new file"; return 1; }
@@ -1346,11 +1352,11 @@ _cs_plugin_write() {
     mv -f "$tmp" "$f" || { rm -f "$tmp"; CS_CFG_ERR="could not replace the middleware file"; return 1; }
     # read back: what the file says now is what was asked
     if [[ "$(_cs_plugin_read_file "$f" | jq -c '{mode, update_interval, default_decision_seconds, http_timeout, remediation_status_code, log_level}')" != "$(jq -c '{mode, update_interval, default_decision_seconds, http_timeout, remediation_status_code, log_level}' <<< "$s")" ]]; then
-        cp -p "$bak" "$f" 2>/dev/null; CS_CFG_ERR="the file did not read back as written; the previous file was put back"; return 1
+        cp -p "$bak" "$f" 2>/dev/null; rm -f "$bak"; CS_CFG_ERR="the file did not read back as written; the previous file was put back"; return 1
     fi
     touch "$dir/.reload" 2>/dev/null; touch "${dir%/*}/.reload" 2>/dev/null || true
     ls -1t "$CS_BACKUP_DIR"/plugin-*.yml 2>/dev/null | tail -n +11 | while IFS= read -r old; do rm -f "$old"; done
-    CS_PLUGIN_BACKUP="plugin-$ts.yml"
+    CS_PLUGIN_BACKUP="${bak##*/}"
     return 0
 }
 
