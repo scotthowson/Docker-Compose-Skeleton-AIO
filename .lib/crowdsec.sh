@@ -1077,6 +1077,7 @@ handle_crowdsec_decisions_import() {
     local body="$1" fmt content defdur defreason perm entries n
     [[ "$body" == \{* ]] && jq -e . >/dev/null 2>&1 <<< "$body" || { _api_error 400 "Send a JSON body: {\"format\": \"auto\", \"content\": \"203.0.113.7\\n198.51.100.0/24\"}"; return; }
     fmt=$(jq -r '(.format // "auto") | tostring' <<< "$body"); content=$(jq -r '(.content // "") | tostring' <<< "$body")
+    content="${content#$'\xef\xbb\xbf'}"     # a byte order mark: the first line of a file saved by a Windows program would otherwise not be an address (or a header)
     [[ "$fmt" =~ ^(auto|csv|json|values)$ ]] || { _api_error 400 "format must be auto, csv, json or values"; return; }
     [[ -n "${content//[[:space:]]/}" ]] || { _api_error 400 "content is empty"; return; }
     (( ${#content} <= 524288 )) || { _api_error 413 "Too much to import at once (512 KB at most)"; return; }
