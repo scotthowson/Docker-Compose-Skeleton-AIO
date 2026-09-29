@@ -1,0 +1,45 @@
+#!/bin/bash
+# =============================================================================
+# dcs-hub-init — the first start of a DCS hub image: the DCS checkout that came with the image moves into the
+# home of the VM's user (from the Proxmox cloud-init tab), the API and the dashboard start as a hub, the boot
+# services are installed, and the console says where to open the browser. Runs once (marker), retried at the
+# next boot when something (the network, a registry) was not there yet.
+# =============================================================================
+set -u
+STATE=/var/lib/dcs-init
+MARK=$STATE/hub-done
+[[ -e "$MARK" ]] && exit 0
+log() { echo "dcs-hub-init: $*"; }
+
+user=$(cat "$STATE/user" 2>/dev/null)
+[[ -n "$user" ]] && id "$user" >/dev/null 2>&1 || { log "no user yet (dcs-init has not run?)"; exit 1; }
+home=$(getent passwd "$user" | cut -d: -f6)
+dir=$home/.Docker-Compose-Skeleton-AIO
+if [[ -d /opt/dcs && ! -e "$dir" ]]; then
+    mv /opt/dcs "$dir" && chown -R "$user:$(id -gn "$user")" "$dir" || { log "cannot move the DCS checkout to $dir"; exit 1; }
+fi
+[[ -x "$dir/setup.sh" ]] || { log "no DCS checkout in $dir"; exit 1; }
+
+log "starting DCS $(cat "$dir/VERSION" 2>/dev/null) as a hub for $user (the dashboard image is pulled the first time)"
+# no prompts, no account: the wizard in the browser makes the first admin and links Proxmox
+if ! runuser -u "$user" -- env HOME="$home" DCS_UNATTENDED=true DCS_FLEET_ROLE=hub bash -c "cd '$dir' && ./setup.sh"; then
+    log "setup.sh did not finish; it is tried again at the next boot"
+    exit 1
+fi
+# DCS starts by itself after a reboot from now on (dcs-api and dcs-stacks services)
+env DCS_UNATTENDED=true "$dir/.scripts/install-service.sh" </dev/null || log "the boot services did not install (sudo $dir/.scripts/install-service.sh)"
+
+# the console tells where the dashboard is
+port=$(grep -m1 '^DCS_UI_PORT=' "$dir/.env" 2>/dev/null | cut -d= -f2 | tr -d "\"'"); port=${port:-3000}
+mkdir -p /etc/issue.d
+cat > /etc/issue.d/30-dcs-hub.issue <<ISSUE
+  DCS hub $(cat "$dir/VERSION" 2>/dev/null)
+  Dashboard  http://\4{eth0}:$port   (open it in a browser to finish the setup)
+  API        http://\4{eth0}:9876
+
+ISSUE
+agetty --reload 2>/dev/null || true
+: > "$MARK"
+sync
+log "done: the dashboard is on port $port"
+exit 0

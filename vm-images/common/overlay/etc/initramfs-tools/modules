@@ -1,0 +1,4 @@
+# The disk and its file system are all the initramfs has to find: the rest of the drivers load from the root file system.
+virtio_scsi
+virtio_blk
+sd_mod

@@ -1,0 +1,18 @@
+[Unit]
+Description=DCS hub: first start of the API and the dashboard
+After=dcs-init.service network-online.target docker.service
+Wants=network-online.target docker.service
+ConditionPathExists=!/var/lib/dcs-init/hub-done
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/dcs-hub-init
+TimeoutStartSec=900
+Restart=on-failure
+RestartSec=30
+StartLimitIntervalSec=0
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=multi-user.target

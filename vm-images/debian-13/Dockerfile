@@ -1,8 +1,9 @@
 # =============================================================================
-# DCS VM image — Debian 13 (trixie): a single-purpose Docker host, nothing else.
+# DCS VM images — Debian 13 (trixie): a single-purpose Docker host, nothing else.
+# Two targets: `node` (what the hub clones for every stack) and `hub` (node + the DCS checkout and its first start).
 # This builds the root file system; ../build.sh turns it into a bootable disk.
 # =============================================================================
-FROM debian:trixie-slim
+FROM debian:trixie-slim AS node
 ARG DEBIAN_FRONTEND=noninteractive
 ENV LANG=C.UTF-8
 
@@ -21,9 +22,10 @@ RUN set -eux; \
     apt-get update
 
 # The kernel first (its hooks must not meet a half-installed boot loader), with a compact initramfs
+COPY common/overlay/etc/initramfs-tools/modules /etc/initramfs-tools/modules
 RUN set -eux; \
     apt-get install -y initramfs-tools zstd; \
-    sed -i 's/^COMPRESS=.*/COMPRESS=zstd/; s/^MODULES=.*/MODULES=most/' /etc/initramfs-tools/initramfs.conf; \
+    sed -i 's/^COMPRESS=.*/COMPRESS=zstd/; s/^MODULES=.*/MODULES=list/' /etc/initramfs-tools/initramfs.conf; \
     apt-get install -y linux-image-cloud-amd64
 
 # The system: systemd with its own networking, ssh, sudo, the tools DCS itself runs on, the guest agent
@@ -49,7 +51,7 @@ RUN set -eux; \
         systemctl enable "$u" >/dev/null 2>&1 || { echo "cannot enable $u" >&2; systemctl enable "$u"; exit 1; }; \
         systemctl is-enabled "$u" >/dev/null 2>&1 || [ "$u" = systemd-repart.service ] || { echo "$u is not enabled" >&2; exit 1; }; \
     done; \
-    systemctl mask apt-daily.timer apt-daily-upgrade.timer >/dev/null 2>&1; \
+    systemctl mask apt-daily.timer apt-daily-upgrade.timer systemd-binfmt.service proc-sys-fs-binfmt_misc.automount >/dev/null 2>&1; \
     ln -sf /usr/share/zoneinfo/UTC /etc/localtime; echo UTC > /etc/timezone; \
     echo "LANG=C.UTF-8" > /etc/default/locale; \
     : > /etc/machine-id; : > /etc/motd; \
@@ -67,3 +69,15 @@ RUN set -eux; \
            /usr/share/doc/*/changelog* /usr/share/doc/*/NEWS* /usr/share/common-licenses/Apache-2.0 2>/dev/null || true; \
     find /usr /var -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true; \
     rm -f /var/lib/dpkg/*-old /var/lib/systemd/random-seed
+
+# =============================================================================
+# The hub image: the same system, the DCS checkout (the build context "dcs") and the service that starts it at the
+# first boot. Members never carry DCS code: the hub gives them its own at join time, so versions always match.
+# =============================================================================
+FROM node AS hub
+COPY hub/overlay/ /
+COPY --from=dcs . /opt/dcs
+RUN set -eux; \
+    chmod 755 /usr/local/sbin/dcs-hub-init; \
+    systemctl enable dcs-hub-init.service; systemctl is-enabled dcs-hub-init.service; \
+    rm -f /opt/dcs/.git/hooks/*.sample

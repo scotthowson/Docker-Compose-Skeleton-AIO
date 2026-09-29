@@ -29,6 +29,7 @@ check "gateway"                       "Gateway=192.168.2.1" "$(grep '^Gateway=' 
 check "no DHCP when static"           0 "$(grep -c '^DHCP=' "$N")"
 check "dns server"                    "nameserver 192.168.2.1" "$(grep '^nameserver' "$R/etc/resolv.conf")"
 check "search domain"                 "search howson.dev" "$(grep '^search' "$R/etc/resolv.conf")"
+check "the user is remembered"            dcs "$(cat "$R/var/lib/dcs-init/user")"
 check "instance id remembered"        3ba902022cccfb5339400f70bf82ad87da79c87b "$(cat "$R/var/lib/dcs-init/instance-id")"
 # the same instance again: nothing is rewritten
 echo "kept" > "$R/etc/hostname"
@@ -37,6 +38,13 @@ check "same instance: nothing redone" kept "$(cat "$R/etc/hostname")"
 # a new instance (the config changed): applied again
 rm "$R/var/lib/dcs-init/instance-id"; run "$R" static >/dev/null
 check "new instance: applied again"   monitoring-management "$(cat "$R/etc/hostname")"
+# a hard power-off right after the first boot leaves empty files behind: the next boot must not trust the marker
+: > "$N"
+check "empty network file: run exits 0"    0 "$(run "$R" static)"
+check "empty network file: written again"  "Address=192.168.2.100/24" "$(grep '^Address=' "$N")"
+: > "$R/etc/hostname"; run "$R" static >/dev/null
+check "empty host name: written again"     monitoring-management "$(cat "$R/etc/hostname")"
+check "network files are numbered from 0"  10-dcs-0.network "$(basename "$N")"
 
 echo "dcs-init: DHCP, two keys, two DNS servers"
 R=$T/dhcp; run "$R" dhcp >/dev/null

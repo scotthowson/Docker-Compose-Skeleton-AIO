@@ -34,7 +34,8 @@ if [[ -z "${DCS_SEED_DIR:-}" ]]; then
         if [[ ! -e "$STATE/instance-id" ]]; then
             mkdir -p "$NETDIR"
             printf '[Match]\nName=eth0 en* ens* eno*\n\n[Network]\nDHCP=yes\n' > "$NETDIR/10-dcs.network"
-            ssh-keygen -A >/dev/null 2>&1 || true
+            find "$R/etc/ssh" -maxdepth 1 -name 'ssh_host_*' -size 0 -delete 2>/dev/null; ssh-keygen -A >/dev/null 2>&1 || true
+            sync
         fi
         exit 0
     fi
@@ -42,8 +43,22 @@ if [[ -z "${DCS_SEED_DIR:-}" ]]; then
 fi
 
 iid=$(sed -n 's/^instance-id:[[:space:]]*//p' "$SEED/meta-data" 2>/dev/null | head -1)
+# A hard power-off within seconds of the first boot can leave files it wrote empty (the file system allocates their
+# blocks later): the marker only counts when the host name, the network files and the ssh host keys are really there.
+intact() {
+    [[ -s "$R/etc/hostname" ]] || return 1
+    find "$NETDIR" -maxdepth 1 -name '10-dcs*.network' -size +0 2>/dev/null | grep -q . || return 1
+    find "$NETDIR" -maxdepth 1 -name '10-dcs*.network' -size 0 2>/dev/null | grep -q . && return 1
+    if ! $TEST; then
+        local k n=0
+        for k in "$R"/etc/ssh/ssh_host_*_key; do [[ -s "$k" ]] || return 1; n=$((n + 1)); done
+        [[ $n -gt 0 ]] || return 1
+    fi
+    return 0
+}
 if [[ -n "$iid" && "$iid" == "$(cat "$STATE/instance-id" 2>/dev/null)" ]]; then
-    exit 0   # the same instance as last boot: everything is in place
+    intact && exit 0   # the same instance as last boot: everything is in place
+    log "instance ${iid} is marked done but some of its files are missing or empty: applying it again"
 fi
 log "applying instance ${iid:-unknown}"
 
@@ -65,6 +80,7 @@ $TEST || hostname "$host" 2>/dev/null || true
 
 # --- the user, with passwordless sudo (the hub runs "sudo -n"), the docker group and the ssh keys ---
 user=$(val user); [[ -n "$user" ]] || user=dcs
+echo "$user" > "$STATE/user"
 if ! $TEST; then
     if ! id "$user" >/dev/null 2>&1; then
         useradd -m -s /bin/bash "$user" 2>/dev/null || log "could not create $user"
@@ -84,7 +100,7 @@ $TEST || chown "$user:$user" "$home/.ssh/authorized_keys" 2>/dev/null
 chmod 600 "$home/.ssh/authorized_keys"
 pw=$(val password)
 if ! $TEST && [[ -n "$pw" && "$pw" == \$* ]]; then usermod -p "$pw" "$user" 2>/dev/null || true; fi
-$TEST || ssh-keygen -A >/dev/null 2>&1 || true
+$TEST || { find "$R/etc/ssh" -maxdepth 1 -name 'ssh_host_*' -size 0 -delete 2>/dev/null; ssh-keygen -A >/dev/null 2>&1 || true; }
 
 # --- network: version 1 config -> systemd-networkd + resolv.conf -------------------------------------------
 NC="$SEED/network-config"
@@ -92,6 +108,7 @@ rm -f "$NETDIR"/10-dcs*.network
 mkdir -p "$NETDIR"
 if [[ -s "$NC" ]]; then
     awk -v dir="$NETDIR" '
+        BEGIN { nic = 0 }
         function q(s) { gsub(/^[[:space:]]+|[[:space:]]+$/, "", s); gsub(/^["\x27]|["\x27]$/, "", s); return s }
         function prefix(mask,   n, i, p, bits, b) {
             n = split(mask, o, "."); bits = 0
@@ -138,6 +155,8 @@ if ! ls "$NETDIR"/10-dcs*.network >/dev/null 2>&1; then
     printf '[Match]\nName=eth0 en* ens* eno*\n\n[Network]\nDHCP=yes\n' > "$NETDIR/10-dcs.network"
 fi
 
-[[ -n "$iid" ]] && echo "$iid" > "$STATE/instance-id"
+$TEST || sync   # everything above is on the disk before the marker says so
+if [[ -n "$iid" ]]; then echo "$iid" > "$STATE/instance-id.tmp" && mv -f "$STATE/instance-id.tmp" "$STATE/instance-id"; fi
+$TEST || sync
 log "done ($host)"
 exit 0
