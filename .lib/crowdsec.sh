@@ -256,7 +256,9 @@ _cs_pipe() {
 
 # The message worth showing from cscli's stderr: the last "Error:" or fatal line, without the wrapping
 _cs_errline() {
-    local e="${1:-$CS_ERR}" line
+    local e="${1:-$CS_ERR}" line probe
+    # what failed inside a $( … ) (the cached readers run in one) left nothing in CS_ERR here: ask CrowdSec what is wrong with its API
+    if [[ -z "$e" && -z "${1:-}" && -n "$CS_NAME" ]]; then _cs_run probe lapi status || e="$CS_ERR"; fi
     line=$(printf '%s\n' "$e" | grep -E '^Error:|level=(fatal|error)' | tail -n 1)
     [[ -n "$line" ]] || line=$(printf '%s\n' "$e" | grep -v '^[[:space:]]*$' | tail -n 1)
     line="${line#Error: }"
