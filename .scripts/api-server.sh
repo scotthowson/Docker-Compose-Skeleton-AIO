@@ -12620,7 +12620,15 @@ _crowdsec_post_deploy() {
     [[ -n "$webhook" ]] || webhook=$(_discord_webhook 2>/dev/null || true)
     if [[ "$webhook" =~ ^\$\{SECRETS[._]([A-Za-z_][A-Za-z0-9_]*)\}$ ]]; then webhook=$(secrets_get "${BASH_REMATCH[1]}" 2>/dev/null || true); fi
     domain=$(_find_traefik_domain); [[ -n "$domain" ]] || domain="DCS"
-    if _discord_is_webhook "$webhook"; then
+    # Files the CrowdSec page already manages (its marker on the first lines) carry the person's settings: a re-deploy leaves them alone
+    local managed="" head_txt
+    head_txt=$(docker exec CrowdSec cat /etc/crowdsec/notifications/http.yaml 2>/dev/null | head -n 12 || true)
+    [[ "$head_txt" == *"# dcs-notify:"* ]] && managed=yes
+    head_txt=$(docker exec CrowdSec cat /etc/crowdsec/profiles.yaml 2>/dev/null | head -n 12 || true)
+    [[ "$head_txt" == *"# dcs-settings:"* ]] && managed=yes
+    if [[ -n "$managed" ]]; then
+        echo "[dcs] the ban settings and Discord alerts are managed on the CrowdSec page: kept as they are" >> "$log"
+    elif _discord_is_webhook "$webhook"; then
         local tmp; tmp=$(mktemp)
         W="$webhook" D="$domain" awk '{ gsub(/__WEBHOOK__/, ENVIRON["W"]); gsub(/__DOMAIN__/, ENVIRON["D"]); print }' "$tdir/files/notifications-discord.yaml" > "$tmp"
         if docker cp "$tmp" CrowdSec:/etc/crowdsec/notifications/http.yaml 2>>"$log" && docker cp "$tdir/files/profiles.yaml" CrowdSec:/etc/crowdsec/profiles.yaml 2>>"$log"; then
