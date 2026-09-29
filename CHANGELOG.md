@@ -3,6 +3,19 @@
 All notable changes to Docker Compose Skeleton AIO are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [3.9.9] - 2026-09-29
+
+### Fixed
+
+- **An update was held back because `setup.sh` had made a script executable.** Setup runs `chmod +x` over
+  every script; two libraries (`.lib/envfile.sh`, `.lib/setup-checks.sh`) are tracked as 644, so every
+  install that had run setup listed them as edited framework files. The first release to change one of them
+  would then be refused ("local changes to framework files would be overwritten", 409), the unattended update
+  would wait for consent about edits nobody had made, and the Updates page showed them as "edited on this
+  server". A file whose only difference is the executable bit is no longer a local change: the update check
+  leaves it out, the update goes through and sets the bit again afterwards. A real edit to the same file is
+  still caught.
+
 ## [3.9.8] - 2026-09-29
 
 ### Fixed

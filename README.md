@@ -413,7 +413,8 @@ A `dcs-update` schedule (target `images` to pull image updates too) applies the 
 outside the listener, restarts the API, waits `UPDATE_HEALTH_GRACE` seconds and rolls back to the
 backup tag when the health score dropped by `UPDATE_ROLLBACK_DROP` points. The outcome is posted
 to your notification channels and listed on the Updates page. Framework files you edited by hand
-are never replaced unattended — the Updates page asks you first.
+are never replaced unattended — the Updates page asks you first. (A script whose only difference is
+the executable bit — `setup.sh` sets it on every one — is not an edit.)
 
 ### Proxmox
 

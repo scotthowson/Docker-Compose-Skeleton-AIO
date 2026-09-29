@@ -8983,18 +8983,29 @@ _api_update_release_notes() {
     ' | head -c 12000 || true
 }
 
+# A tracked file whose only difference from HEAD is the executable bit.
+# setup.sh runs chmod +x over every script, so git lists a script it tracks as
+# 644 as modified although not a byte is edited. That is no local change: it
+# never holds an update back, and the bit is set again after the switch.
+_api_git_mode_only() {
+    [[ -e "$1" ]] || return 1
+    git -c core.fileMode=false diff --quiet HEAD -- "$1" 2>/dev/null
+}
+
 # Local edits to tracked files, split by ownership, and the subset a switch
 # to UPD_TARGET would overwrite. Sets UPD_USER_DIRTY, UPD_FW_DIRTY,
-# UPD_USER_KEEP (user files the update touches: put back afterwards) and
-# UPD_FW_CONFLICT (framework files the update touches: need replace_local).
+# UPD_USER_KEEP (user files the update touches: put back afterwards),
+# UPD_FW_CONFLICT (framework files the update touches: need replace_local) and
+# UPD_MODE_FIX (files with a changed executable bit only that the update touches).
 _api_update_scan_local() {
-    UPD_USER_DIRTY=() UPD_FW_DIRTY=() UPD_USER_KEEP=() UPD_FW_CONFLICT=()
-    declare -gA UPD_DIRTY_STATUS=()
+    UPD_USER_DIRTY=() UPD_FW_DIRTY=() UPD_USER_KEEP=() UPD_FW_CONFLICT=() UPD_MODE_FIX=()
+    declare -gA UPD_DIRTY_STATUS=() UPD_MODE_ONLY=()
     local line st path f
     while IFS= read -r line; do
         [[ -z "$line" ]] && continue
         st="${line:0:2}"; path="${line:3}"; path="${path##* -> }"
         [[ "$path" == \"*\" ]] && path="${path:1:${#path}-2}"
+        if [[ "$st" == *M* ]] && _api_git_mode_only "$path"; then UPD_MODE_ONLY["$path"]=1; continue; fi
         UPD_DIRTY_STATUS["$path"]="$st"
         if _api_git_is_user_path "$path"; then UPD_USER_DIRTY+=("$path"); else UPD_FW_DIRTY+=("$path"); fi
     done < <(git status --porcelain --untracked-files=no 2>/dev/null || true)
@@ -9003,6 +9014,8 @@ _api_update_scan_local() {
         [[ -z "$f" ]] && continue
         if [[ -n "${UPD_DIRTY_STATUS[$f]:-}" ]]; then
             if _api_git_is_user_path "$f"; then UPD_USER_KEEP+=("$f"); else UPD_FW_CONFLICT+=("$f"); fi
+        elif [[ -n "${UPD_MODE_ONLY[$f]:-}" ]]; then
+            UPD_MODE_FIX+=("$f")
         elif [[ -e "$f" ]] && ! git ls-files --error-unmatch -- "$f" >/dev/null 2>&1; then
             # an untracked file sits where the update creates one
             UPD_DIRTY_STATUS["$f"]="??"
@@ -9056,6 +9069,14 @@ _api_update_switch() {
             rm -rf -- "$f" 2>/dev/null || true
         fi
     done
+    # 2b. files that differ only in the executable bit: git counts that as a local change, so the
+    #     tracked mode goes back for the switch and the bit is set again after it
+    local -a mode_x=()
+    for f in ${UPD_MODE_FIX[@]+"${UPD_MODE_FIX[@]}"}; do
+        [[ -n "$f" ]] || continue
+        [[ -x "$f" ]] && mode_x+=("$f")
+        git checkout -q HEAD -- "$f" 2>/dev/null || true
+    done
     # 3. the switch itself
     local rc=0
     if [[ "$mode" == "reset" ]]; then
@@ -9063,6 +9084,9 @@ _api_update_switch() {
     else
         UPD_SWITCH_OUTPUT=$(git merge -q --ff-only "$UPD_TARGET" 2>&1) || rc=$?
     fi
+    for f in ${mode_x[@]+"${mode_x[@]}"}; do
+        [[ -f "$f" ]] && chmod +x -- "$f" 2>/dev/null || true
+    done
     # 4. user files back exactly as they were (after a failed switch too)
     for f in ${UPD_USER_KEEP[@]+"${UPD_USER_KEEP[@]}"}; do
         [[ -n "$f" ]] || continue

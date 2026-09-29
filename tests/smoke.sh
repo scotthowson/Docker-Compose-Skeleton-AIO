@@ -495,6 +495,28 @@ check "rollback: succeeds"              200 "$(printf '%s' "$RB" | status_of)"
 check "rollback: restored version"      1.0.0 "$(printf '%s' "$RB" | body_of | jq -r '.restored_version')"
 check "rollback: user compose kept"     yes "$(grep -q '# mine' "$UPD/Stacks/demo/docker-compose.yml" && echo yes || echo no)"
 check "rollback: framework file back"   'echo one' "$(cat "$UPD/.scripts/tool.sh")"
+# setup.sh runs chmod +x over every script, so a script git tracks as 644 reads as edited although only the
+# executable bit differs. That is not a local edit and must not hold an update back; a real edit still does
+chmod +x "$UPD/.scripts/tool.sh"
+check "exec bit: git lists the file"       yes "$(_gu status --porcelain --untracked-files=no | grep -q '\.scripts/tool\.sh' && echo yes || echo no)"
+CHK_X=$(_upd GET /system/update/check | body_of)
+check "exec bit: no framework edit shown"  '' "$(printf '%s' "$CHK_X" | jq -r '.local_changes.framework | join(" ")')"
+check "exec bit: no conflict with update"  '' "$(printf '%s' "$CHK_X" | jq -r '.local_changes.conflicts | join(" ")')"
+APPLY_X=$(_upd POST /system/update/apply '{"confirm":true}')
+check "exec bit: apply goes through"       200 "$(printf '%s' "$APPLY_X" | status_of)"
+check "exec bit: file updated"             'echo two' "$(cat "$UPD/.scripts/tool.sh")"
+check "exec bit: still executable"         yes "$([[ -x "$UPD/.scripts/tool.sh" ]] && echo yes || echo no)"
+check "exec bit: nothing reported replaced" '' "$(printf '%s' "$APPLY_X" | body_of | jq -r '.replaced_local | join(" ")')"
+printf '1.2.0\n' > "$UPD_SRC/VERSION"; printf 'echo three\n' > "$UPD_SRC/.scripts/tool.sh"
+_gs add -A >/dev/null && _gs commit -q -m 'release 1.2.0' && _gs tag v1.2.0 && _gs push -q origin main --tags
+printf 'echo mine\n' > "$UPD/.scripts/tool.sh"     # a real edit on top of the executable bit
+check "exec bit + edit: still a conflict"  '.scripts/tool.sh' "$(_upd GET /system/update/check | body_of | jq -r '.local_changes.conflicts | join(" ")')"
+check "exec bit + edit: apply refused"     409 "$(_upd POST /system/update/apply '{"confirm":true}' | status_of)"
+check "exec bit + edit: nothing moved"     1.1.0 "$(tr -d '[:space:]' < "$UPD/VERSION")"
+_gu checkout -q -- .scripts/tool.sh; chmod +x "$UPD/.scripts/tool.sh"   # the edit is gone, the bit stays
+check "exec bit: the next release applies" 200 "$(_upd POST /system/update/apply '{"confirm":true}' | status_of)"
+check "exec bit: next release content"     'echo three' "$(cat "$UPD/.scripts/tool.sh")"
+check "exec bit: executable after that"    yes "$([[ -x "$UPD/.scripts/tool.sh" ]] && echo yes || echo no)"
 check "user path: Stacks"               0 "$(_lib _api_git_is_user_path Stacks/demo/.env; echo $?)"
 check "user path: scripts are not"      1 "$(_lib _api_git_is_user_path .scripts/api-server.sh; echo $?)"
 sleep 300 & _UPD_SLEEP=$!
