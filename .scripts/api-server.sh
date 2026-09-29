@@ -14375,6 +14375,15 @@ _theme_clean() {
     bad=$(jq -r '.palette // {} | to_entries[] | select(((.value | type) != "string") or ((.value | test("^#[0-9a-fA-F]{6}$")) | not)) | .key' <<< "$doc" 2>/dev/null | head -3 | tr '\n' ' ')
     [[ -z "${bad// /}" ]] || { printf %s "palette colours must be #rrggbb (bad: ${bad% })" > "${TMPDIR:-/tmp}/dcs-theme-err.$$"; return 1; }
     jq -e '(.palette // {}) | has("accent") and has("bg") and has("surface") and has("text")' <<< "$doc" >/dev/null 2>&1 || { printf %s "palette needs at least accent, bg, surface and text" > "${TMPDIR:-/tmp}/dcs-theme-err.$$"; return 1; }
+    # a theme may carry both looks: palette_dark and palette_light (each checked like palette); a document with only `palette`
+    # (and its mode) stays valid, the dashboard derives the other look
+    local pk
+    for pk in palette_dark palette_light; do
+        jq -e --arg k "$pk" '(.[$k] // null) == null or (.[$k] | type == "object")' <<< "$doc" >/dev/null 2>&1 || { printf %s "$pk must be an object of colours" > "${TMPDIR:-/tmp}/dcs-theme-err.$$"; return 1; }
+        bad=$(jq -r --arg k "$pk" '(.[$k] // {}) | to_entries[] | select(((.value | type) != "string") or ((.value | test("^#[0-9a-fA-F]{6}$")) | not)) | .key' <<< "$doc" 2>/dev/null | head -3 | tr '\n' ' ')
+        [[ -z "${bad// /}" ]] || { printf %s "$pk colours must be #rrggbb (bad: ${bad% })" > "${TMPDIR:-/tmp}/dcs-theme-err.$$"; return 1; }
+        jq -e --arg k "$pk" '(.[$k] // null) == null or (.[$k] | has("accent") and has("bg") and has("surface") and has("text"))' <<< "$doc" >/dev/null 2>&1 || { printf %s "$pk needs at least accent, bg, surface and text" > "${TMPDIR:-/tmp}/dcs-theme-err.$$"; return 1; }
+    done
     css=$(jq -r '.css // ""' <<< "$doc" 2>/dev/null); [[ ${#css} -le 65536 ]] || { printf %s "css is limited to 64 KB" > "${TMPDIR:-/tmp}/dcs-theme-err.$$"; return 1; }
     # the same constructs the dashboard cuts out of custom CSS: nothing that loads or runs anything
     before="$css"
@@ -14383,7 +14392,9 @@ _theme_clean() {
     jq -c --arg css "$css" --argjson t "$(date +%s)" --argjson st "$stripped" '
         {theme: {schema: 1, name: .name, title: ((.title // .name) | tostring | .[0:80]), description: ((.description // "") | tostring | .[0:300]), author: ((.author // "") | tostring | .[0:80]),
                  version: ((.version // "1.0.0") | tostring | .[0:20]), mode: (.mode // "dark"), palette: (.palette // {}),
-                 font: ((.font // "") | tostring | .[0:64]), radius: ((.radius // "") | tostring | .[0:4]), css: $css, updated_at: $t}, stripped: $st}' <<< "$doc" 2>/dev/null
+                 font: ((.font // "") | tostring | .[0:64]), radius: ((.radius // "") | tostring | .[0:4]), css: $css, updated_at: $t}
+                + (if (.palette_dark // null) != null then {palette_dark: .palette_dark} else {} end)
+                + (if (.palette_light // null) != null then {palette_light: .palette_light} else {} end), stripped: $st}' <<< "$doc" 2>/dev/null
 }
 _theme_clean_err() { cat "${TMPDIR:-/tmp}/dcs-theme-err.$$" 2>/dev/null; rm -f "${TMPDIR:-/tmp}/dcs-theme-err.$$"; }
 _theme_write() { local doc="$1" name; name=$(jq -r .name <<< "$doc"); mkdir -p "$THEMES_DIR" 2>/dev/null; printf '%s\n' "$doc" > "$THEMES_DIR/$name.json.tmp.$$" 2>/dev/null && mv -f "$THEMES_DIR/$name.json.tmp.$$" "$THEMES_DIR/$name.json"; }

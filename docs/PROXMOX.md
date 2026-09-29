@@ -278,13 +278,16 @@ none).
 
 ### The operating system
 
-Every VM is built from a **cloud image**: a system that takes its user, key, address, Docker
-and DCS from cloud-init and the bootstrap, so the build needs no hand on it. The VM settings
-(the wizard's Stacks step, *New VM*) offer:
+Every VM is built from an image that needs no hand on it. The default is a **purpose-built DCS
+image** (Debian 13, Ubuntu 26.04 or Fedora 44 as a Docker host and nothing else, see
+[VM images](VM-IMAGES.md)); the others are **cloud images**, systems that take their user, key,
+address, Docker and DCS from cloud-init and the bootstrap. The VM settings (the wizard's Stacks
+step, *New VM*) offer:
 
 | Choice | What happens |
 |--------|--------------|
-| **Catalogue** — Debian 13 (the default, smallest), Debian 12, Ubuntu Server 26.04 / 24.04 / 22.04 LTS, Fedora Cloud, AlmaLinux 9 | Proxmox downloads the image once into the import storage (or the hub fetches and uploads it), every VM built from it imports that file. |
+| **DCS images** — DCS Debian 13 (the default), DCS Ubuntu 26.04, DCS Fedora 44 | Proxmox downloads the node image once from the release of this DCS version (the hub has it check the download against the release's `SHA256SUMS`; `FLEET_DCS_IMAGE_BASE` names another place). Every VM is created from it as it is: the tools, Docker and the guest agent are in place, so there is nothing to install and nothing to bake; only the fresh DCS code and the join run. |
+| **Cloud images** — Debian 13, Debian 12, Ubuntu Server 26.04 / 24.04 / 22.04 LTS, Fedora Cloud, AlmaLinux 9 | Proxmox downloads the image once into the import storage (or the hub fetches and uploads it), every VM built from it imports that file. |
 | **On Proxmox already** — a cloud image in the import storage | Used as is: put images there yourself (Datacenter → Storage → *local* → *Import*) and they show up. |
 | **On Proxmox already** — an installer ISO from *ISO Images* | The hub creates the VM with the ISO attached and stops there: install the system in the VM's Proxmox console (the card says which address to give it), then run the one-line join the card shows. The build closes by itself when the VM joins. Anything Proxmox can boot works this way. |
 | **A URL** | Any cloud image (`.qcow2`, `.img`, `.raw`) with cloud-init and apt or dnf inside. |
@@ -296,6 +299,8 @@ volume Docker must write). A `.config/fleet-images.json` on the hub (an array of
 build; *New VM* can pick a different one per VM.
 
 ### Faster builds: the baked DCS template
+
+(A purpose-built DCS image is already what a bake makes, so it is never baked.)
 
 A build from a cloud image spends most of its 85 seconds installing packages and Docker. Tick
 **Bake a DCS template first** in the VM settings (on by default) and the hub does that work

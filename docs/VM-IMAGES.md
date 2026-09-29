@@ -141,8 +141,10 @@ For UEFI add `--machine q35 --bios ovmf --efidisk0 local-lvm:1,efitype=4m,pre-en
    settings, the Proxmox link (an API token), the stacks. It is on the console too (Proxmox → the VM → Console), and the
    guest agent shows the address in Proxmox's Summary.
 
-From the hub, **New VM stack** and the wizard's VM step build the other VMs. (Choosing these images there is part of
-the 4.0 work; until it lands the hub builds from the cloud images it always did, and these images are for hubs and by-hand nodes.)
+From the hub, **New VM stack** and the wizard's VM step build the other VMs, and they offer the DCS node images first
+(recommended): the hub has Proxmox download the one you pick from the release of its own version, checks it against
+`SHA256SUMS`, and creates each VM from it directly. There is nothing to install and no template to bake, so a stack's VM is
+up in about a minute. The cloud images stay in the list for anything else.
 
 ## Keeping an image current
 

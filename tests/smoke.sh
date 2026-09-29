@@ -2135,6 +2135,15 @@ check "theme: active must exist"             404 "$(auth_request PUT /themes/act
 check "theme: set active"                    smoke-night "$(auth_request PUT /themes/active '{"name":"smoke-night"}' | body_of | jq -r '.active')"
 check "theme: list says active"              smoke-night "$(auth_request GET /themes | body_of | jq -r '.active')"
 check "theme: get the document"              '#34d399' "$(auth_request GET /themes/smoke-night | body_of | jq -r '.palette.accent')"
+# a theme with both looks: palette_dark and palette_light travel with it; a bad one is refused; an older document still works
+_TP='{"schema":1,"name":"smoke-pair","title":"Smoke Pair","mode":"dark","palette":{"accent":"#34d399","bg":"#020617","surface":"#0f172a","text":"#f1f5f9"},"palette_dark":{"accent":"#34d399","bg":"#020617","surface":"#0f172a","text":"#f1f5f9"},"palette_light":{"accent":"#047857","bg":"#f8fafc","surface":"#ffffff","text":"#0f172a"}}'
+check "theme pair: stored"                   200 "$(auth_request POST /themes "$_TP" | status_of)"
+check "theme pair: both looks kept"          "#f8fafc #020617" "$(auth_request GET /themes/smoke-pair | body_of | jq -r '"\(.palette_light.bg) \(.palette_dark.bg)"')"
+check "theme pair: listed with both"         "true true" "$(auth_request GET /themes | body_of | jq -r '[.themes[] | select(.name == "smoke-pair")][0] | "\(has("palette_dark")) \(has("palette_light"))"')"
+check "theme pair: a bad light colour refused" 400 "$(auth_request POST /themes '{"name":"bad-pair","palette":{"accent":"#000000","bg":"#000000","surface":"#000000","text":"#ffffff"},"palette_light":{"accent":"red","bg":"#ffffff","surface":"#ffffff","text":"#000000"}}' | status_of)"
+check "theme pair: the light look needs the basics" 400 "$(auth_request POST /themes '{"name":"thin-pair","palette":{"accent":"#000000","bg":"#000000","surface":"#000000","text":"#ffffff"},"palette_light":{"accent":"#000000"}}' | status_of)"
+check "theme pair: a document without them has none" false "$(auth_request GET /themes/smoke-night | body_of | jq -r 'has("palette_light")')"
+auth_request DELETE /themes/smoke-pair >/dev/null
 check "theme: delete"                        200 "$(auth_request DELETE /themes/smoke-night | status_of)"
 check "theme: active cleared with it"        "" "$(auth_request GET /themes | body_of | jq -r '.active')"
 check "theme: gone"                          404 "$(auth_request GET /themes/smoke-night | status_of)"

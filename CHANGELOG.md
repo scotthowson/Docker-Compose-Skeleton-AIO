@@ -17,6 +17,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   images first and recommend them; a VM from one is created straight from the imported image (nothing to install, so
   nothing to bake), and the hub has Proxmox check the download against the release's `SHA256SUMS`. The images come from the
   release of the running version (`FLEET_DCS_IMAGE_BASE` names another place); the cloud images stay in the list.
+- **A theme carries both its looks.** A theme document may hold `palette_dark` and `palette_light` next to `palette` (each a
+  full palette, validated like it); the dashboard shows the one that matches the dark/light switch, so a theme is never
+  worn in the wrong mode. Documents with only `palette` and `mode` stay valid.
 - **The VM sheet says what the VM runs and what it was built from.** Info on a VM card lists the operating system the guest
   reports through the guest agent (or the DCS inside it, or Proxmox's OS type), the image the hub built it from and the DCS
   template it was cloned from, the firmware (BIOS or UEFI) and the creation date. New VMs carry the image in their Proxmox
