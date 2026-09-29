@@ -6,7 +6,9 @@ A Proxmox LXC container is the lightest home for a DCS hub: no second kernel, no
 controller, and it starts in seconds. This page builds one step by step: an unprivileged Debian 13
 container with Docker inside, DCS set up as a hub, and boot services so it survives a reboot.
 
-Every command below was run on a real host, and the output quoted is what came back.
+Every command below was run on a real Proxmox host, with the test container's own ID and address, and
+the output quoted is what came back. The interactive steps (`pct enter`, `passwd`, `su`) ran as their
+scripted equivalents (`pct exec`, `chpasswd`, `su -c`).
 
 | Tested with | |
 |---|---|
@@ -74,7 +76,7 @@ On LVM-thin, `pct create` may warn that the thin volumes add up to more than the
 provisioning at work: the container only takes the space it uses.
 
 <details>
-<summary><b>The same in the web UI</b></summary>
+<summary><b>The same in the web UI</b> (not part of the test run)</summary>
 
 *Create CT*:
 
