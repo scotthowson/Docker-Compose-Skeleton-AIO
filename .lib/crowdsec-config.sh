@@ -104,7 +104,7 @@ _cs_profile_inspect() {
                             and (if $rg != null then ($rg | stock_ok("Alert.Remediation == true && Alert.GetScope() == \"Range\"")) else true end)
                        then "stock" else "custom" end),
                 ip_duration: ($ip.durations[0] // null), range_duration: ($rg.durations[0] // null),
-                escalate: ((($ip // {}) | expr_of) != "" or (($rg // {}) | expr_of) != ""),
+                escalate: ((($ip // {keys: []}) | expr_of) != "" or (($rg // {keys: []}) | expr_of) != ""),
                 notified: ($p | map(.notifications | index("http_default") != null) | any),
                 header: (if $hasdcs then ($hdr | fromjson? // null) else null end) }'
 }
