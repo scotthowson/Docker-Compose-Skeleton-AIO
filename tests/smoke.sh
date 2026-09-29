@@ -1426,6 +1426,10 @@ check "fleet: bot may drive members"    0 "$(_lib _api_bot_allowed POST "/fleet/
 check "fleet: overview reaches member"  true "$(auth_request GET /fleet/overview | body_of | jq -r '.members[0].reachable' 2>/dev/null)"
 check "fleet: overview counts stacks"   yes "$([[ "$(auth_request GET /fleet/overview | body_of | jq -r '.totals.stacks' 2>/dev/null)" -ge 1 ]] && echo yes || echo no)"
 check "fleet: overview names member"    media-vm "$(auth_request GET /fleet/overview | body_of | jq -r '.members[0].name' 2>/dev/null)"
+# a hub's badges add the VM's images, networks and volumes to its own: the overview carries them, per member and in the totals
+_OV=$(auth_request GET /fleet/overview | body_of)
+check "fleet: overview carries the VM's Docker counts" "number number number" "$(jq -r '[.totals.images, .totals.networks, .totals.volumes] | map(type) | join(" ")' <<< "$_OV" 2>/dev/null)"
+check "fleet: …the same the VM reports itself"        "$(auth_request GET "/fleet/members/$MID/api/status" | body_of | jq -r '"\(.docker.images) \(.docker.networks) \(.docker.volumes)"' 2>/dev/null)" "$(jq -r '"\(.totals.images) \(.totals.networks) \(.totals.volumes)"' <<< "$_OV" 2>/dev/null)"
 # the Maintenance page's three questions, answered by the hub for the whole fleet in one call each
 _MR=$(auth_request GET '/maintenance/report?fleet=1' | body_of)
 check "maintenance: fleet report merged" true "$(jq -r '.fleet == true and (.totals.containers.total | type) == "number" and (.members | length) == 2 and .members[0].id == null and .members[1].id == "'"$MID"'" and .members[1].ok == true' <<< "$_MR" 2>/dev/null)"
@@ -2192,12 +2196,13 @@ cat > "$_AB/pacman" <<'FAKEPACMAN'
 #!/bin/bash
 # a pacman that knows docker 1:29.9.0-1 once its database was synchronised into the --dbpath it was given
 op=""; db=""
-while [[ $# -gt 0 ]]; do case "$1" in --dbpath) db=$2; shift 2 ;; --config|--logfile) shift 2 ;; -Q|-Sy|-Si) op=$1; shift ;; *) shift ;; esac; done
+while [[ $# -gt 0 ]]; do case "$1" in --dbpath) db=$2; shift 2 ;; --config|--logfile) shift 2 ;; -Q|-Sy|-Si|-Qu) op=$1; shift ;; *) shift ;; esac; done
 [[ -n "${FAKE_PACMAN_LOG:-}" ]] && echo "$op $db" >> "$FAKE_PACMAN_LOG"
 case "$op" in
     -Q) exit 0 ;;
     -Sy) [[ -n "${FAKE_PACMAN_FAIL:-}" ]] && exit 1; mkdir -p "$db/sync"; : > "$db/sync/core.db"; exit 0 ;;
     -Si) [[ -f "$db/sync/core.db" ]] || { echo "error: package 'docker' was not found" >&2; exit 1; }; printf 'Name            : docker\nVersion         : 1:29.9.0-1\n'; exit 0 ;;
+    -Qu) [[ -f "$db/sync/core.db" ]] && echo "docker 1:29.8.1-1 -> 1:29.9.0-1"; exit 0 ;;
 esac
 exit 1
 FAKEPACMAN
@@ -2211,6 +2216,14 @@ check "engine (arch): the private copy is removed" 0 "$(find "$_AT" -mindepth 1 
 PATH="$_AB:$PATH" TMPDIR="$_AT" FAKE_PACMAN_FAIL=1 _lib _docker_engine_candidate_refresh "$_AF"
 check "engine (arch): a refused sync says unknown" 'docker-arch ' "$(jq -r '"\(.source) \(.candidate)"' "$_AF" 2>/dev/null)"
 check "engine (arch): …and still cleans up"        0 "$(find "$_AT" -mindepth 1 | wc -l)"
+# …and the OS update check on Arch asks a private copy of the databases too ("pacman -Sy" alone leaves the system's own newer than what is installed)
+_PB="$WORK/pacman-only-bin"; mkdir -p "$_PB"; ln -sf /usr/bin/* /bin/* "$_PB"/ 2>/dev/null || true
+command rm -f "$_PB/apt-get" "$_PB/apt" "$_PB/dnf" "$_PB/yum" "$_PB/pacman" "$_PB/sudo" "$_PB/dpkg" "$_PB/rpm" "$_AL"
+_OS=$(PATH="$_AB:$_PB" TMPDIR="$_AT" FAKE_PACMAN_LOG="$_AL" auth_request POST /system/os-update/check '{}' | body_of)
+check "os update (arch): what an upgrade would change"   "1 pacman docker 1:29.9.0-1" "$(jq -r '"\(.count) \(.package_manager) \(.packages[0].package) \(.packages[0].version)"' <<< "$_OS" 2>/dev/null)"
+check "os update (arch): pacman's own database left alone" 0 "$(grep -c ' /var/lib/pacman/*$' "$_AL" 2>/dev/null || true)"
+check "os update (arch): the private copy is removed"    0 "$(find "$_AT" -mindepth 1 | wc -l)"
+command rm -rf "$_PB"
 command rm -rf "$_AB" "$_AT" "$_AF" "$_AL"
 # a machine without the hostname and crontab commands: Arch's minimal image has no hostname, and none of the DCS VM images has cron
 _NB="$WORK/nocmd-bin"; mkdir -p "$_NB"; ln -sf /usr/bin/* /bin/* "$_NB"/ 2>/dev/null || true; command rm -f "$_NB/hostname" "$_NB/crontab"

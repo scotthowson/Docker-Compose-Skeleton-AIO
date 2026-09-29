@@ -22,6 +22,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Docker Engine on Arch.** The engine card and its update know Arch's `docker` package: the newest version is read from a private
   copy of the sync databases (the system's own are never refreshed alone) and the update is a whole-system `pacman -Syu`, with the
   engine restarted, or a reboot note when the kernel changed.
+- **A hub's badges and cards count its VMs' images, networks and volumes.** `GET /fleet/overview` carries each VM's Docker counts (from its
+  `/status`) and their sum in `totals` (`images`, `networks`, `volumes`); the dashboard adds them to the hub's own in the sidebar badges, the
+  Docker Images card and the status bar, as it already did the containers and the stacks.
 - **The boot test makes a member of every node image.** On its BIOS run a node image is joined to a hub started from the checkout, with
   the same bootstrap the dashboard runs, and used through it: host name, the Docker Engine card, the Cron Jobs page, a stack with a healthy
   and an unhealthy container, a Docker restart, an engine update (`vm-images/tests/member-check.sh`). It found the problems listed under
@@ -87,6 +90,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   every script reads the name from `uname -n` (the API from `/proc`) and the first address from `ip`.
 - **The Cron Jobs page listed "command not found" as a job** on a machine without cron, which is every DCS VM image. It shows an empty
   list. `maintenance.sh` no longer needs `bc` to print sizes.
+- **Checking for OS updates on Arch left the system's package databases newer than the packages.** The check ran `pacman -Sy` on its
+  own, which Arch does not support (the next `pacman -S` is then a partial upgrade). It asks a private copy of the databases now, like the
+  Docker Engine lookup, and the version it lists is the new one (it read the arrow).
 - **A VM with running containers took 90 s to power off.** The images keep Docker's `live-restore` on, so stopping Docker leaves the
   containers to systemd, which sends SIGTERM and waits 90 s for one that ignores it (`sleep infinity`, `tail -f`, a shell as PID 1).
   `dcs-container-stop.service` stops them first, the way `docker stop` does: ten seconds at most.

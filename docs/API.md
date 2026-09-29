@@ -411,7 +411,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | GET | `/proxmox/vms/{node}/{type}/{vmid}` | user | One VM or container: live status and its configuration (cores, memory, OS, boot, description) |
 | GET | `/fleet/status` | user | What this server is in the fleet: a hub (members, join codes), a member (its hub), or standalone; plus a pending join and how others reach this API |
 | GET | `/fleet/members` | user | The members this hub manages, with the guest each one runs in and when it last answered |
-| GET | `/fleet/overview` | user | Every member with its stacks, containers and counts, fetched from the members in parallel (10 s cache) |
+| GET | `/fleet/overview` | user | Every member with its stacks, containers and Docker counts (images, networks, volumes), and the totals, fetched from the members in parallel (10 s cache) |
 | GET | `/fleet/discover` | admin | Scan the guests for DCS installs: Proxmox gives each running guest's addresses (guest agent / container interfaces) and the API port is probed; found installs come back with the guest already matched (30 s cache; POST forces a new scan and accepts Proxmox values to try before they are saved) |
 | GET | `/fleet/join-tokens` | admin | The join codes that are still valid (admin) |
 | GET | `/fleet/provision/defaults` | admin | Suggested values for creating VMs: node and its size, storages, bridge, an address range next to the hub, the cloud image, the admin name, the guests Proxmox already has (a stack cannot get a VM named like one), the stacks that already run on this server (they stay on it) and whether the hub's firewalld keeps the API port closed (admin) |
