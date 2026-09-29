@@ -1349,7 +1349,8 @@ handle_crowdsec_allowlist_add() {
     expires=$(jq -r '(.expires // "") | tostring' <<< "$body")
     tgt=$(_cs_norm_target "$value") || { _api_error 400 "Not an IP address or network: ${value:0:80}"; return; }
     scope="${tgt%%$'\t'*}"; val="${tgt#*$'\t'}"
-    if [[ "$val" == "0.0.0.0/0" || "$val" == "::/0" || ( "$scope" == Range && "${val#*/}" -lt 8 && "$val" != *:* ) ]]; then
+    # (a network wider than a /8 of IPv4, or than a /16 of IPv6 - the same limits as for a ban)
+    if [[ "$scope" == Range ]] && { [[ "$val" == *:* && "${val#*/}" -lt 16 ]] || [[ "$val" != *:* && "${val#*/}" -lt 8 ]]; }; then
         _api_error 400 "$val is far too wide: it would switch CrowdSec off for a large part of the internet"; return
     fi
     if [[ -n "$expires" ]]; then exp_norm=$(_cs_norm_duration "$expires") || { _api_error 400 "Invalid expiry: use 30m, 12h, 7d or 2w"; return; }; fi
