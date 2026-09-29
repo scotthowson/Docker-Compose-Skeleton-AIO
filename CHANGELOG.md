@@ -13,6 +13,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   power-on. One disk boots under BIOS and UEFI; `dcs-init` reads the Proxmox seed in place of cloud-init and survives a power
   cut at its first boot; `dcs-proxmox.sh` turns a release image into a hub VM or a node template on the Proxmox host in one
   command. `build.sh` builds and tests them (17 checks per node image, 22 per hub image) without root.
+- **The hub builds VMs from the purpose-built images.** The OS pickers (the wizard's VM step, *New VM stack*) list the DCS
+  images first and recommend them; a VM from one is created straight from the imported image (nothing to install, so
+  nothing to bake), and the hub has Proxmox check the download against the release's `SHA256SUMS`. The images come from the
+  release of the running version (`FLEET_DCS_IMAGE_BASE` names another place); the cloud images stay in the list.
 - **The VM sheet says what the VM runs and what it was built from.** Info on a VM card lists the operating system the guest
   reports through the guest agent (or the DCS inside it, or Proxmox's OS type), the image the hub built it from and the DCS
   template it was cloned from, the firmware (BIOS or UEFI) and the creation date. New VMs carry the image in their Proxmox
@@ -25,6 +29,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **CI runs on Ubuntu 24.04 and 26.04** (what `ubuntu-latest` becomes on October 19, 2026) with Node 24 actions, checks the
+  first-boot script of the VM images, and a new workflow builds all six images, boots each on BIOS and UEFI under KVM and,
+  on a version tag, attaches them to the release with `SHA256SUMS` and `dcs-proxmox.sh`. A provisioning check that looked at
+  a stack before its VM had started it (one red run in twenty) now waits for it.
 - **The heartbeat answers in about 30 ms instead of 70.** `GET /ping` is answered before the ~26,000 lines of handlers are
   parsed (they were about 85 of every request's 105 ms), with the same response function, so the headers are the ones every
   answer carries. A server with an IP allow-list or in setup mode, and every other route, takes the normal path. A heartbeat

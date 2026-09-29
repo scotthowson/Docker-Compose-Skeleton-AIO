@@ -8,7 +8,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT" || exit 1
 rc=0
 
-mapfile -t SCRIPTS < <(git ls-files -co --exclude-standard '*.sh' 'setup.sh' 'start.sh' 'stop.sh' 'restart.sh' 'status.sh' '.config/settings.cfg' 2>/dev/null | sort -u)
+# (the VM images' scripts that run inside the VM have no .sh extension: dcs-init, dcs-hub-init, dcs-grubcfg, the kernel-install plugin)
+mapfile -t SCRIPTS < <(git ls-files -co --exclude-standard '*.sh' 'setup.sh' 'start.sh' 'stop.sh' 'restart.sh' 'status.sh' '.config/settings.cfg' 'vm-images/*/sbin/*' 'vm-images/*/install.d/*' 2>/dev/null | sort -u)
 # Plugin hooks are bash too
 while IFS= read -r hook; do
     head -1 "$hook" | grep -qE '^#!/(usr/)?bin/(env )?bash' && SCRIPTS+=("$hook")

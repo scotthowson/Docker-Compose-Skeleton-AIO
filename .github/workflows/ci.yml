@@ -7,13 +7,18 @@ on:
 
 jobs:
   lint-and-test:
-    runs-on: ubuntu-latest
+    # both Ubuntu images: 24.04 is what "latest" was, 26.04 is what it becomes on October 19, 2026
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-26.04]
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install tools
-        # ShellCheck 0.10+ has --extended-analysis (the linter turns it off for the 25,000-line API script:
+        # ShellCheck 0.10+ has --extended-analysis (the linter turns it off for the 27,000-line API script:
         # the dataflow analysis needs ~12 GB and killed the 7 GB runner); Ubuntu's package is 0.9
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq jq socat xz-utils
@@ -33,13 +38,16 @@ jobs:
         if: failure()
         run: |
           {
-            echo '### Smoke checks that failed'
+            echo '### Smoke checks that failed (${{ matrix.os }})'
             echo
             echo '```'
             grep -E '^  FAIL' smoke.log || echo '(no FAIL line — the run stopped before the end; last lines below)'
             tail -n 15 smoke.log
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: VM images — the first-boot script against the seeds Proxmox writes
+        run: vm-images/tests/dcs-init-test.sh
 
       - name: Setup dry run
         run: ./setup.sh --dry-run

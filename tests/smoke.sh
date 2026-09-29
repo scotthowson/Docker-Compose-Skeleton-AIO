@@ -1791,7 +1791,14 @@ trap '_fleet_stop_listeners; rm -rf "$WORK" "$MWORK" "$PWORK" "$VMWORK"' EXIT
 check "provision: defaults answer"      true "$(auth_request GET /fleet/provision/defaults | body_of | jq -r '.proxmox_linked' 2>/dev/null)"
 check "provision: default disk storage" local-lvm "$(auth_request GET /fleet/provision/defaults | body_of | jq -r '.storage' 2>/dev/null)"
 check "images: catalogue offered"       yes "$(auth_request GET /fleet/provision/defaults | body_of | jq -e '.images.catalogue | length >= 6' >/dev/null 2>&1 && echo yes || echo no)"
-check "images: the default first"       debian-13 "$(auth_request GET /fleet/provision/defaults | body_of | jq -r '.images.catalogue[0].id' 2>/dev/null)"
+check "images: the default first"       dcs-debian-13 "$(auth_request GET /fleet/provision/defaults | body_of | jq -r '.images.catalogue[0].id' 2>/dev/null)"
+check "images: the purpose-built ones lead" "dcs-debian-13 dcs-ubuntu-26.04 dcs-fedora-44 debian-13" "$(auth_request GET /fleet/provision/defaults | body_of | jq -r '.images.catalogue[:4] | map(.id) | join(" ")' 2>/dev/null)"
+check "images: …marked prebuilt"          "true true true" "$(auth_request GET /fleet/provision/defaults | body_of | jq -r '[.images.catalogue[:3][] | .prebuilt | tostring] | join(" ")' 2>/dev/null)"
+check "images: …fetched from this version's release" yes "$(auth_request GET /fleet/provision/defaults | body_of | jq -r '.images.catalogue[0].url' 2>/dev/null | grep -q "/releases/download/v$(tr -d '[:space:]' < "$WORK/VERSION")/dcs-node-debian-13.qcow2$" && echo yes || echo no)"
+check "images: the release base can move"  "http://mirror.test/dcs/dcs-node-fedora-44.qcow2" "$(_lib eval 'FLEET_DCS_IMAGE_BASE=http://mirror.test/dcs/; _fleet_image_catalogue_json | jq -r ".[2].url"')"
+check "images: the resolver reports prebuilt" "dcs-fedora-44|dnf|true|dcs-node-fedora-44.qcow2" "$(_lib eval '_fleet_resolve_image dcs-fedora-44 "" "" ""; echo "$RI_ID|$RI_FAMILY|$RI_PREBUILT|$RI_FILE"')"
+check "images: a cloud image is not prebuilt" false "$(_lib eval '_fleet_resolve_image ubuntu-24.04 "" "" ""; echo "$RI_PREBUILT"')"
+check "images: nothing to bake for a DCS image" 400 "$(auth_request POST /fleet/templates '{"node":"pve","storage":"local-lvm","image_storage":"local","gateway":"192.0.2.1","ip_start":"192.0.2.90","image":"dcs-debian-13"}' | status_of)"
 check "images: Ubuntu 26.04 in the list" yes "$(auth_request GET /fleet/provision/defaults | body_of | jq -e '.images.catalogue[] | select(.id == "ubuntu-26.04")' >/dev/null 2>&1 && echo yes || echo no)"
 check "images: ISOs read from Proxmox"  local:iso/tiny-installer.iso "$(auth_request GET /fleet/provision/defaults | body_of | jq -r '.images.on_proxmox.isos[0].volid' 2>/dev/null)"
 check "provision: unknown image refused" 400 "$(auth_request POST /fleet/provision '{"node":"pve","storage":"local-lvm","gateway":"192.0.2.1","ip_start":"192.0.2.70","image":"windows-95","vms":[{"stack":"nope"}]}' | status_of)"
@@ -1857,7 +1864,9 @@ check "provision: member runs the stack" smoke-photos "$(auth_request GET /fleet
 check "provision: stack moved into the VM" yes "$(auth_request GET "/fleet/jobs/$JOB" | body_of | jq -r '.steps[] | select(.id == "stack") | .detail' 2>/dev/null | grep -q 'started in the VM' && echo yes || echo no)"
 check "provision: source folder named"  yes "$(auth_request GET "/fleet/jobs/$JOB" | body_of | jq -r '.log[].text' 2>/dev/null | grep -q 'Stacks/smoke-photos-src from the hub copied into the VM as smoke-photos' && echo yes || echo no)"
 check "provision: VM has the compose"   yes "$(auth_request GET /stacks/smoke-photos/compose | body_of | jq -r '.content // .compose // ""' 2>/dev/null | grep -q 'sleep' && echo yes || echo no)"
-check "provision: stack running in VM"  running "$(auth_request GET /stacks/smoke-photos | body_of | jq -r '.status' 2>/dev/null | cut -d: -f1)"
+# the stack was started a moment ago: a slow runner may look before the VM's docker says "running" (or its cached answer expires)
+_stk=""; for _i in $(seq 1 30); do _stk=$(auth_request GET /stacks/smoke-photos | body_of | jq -r '.status' 2>/dev/null | cut -d: -f1); [[ "$_stk" == running ]] && break; sleep 1; done
+check "provision: stack running in VM"  running "$_stk"
 check "provision: the stack's secret travelled" yes "$(auth_request GET /fleet/members/smoke-photos/api/secrets | body_of | jq -e '[.secrets[] | if type == "object" then .key else . end] | index("SMOKE_TRAVEL") != null' >/dev/null 2>&1 && echo yes || echo no)"
 check "provision: secret copy logged"   yes "$(auth_request GET "/fleet/jobs/$JOB" | body_of | jq -r '.log[].text' 2>/dev/null | grep -q 'secret(s) the stack uses copied' && echo yes || echo no)"
 # the hub's own start.sh never starts a folder that lives in a VM, whatever DOCKER_STACKS says

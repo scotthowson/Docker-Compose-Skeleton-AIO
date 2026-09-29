@@ -20963,8 +20963,15 @@ FLEET_IMAGE_FILE="${FLEET_IMAGE_FILE:-debian-13-genericcloud-amd64.qcow2}"
 _fleet_image_catalogue_json() {
     local f="$BASE_DIR/.config/fleet-images.json"
     if [[ -s "$f" ]] && jq -e 'type == "array" and length > 0 and all(.[]; has("id") and has("url") and has("file"))' "$f" >/dev/null 2>&1; then jq -c . "$f"; return 0; fi
-    jq -nc --arg u "$FLEET_IMAGE_URL" --arg f "$FLEET_IMAGE_FILE" '[
-        {id: "debian-13", label: "Debian 13 (trixie) — the default, smallest", url: $u, file: $f, family: "apt"},
+    # The purpose-built DCS images (vm-images/, published with every release): a Docker host and nothing else, so a VM
+    # built from one needs no bake — it boots with the tools, Docker and the guest agent in place. Node images only:
+    # the DCS code always comes from the hub. FLEET_DCS_IMAGE_BASE points at another place to fetch them from.
+    local dbase="${FLEET_DCS_IMAGE_BASE:-https://github.com/scotthowson/dcs-orchestrator/releases/download/v${DCS_VERSION}}"
+    jq -nc --arg u "$FLEET_IMAGE_URL" --arg f "$FLEET_IMAGE_FILE" --arg b "${dbase%/}" '[
+        {id: "dcs-debian-13", label: "DCS Debian 13 — purpose-built for the fleet, the default (250 MB)", url: ($b + "/dcs-node-debian-13.qcow2"), file: "dcs-node-debian-13.qcow2", family: "apt", prebuilt: true},
+        {id: "dcs-ubuntu-26.04", label: "DCS Ubuntu 26.04 LTS — purpose-built (390 MB)", url: ($b + "/dcs-node-ubuntu-26.04.qcow2"), file: "dcs-node-ubuntu-26.04.qcow2", family: "apt", prebuilt: true},
+        {id: "dcs-fedora-44", label: "DCS Fedora 44 — purpose-built, SELinux enforcing (400 MB)", url: ($b + "/dcs-node-fedora-44.qcow2"), file: "dcs-node-fedora-44.qcow2", family: "dnf", prebuilt: true},
+        {id: "debian-13", label: "Debian 13 (trixie) cloud image, tools and Docker installed by the hub", url: $u, file: $f, family: "apt"},
         {id: "debian-12", label: "Debian 12 (bookworm)", url: "https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.qcow2", file: "debian-12-genericcloud-amd64.qcow2", family: "apt"},
         {id: "ubuntu-26.04", label: "Ubuntu Server 26.04 LTS (resolute)", url: "https://cloud-images.ubuntu.com/resolute/current/resolute-server-cloudimg-amd64.img", file: "ubuntu-26.04-server-cloudimg-amd64.qcow2", family: "apt"},
         {id: "ubuntu-24.04", label: "Ubuntu Server 24.04 LTS (noble)", url: "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img", file: "ubuntu-24.04-server-cloudimg-amd64.qcow2", family: "apt"},
@@ -21332,6 +21339,7 @@ handle_fleet_templates_bake() {
     _pve_configured || { _api_error 409 "Proxmox is not linked"; return; }
     _fleet_resolve_image "$(jq -r '.image // ""' <<< "$body")" "$(jq -r '.image_url // ""' <<< "$body")" "$(jq -r '.image_file // ""' <<< "$body")" "" || { _api_error 400 "$RI_ERR"; return; }
     local node; node=$(jq -r '.node // ""' <<< "$body")
+    [[ "$RI_PREBUILT" == true ]] && { _api_error 400 "$RI_ID is a purpose-built image: VMs boot from it as it is, there is nothing to bake"; return; }
     [[ -n "$(_fleet_template_for "$node" "$RI_ID")" ]] && { _api_error 409 "A DCS template for $RI_ID already exists on $node (VM $(_fleet_template_for "$node" "$RI_ID")) — delete it first to bake again"; return; }
     # the bake is a build with no VMs: the provisioning handler queues the bake job alone
     handle_fleet_provision "$(jq -c '. + {vms: [], bake: true, bake_only: true}' <<< "$body")"
@@ -21353,7 +21361,7 @@ handle_fleet_template_delete() {
 # or returns 1 with the reason in RI_ERR
 _fleet_resolve_image() {
     local id="$1" url="$2" file="$3" iso="$4" e
-    RI_KIND=cloud RI_ID="" RI_URL="" RI_FILE="" RI_FAMILY="" RI_ISO="" RI_ERR=""
+    RI_KIND=cloud RI_ID="" RI_URL="" RI_FILE="" RI_FAMILY="" RI_ISO="" RI_ERR="" RI_PREBUILT=false
     if [[ -n "$iso" ]]; then
         [[ "$iso" =~ ^[A-Za-z0-9_.-]+:iso/[A-Za-z0-9_.+-]+\.(iso|ISO)$ ]] || { RI_ERR="iso must be a Proxmox volume like local:iso/name.iso"; return 1; }
         RI_KIND=iso RI_ISO="$iso" RI_ID="iso" RI_FILE="${iso##*/}"; return 0
@@ -21373,7 +21381,7 @@ _fleet_resolve_image() {
     [[ -n "$id" ]] || id=$(_fleet_image_catalogue_json | jq -r '.[0].id')
     e=$(_fleet_image_catalogue_json | jq -c --arg id "$id" '[.[] | select(.id == $id)] | .[0] // empty')
     [[ -n "$e" ]] || { RI_ERR="unknown image '$id' — one of: $(_fleet_image_catalogue_json | jq -r 'map(.id) | join(", ")')"; return 1; }
-    RI_ID="$id" RI_URL=$(jq -r .url <<< "$e") RI_FILE=$(jq -r .file <<< "$e") RI_FAMILY=$(jq -r '.family // "apt"' <<< "$e"); return 0
+    RI_ID="$id" RI_URL=$(jq -r .url <<< "$e") RI_FILE=$(jq -r .file <<< "$e") RI_FAMILY=$(jq -r '.family // "apt"' <<< "$e") RI_PREBUILT=$(jq -r '.prebuilt // false' <<< "$e"); return 0
 }
 FLEET_JOB_ERR=""
 
@@ -21884,7 +21892,9 @@ handle_fleet_provision() {
     # ahead of the builds — they clone it once it is there (or import the image when it failed)
     if [[ "$bake" == "true" ]]; then
         _fleet_resolve_image "$b_img" "$b_url" "$b_file" "" || { _api_error 400 "$RI_ERR"; return; }
-        if [[ -z "$(_fleet_template_for "$node" "$RI_ID")" ]]; then
+        if [[ "$RI_PREBUILT" == true ]]; then
+            :   # a purpose-built image already is what a bake makes: nothing to install, nothing to seal
+        elif [[ -z "$(_fleet_template_for "$node" "$RI_ID")" ]]; then
             local bid bip bname; bname="dcs-template-$(printf '%s' "$RI_ID" | tr '.' '-')"
             bip=$(_fleet_ip_next "${start:-$gw}") || { _api_error 409 "No free address for the template VM from ${start:-$gw}"; return; }
             bid="job-$now-bake-$(printf '%s' "$RI_ID" | tr '.' '-')"; local bcores bmem bdisk; bcores=$(jq -r '.cores // 2' <<< "$body"); bmem=$(jq -r '.memory_mb // 2048' <<< "$body"); bdisk=$(jq -r '.disk_gb // 10' <<< "$body")
@@ -21962,13 +21972,21 @@ _fleet_ensure_image() { # JOB NODE STORAGE FILE URL
     if [[ "$_PVE_HTTP" == 200 ]] && jq -e --arg v "$st:import/$file" '.data[] | select(.volid == $v)' <<< "$res" >/dev/null 2>&1; then
         _job_log "$id" "image $file already on $st"; return 0
     fi
+    # a purpose-built image is published with a SHA256SUMS next to it: Proxmox checks the download against it
+    local sha_want="" sha_args=()
+    if [[ "$file" =~ ^dcs-(node|hub)-.*\.qcow2$ && "$url" == */* ]]; then
+        sha_want=$(curl -fsSL --max-time 20 "${url%/*}/SHA256SUMS" 2>/dev/null | awk -v f="$file" '$2 == f || $2 == "*" f {print $1; exit}')
+        if [[ "$sha_want" =~ ^[0-9a-f]{64}$ ]]; then sha_args=("checksum-algorithm=sha256" "checksum=$sha_want"); _job_log "$id" "checking $file against the release's SHA256SUMS"
+        else sha_want=""; _job_log "$id" "no SHA256SUMS next to $file: the download is not verified"; fi
+    fi
     _job_log "$id" "asking Proxmox to download $url to $st (a few minutes the first time)"
-    PVE_TIMEOUT=60 _pve_call res POST "/nodes/$node/storage/$st/download-url" "content=import" "filename=$file" "url=$url"
+    PVE_TIMEOUT=60 _pve_call res POST "/nodes/$node/storage/$st/download-url" "content=import" "filename=$file" "url=$url" "${sha_args[@]}"
     if [[ "$_PVE_HTTP" == 403 ]]; then
         # Proxmox lets a token download only with Sys.AccessNetwork (or Sys.Modify): the hub fetches the image and uploads it instead
         _job_log "$id" "Proxmox will not download for this token (Sys.AccessNetwork missing) — the hub fetches the image and uploads it"
         local tmp; tmp=$(mktemp "${TMPDIR:-/tmp}/dcs-image-XXXXXX") || { FLEET_JOB_ERR="no temp space for the image"; return 1; }
         if ! curl -fsSL --max-time 3600 -o "$tmp" "$url"; then rm -f "$tmp"; FLEET_JOB_ERR="the hub could not download $url"; return 1; fi
+        if [[ -n "$sha_want" && "$(sha256sum "$tmp" | cut -d' ' -f1)" != "$sha_want" ]]; then rm -f "$tmp"; FLEET_JOB_ERR="$file does not match the release's SHA256SUMS (a damaged download)"; return 1; fi
         _job_log "$id" "downloaded $(du -h "$tmp" | cut -f1); uploading to $st…"
         local -a opts=(-sS --max-time 3600 -w $'\n%{http_code}' -H "Authorization: PVEAPIToken=${PROXMOX_TOKEN_ID:-}=$(_pve_secret)" -F "content=import" -F "filename=@$tmp;filename=$file")
         [[ "${PROXMOX_VERIFY_TLS:-true}" == "false" ]] && opts+=(-k)
@@ -21981,7 +21999,7 @@ _fleet_ensure_image() { # JOB NODE STORAGE FILE URL
         _job_log "$id" "image uploaded to $st"
         return 0
     fi
-    _pve_explain "$res" || { FLEET_JOB_ERR="download refused: $PVE_ERR"; return 1; }
+    _pve_explain "$res" || { FLEET_JOB_ERR="download refused: $PVE_ERR$([[ "$file" == dcs-* ]] && echo " (the DCS images come from the release of this version: $url; FLEET_DCS_IMAGE_BASE names another place, or pick a cloud image)")"; return 1; }
     upid=$(jq -r '.data // ""' <<< "$res")
     _pve_wait_task "$node" "$upid" 1800 "$id" || return 1
     _job_log "$id" "image ready on $st"

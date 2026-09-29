@@ -1,0 +1,89 @@
+name: VM images
+
+# The six purpose-built VM images (hub and node, Debian 13, Ubuntu 26.04, Fedora 44): built without root, booted the way
+# Proxmox boots them (BIOS and UEFI, on KVM) and checked. On a version tag they are attached to the release, next to
+# SHA256SUMS and the Proxmox importer, and the hub downloads them from there.
+
+on:
+  push:
+    tags: ['v*']
+  pull_request:
+    paths: ['vm-images/**', '.github/workflows/vm-images.yml']
+  workflow_dispatch:
+
+concurrency:
+  group: vm-images-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.role }} · ${{ matrix.distro }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        distro: [debian-13, ubuntu-26.04, fedora-44]
+        role: [node, hub]
+    env:
+      # the test containers come from a mirror: Docker Hub limits anonymous pulls per address and the runners share addresses
+      DCS_TEST_REGISTRY: public.ecr.aws/docker/library/
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Room and KVM
+        run: |
+          # an image build needs ~10 GB of scratch space: drop what the runner carries and this job does not use
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /opt/hostedtoolcache/CodeQL
+          # QEMU may use /dev/kvm (nested virtualization is on for these runners)
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
+          ls -la /dev/kvm; df -h / | tail -1
+
+      - name: Tools for the boot test
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq qemu-system-x86 qemu-utils ovmf genisoimage
+
+      - name: Build and boot-test (BIOS and UEFI)
+        run: vm-images/build.sh ${{ matrix.distro }} ${{ matrix.role }} --test
+
+      - name: Keep the image
+        uses: actions/upload-artifact@v6
+        with:
+          name: dcs-${{ matrix.role }}-${{ matrix.distro }}
+          path: |
+            vm-images/out/dcs-${{ matrix.role }}-${{ matrix.distro }}.qcow2
+          retention-days: 7
+          if-no-files-found: error
+
+  publish:
+    name: attach to the release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v7
+        with:
+          path: images
+          merge-multiple: true
+
+      - name: Checksums and the Proxmox importer
+        working-directory: images
+        run: |
+          cp ../vm-images/proxmox/dcs-proxmox.sh .
+          sha256sum dcs-*.qcow2 > SHA256SUMS
+          ls -la; cat SHA256SUMS
+
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --title "$TAG" --generate-notes
+          gh release upload "$TAG" images/* --clobber

@@ -7,6 +7,7 @@
 #   usage: boot-test.sh IMAGE.qcow2 [--role node|hub] [--firmware bios|uefi] [--ram MB] [--cpus N] [--grow-to GB]
 #                                   [--keep] [--hold] [--no-net] [--no-power-cut]
 # A hub image is also checked for its first start: the API and the dashboard answer and the wizard waits for its admin.
+# DCS_TEST_REGISTRY=public.ecr.aws/docker/library/ pulls the test containers from a mirror (CI).
 # Prints what it measured (time to ssh, memory, disk, failed units); exit status = failed checks.
 # The last step (node images) cuts the power the moment a fresh VM first answers and boots it again: the files
 # the first boot wrote must have reached the disk. KVM is used when /dev/kvm is writable (GitHub-hosted runners have it),
@@ -142,13 +143,13 @@ chk "no failed units${FACTS:+ ($(get failed))}" [ -z "$(get failed | tr -d " ")"
 chk "the guest agent runs"                     [ "$(get agent)" = active ]
 chk "the disk grew into the larger virtual disk (${GROW} GB → $(get root_gb) GB)" [ "$(get root_gb)" -ge $((GROW - 1)) ]
 if [[ $NET == 1 ]]; then
-    HW=$("${SSH[@]}" "timeout 120 docker run --rm hello-world 2>&1 | grep -c 'Hello from Docker'" 2>/dev/null)
+    HW=$("${SSH[@]}" "timeout 120 docker run --rm ${DCS_TEST_REGISTRY:-}hello-world 2>&1 | grep -c 'Hello from Docker'" 2>/dev/null)
     chk "a container runs (hello-world pulled and started)" [ "${HW:-0}" -ge 1 ]
-    OUTB=$("${SSH[@]}" "timeout 90 docker run --rm alpine:3 wget -q -O- -T 10 https://example.com 2>&1 | grep -c 'Example Domain'" 2>/dev/null)
+    OUTB=$("${SSH[@]}" "timeout 90 docker run --rm ${DCS_TEST_REGISTRY:-}alpine:3 wget -q -O- -T 10 https://example.com 2>&1 | grep -c 'Example Domain'" 2>/dev/null)
     chk "a container reaches the internet (outbound NAT)" [ "${OUTB:-0}" -ge 1 ]
-    PUB=$("${SSH[@]}" "bash -s" 2>/dev/null <<'PUBTEST'
+    PUB=$("${SSH[@]}" "DCS_TEST_REGISTRY='${DCS_TEST_REGISTRY:-}' bash -s" 2>/dev/null <<'PUBTEST'
 mkdir -p /tmp/pubtest && cd /tmp/pubtest
-printf 'services:\n  web:\n    image: nginx:alpine\n    ports: ["18080:80"]\n' > compose.yml
+printf 'services:\n  web:\n    image: ${DCS_TEST_REGISTRY:-}nginx:alpine\n    ports: ["18080:80"]\n' > compose.yml
 docker compose up -d >/dev/null 2>&1
 c=000; for i in 1 2 3 4 5 6 7 8 9 10; do c=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/); [ "$c" = 200 ] && break; sleep 1; done
 echo "$c"
