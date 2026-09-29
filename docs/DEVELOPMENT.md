@@ -147,6 +147,13 @@ default 4096), `--firmware bios|uefi|both`. `--test` needs `qemu-system-x86_64`,
 `genisoimage`, and OVMF for UEFI. `vm-images/tests/measure.sh USER@HOST` prints the same figures for a VM
 on a real Proxmox node. The images are described in [VM images](VM-IMAGES.md).
 
+To look around in a hub without Proxmox, boot the image in QEMU and keep it running; the script prints
+the local ports of the dashboard, the API and ssh:
+
+```bash
+vm-images/tests/boot-test.sh vm-images/out/dcs-hub-debian-13.qcow2 --role hub --hold
+```
+
 ## Releases
 
 - `VERSION` holds the release version; `.config/settings.cfg` and the API read it.
