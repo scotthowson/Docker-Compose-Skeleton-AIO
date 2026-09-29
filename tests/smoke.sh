@@ -21,6 +21,7 @@ mkdir -p "$WORK/.scripts" "$WORK/.lib" "$WORK/.config" "$WORK/Stacks/demo" "$WOR
 cp "$ROOT/.scripts/api-server.sh" "$WORK/.scripts/"
 cp "$ROOT/compose.sh" "$WORK/"
 cp "$ROOT/VERSION" "$WORK/"   # the hub's bundle carries it; /ping and /fleet/versions report it
+mkdir -p "$WORK/vm-images"; cp "$ROOT/vm-images/images.json" "$WORK/vm-images/"   # the list of purpose-built VM images (the catalogue reads it)
 cp -r "$ROOT/.lib/." "$WORK/.lib/"
 cp -r "$ROOT/.config/." "$WORK/.config/"
 grep -vE '^(API_BIND|API_AUTH_ENABLED|API_INSECURE_NO_AUTH|API_TRUSTED_PROXIES|API_IP_WHITELIST|API_PORT)=' "$ROOT/.env.example" > "$WORK/.env"
@@ -614,6 +615,20 @@ _rip_install() {
 _rip_ping() { curl -s -m 1 "http://127.0.0.1:$RIPPORT/ping" 2>/dev/null; }
 _rip_wait() { local i; for ((i = 0; i < ${1:-60}; i++)); do [[ "$(_rip_ping)" == *ok* ]] && return 0; sleep 0.25; done; return 1; }
 _rip_holders() { local p c=""; for p in $(ss -Hltnp "sport = :$RIPPORT" 2>/dev/null | grep -oE 'pid=[0-9]+' | cut -d= -f2 | sort -u); do c+="$(cat "/proc/$p/comm" 2>/dev/null) "; done; printf '%s' "$c" | tr ' ' '\n' | sort -u | tr '\n' ' ' | sed 's/ $//'; }
+# A listener started with a RELATIVE path (`.scripts/api-server.sh --bind …`, as CLAUDE.md shows) is stopped by --stop like any other:
+# its command line holds only the relative path, and --stop used to call the process foreign and leave it running
+if command -v socat >/dev/null 2>&1 && command -v ss >/dev/null 2>&1; then
+    RIP="$WORK/rip-rel"; RIPPORT=$(_free_port); _rip_install "$RIP" "$RIPPORT"
+    (cd "$RIP" && setsid nohup .scripts/api-server.sh --bind 127.0.0.1 --port "$RIPPORT" > "$RIP/logs/rip.log" 2>&1 < /dev/null &)
+    _rip_wait 60
+    RIP_MAIN=$(cat "$RIP/.data/api-server.pid" 2>/dev/null)
+    check "stop, relative start: the API answers"        yes "$([[ "$(_rip_ping)" == *ok* ]] && echo yes || echo no)"
+    (cd "$RIP" && .scripts/api-server.sh --stop >/dev/null 2>&1)
+    for _i in $(seq 1 30); do kill -0 "$RIP_MAIN" 2>/dev/null || break; sleep 0.25; done
+    check "stop, relative start: the process ends"       no "$(kill -0 "$RIP_MAIN" 2>/dev/null && echo yes || echo no)"
+    check "stop, relative start: the port is free"       "" "$(ss -Hltn "sport = :$RIPPORT" 2>/dev/null)"
+    RIP_MAIN=""
+fi
 # The plain case, on the default transport: no DDNS loop, a listener that restarts itself twice (an update, POST /system/restart)
 # and stops cleanly. A shutdown step that fails ends the whole process (the server runs with errexit) and nothing comes back.
 if command -v socat >/dev/null 2>&1 && command -v ss >/dev/null 2>&1; then
@@ -1196,7 +1211,7 @@ check "proxmox: vms need config"        503 "$(auth_request GET /proxmox/vms | s
 check "proxmox: environment reported"   yes "$(auth_request GET /proxmox/status | body_of | jq -e '.environment | has("guest")' >/dev/null 2>&1 && echo yes || echo no)"
 check "setup defaults: environment"     yes "$(request GET /setup/defaults '' "${NOAUTH[@]}" | body_of | jq -e '.system.proxmox | has("guest")' >/dev/null 2>&1 && echo yes || echo no)"
 _PVE_PORT=$(( 20000 + RANDOM % 20000 ))
-python3 "$ROOT/tests/mock-proxmox.py" "$_PVE_PORT" 'dcs@pve!smoke' 'smoke-secret' "$WORK/.data/pve-mock.json" >/dev/null 2>&1 &
+MOCK_DENY_ARGS_FILE="$WORK/.data/deny-args" python3 "$ROOT/tests/mock-proxmox.py" "$_PVE_PORT" 'dcs@pve!smoke' 'smoke-secret' "$WORK/.data/pve-mock.json" >/dev/null 2>&1 &
 _PVE_PID=$!
 timeout 10 bash -c "until curl -s -o /dev/null http://127.0.0.1:$_PVE_PORT/api2/json/version; do sleep 0.2; done" 2>/dev/null
 _envset PROXMOX_URL "http://127.0.0.1:$_PVE_PORT"; _envset PROXMOX_TOKEN_ID 'dcs@pve!smoke'; _envset PROXMOX_TOKEN_SECRET 'smoke-secret'; _envset API_RESPONSE_CACHE false
@@ -1792,11 +1807,26 @@ check "provision: defaults answer"      true "$(auth_request GET /fleet/provisio
 check "provision: default disk storage" local-lvm "$(auth_request GET /fleet/provision/defaults | body_of | jq -r '.storage' 2>/dev/null)"
 check "images: catalogue offered"       yes "$(auth_request GET /fleet/provision/defaults | body_of | jq -e '.images.catalogue | length >= 6' >/dev/null 2>&1 && echo yes || echo no)"
 check "images: the default first"       dcs-debian-13 "$(auth_request GET /fleet/provision/defaults | body_of | jq -r '.images.catalogue[0].id' 2>/dev/null)"
-check "images: the purpose-built ones lead" "dcs-debian-13 dcs-ubuntu-26.04 dcs-fedora-44 debian-13" "$(auth_request GET /fleet/provision/defaults | body_of | jq -r '.images.catalogue[:4] | map(.id) | join(" ")' 2>/dev/null)"
-check "images: …marked prebuilt"          "true true true" "$(auth_request GET /fleet/provision/defaults | body_of | jq -r '[.images.catalogue[:3][] | .prebuilt | tostring] | join(" ")' 2>/dev/null)"
+check "images: the purpose-built ones lead" "dcs-debian-13 dcs-ubuntu-26.04 dcs-fedora-44 dcs-arch debian-13" "$(auth_request GET /fleet/provision/defaults | body_of | jq -r '.images.catalogue[:5] | map(.id) | join(" ")' 2>/dev/null)"
+check "images: …marked prebuilt"          "true true true true" "$(auth_request GET /fleet/provision/defaults | body_of | jq -r '[.images.catalogue[:4][] | .prebuilt | tostring] | join(" ")' 2>/dev/null)"
 check "images: …fetched from this version's release" yes "$(auth_request GET /fleet/provision/defaults | body_of | jq -r '.images.catalogue[0].url' 2>/dev/null | grep -q "/releases/download/v$(tr -d '[:space:]' < "$WORK/VERSION")/dcs-node-debian-13.qcow2$" && echo yes || echo no)"
 check "images: the release base can move"  "http://mirror.test/dcs/dcs-node-fedora-44.qcow2" "$(_lib eval 'FLEET_DCS_IMAGE_BASE=http://mirror.test/dcs/; _fleet_image_catalogue_json | jq -r ".[2].url"')"
 check "images: the resolver reports prebuilt" "dcs-fedora-44|dnf|true|dcs-node-fedora-44.qcow2" "$(_lib eval '_fleet_resolve_image dcs-fedora-44 "" "" ""; echo "$RI_ID|$RI_FAMILY|$RI_PREBUILT|$RI_FILE"')"
+check "images: …Arch is pacman, prebuilt" "dcs-arch|pacman|true|dcs-node-arch.qcow2" "$(_lib eval '_fleet_resolve_image dcs-arch "" "" ""; echo "$RI_ID|$RI_FAMILY|$RI_PREBUILT|$RI_FILE"')"
+check "images: the list is vm-images/images.json (its default leads)" "dcs-$(jq -r .default "$ROOT/vm-images/images.json")" "$(auth_request GET /fleet/provision/defaults | body_of | jq -r '.images.catalogue[0].id' 2>/dev/null)"
+check "images: without the file, Debian alone"  "dcs-debian-13" "$(_lib eval 'BASE_DIR=/nonexistent; _fleet_dcs_images_json http://x | jq -r "map(.id) | join(\" \")"')"
+
+# --- disks and health: a VM with one root file system reports it; a fresh boot is not punished for days
+_fakedf="$WORK/fakedf"; mkdir -p "$_fakedf"
+printf '%s\n' '#!/bin/bash' 'echo "Filesystem Mounted on Size Used Avail Use%"' 'echo "/dev/sda3 / 7.8G 1.0G 6.4G 14%"' '[[ "${FAKE_DF:-}" == data ]] && echo "/dev/sdb1 /mnt/data 100G 40G 55G 42%"' 'exit 0' > "$_fakedf/df"; chmod +x "$_fakedf/df"
+_disks() { PATH="$_fakedf:$PATH" FAKE_DF="$1" _lib eval "_api_success() { printf '%s' \"\$1\"; }; $2" | jq -c "$3" 2>/dev/null; }
+check "disks: only /, so /system/metrics reports it"   '["/"]'        "$(_disks root handle_system_metrics '.disks | map(.mount)')"
+check "disks: data disk, / stays out of /system/metrics" '["/mnt/data"]' "$(_disks data handle_system_metrics '.disks | map(.mount)')"
+check "disks: only /, so /disks reports it"            '[1,["/"]]'    "$(_disks root handle_disks '[.total, [.disks[].mount]]')"
+check "disks: data disk, / stays out of /disks"        '[1,["/mnt/data"]]' "$(_disks data handle_disks '[.total, [.disks[].mount]]')"
+for _u in "0 50" "599 50" "600 75" "3599 75" "3600 90" "86399 90" "86400 100" "9999999 100"; do
+    set -- $_u; check "health score: uptime $1 s scores $2" "$2" "$(_lib _health_uptime_score "$1")"
+done
 check "images: a cloud image is not prebuilt" false "$(_lib eval '_fleet_resolve_image ubuntu-24.04 "" "" ""; echo "$RI_PREBUILT"')"
 check "images: nothing to bake for a DCS image" 400 "$(auth_request POST /fleet/templates '{"node":"pve","storage":"local-lvm","image_storage":"local","gateway":"192.0.2.1","ip_start":"192.0.2.90","image":"dcs-debian-13"}' | status_of)"
 check "images: Ubuntu 26.04 in the list" yes "$(auth_request GET /fleet/provision/defaults | body_of | jq -e '.images.catalogue[] | select(.id == "ubuntu-26.04")' >/dev/null 2>&1 && echo yes || echo no)"
@@ -1850,6 +1880,18 @@ check "provision: image imported"       yes "$(auth_request GET "/fleet/jobs/$JO
 check "provision: VM created"           smoke-photos "$(auth_request GET /proxmox/vms | body_of | jq -r '.vms[] | select(.vmid == 105) | .name' 2>/dev/null)"
 check "provision: cloud-init address"   yes "$(auth_request GET /proxmox/vms/pve/qemu/105 | body_of | jq -r '.config.ipconfig0 // ""' 2>/dev/null | grep -q '127.0.0.1/24' && echo yes || echo no)"
 check "provision: hub key in cloud-init" yes "$(auth_request GET /proxmox/vms/pve/qemu/105 | body_of | jq -r '.config.sshkeys // ""' 2>/dev/null | grep -q 'ssh-ed25519' && echo yes || echo no)"
+check "provision: boot menu wait switched off" yes "$(auth_request GET /proxmox/vms/pve/qemu/105 | body_of | jq -r '.config.args // ""' 2>/dev/null | grep -q -e '-boot menu=off' && echo yes || echo no)"
+check "provision: …and the log says so"    yes "$(auth_request GET "/fleet/jobs/$JOB" | body_of | jq -r '.log[].text' 2>/dev/null | grep -q 'boot menu wait switched off' && echo yes || echo no)"
+# a token that may not set 'args' (only root@pam may): the refusal is logged and remembered, nothing else fails
+: > "$WORK/.data/deny-args"
+_lib eval "_fleet_vm_fast_boot '$JOB' pve 105" >/dev/null
+check "provision: args refused, said in the log" yes "$(auth_request GET "/fleet/jobs/$JOB" | body_of | jq -r '.log[].text' 2>/dev/null | grep -q 'boot menu wait left on' && echo yes || echo no)"
+check "provision: …the refusal is remembered"    yes "$([[ -e "$WORK/.data/pve-args-refused" ]] && echo yes || echo no)"
+rm -f "$WORK/.data/deny-args"
+_bm() { auth_request GET "/fleet/jobs/$JOB" | body_of | jq -r '[.log[].text | select(test("boot menu wait"))] | length' 2>/dev/null; }
+_bm_before=$(_bm); _lib eval "_fleet_vm_fast_boot '$JOB' pve 105" >/dev/null
+check "provision: …and not asked again"          "$_bm_before" "$(_bm)"
+rm -f "$WORK/.data/pve-args-refused"
 check "vm info: the guest's own system"       "Debian GNU/Linux 13 (trixie)" "$(auth_request GET /proxmox/vms/pve/qemu/100 | body_of | jq -r '.os.name // ""' 2>/dev/null)"
 check "vm info: …and its kernel"                "6.12.111+deb13-cloud-amd64" "$(auth_request GET /proxmox/vms/pve/qemu/100 | body_of | jq -r '.os.kernel // ""' 2>/dev/null)"
 check "vm info: a guest without the agent has no system" null "$(auth_request GET /proxmox/vms/pve/qemu/101 | body_of | jq -r '.os | tostring' 2>/dev/null)"

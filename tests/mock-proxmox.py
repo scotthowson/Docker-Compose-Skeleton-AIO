@@ -114,6 +114,8 @@ class H(http.server.BaseHTTPRequestHandler):
             vmid = int(parts[6]); vm = VMS.get(vmid)
             if not vm: return self._send(500, {'message': 'no such vm', 'data': None})
             # a token that may not change this guest's options (VM 101 stands for one)
+            # a token: only root@pam may set 'args' (the test switches this on with a file next to the state)
+            if 'args' in f and os.environ.get('MOCK_DENY_ARGS_FILE') and os.path.exists(os.environ['MOCK_DENY_ARGS_FILE']): return self._send(403, {'message': "Permission check failed (only root can set 'args' config for non-root users)", 'data': None})
             if 'tags' in f and vmid in DENY_TAGS: return self._send(403, {'message': f'Permission check failed (/vms/{vmid}, VM.Config.Options)', 'data': None})
             if 'tags' in f: vm['tags'] = f['tags']
             if parts[5] == 'qemu': CONFIGS.setdefault(vmid, {}).update({k: v for k, v in f.items() if k != 'tags'})

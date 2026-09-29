@@ -376,6 +376,19 @@ _api_reclaim_port() {
     [[ -z "$(_api_port_listeners "$port")" ]]
 }
 
+# _api_pid_is_ours PID — 0 when that process runs this installation's API script, however it was started: with the absolute path or
+# with a relative one (.scripts/api-server.sh --bind …, as CLAUDE.md shows), which its command line only holds relative to its directory
+_api_pid_is_ours() {
+    local pid="$1" tok cwd
+    [[ "$pid" =~ ^[0-9]+$ && -r "/proc/$pid/cmdline" ]] || return 1
+    cwd=$(readlink "/proc/$pid/cwd" 2>/dev/null)
+    while IFS= read -r tok; do
+        [[ "$tok" == *api-server.sh ]] || continue
+        [[ "$tok" == /* ]] || tok="$cwd/$tok"
+        [[ "$(realpath -m "$tok" 2>/dev/null)" == "$_self_path" ]] && return 0
+    done < <(tr '\0' '\n' < "/proc/$pid/cmdline" 2>/dev/null)
+    return 1
+}
 if [[ "$STOP_SERVER" == "true" ]]; then
     stopped=false
     _self_path="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
@@ -384,7 +397,7 @@ if [[ "$STOP_SERVER" == "true" ]]; then
         # the pid file is trusted only when that process really is this installation's server:
         # a copied .data/ (or a reused pid) must never point --stop at someone else's process
         _pidcmd=""; [[ "$pid" =~ ^[0-9]+$ ]] && _pidcmd=$(tr '\0' ' ' < "/proc/${pid}/cmdline" 2>/dev/null || true)
-        if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null && [[ "$_pidcmd" != *"$_self_path"* && "$_pidcmd" != *"$BASE_DIR/.scripts/api-server.sh"* ]]; then
+        if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null && [[ "$_pidcmd" != *"$_self_path"* && "$_pidcmd" != *"$BASE_DIR/.scripts/api-server.sh"* ]] && ! _api_pid_is_ours "$pid"; then
             echo "PID file points at PID $pid (${_pidcmd:0:70}), which is not this installation's API server — ignored"
             pid=""
         fi
@@ -415,7 +428,7 @@ if [[ "$STOP_SERVER" == "true" ]]; then
         # the listener is a socat whose parent is this script: match either the
         # process or its parent against this installation's script path
         _pcmd=$(tr '\0' ' ' < "/proc/$(awk '{print $4}' "/proc/${_p}/stat" 2>/dev/null)/cmdline" 2>/dev/null || true)
-        if [[ "$_cmd" == *"$_self_path"* || "$_pcmd" == *"$_self_path"* || "$_cmd" == *"$BASE_DIR/.scripts/api-server.sh"* || "$_pcmd" == *"$BASE_DIR/.scripts/api-server.sh"* ]]; then
+        if [[ "$_cmd" == *"$_self_path"* || "$_pcmd" == *"$_self_path"* || "$_cmd" == *"$BASE_DIR/.scripts/api-server.sh"* || "$_pcmd" == *"$BASE_DIR/.scripts/api-server.sh"* ]] || _api_pid_is_ours "$_p" || _api_pid_is_ours "$(awk '{print $4}' "/proc/${_p}/stat" 2>/dev/null)"; then
             kill -TERM "$_p" 2>/dev/null || true
             sleep 0.5
             kill -KILL "$_p" 2>/dev/null || true
@@ -3387,9 +3400,13 @@ handle_system() {
 # GET /disks — Mounted filesystems and their usage
 handle_disks() {
     local -a disk_entries=()
+    local _pass allow_root=false
     # Parse df output handling mount paths with spaces (e.g. "/media/user/Dev Drive")
     # Split each line into words — last 4 are always size/used/avail/percent,
-    # first word is device, everything between is the mount path
+    # first word is device, everything between is the mount path.
+    # The root file system is left out when there are data disks and reported when it is all there is (a VM, an LXC): second pass.
+    for _pass in 1 2; do
+    [[ $_pass == 2 ]] && { (( ${#disk_entries[@]} == 0 )) || break; allow_root=true; }
     while IFS= read -r line; do
         [[ -z "$line" ]] && continue
         local -a fields
@@ -3412,13 +3429,15 @@ handle_disks() {
 
         [[ -z "$device" || "$device" == "Filesystem" ]] && continue
         case "$mount" in
-            /|/boot|/boot/*|/sys/*|/proc/*|/dev/*|/run/*|/snap/*) continue ;;
+            /) $allow_root || continue ;;
+            /boot|/boot/*|/sys/*|/proc/*|/dev/*|/run/*|/snap/*) continue ;;
         esac
         # Skip mergerfs/overlay mounts (device paths contain colons)
         [[ "$device" == *":"* ]] && continue
         [[ "$device" != /* ]] && continue
         disk_entries+=("{\"device\": \"$(_api_json_escape "$device")\", \"mount\": \"$(_api_json_escape "$mount")\", \"total\": \"$(_api_json_escape "$total")\", \"used\": \"$(_api_json_escape "$used")\", \"available\": \"$(_api_json_escape "$available")\", \"percent\": \"$(_api_json_escape "$percent")\"}")
     done < <(df -h --output=source,target,size,used,avail,pcent -x tmpfs -x devtmpfs -x squashfs -x overlay -x efivarfs -x vfat 2>/dev/null | tail -n +2)
+    done
 
     local json
     json=$(printf '%s,' "${disk_entries[@]}")
@@ -10453,9 +10472,12 @@ handle_system_metrics() {
     swap_total=$(awk '/SwapTotal/ {print int($2/1024)}' /proc/meminfo 2>/dev/null || echo 0)
     swap_used=$(( swap_total - $(awk '/SwapFree/ {print int($2/1024)}' /proc/meminfo 2>/dev/null || echo 0) ))
 
-    # Disk: all mount points (word-split parsing to handle mount paths with spaces)
+    # Disk: all mount points (word-split parsing to handle mount paths with spaces). The root file system is left out when there are
+    # data disks (the small system disk is not what the Health page is after) and reported when it is all there is (a VM, an LXC).
     local disk_json="["
-    local first=true
+    local first=true _pass allow_root=false
+    for _pass in 1 2; do
+    [[ $_pass == 2 ]] && { $first || break; allow_root=true; }
     while IFS= read -r line; do
         [[ -z "$line" ]] && continue
         local -a fields
@@ -10476,7 +10498,8 @@ handle_system_metrics() {
 
         [[ -z "$dev" || "$dev" != /* ]] && continue
         case "$mount" in
-            /|/boot|/boot/*|/sys/*|/proc/*|/dev/*|/run/*|/snap/*) continue ;;
+            /) $allow_root || continue ;;
+            /boot|/boot/*|/sys/*|/proc/*|/dev/*|/run/*|/snap/*) continue ;;
         esac
         # Skip mergerfs/overlay mounts (device paths contain colons)
         [[ "$dev" == *":"* ]] && continue
@@ -10484,6 +10507,7 @@ handle_system_metrics() {
         first=false
         disk_json+="{\"device\": \"$(_api_json_escape "$dev")\", \"mount\": \"$(_api_json_escape "$mount")\", \"total\": \"$total\", \"used\": \"$used\", \"available\": \"$avail\", \"percent\": \"$pct\"}"
     done < <(df -h --output=source,target,size,used,avail,pcent -x tmpfs -x devtmpfs -x squashfs -x overlay -x efivarfs 2>/dev/null | tail -n +2)
+    done
     disk_json+="]"
 
     _api_success "{\"cpu\": {\"count\": $cpu_count, \"load_average\": [$load1, $load5, $load15]}, \"memory\": {\"total_mb\": $mem_total, \"used_mb\": $mem_used, \"available_mb\": $mem_available, \"cached_mb\": $mem_cached, \"swap_total_mb\": $swap_total, \"swap_used_mb\": $swap_used}, \"disks\": $disk_json}"
@@ -19150,7 +19174,7 @@ handle_proxmox_vm_detail() {
            guest_mem_free: ($c.ballooninfo.free_mem // 0), guest_mem_total: ($c.ballooninfo.total_mem // 0),
            netin: ($c.netin // 0), netout: ($c.netout // 0), diskread: ($c.diskread // 0), diskwrite: ($c.diskwrite // 0),
            agent: (($c.agent // $f.agent // 0) | tostring), lock: ($c.lock // ""), os: $os, image: $image,
-           config: {bios: ($f.bios // ""), machine: ($f.machine // ""), created: ((($f.meta // "") | capture("ctime=(?<t>[0-9]+)")?.t | tonumber?) // null),
+           config: {bios: ($f.bios // ""), machine: ($f.machine // ""), args: ($f.args // ""), created: ((($f.meta // "") | capture("ctime=(?<t>[0-9]+)")?.t | tonumber?) // null),
                     cores: ($f.cores // null), sockets: ($f.sockets // null), memory: ($f.memory // null), ostype: ($f.ostype // ""), boot: ($f.boot // ""), scsi0: ($f.scsi0 // ""), ide2: ($f.ide2 // ""), net0: ($f.net0 // ""), ipconfig0: ($f.ipconfig0 // ""), ciuser: ($f.ciuser // ""), nameserver: ($f.nameserver // ""), sshkeys: ($f.sshkeys // ""), agent: (($f.agent // "") | tostring), tags: ($f.tags // ""),
                     onboot: (($f.onboot // 0) | tostring), description: ($f.description // ""), tags: ($f.tags // ""),
                     net0: ($f.net0 // ""), bootdisk: ($f.bootdisk // ""), hostname: ($f.hostname // "")}}')"
@@ -20064,6 +20088,7 @@ _docker_engine_source() {
     elif command -v dpkg >/dev/null 2>&1 && dpkg -s docker.io >/dev/null 2>&1; then echo docker.io
     elif command -v rpm >/dev/null 2>&1 && rpm -q docker-ce >/dev/null 2>&1; then echo docker-ce
     elif command -v rpm >/dev/null 2>&1 && rpm -q moby-engine >/dev/null 2>&1; then echo moby-engine
+    elif command -v pacman >/dev/null 2>&1 && pacman -Q docker >/dev/null 2>&1; then echo docker-arch
     else echo ""; fi
 }
 _docker_engine_candidate_refresh() {
@@ -20074,6 +20099,17 @@ _docker_engine_candidate_refresh() {
             if command -v apt-cache >/dev/null 2>&1; then cand=$(timeout 30 apt-cache policy "$src" 2>/dev/null | awk '/Candidate:/ {print $2}')
             elif command -v dnf >/dev/null 2>&1; then cand=$(timeout 120 dnf -q list --available "$src" 2>/dev/null | awk -v p="$src" '$1 ~ "^"p {print $2}' | tail -1); fi ;;
         moby-engine) cand=$(timeout 120 dnf -q list --available moby-engine 2>/dev/null | awk '$1 ~ /^moby-engine/ {print $2}' | tail -1) ;;
+        docker-arch)
+            local pdb; pdb=$(mktemp -d "${TMPDIR:-/tmp}/dcs-pacdb-XXXXXX" 2>/dev/null)
+            if [[ -n "$pdb" ]]; then
+                ln -s /var/lib/pacman/local "$pdb/local"; mkdir -p "$pdb/sync"
+                if [[ "$(id -u)" -eq 0 ]] || sudo -n true 2>/dev/null; then
+                    cp /var/lib/pacman/sync/*.db "$pdb/sync/" 2>/dev/null
+                    timeout 100 sudo -n pacman -Sy --dbpath "$pdb" --logfile /dev/null >/dev/null 2>&1 || timeout 100 pacman -Sy --dbpath "$pdb" --logfile /dev/null >/dev/null 2>&1
+                fi
+                cand=$(pacman -Si --dbpath "$pdb" docker 2>/dev/null | awk '/^Version/ {print $3}')
+                sudo -n rm -rf "$pdb" 2>/dev/null || rm -rf "$pdb" 2>/dev/null
+            fi ;;
     esac
     cand=$(printf '%s' "$cand" | sed -E 's/^[0-9]+://; s/^([0-9]+\.[0-9]+\.[0-9]+).*/\1/'); [[ "$cand" == "(none)" ]] && cand=""
     jq -nc --arg s "$src" --arg c "$cand" --argjson t "$(date +%s)" '{source: $s, candidate: $c, checked_at: $t}' > "$f.tmp.$$" 2>/dev/null && mv -f "$f.tmp.$$" "$f"
@@ -20103,9 +20139,9 @@ _docker_engine_json() {
     local checked_at; checked_at=$(jq -r '.checked_at // 0' "$BASE_DIR/.data/docker-engine-candidate.json" 2>/dev/null); [[ "$checked_at" =~ ^[0-9]+$ ]] || checked_at=0
     jq -nc --arg v "$ver" --arg src "$src" --arg cand "$cand" --arg pm "$pm" --argjson up "$upgradable" --argjson sudo "$sudo_ready" --argjson aa "$apparmor" --argjson st "$st" --arg host "$(hostname 2>/dev/null)" --argjson chk "$checking" --argjson cat "$checked_at" '
         {version: $v, source: (if $src == "" then "unknown" else $src end), candidate: $cand, checking: $chk, candidate_checked_at: $cat, package_manager: $pm, upgradable: $up, sudo_ready: $sudo, hostname: $host,
-         apparmor_issue: $aa, recommended: (if $src == "docker-ce" then true else false end),
-         switch_command: (if $src == "docker-ce" then "" else "curl -fsSL https://get.docker.com | sh" end),
-         note: (if $aa then "Debian'"'"'s docker.io with AppArmor 4 denies nginx and HAProxy their worker sockets (the dashboard and Traefik'"'"'s socket proxy fail): switch to Docker Engine from Docker" elif $src == "docker.io" then "Docker comes from Debian'"'"'s repository; Docker Engine from Docker (docker-ce) is what DCS is tested with" elif $src == "unknown" then "Docker was not installed from a package this API knows; updates are yours to run" else "" end),
+         apparmor_issue: $aa, recommended: (if $src == "docker-ce" or $src == "docker-arch" then true else false end),
+         switch_command: (if $src == "docker-ce" or $src == "docker-arch" then "" else "curl -fsSL https://get.docker.com | sh" end),
+         note: (if $aa then "Debian'"'"'s docker.io with AppArmor 4 denies nginx and HAProxy their worker sockets (the dashboard and Traefik'"'"'s socket proxy fail): switch to Docker Engine from Docker" elif $src == "docker.io" then "Docker comes from Debian'"'"'s repository; Docker Engine from Docker (docker-ce) is what DCS is tested with" elif $src == "docker-arch" then "Docker comes from Arch Linux'"'"'s repositories. Arch has no partial upgrades: updating Docker upgrades the whole system, and a new kernel needs a reboot" elif $src == "unknown" then "Docker was not installed from a package this API knows; updates are yours to run" else "" end),
          last_update: $st}'
 }
 # GET /system/docker-engine — The Docker Engine here: version, package source (docker-ce, Debian's docker.io, …), the newest version the source offers, whether this API may update it unattended (passwordless sudo), and the last engine update; ?fleet=1 on a hub lists every member's too
@@ -20151,7 +20187,8 @@ handle_docker_engine_update() {
     case "$pm" in
         apt) cmd="export DEBIAN_FRONTEND=noninteractive; apt-get update -qq; if dpkg -s docker-ce >/dev/null 2>&1; then apt-get install -y -q --only-upgrade docker-ce docker-ce-cli containerd.io docker-compose-plugin docker-buildx-plugin; else apt-get install -y -q --only-upgrade docker.io docker-compose-v2 containerd; fi" ;;
         dnf|yum) cmd="if rpm -q docker-ce >/dev/null 2>&1; then $pm upgrade -y docker-ce docker-ce-cli containerd.io docker-compose-plugin; else $pm upgrade -y moby-engine docker-compose; fi" ;;
-        *) _api_error 500 "Docker Engine updates need apt or dnf here (found: $pm)"; return ;;
+        pacman) cmd="pacman -Syu --noconfirm; rc=\$?; if [ -e \"/usr/lib/modules/\$(uname -r)\" ]; then systemctl try-restart containerd docker; else echo 'The kernel was upgraded: reboot to load it (until then the running kernel cannot load new modules)'; fi; exit \$rc" ;;
+        *) _api_error 500 "Docker Engine updates need apt, dnf or pacman here (found: $pm)"; return ;;
     esac
     mkdir -p "$API_AUTH_DIR" 2>/dev/null
     jq -nc --arg t "$(date -Iseconds)" --arg by "${AUTH_USERNAME:-api}" '{status: "running", started_at: $t, by: $by}' > "$status_file"
@@ -20968,6 +21005,18 @@ FLEET_SSH_CMD="${FLEET_SSH_CMD:-ssh}"
 FLEET_VM_USER="${FLEET_VM_USER:-dcs}"
 FLEET_IMAGE_URL="${FLEET_IMAGE_URL:-https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2}"
 FLEET_IMAGE_FILE="${FLEET_IMAGE_FILE:-debian-13-genericcloud-amd64.qcow2}"
+# The purpose-built DCS images (vm-images/): a Docker host and nothing else, so a VM built from one needs no bake. The list is
+# vm-images/images.json, the one file the image build, CI, the Proxmox importer, the documentation and this catalogue all read
+# (tests/lint.sh fails when they drift apart). The default image leads. Without the file (a checkout that lacks vm-images/) the
+# default Debian image is offered on its own.
+_fleet_dcs_images_json() {
+    local b="${1%/}" m="$BASE_DIR/vm-images/images.json"
+    if [[ -s "$m" ]] && jq -e '(.images | type == "array" and length > 0) and all(.images[]; has("id") and has("name") and has("family"))' "$m" >/dev/null 2>&1; then
+        jq -c --arg b "$b" '.default as $d | [.images | sort_by(.id != $d)[] | {id: ("dcs-" + .id), label: ("DCS " + .name + " — purpose-built for the fleet, " + (.summary // "")), url: ($b + "/dcs-node-" + .id + ".qcow2"), file: ("dcs-node-" + .id + ".qcow2"), family: .family, prebuilt: true}]' "$m"
+    else
+        jq -nc --arg b "$b" '[{id: "dcs-debian-13", label: "DCS Debian 13 — purpose-built for the fleet, the default", url: ($b + "/dcs-node-debian-13.qcow2"), file: "dcs-node-debian-13.qcow2", family: "apt", prebuilt: true}]'
+    fi
+}
 # The operating systems a VM can be built from: cloud images (cloud-init, apt or dnf) the hub has
 # Proxmox download once. The first entry is the default (FLEET_IMAGE_URL/FILE); a
 # .config/fleet-images.json with the same shape replaces the whole list.
@@ -20978,10 +21027,7 @@ _fleet_image_catalogue_json() {
     # built from one needs no bake — it boots with the tools, Docker and the guest agent in place. Node images only:
     # the DCS code always comes from the hub. FLEET_DCS_IMAGE_BASE points at another place to fetch them from.
     local dbase="${FLEET_DCS_IMAGE_BASE:-https://github.com/scotthowson/dcs-orchestrator/releases/download/v${DCS_VERSION}}"
-    jq -nc --arg u "$FLEET_IMAGE_URL" --arg f "$FLEET_IMAGE_FILE" --arg b "${dbase%/}" '[
-        {id: "dcs-debian-13", label: "DCS Debian 13 — purpose-built for the fleet, the default (250 MB)", url: ($b + "/dcs-node-debian-13.qcow2"), file: "dcs-node-debian-13.qcow2", family: "apt", prebuilt: true},
-        {id: "dcs-ubuntu-26.04", label: "DCS Ubuntu 26.04 LTS — purpose-built (390 MB)", url: ($b + "/dcs-node-ubuntu-26.04.qcow2"), file: "dcs-node-ubuntu-26.04.qcow2", family: "apt", prebuilt: true},
-        {id: "dcs-fedora-44", label: "DCS Fedora 44 — purpose-built, SELinux enforcing (400 MB)", url: ($b + "/dcs-node-fedora-44.qcow2"), file: "dcs-node-fedora-44.qcow2", family: "dnf", prebuilt: true},
+    jq -nc --argjson dcs "$(_fleet_dcs_images_json "${dbase%/}")" --arg u "$FLEET_IMAGE_URL" --arg f "$FLEET_IMAGE_FILE" '$dcs + [
         {id: "debian-13", label: "Debian 13 (trixie) cloud image, tools and Docker installed by the hub", url: $u, file: $f, family: "apt"},
         {id: "debian-12", label: "Debian 12 (bookworm)", url: "https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.qcow2", file: "debian-12-genericcloud-amd64.qcow2", family: "apt"},
         {id: "ubuntu-26.04", label: "Ubuntu Server 26.04 LTS (resolute)", url: "https://cloud-images.ubuntu.com/resolute/current/resolute-server-cloudimg-amd64.img", file: "ubuntu-26.04-server-cloudimg-amd64.qcow2", family: "apt"},
@@ -21008,6 +21054,22 @@ _fleet_images_json() {
         done
     fi
     jq -nc --argjson c "$(_fleet_image_catalogue_json)" --argjson i "$imports" --argjson o "$isos" --argjson t "$(_fleet_templates_json)" '{catalogue: $c, on_proxmox: {imports: $i, isos: $o}, templates: $t}'
+}
+# _fleet_vm_fast_boot JOB NODE VMID — Proxmox starts every VM with -boot menu=on, and SeaBIOS as well as OVMF then wait about 2.6 s for an
+# ESC key nobody presses, at every boot of every VM. "-boot menu=off,…" (the rest is Proxmox's own setting) skips the wait. Only root@pam
+# may set the 'args' option: an API token is refused, the refusal is remembered (.data/pve-args-refused, so the next VM does not ask
+# again) and the VM stays as it was. FLEET_VM_FAST_BOOT=false turns the attempt off.
+_fleet_vm_fast_boot() {
+    local id="$1" node="$2" vmid="$3" res
+    [[ "${FLEET_VM_FAST_BOOT:-true}" == true && ! -e "$BASE_DIR/.data/pve-args-refused" ]] || return 0
+    PVE_TIMEOUT=30 _pve_call res PUT "/nodes/$node/qemu/$vmid/config" "args=-boot menu=off,strict=on,reboot-timeout=1000"
+    if [[ "$_PVE_HTTP" == 200 ]]; then
+        _job_log "$id" "boot menu wait switched off: this VM starts about 2.6 s sooner at every boot"
+    else
+        mkdir -p "$BASE_DIR/.data" 2>/dev/null; : > "$BASE_DIR/.data/pve-args-refused"
+        _job_log "$id" "boot menu wait left on: Proxmox lets only root@pam set the 'args' option, this token may not. On the node, qm set $vmid --args '-boot menu=off,strict=on,reboot-timeout=1000' starts the VM 2.6 s sooner at every boot"
+    fi
+    return 0
 }
 # A baked template: a VM built once from a cloud image with the tools, Docker and the guest agent
 # installed, sealed with cloud-init and turned into a Proxmox template. A VM cloned from it skips
@@ -22085,6 +22147,7 @@ _fleet_job_run() {
             upid=$(jq -r '.data // ""' <<< "$res"); [[ "$upid" == UPID:* ]] && _pve_wait_task "$node" "$upid" 300 "$id"
         fi
         _job_step "$id" create "done" "VM $vmid"
+        [[ "$kind" != iso ]] && _fleet_vm_fast_boot "$id" "$node" "$vmid"
     else
         _job_step "$id" create "done" "VM $vmid"
     fi
@@ -23657,6 +23720,16 @@ handle_schedule_history() {
 
 HEALTH_SCORE_HISTORY_FILE="$BASE_DIR/.data/health-score-history.jsonl"
 
+# _health_uptime_score SECONDS — the uptime factor of the system score, in steps like the container score (.lib/health-score.sh): a day
+# of uptime is 100, an hour 90, ten minutes 75, less 50. (A linear ramp over seven days kept a healthy, freshly installed or rebooted
+# server at B or C for days.)
+_health_uptime_score() {
+    local u="${1:-0}"; [[ "$u" =~ ^[0-9]+$ ]] || u=0
+    if (( u >= 86400 )); then echo 100
+    elif (( u >= 3600 )); then echo 90
+    elif (( u >= 600 )); then echo 75
+    else echo 50; fi
+}
 # GET /health/score — Compute system-wide health score (0-100)
 # Factors: stacks (container health), resources (CPU/mem), images (freshness), uptime
 # GET /health/score — System health score (0-100) with its factors
@@ -23755,9 +23828,7 @@ handle_health_score() {
     # ── Factor 4: System uptime (15% weight) ──
     local uptime_seconds
     uptime_seconds=$(awk '{printf "%d", $1}' /proc/uptime 2>/dev/null || echo 0)
-    # Score: 100 if uptime > 7 days, scales linearly below that
-    local uptime_score
-    uptime_score=$(awk "BEGIN { s = ($uptime_seconds / 604800) * 100; if (s > 100) s = 100; printf \"%d\", s }")
+    local uptime_score; uptime_score=$(_health_uptime_score "$uptime_seconds")
 
     # ── Weighted total ──
     local total_score
