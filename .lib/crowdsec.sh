@@ -843,15 +843,23 @@ _cs_deleted_count() {
     printf '%s' "${n:-0}"
 }
 
-# _cs_unban_value VALUE — remove the active decisions for one address or network. CS_DELETED holds the count. Return 2: not a valid target
+# _cs_unban_value VALUE — remove the active decisions for exactly this address or network. CS_DELETED holds the count. Return 2: not a valid target.
+# cscli's `delete --ip X` also removes a wider network that contains X, which would silently lift bans nobody asked about: the decisions are found by
+# value and removed by id.
 CS_DELETED=0
 _cs_unban_value() {
-    local tgt scope val out rc
+    local tgt scope val out raw ids id rc=0 n=0
     tgt=$(_cs_norm_target "$1") || return 2
     scope="${tgt%%$'\t'*}"; val="${tgt#*$'\t'}"
-    if [[ "$scope" == Range ]]; then _cs_run out decisions delete --range "$val"; else _cs_run out decisions delete --ip "$val"; fi
-    rc=$?
-    CS_DELETED=$(_cs_deleted_count "$CS_ERR$out")
+    CS_DELETED=0
+    _cs_run raw decisions list --limit 0 -o json || return 1
+    ids=$(printf '%s\n' "$raw" | jq -r --arg v "${val,,}" --arg s "${scope,,}" '(. // [])[] | .decisions[]? | select((.value | ascii_downcase) == $v and (.scope | ascii_downcase) == $s and ((.duration // "") | startswith("-") | not)) | .id' 2>/dev/null)
+    while IFS= read -r id; do
+        [[ "$id" =~ ^[0-9]+$ ]] || continue
+        _cs_run out decisions delete --id "$id" || { rc=$?; continue; }
+        n=$(( n + $(_cs_deleted_count "$CS_ERR$out") ))
+    done <<< "$ids"
+    CS_DELETED=$n
     return $rc
 }
 
