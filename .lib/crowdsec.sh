@@ -417,7 +417,7 @@ def scen_row: (. // "") as $s | ((label_table | map(. as $r | select($s | starts
         else ["", "Attack blocked", "other"] end));
 def scen_label: scen_row | .[1];
 def scen_family: scen_row | .[2];
-def alert_label: if (.kind // "") == "cscli" then "Manual ban" else ((.scenario // "") | scen_label) end;
+def alert_label: if (.kind // "") == "cscli" then (if ((.decisions // []) | map(.origin // "") | index("cscli-import")) != null then "Imported list" else "Manual ban" end) else ((.scenario // "") | scen_label) end;
 def alert_family: if (.kind // "") == "cscli" then "manual" else ((.scenario // "") | scen_family) end;
 '
 
@@ -454,7 +454,9 @@ def alert_row:
     created_at: (.created_at // ""), start_at: (.start_at // ""), stop_at: (.stop_at // ""),
     machine: (.machine_id // ""), kind: (.kind // ""), simulated: (.simulated // false), remediation: (.remediation // false),
     capacity: (.capacity // 0), leakspeed: (.leakspeed // ""),
-    source: { value: (.source.value // ""), ip: (.source.ip // .source.value // ""), scope: (.source.scope // ""), range: (.source.range // ""),
+    # an imported list has no source of its own: its first address stands for it
+    source: { value: (if (.source.value // "") == "" then ((.decisions // [])[0].value // "") else .source.value end), ip: (.source.ip // .source.value // ""),
+              scope: (if (.source.scope // "") == "" then ((.decisions // [])[0].scope // "") else .source.scope end), range: (.source.range // ""),
               country: (.source.cn | cc), as_number: ((.source.as_number // "") | tostring), as_name: (.source.as_name // ""),
               latitude: (.source.latitude // null), longitude: (.source.longitude // null) },
     decisions: [ (.decisions // [])[] | { id: .id, type: .type, value: .value, scope: .scope, origin: (.origin // ""), duration: .duration, simulated: (.simulated // false) } ],
