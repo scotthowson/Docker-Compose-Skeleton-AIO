@@ -503,6 +503,25 @@ _sed_escape_val() {
     printf '%s' "$v"
 }
 
+# The CORS response headers for this request's Origin (nothing for a request without one or from an origin that is not allowed).
+# The response writer and the response cache both use it: a cached answer must carry the CORS headers of the request it is
+# served to, not those of the request that filled the cache.
+_api_cors_lines() {
+    local cors_origin
+    cors_origin=$(_api_cors_origin)
+    if [[ -n "$cors_origin" ]]; then
+        printf "Access-Control-Allow-Origin: %s\r\n" "$cors_origin"
+        printf "Access-Control-Allow-Methods: GET, POST, PUT, PATCH, DELETE, OPTIONS\r\n"
+        printf "Access-Control-Allow-Headers: Content-Type, Authorization\r\n"
+        printf "Access-Control-Allow-Private-Network: true\r\n"
+        # a preflight is remembered for ten minutes (browsers ask again every 5 s without it:
+        # nearly one OPTIONS for every call a dashboard on another origin makes)
+        [[ "${method:-}" == "OPTIONS" ]] && printf "Access-Control-Max-Age: 600\r\n"
+        printf "Vary: Origin\r\n"
+    fi
+    return 0
+}
+
 # Validate a request Origin against the CORS whitelist
 # Returns the origin if allowed, empty if not
 _api_cors_origin() {
@@ -583,18 +602,7 @@ _api_response() {
     printf "Content-Length: %d\r\n" "$content_length"
 
     # Dynamic CORS — only emit for whitelisted origins
-    local cors_origin
-    cors_origin=$(_api_cors_origin)
-    if [[ -n "$cors_origin" ]]; then
-        printf "Access-Control-Allow-Origin: %s\r\n" "$cors_origin"
-        printf "Access-Control-Allow-Methods: GET, POST, PUT, PATCH, DELETE, OPTIONS\r\n"
-        printf "Access-Control-Allow-Headers: Content-Type, Authorization\r\n"
-        printf "Access-Control-Allow-Private-Network: true\r\n"
-        # a preflight is remembered for ten minutes (browsers ask again every 5 s without it:
-        # nearly one OPTIONS for every call a dashboard on another origin makes)
-        [[ "${method:-}" == "OPTIONS" ]] && printf "Access-Control-Max-Age: 600\r\n"
-        printf "Vary: Origin\r\n"
-    fi
+    _api_cors_lines
 
     # Security headers
     printf "X-Content-Type-Options: nosniff\r\n"
@@ -719,11 +727,18 @@ _api_cached() {
 # Print a stored response with the cache headers added after the status line
 # (byte-exact body, so Content-Length stays right).
 _api_cache_emit() {
-    local file="$1" state="$2" age="$3" first
+    local file="$1" state="$2" age="$3" first line
     {
         IFS= read -r first
         printf '%s\n' "$first"
         printf 'X-DCS-Cache: %s\r\nAge: %s\r\n' "$state" "$age"
+        # the stored headers, except the CORS ones: those are the ones of the request that filled the cache (its Origin), and a
+        # dashboard on another origin got them and a CORS error
+        while IFS= read -r line; do
+            if [[ -z "$line" || "$line" == $'\r' ]]; then _api_cors_lines; printf '%s\n' "$line"; break; fi
+            case "$line" in Access-Control-*|Vary:*) continue ;; esac
+            printf '%s\n' "$line"
+        done
         cat
     } < "$file"
 }
@@ -1130,6 +1145,17 @@ _api_add_user() {
     fi
 }
 
+# _api_with_tokens_lock CMD… — runs CMD while holding the lock every read-modify-write of tokens.json takes; a caller that holds it
+# already (the sign-in below) runs CMD directly. Without it two requests can each read the file, change it and write it back, and one
+# of the changes (a fresh session) is lost.
+_api_with_tokens_lock() {
+    if [[ -n "${_API_TOKENS_LOCK_HELD:-}" ]]; then "$@"; return; fi
+    (
+        flock -w 10 200 || { echo "Token lock timeout" >&2; exit 1; }
+        _API_TOKENS_LOCK_HELD=1 "$@"
+    ) 200>"$API_AUTH_DIR/.tokens.lock"
+}
+
 # Store a session token (enforces single-session when enabled)
 _api_store_token() {
     local token="$1" username="$2" role="$3"
@@ -1139,6 +1165,7 @@ _api_store_token() {
     # both pass the single-session check and create duplicate tokens.
     (
         flock -w 10 200 || { echo "Token lock timeout" >&2; return 1; }
+        _API_TOKENS_LOCK_HELD=1
 
         # Single-session enforcement: revoke all existing tokens for this user
         # (bot accounts keep theirs: a bot may sign in from several places)
@@ -1953,7 +1980,8 @@ _api_reset_rate_limit() {
 }
 
 # Clean up expired tokens (called periodically)
-_api_cleanup_expired_tokens() {
+_api_cleanup_expired_tokens() { _api_with_tokens_lock _api_cleanup_expired_tokens_locked; }
+_api_cleanup_expired_tokens_locked() {
     local tokens
     tokens=$(_api_read_auth_file "tokens.json")
     local now
@@ -2049,7 +2077,8 @@ _api_delete_invite() {
 }
 
 # Revoke all tokens for a user
-_api_revoke_user_tokens() {
+_api_revoke_user_tokens() { _api_with_tokens_lock _api_revoke_user_tokens_locked "$1"; }
+_api_revoke_user_tokens_locked() {
     local username="$1"
     local tokens
     tokens=$(_api_read_auth_file "tokens.json")
@@ -2969,6 +2998,42 @@ handle_images() {
     _api_success "{\"total\": ${#entries[@]}, \"images\": $json}"
 }
 
+# The jq program that turns `docker ps` rows into the container list (a variable so the tests can feed it rows).
+# health: "unhealthy" is looked for first (its text contains "healthy"); uptime: "Up 3 hours" counts from the start, RunningFor from the creation.
+_CONTAINERS_JQ='
+            ($stats[0] // {}) as $st |
+            [.[] | {
+                name: .Names,
+                state: .State,
+                health: (if .Status | test("unhealthy") then "unhealthy"
+                         elif .Status | test("healthy") then "healthy"
+                         elif .Status | test("health:") then "starting"
+                         else "none" end),
+                image: .Image,
+                image_id: (.ID[:12] // ""),
+                created: .CreatedAt,
+                uptime_seconds: (if .State != "running" then 0
+                    else (((.Status // "") | if startswith("Up ") then sub("^Up "; "") else null end) // .RunningFor // "") as $rf
+                        | ($rf
+                        # "About an hour ago" / "About a minute ago" carry no digit: a
+                        # missing match must not empty the whole entry out of the list
+                        | ([$rf | match("[0-9]+").string | tonumber] | .[0]) as $n
+                        | (if ($rf | test("About a")) then 1 elif $n == null then 0 else $n end) * (
+                            if ($rf | test("second")) then 1
+                            elif ($rf | test("minute")) then 60
+                            elif ($rf | test("hour")) then 3600
+                            elif ($rf | test("day")) then 86400
+                            elif ($rf | test("week")) then 604800
+                            elif ($rf | test("month")) then 2592000
+                            elif ($rf | test("year")) then 31536000
+                            else 0 end)) end),
+                ports: .Ports,
+                restart_count: 0,
+                on_demand: ($sab[.Names] // false),
+                stack: ((.Labels // "") | split(",") | map(select(startswith("com.docker.compose.project="))) | .[0] // "" | sub("^com.docker.compose.project="; "")),
+                cpu_percent: ($st[.Names].cpu // null),
+                mem_percent: ($st[.Names].mem // null)
+            }]'
 # GET /containers — All containers with state, health, ports and cached CPU/memory usage
 handle_containers() {
     # PERFORMANCE: Single docker command to get all container data as JSON
@@ -3010,39 +3075,7 @@ handle_containers() {
         # Build containers JSON — read stats cache via --slurpfile (avoids shell arg size limits)
         local containers_json
         local _sab_json; _sab_json=$(_sablier_names_json)
-        containers_json=$(printf '%s\n' "$raw_json" | jq -s --argjson now "$now_epoch" --argjson sab "$_sab_json" --slurpfile stats "$_stats_cache" '
-            ($stats[0] // {}) as $st |
-            [.[] | {
-                name: .Names,
-                state: .State,
-                health: (if .Status | test("healthy") then "healthy"
-                         elif .Status | test("unhealthy") then "unhealthy"
-                         elif .Status | test("health:") then "starting"
-                         else "none" end),
-                image: .Image,
-                image_id: (.ID[:12] // ""),
-                created: .CreatedAt,
-                uptime_seconds: (if .State != "running" then 0
-                    else ((.RunningFor // "") as $rf
-                        # "About an hour ago" / "About a minute ago" carry no digit: a
-                        # missing match must not empty the whole entry out of the list
-                        | ([$rf | match("[0-9]+").string | tonumber] | .[0]) as $n
-                        | (if ($rf | test("About a")) then 1 elif $n == null then 0 else $n end) * (
-                            if ($rf | test("second")) then 1
-                            elif ($rf | test("minute")) then 60
-                            elif ($rf | test("hour")) then 3600
-                            elif ($rf | test("day")) then 86400
-                            elif ($rf | test("week")) then 604800
-                            elif ($rf | test("month")) then 2592000
-                            elif ($rf | test("year")) then 31536000
-                            else 0 end)) end),
-                ports: .Ports,
-                restart_count: 0,
-                on_demand: ($sab[.Names] // false),
-                stack: ((.Labels // "") | split(",") | map(select(startswith("com.docker.compose.project="))) | .[0] // "" | sub("^com.docker.compose.project="; "")),
-                cpu_percent: ($st[.Names].cpu // null),
-                mem_percent: ($st[.Names].mem // null)
-            }]' 2>/dev/null)
+        containers_json=$(printf '%s\n' "$raw_json" | jq -s --argjson now "$now_epoch" --argjson sab "$_sab_json" --slurpfile stats "$_stats_cache" "$_CONTAINERS_JQ" 2>/dev/null)
 
         if [[ -n "$containers_json" ]]; then
             local total
@@ -20100,15 +20133,19 @@ _docker_engine_candidate_refresh() {
             elif command -v dnf >/dev/null 2>&1; then cand=$(timeout 120 dnf -q list --available "$src" 2>/dev/null | awk -v p="$src" '$1 ~ "^"p {print $2}' | tail -1); fi ;;
         moby-engine) cand=$(timeout 120 dnf -q list --available moby-engine 2>/dev/null | awk '$1 ~ /^moby-engine/ {print $2}' | tail -1) ;;
         docker-arch)
-            local pdb; pdb=$(mktemp -d "${TMPDIR:-/tmp}/dcs-pacdb-XXXXXX" 2>/dev/null)
+            # pacman's own databases are never touched: a private copy is refreshed and asked, then removed. It gets its own
+            # pacman.conf without DownloadUser, because the sandbox user pacman downloads as cannot write in this directory
+            local pdb asroot=(); [[ "$(id -u)" -eq 0 ]] || asroot=(sudo -n)
+            pdb=$(mktemp -d "${TMPDIR:-/tmp}/dcs-pacdb-XXXXXX" 2>/dev/null) || pdb=""
             if [[ -n "$pdb" ]]; then
-                ln -s /var/lib/pacman/local "$pdb/local"; mkdir -p "$pdb/sync"
+                ln -s /var/lib/pacman/local "$pdb/local" 2>/dev/null || true; mkdir -p "$pdb/sync" 2>/dev/null || true
+                sed '/^[[:space:]]*DownloadUser/d' /etc/pacman.conf > "$pdb/pacman.conf" 2>/dev/null || true
+                cp /var/lib/pacman/sync/*.db "$pdb/sync/" 2>/dev/null || true
                 if [[ "$(id -u)" -eq 0 ]] || sudo -n true 2>/dev/null; then
-                    cp /var/lib/pacman/sync/*.db "$pdb/sync/" 2>/dev/null
-                    timeout 100 sudo -n pacman -Sy --dbpath "$pdb" --logfile /dev/null >/dev/null 2>&1 || timeout 100 pacman -Sy --dbpath "$pdb" --logfile /dev/null >/dev/null 2>&1
+                    timeout 100 "${asroot[@]}" pacman --config "$pdb/pacman.conf" -Sy --dbpath "$pdb" --logfile /dev/null >/dev/null 2>&1 || true
                 fi
-                cand=$(pacman -Si --dbpath "$pdb" docker 2>/dev/null | awk '/^Version/ {print $3}')
-                sudo -n rm -rf "$pdb" 2>/dev/null || rm -rf "$pdb" 2>/dev/null
+                cand=$(pacman --config "$pdb/pacman.conf" -Si --dbpath "$pdb" docker 2>/dev/null | awk '/^Version/ {print $3}') || cand=""
+                "${asroot[@]}" rm -rf "$pdb" 2>/dev/null || rm -rf "$pdb" 2>/dev/null || true
             fi ;;
     esac
     cand=$(printf '%s' "$cand" | sed -E 's/^[0-9]+://; s/^([0-9]+\.[0-9]+\.[0-9]+).*/\1/'); [[ "$cand" == "(none)" ]] && cand=""

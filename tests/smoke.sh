@@ -285,6 +285,25 @@ _TN=$(find "$WORK/.templates" -mindepth 1 -maxdepth 1 -type d | wc -l)
 check "templates: every folder listed"   "$_TN" "$(auth_request GET /templates | body_of | jq -r '.total' 2>/dev/null)"
 check "templates: bare folder listed"    other "$(auth_request GET /templates | body_of | jq -r '.templates[] | select(.name == "bare-tpl") | .category' 2>/dev/null)"
 check "templates: list is cached"        yes "$(auth_request GET /templates | grep -qi '^X-DCS-Cache:' && echo yes || echo no)"
+# a cached answer carries the CORS headers of the request it is served to, not those of the request that filled the cache
+# (a second dashboard origin used to get the first one's Access-Control-Allow-Origin, and a CORS error)
+_corso() { printf 'GET /templates HTTP/1.1\r\nOrigin: %s\r\n\r\n' "$1" | env "${NOAUTH[@]}" "$API" --handle-request 2>/dev/null | tr -d '\r'; }
+_corso http://localhost:3013 >/dev/null
+_c2=$(_corso http://localhost:4000)
+check "cache: served from the cache"                   hit "$(grep -i '^X-DCS-Cache:' <<< "$_c2" | awk '{print $2}')"
+check "cache: …with the second origin's own CORS"      http://localhost:4000 "$(grep -i '^Access-Control-Allow-Origin:' <<< "$_c2" | awk '{print $2}')"
+check "cache: …and only one CORS origin header"        1 "$(grep -ci '^Access-Control-Allow-Origin:' <<< "$_c2")"
+check "cache: a foreign origin gets no CORS header"    0 "$(_corso http://192.0.2.9:3003 | grep -ci '^Access-Control-Allow-Origin:')"
+check "cache: no Origin, no CORS header"               0 "$(printf 'GET /templates HTTP/1.1\r\n\r\n' | env "${NOAUTH[@]}" "$API" --handle-request 2>/dev/null | grep -ci '^Access-Control-Allow-Origin:')"
+check "cache: the body is intact"                      yes "$(sed -n '/^$/,$p' <<< "$_c2" | sed '1d' | jq -e 'has("templates")' >/dev/null 2>&1 && echo yes || echo no)"
+
+# the container list: an unhealthy container is not healthy (its text holds "healthy"), and a running one's uptime counts from its start
+_ROWS='{"ID":"a1","Names":"web","State":"running","Status":"Up 3 hours (unhealthy)","RunningFor":"5 days ago","Image":"i","CreatedAt":"","Ports":"","Labels":""}
+{"ID":"a2","Names":"db","State":"running","Status":"Up About an hour (healthy)","RunningFor":"2 weeks ago","Image":"i","CreatedAt":"","Ports":"","Labels":""}
+{"ID":"a3","Names":"cache","State":"running","Status":"Up 12 minutes (health: starting)","RunningFor":"12 minutes ago","Image":"i","CreatedAt":"","Ports":"","Labels":""}
+{"ID":"a4","Names":"old","State":"exited","Status":"Exited (0) 2 days ago","RunningFor":"3 days ago","Image":"i","CreatedAt":"","Ports":"","Labels":""}'
+_CL=$(printf '%s\n' "$_ROWS" | _lib eval 'jq -s --argjson now 0 --argjson sab "{}" --slurpfile stats <(echo "{}") "$_CONTAINERS_JQ"' | jq -r '.[] | "\(.name) \(.health) \(.uptime_seconds)"' | tr '\n' ';')
+check "containers: unhealthy is unhealthy, uptime from the start" "web unhealthy 10800;db healthy 3600;cache starting 720;old none 0;" "$_CL"
 mkdir -p "$WORK/.templates/broken-tpl"; printf '{not json' > "$WORK/.templates/broken-tpl/template.json"; rm -f "$WORK/.data/cache"/templates*.http
 check "templates: broken one skipped"    "$_TN" "$(auth_request GET /templates | body_of | jq -r '.total' 2>/dev/null)"
 check "templates: others still there"    demo-tpl "$(auth_request GET /templates | body_of | jq -r '.templates[] | select(.name == "demo-tpl") | .name' 2>/dev/null)"
@@ -1102,6 +1121,15 @@ check "create user: duplicate refused"  409 "$(auth_request POST /auth/users '{"
 check "create user: bad name refused"   400 "$(auth_request POST /auth/users '{"username":"x!","password":"Botpass-1234"}' | status_of)"
 check "create user: viewer denied"      403 "$(viewer_request POST /auth/users '{"username":"nope-zz","password":"Botpass-1234"}' | status_of)"
 check "create user: can sign in"        200 "$(request POST /auth/login '{"username":"bot-smoke","password":"Botpass-1234"}' "${AUTH[@]}" | status_of)"
+# sign-ins that overlap (each one also removes the expired sessions): no session is lost or doubled, and the file stays valid JSON
+auth_request POST /auth/users '{"username":"race-a","password":"Racepass-1234","role":"user"}' >/dev/null
+auth_request POST /auth/users '{"username":"race-b","password":"Racepass-1234","role":"user"}' >/dev/null
+for _i in 1 2 3 4 5 6; do
+    request POST /auth/login '{"username":"race-a","password":"Racepass-1234"}' "${AUTH[@]}" >/dev/null &
+    request POST /auth/login '{"username":"race-b","password":"Racepass-1234"}' "${AUTH[@]}" >/dev/null &
+done; wait
+check "sign-ins that overlap: the token file is valid"   yes "$(jq -e . "$WORK/.api-auth/tokens.json" >/dev/null 2>&1 && echo yes || echo no)"
+check "…each of the two users keeps exactly one session" "1 1" "$(jq -r '[([.[] | select(.username == "race-a")] | length), ([.[] | select(.username == "race-b")] | length)] | join(" ")' "$WORK/.api-auth/tokens.json" 2>/dev/null)"
 check "homarr register: validation"     400 "$(auth_request POST /homarr/register '{"name":"","url":"nope"}' | status_of)"
 check "homarr register: no Homarr here" 409 "$(auth_request POST /homarr/register '{"name":"Smoke","url":"http://127.0.0.1:1/"}' | status_of)"
 check "homarr register: viewer denied"  403 "$(viewer_request POST /homarr/register '{"name":"Smoke","url":"http://127.0.0.1:1/"}' | status_of)"
@@ -2144,6 +2172,35 @@ check "engine: shape"                        true "$(printf '%s' "$_EN" | body_o
 check "engine: status idle"                  idle "$(fake_request GET /system/docker-engine/status | body_of | jq -r '.status')"
 check "engine: update viewer denied"         403 "$(viewer_request POST /system/docker-engine/update '{}' | status_of)"
 check "engine: fleet update needs members"   409 "$(fake_request POST /fleet/docker-engine/update '{"members":"all"}' | status_of)"
+# …on Arch: pacman is asked through a private copy of its databases (and a config of its own), the real /var/lib/pacman is never touched
+_AB="$WORK/fakebin-arch"; _AT="$WORK/tmp-arch"; _AF="$WORK/.data/docker-engine-candidate.arch.json"; _AL="$WORK/pacman-calls.log"
+mkdir -p "$_AB" "$_AT"; command rm -f "$_AF" "$_AL"
+printf '#!/bin/bash\nexit 1\n' > "$_AB/dpkg"; printf '#!/bin/bash\nexit 1\n' > "$_AB/rpm"
+printf '#!/bin/bash\n[[ "$1" == -n ]] && shift\nexec "$@"\n' > "$_AB/sudo"
+cat > "$_AB/pacman" <<'FAKEPACMAN'
+#!/bin/bash
+# a pacman that knows docker 1:29.9.0-1 once its database was synchronised into the --dbpath it was given
+op=""; db=""
+while [[ $# -gt 0 ]]; do case "$1" in --dbpath) db=$2; shift 2 ;; --config|--logfile) shift 2 ;; -Q|-Sy|-Si) op=$1; shift ;; *) shift ;; esac; done
+[[ -n "${FAKE_PACMAN_LOG:-}" ]] && echo "$op $db" >> "$FAKE_PACMAN_LOG"
+case "$op" in
+    -Q) exit 0 ;;
+    -Sy) [[ -n "${FAKE_PACMAN_FAIL:-}" ]] && exit 1; mkdir -p "$db/sync"; : > "$db/sync/core.db"; exit 0 ;;
+    -Si) [[ -f "$db/sync/core.db" ]] || { echo "error: package 'docker' was not found" >&2; exit 1; }; printf 'Name            : docker\nVersion         : 1:29.9.0-1\n'; exit 0 ;;
+esac
+exit 1
+FAKEPACMAN
+chmod +x "$_AB"/*
+check "engine (arch): the package source"          docker-arch "$(PATH="$_AB:$PATH" _lib _docker_engine_source)"
+PATH="$_AB:$PATH" TMPDIR="$_AT" FAKE_PACMAN_LOG="$_AL" _lib _docker_engine_candidate_refresh "$_AF"
+check "engine (arch): the newest version"          29.9.0 "$(jq -r '.candidate' "$_AF" 2>/dev/null)"
+check "engine (arch): synced and asked its copy"   '1 1' "$(printf '%s %s' "$(grep -c '^-Sy /' "$_AL" 2>/dev/null)" "$(grep -c '^-Si /' "$_AL" 2>/dev/null)")"
+check "engine (arch): pacman's own database left alone" 0 "$(grep -c ' /var/lib/pacman/*$' "$_AL" 2>/dev/null || true)"
+check "engine (arch): the private copy is removed" 0 "$(find "$_AT" -mindepth 1 | wc -l)"
+PATH="$_AB:$PATH" TMPDIR="$_AT" FAKE_PACMAN_FAIL=1 _lib _docker_engine_candidate_refresh "$_AF"
+check "engine (arch): a refused sync says unknown" 'docker-arch ' "$(jq -r '"\(.source) \(.candidate)"' "$_AF" 2>/dev/null)"
+check "engine (arch): …and still cleans up"        0 "$(find "$_AT" -mindepth 1 | wc -l)"
+command rm -rf "$_AB" "$_AT" "$_AF" "$_AL"
 # the fleet's proxy domain: what the hub hands over, and what a member does with it
 check "fleet domain: from the proxy stack"   smoke.test "$(_lib _fleet_domain)"
 check "domain: hostname accepted"            0 "$(_lib _domain_valid home.example.org; echo $?)"
