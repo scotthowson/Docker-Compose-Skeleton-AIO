@@ -838,7 +838,8 @@ _cs_settings_view() {
         local want; want=$(jq -r '.applied_profile_sha // ""' <<< "$saved")
         [[ -n "$want" && "$want" != "$(_cs_sha "$CS_LIVE_PROFILES")" ]] && drift=true
     fi
-    [[ "$(jq -r '.mode' <<< "$CS_INSPECT")" == custom ]] && raw="${CS_LIVE_PROFILES:0:20000}"
+    # a hand-written profile file is shown to admins only (it can hold anything, including notification wiring)
+    if [[ "$(jq -r '.mode' <<< "$CS_INSPECT")" == custom ]] && _api_check_admin; then raw="${CS_LIVE_PROFILES:0:20000}"; fi
     jq -nc --argjson insp "$CS_INSPECT" --argjson live "$CS_LIVE_SETTINGS" --argjson saved "$saved" --argjson presets "$_CS_DURATION_PRESETS" --argjson defaults "$_CS_PROFILE_DEFAULTS" \
         --argjson drift "$drift" --arg raw "$raw" --arg manual "$(_cs_manual_default_duration)" --argjson backups "$(_cs_backups_json)" --argjson ret "$(_cs_retention_days)" '
         { mode: $insp.mode, editable: ($insp.mode != "custom"), custom: ($insp.mode == "custom"), profile: $live, manual_duration: $manual, defaults: $defaults, presets: $presets,

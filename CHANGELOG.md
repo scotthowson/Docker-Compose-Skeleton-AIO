@@ -29,6 +29,21 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   an *Add …* button naming the missing tags on the *This server* card of the Proxmox page (`GET /proxmox/self`, `POST /proxmox/self/tag`).
   DCS only adds tags, finds its VM by SMBIOS id, address or name, tags a non-hub DCS `dcs` alone, leaves a machine that
   is no guest of the linked host alone, and explains a token without `VM.Config.Options` instead of failing the setup.
+- **The CrowdSec page** ([docs/CROWDSEC.md](docs/CROWDSEC.md)). One page for intrusion prevention, with a logical view for every state
+  CrowdSec can be in (not deployed: a pre-flight and one-click deploy that follows the deployment and opens the page by itself; stopped, crash
+  loop, starting, unhealthy, API unreachable, Docker down: the honest reason, the log and the one-click fix) and, when healthy, an overview
+  (detections over time, a dotted world map, countries, kinds of attack, busiest sources, whether Traefik enforces the bans), the bans (search,
+  filters, sort, ban an address or network for 1 h to permanent, bulk lift, import and export as CSV or JSON, a self-lockout guard), the alerts
+  with the requests that raised them, the allowlist (CrowdSec's native allowlist or DCS's whitelist parser, and it says which), the Discord alerts, the ban
+  settings, the hub, the bouncers, machines and community status, and the container log. Countries are shown everywhere as a flag and a name and can be
+  filtered and ranked over 24 hours, 7 or 30 days (the Traefik bouncer enforces addresses and networks only, so there are no country bans, and the page says so).
+  **Everything about the Discord message is configurable on the page**: on and off, a global or CrowdSec-only webhook (masked, admin only), name, avatar,
+  colour, mention, which events notify, filters, batching, and the title, description, footer and fields written with 33 placeholders, with a live preview that
+  is rendered by the server so it equals what is sent, and a real test message. The ban length, repeat-offender escalation, per-scenario lengths and simulation mode
+  are settings too. Every change to CrowdSec's files is validated by CrowdSec itself, backed up, applied with a restart, read back, and rolled back on failure; user
+  text never reaches a generated file as code; a re-deploy keeps what the page manages. `GET /crowdsec/status`, `/decisions`, `/alerts`, `/metrics`, `/allowlist`,
+  `/bouncers`, `/machines`, `/settings`, `/simulation`, `/notifications`, `/hub`, `/logs`, `/community` and their mutations are new (viewers read, admins change,
+  every change is in the audit log); `tests/mock-crowdsec.py` is a stateful stand-in for `docker` and `cscli` that the smoke tests and browser labs run against.
 
 ### Changed
 

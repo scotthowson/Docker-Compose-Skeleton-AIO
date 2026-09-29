@@ -75,6 +75,8 @@ Deploying the `crowdsec` template asks for a **Discord webhook for alerts**. Lea
 
 Each ban is one embed: what was blocked in plain words (SSH brute force, web probing, exploit attempt …), the address with its flag and network, the number of hits, the decision and its duration, the scenario, links to CrowdSec CTI and AbuseIPDB, and the first request that triggered it when there was one.
 
+**Change any of it on the CrowdSec page → Discord tab** ([docs/CROWDSEC.md](CROWDSEC.md#6-discord-alerts)): the webhook (shared or CrowdSec-only), name, avatar, colour, mention, which events notify, filters, batching and every line of the message, with a live preview and a real test message.
+
 **Already running CrowdSec?** Re-apply the template to it without redeploying:
 
 ```bash
