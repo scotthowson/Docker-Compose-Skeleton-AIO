@@ -2022,7 +2022,7 @@ rm -rf "$WORK/.data/fleet-jobs" "$WORK/.data/fleet-ssh"
 _fleet_stop_listeners
 _envdel API_AUTH_ENABLED; _envdel FLEET_SCAN_PORTS; _envset API_PORT 9876
 rm -f "$WORK/.data/fleet.json" "$WORK/.data/fleet-watch.stamp"; rm -rf "$WORK/.data/fleet-sessions"
-trap 'rm -rf "$WORK" "$MWORK" "$PWORK"' EXIT
+trap '(cd "$VMWORK/Stacks/smoke-photos" 2>/dev/null && docker compose -p smoke-photos down --remove-orphans >/dev/null 2>&1); rm -rf "$WORK" "$MWORK" "$PWORK" "$VMWORK"' EXIT
 
 check "proxmox: watcher silent first"   0 "$(PROXMOX_STATE_FILE="$WORK/.data/pve-state.json" _lib _pve_watch; grep -c 'proxmox_vm_stopped' "$WORK/.data/audit.jsonl" 2>/dev/null)"
 auth_request POST /proxmox/vms/pve/qemu/100/stop '{}' >/dev/null   # DCS asked: never an alert
