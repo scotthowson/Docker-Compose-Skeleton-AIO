@@ -432,12 +432,14 @@ Link an API token (Datacenter → Permissions → API Tokens, with `VM.Audit`, `
   container with its state and load; admins start, shut down, stop, reboot, reset, suspend and
   resume them, each with a confirmation that says what it does; recent tasks are listed;
 - a **dashboard card** shows the same at a glance;
+- the VM that runs a hub is **tagged** `dcs` and `hub` in Proxmox by the wizard (the VMs the hub builds carry `dcs` and
+  their stack), so the resource tree can be filtered by them;
 - power actions are **audited** (`proxmox_vm_start` …) and reach webhooks and Discord; a watcher
   raises `proxmox_vm_stopped` when a guest stops without DCS asking, `proxmox_vm_started` when it
   comes back — both are notification-rule triggers;
 - the **Discord bot** answers `/vms` and `/vm <name> <action>`.
 
-`GET /proxmox/status|nodes|vms|tasks`, `GET /proxmox/vms/{node}/{qemu|lxc}/{vmid}`,
+`GET /proxmox/status|nodes|vms|tasks|self`, `POST /proxmox/self/tag`, `GET /proxmox/vms/{node}/{qemu|lxc}/{vmid}`,
 `POST /proxmox/vms/{node}/{type}/{vmid}/{action}` and `POST /proxmox/test` are the endpoints;
 `PROXMOX_URL`, `PROXMOX_TOKEN_ID`, `PROXMOX_TOKEN_SECRET` (or the secret of that name),
 `PROXMOX_VERIFY_TLS` and `PROXMOX_NODE` the settings.

@@ -4,7 +4,7 @@ Generated from the router in `.scripts/api-server.sh` by `.scripts/api-docs.sh` 
 Run `.scripts/api-docs.sh` after adding or changing a route; CI fails when this file is stale.
 
 The API listens on `API_BIND:API_PORT` (default `0.0.0.0:9876`) and answers JSON.
-Every endpoint below is `331` in total.
+Every endpoint below is `333` in total.
 
 ## Access levels
 
@@ -406,6 +406,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | GET | `/proxmox/status` | user | The Proxmox link: configured, reachable, version, node and VM counts, and what to fix when it is not |
 | GET | `/proxmox/nodes` | user | Every Proxmox node with CPU, memory, disk and uptime |
 | GET | `/proxmox/vms` | user | Every VM and LXC container with status, CPU, memory, disk, uptime and tags |
+| GET | `/proxmox/self` | user | The Proxmox guest this DCS runs in (found by its SMBIOS id, addresses or name) with the tags it has and the ones it should have: dcs, and hub on the hub of a fleet |
 | GET | `/proxmox/tasks` | user | Recent Proxmox tasks (starts, stops, backups, migrations): who ran them and how they ended |
 | GET | `/proxmox/vms/{node}/{type}/{vmid}` | user | One VM or container: live status and its configuration (cores, memory, OS, boot, description) |
 | GET | `/fleet/status` | user | What this server is in the fleet: a hub (members, join codes), a member (its hub), or standalone; plus a pending join and how others reach this API |
@@ -440,6 +441,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | POST | `/fleet/provision/defaults` | admin | Suggested values for creating VMs: node and its size, storages, bridge, an address range next to the hub, the cloud image, the admin name, the guests Proxmox already has (a stack cannot get a VM named like one), the stacks that already run on this server (they stay on it) and whether the hub's firewalld keeps the API port closed (admin) |
 | POST | `/proxmox/capabilities` | admin | What the API token may do on /: the privileges that creating VMs needs, and which are missing (POST with {url, token_id, token_secret, verify_tls} before the link is saved) |
 | POST | `/proxmox/storage` | admin | The node's storages with content types and free space (import_ready: can hold a cloud image) |
+| POST | `/proxmox/self/tag` | admin | Give the VM this DCS runs in its Proxmox tags (dcs, and hub on the hub); tags it already has stay. The API token needs VM.Config.Options on that VM |
 | POST | `/fleet/templates` | admin | Bake a DCS template from a cloud image {node, storage, image_storage, bridge, cidr, gateway, dns, ip_start, image\|image_url\|image_file, cores?, memory_mb?, disk_gb?}: a build job of kind "bake" |
 | POST | `/fleet/update` | admin | Bring members to this hub's DCS version {members: ["id", …] or "all"}: each fetches the hub's code bundle, keeps its own files and re-executes; the round runs on its own — the answer lists what happened per member when it finished within 25 s, otherwise it is 202 {running: true} and GET /fleet/versions (last_round) follows it |
 | POST | `/fleet/self-update` | admin | Fleet self update |

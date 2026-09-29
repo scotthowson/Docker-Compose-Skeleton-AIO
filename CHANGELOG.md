@@ -5,6 +5,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **The hub's own VM is tagged in Proxmox.** The VMs the hub builds already carried `dcs;<stack>`; the VM that runs the
+  hub now gets `dcs;hub`, put on when the wizard finishes with Proxmox linked (the completion screen says so) and by
+  an *Add …* button naming the missing tags on the *This server* card of the Proxmox page (`GET /proxmox/self`, `POST /proxmox/self/tag`).
+  DCS only adds tags, finds its VM by SMBIOS id, address or name, tags a non-hub DCS `dcs` alone, leaves a machine that
+  is no guest of the linked host alone, and explains a token without `VM.Config.Options` instead of failing the setup.
+
 ### Fixed
 
 - **A stopped Docker no longer reads as "All Systems Healthy".** `docker ps` failing (the daemon stopped, the socket

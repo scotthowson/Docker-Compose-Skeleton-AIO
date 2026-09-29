@@ -1198,6 +1198,40 @@ check "provision defaults: firewall state" yes "$(auth_request GET /fleet/provis
 check "proxmox: vm detail"              media-vm "$(auth_request GET /proxmox/vms/pve/qemu/100 | body_of | jq -r '.name' 2>/dev/null)"
 check "proxmox: bad type refused"       400 "$(auth_request GET /proxmox/vms/pve/disk/100 | status_of)"
 check "proxmox: bad action refused"     400 "$(auth_request POST /proxmox/vms/pve/lxc/200/explode '{}' | status_of)"
+# --- the VM this DCS runs in is tagged in Proxmox: dcs, and hub on the hub ---------------------------------------------
+_pve_put() { curl -s -o /dev/null -X PUT -H "Authorization: PVEAPIToken=dcs@pve!smoke=smoke-secret" --data-urlencode "$2" "http://127.0.0.1:$_PVE_PORT/api2/json/nodes/pve/qemu/$1/config"; }
+_envset FLEET_IDENTITY_UUID 11111111-2222-3333-4444-555555555555        # this server "is" VM 100 (media-vm)
+SELF=$(auth_request GET /proxmox/self | body_of)
+check "self tags: found by its SMBIOS id"       "100 uuid" "$(jq -r '"\(.guest.vmid) \(.guest.matched_by)"' <<< "$SELF")"
+check "self tags: a linked DCS is a hub"        "dcs hub" "$(jq -r '.wanted | join(" ")' <<< "$SELF")"
+check "self tags: reading writes nothing"       "docker media" "$(auth_request GET /proxmox/vms | body_of | jq -r '.vms[] | select(.vmid == 100) | .tags | join(" ")')"
+check "self tags: what is missing"              "dcs hub" "$(jq -r '.missing | join(" ")' <<< "$SELF")"
+TAGGED=$(auth_request POST /proxmox/self/tag '{}' | body_of)
+check "self tags: the hub's VM is tagged"       "true true" "$(jq -r '"\(.tagged) \(.changed)"' <<< "$TAGGED")"
+check "self tags: it says what it did"          "Tagged VM 100 (media-vm) in Proxmox: dcs, hub" "$(jq -r '.message' <<< "$TAGGED")"
+check "self tags: the old tags stay"            "docker media dcs hub" "$(auth_request GET /proxmox/vms | body_of | jq -r '.vms[] | select(.vmid == 100) | .tags | join(" ")')"
+check "self tags: again changes nothing"        "true false" "$(auth_request POST /proxmox/self/tag '{}' | body_of | jq -r '"\(.tagged) \(.changed)"')"
+check "self tags: a viewer may not tag"         403 "$(viewer_request POST /proxmox/self/tag '{}' | status_of)"
+_envset FLEET_ROLE standalone
+check "self tags: a standalone DCS wants dcs only" "dcs" "$(auth_request GET /proxmox/self | body_of | jq -r '.wanted | join(" ")')"
+_envdel FLEET_ROLE
+_envset FLEET_IDENTITY_UUID 22222222-3333-4444-5555-666666666666        # VM 101: the token may not change it
+DENIED=$(auth_request POST /proxmox/self/tag '{}' | body_of)
+check "self tags: a token without the right is told" "false true" "$(jq -r '"\(.tagged) \(.message | test("VM.Config.Options"))"' <<< "$DENIED")"
+check "self tags: nothing was written then"     "docker" "$(auth_request GET /proxmox/vms | body_of | jq -r '.vms[] | select(.vmid == 101) | .tags | join(" ")')"
+_envset FLEET_IDENTITY_UUID 99999999-9999-9999-9999-999999999999        # a machine that is no guest of this Proxmox
+check "self tags: an unknown machine is left alone" "null false" "$(auth_request POST /proxmox/self/tag '{}' | body_of | jq -r '"\(.guest) \(.tagged)"')"
+# the wizard's last call does it as well, and never fails because of it
+_pve_put 100 'tags=docker;media'
+_envset FLEET_IDENTITY_UUID 11111111-2222-3333-4444-555555555555
+rm -f "$WORK/.api-auth/.setup-complete"
+WZ=$(auth_request POST /setup/complete '{}' | body_of)
+check "wizard: the hub's VM is tagged at the end" "true dcs,hub" "$(jq -r '"\(.proxmox_tag.tagged) \(.proxmox_tag.tags[-2:] | join(","))"' <<< "$WZ")"
+check "wizard: setup is complete"               true "$(jq -r '.initialized' <<< "$WZ")"
+_envset FLEET_IDENTITY_UUID 99999999-9999-9999-9999-999999999999
+rm -f "$WORK/.api-auth/.setup-complete"
+check "wizard: a machine Proxmox does not know still completes" "true false" "$(auth_request POST /setup/complete '{}' | body_of | jq -r '"\(.initialized) \(.proxmox_tag.tagged)"')"
+_envdel FLEET_IDENTITY_UUID; _pve_put 100 'tags=docker;media'
 check "proxmox: reset is qemu-only"     400 "$(auth_request POST /proxmox/vms/pve/lxc/200/reset '{}' | status_of)"
 check "proxmox: balloon is qemu-only"   400 "$(auth_request POST /proxmox/vms/pve/lxc/200/balloon '{}' | status_of)"
 _BL=$(auth_request POST /proxmox/vms/pve/qemu/100/balloon '{}')

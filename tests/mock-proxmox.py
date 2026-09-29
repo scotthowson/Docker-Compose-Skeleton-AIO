@@ -28,6 +28,7 @@ STORAGES = {'local': {'storage': 'local', 'type': 'dir', 'content': 'images,iso,
 IMPORTS = {}        # storage -> [volid]
 CONFIGS = {}        # vmid -> dict of config keys the hub set
 NEXT_ID = [105]
+DENY_TAGS = {101}    # guests whose tags the token may not change
 TLS = os.environ.get('MOCK_PVE_TLS') == '1'
 PRIVS = [] if os.environ.get('MOCK_PVE_PRIVS') == 'none' else ['VM.Allocate', 'VM.Clone', 'VM.Config.Disk', 'VM.Config.CDROM', 'VM.Config.Network', 'VM.Config.Options', 'VM.Config.Cloudinit', 'VM.Config.Memory', 'VM.Config.CPU', 'VM.Config.HWType',
          'VM.PowerMgmt', 'VM.Audit', 'VM.Console', 'Datastore.AllocateSpace', 'Datastore.AllocateTemplate', 'Datastore.Audit', 'Datastore.Allocate', 'Sys.Audit', 'SDN.Use']
@@ -87,6 +88,7 @@ class H(http.server.BaseHTTPRequestHandler):
             if parts[7] == 'config':
                 cfg = {'name': vm['name'], 'cores': vm['maxcpu'], 'memory': vm['maxmem'] // 1048576, 'ostype': 'l26', 'onboot': 1, 'description': 'mock', 'net0': 'virtio=DE:AD:BE:EF:00:01,bridge=vmbr0', 'bootdisk': 'scsi0'}
                 if vm['type'] == 'qemu': cfg['smbios1'] = f"uuid={UUIDS.get(vmid, '00000000-0000-0000-0000-000000000000')}"
+                cfg['tags'] = vm.get('tags', '')
                 cfg.update(CONFIGS.get(vmid, {}))
                 return self._send(200, {'data': cfg})
             # guest addresses, as the hub's scan asks for them
@@ -103,10 +105,17 @@ class H(http.server.BaseHTTPRequestHandler):
         if len(parts) == 5 and parts[3] == 'storage' and parts[4] in STORAGES:
             if 'content' in f: STORAGES[parts[4]]['content'] = f['content']
             return self._send(200, {'data': None})
+        if len(parts) >= 8 and parts[3] == 'nodes' and parts[5] in ('qemu', 'lxc') and parts[7] == 'config':
+            vmid = int(parts[6]); vm = VMS.get(vmid)
+            if not vm: return self._send(500, {'message': 'no such vm', 'data': None})
+            # a token that may not change this guest's options (VM 101 stands for one)
+            if 'tags' in f and vmid in DENY_TAGS: return self._send(403, {'message': f'Permission check failed (/vms/{vmid}, VM.Config.Options)', 'data': None})
+            if 'tags' in f: vm['tags'] = f['tags']
+            if parts[5] == 'qemu': CONFIGS.setdefault(vmid, {}).update({k: v for k, v in f.items() if k != 'tags'})
+            return self._send(200, {'data': None})
         if len(parts) >= 8 and parts[3] == 'nodes' and parts[5] == 'qemu':
             vmid = int(parts[6]); vm = VMS.get(vmid)
             if not vm: return self._send(500, {'message': 'no such vm', 'data': None})
-            if parts[7] == 'config': CONFIGS.setdefault(vmid, {}).update(f); return self._send(200, {'data': None})
             if parts[7] == 'resize': vm['maxdisk'] = int(f.get('size', '32G').rstrip('G')) * 1073741824; return self._send(200, {'data': mk_upid('qmresize', vmid)})
         self._send(501, {'message': 'not mocked', 'data': None})
     def do_DELETE(self):

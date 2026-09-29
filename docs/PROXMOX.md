@@ -116,6 +116,14 @@ Proxmox a real certificate (Datacenter → ACME) and keep verification on.
   paused one. Every action asks first and explains what it does.
 - **Recent tasks** — starts, stops, backups and migrations with who ran them and how they ended.
 - **A dashboard card** with the node load and the guests, one click from the page.
+- **Tags for the DCS VMs.** Every VM the hub builds carries `dcs` and its stack (`dcs;media-services`), the baked
+  templates `dcs;template`, and the VM that runs the hub itself gets `dcs;hub` — put on by the wizard when it
+  finishes with Proxmox linked, and by an **Add …** button naming the missing tags on the *This server* card of the Proxmox page whenever
+  they are missing. Tags already on the VM stay; DCS only adds. The API token needs `VM.Config.Options` on that VM
+  for it (the roles of *Building the VMs* have it; a token with only `VM.Audit`, `VM.PowerMgmt` and `Sys.Audit` is
+  told so and the tags can be added in Proxmox by hand). A DCS that is not a hub gets `dcs` alone; a machine that is
+  no guest of the linked Proxmox host is left as it is. DCS finds its own VM by the SMBIOS id, then a shared
+  address (guest agent), then the name — the same way the hub matches its members.
 
 ### Events, alerts and audit
 
@@ -150,6 +158,8 @@ The bot's DCS account may power guests when it has the **bot** or **admin** role
 | GET | `/proxmox/nodes` | user |
 | GET | `/proxmox/vms` | user — every guest (templates dropped) |
 | GET | `/proxmox/vms/{node}/{qemu\|lxc}/{vmid}` | user — live status plus configuration |
+| GET | `/proxmox/self` | user — the guest this DCS runs in (found by SMBIOS id, address or name), the tags it has and the ones it should have |
+| POST | `/proxmox/self/tag` | admin — give that guest its tags now (`dcs`, and `hub` on a hub); needs `VM.Config.Options` on it |
 | GET | `/proxmox/tasks` | user — recent tasks |
 | POST | `/proxmox/vms/{node}/{qemu\|lxc}/{vmid}/{action}` | admin, bot — `start shutdown stop reboot reset suspend resume` |
 | POST | `/proxmox/test` | admin — try `{url, token_id, token_secret, verify_tls}` without saving |
