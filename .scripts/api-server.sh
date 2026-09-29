@@ -11822,6 +11822,31 @@ handle_templates_list() {
 # extension) as an empty file — Docker would make a folder there and the app would stop
 # with "is a directory". A folder an earlier failed start left at a file's path is
 # replaced when it is empty. Seeds from the template's config/ are copied before this runs.
+# stdin → stdout: a compose file with :z added to the short-syntax binds of the stack's own folders
+# (./… and ../…, or under an absolute APP_DATA_DIR) — ",z" when options are there, nothing when z or Z
+# already is. Host paths (/, /var/log, /var/lib/docker, devices, the Docker socket…), named volumes
+# and quoted or commented lines stay as written: relabeling a host path would take it from the host.
+_selinux_label_volumes() {
+    awk -v q="'" -v ad="${APP_DATA_DIR:-}" '
+        /^[ \t]*volumes:[ \t]*$/ { in_vol=1; print; next }
+        in_vol && /^[ \t]*-[ \t]/ {
+            line=$0; sub(/[ \t]+$/, "", line)
+            spec=line; sub(/^[ \t]*-[ \t]+/, "", spec)
+            own=(spec ~ /^\.\.?\//) || (ad ~ /^\// && index(spec, ad "/") == 1)
+            if (!own || index(spec, "\"") || index(spec, q) || index(spec, "#")) { print; next }
+            n=split(spec, f, ":")
+            if (n == 2) { print line ":z"; next }
+            if (n == 3) {
+                m=split(f[3], o, ","); lab=0
+                for (i = 1; i <= m; i++) if (o[i] == "z" || o[i] == "Z") lab=1
+                print (lab ? line : line ",z"); next
+            }
+            print; next
+        }
+        in_vol && /^[ \t]*[a-zA-Z_]/ && !/^[ \t]*-/ { in_vol=0 }
+        { print }
+    '
+}
 _template_prepare_mounts() {
     local compose="$1" ad="$2" rel host dir base
     [[ -f "$compose" && -n "$ad" ]] || return 0
@@ -14519,24 +14544,10 @@ handle_template_deploy() {
     # Resolve remaining ${VAR:-default} patterns to their default values
     template_compose=$(printf '%s' "$template_compose" | sed 's/${[A-Za-z_][A-Za-z0-9_]*:-\([^}]*\)}/\1/g')
 
-    # SELinux: append :z to volume mounts that don't already have a mode suffix.
-    # The :z flag relabels files for container access (required on Fedora/RHEL/CentOS).
-    # Harmless on non-SELinux systems (Ubuntu, Debian, Arch).
-    # SKIP system paths: docker.sock, /etc/*, /var/run/*, /var/lib/dbus/* — relabeling these breaks the host.
+    # SELinux (Fedora/RHEL/CentOS): the stack's own folders get :z, so a Docker that confines
+    # containers lets them write there (Docker CE, which does not, ignores it)
     if command -v getenforce >/dev/null 2>&1 && [[ "$(getenforce 2>/dev/null)" != "Disabled" ]]; then
-        template_compose=$(printf '%s' "$template_compose" | awk '
-            /^[ \t]*volumes:[ \t]*$/ { in_vol=1; print; next }
-            in_vol && /^[ \t]*-[ \t]/ && /:\// {
-                if (/:z/ || /:Z/) { print; next }
-                # Skip system paths that must not be relabeled
-                if (/docker\.sock/ || /\/etc\// || /\/var\/run\// || /\/var\/lib\/dbus\// || /\/proc\// || /\/sys\//) { print; next }
-                if (/:ro$/) { sub(/:ro$/, ":ro,z"); print; next }
-                if (/:rw$/) { sub(/:rw$/, ":rw,z"); print; next }
-                print $0 ":z"; next
-            }
-            in_vol && /^[ \t]*[a-zA-Z_]/ && !/^[ \t]*-/ { in_vol=0 }
-            { print }
-        ')
+        template_compose=$(printf '%s' "$template_compose" | _selinux_label_volumes)
     fi
 
     # Container names chosen on the deploy screen: {"container_names": {"service": "Name"}}

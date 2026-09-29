@@ -970,8 +970,36 @@ _ensure_api_running() {
 # Helper: ensure core-infrastructure stack is running (DCS-UI + Redis)
 # ---------------------------------------------------------------------------
 _ensure_core_infra_running() {
-    local ui_status
+    local ui_status ui_image ui_running_id ui_current_id pulled=false
+    # The dashboard as published now: a machine that ran DCS before may still hold (and run) an
+    # older image, and the dashboard's wizard must match this code. A failed pull (offline) keeps
+    # the image this machine has.
+    _info "Fetching the current dashboard image..."
+    if $_COMPOSE_CMD -f "$COMPOSE_DIR/core-infrastructure/docker-compose.yml" --env-file "$BASE_DIR/.env" pull --quiet dcs-ui >/dev/null 2>&1; then
+        pulled=true
+    else
+        _warn "Could not fetch the dashboard image (offline?) — using the one this machine has"
+    fi
     ui_status=$(docker inspect --format='{{.State.Status}}' DCS-UI 2>/dev/null || echo "not_found")
+
+    local core_flags=()
+    if [[ ! -f "$SETUP_COMPLETE_MARKER" ]] && { [[ "$ui_status" != "not_found" ]] || docker inspect skeleton-redis >/dev/null 2>&1; }; then
+        # a first setup that finds the dashboard (or its Redis) from an earlier install — a folder
+        # deleted under running containers leaves them on mounts that are gone: both start anew
+        _info "Containers from an earlier install — the core infrastructure starts anew"
+        core_flags=(--force-recreate)
+        ui_status="recreate"
+    elif [[ "$pulled" == "true" && "$ui_status" == "running" ]]; then
+        # a running dashboard is recreated only when the pull brought a newer image
+        ui_image=$(docker inspect --format='{{.Config.Image}}' DCS-UI 2>/dev/null) || ui_image=""
+        ui_running_id=$(docker inspect --format='{{.Image}}' DCS-UI 2>/dev/null) || ui_running_id=""
+        ui_current_id=$([[ -n "$ui_image" ]] && docker image inspect --format='{{.Id}}' "$ui_image" 2>/dev/null) || ui_current_id=""
+        if [[ -n "$ui_running_id" && -n "$ui_current_id" && "$ui_running_id" != "$ui_current_id" ]]; then
+            _info "A newer dashboard image — DCS-UI restarts on it"
+            $_COMPOSE_CMD -f "$COMPOSE_DIR/core-infrastructure/docker-compose.yml" --env-file "$BASE_DIR/.env" up -d dcs-ui >/dev/null 2>&1 \
+                || _warn "DCS-UI did not restart on the new image — ./compose.sh core-infrastructure up -d dcs-ui"
+        fi
+    fi
 
     if [[ "$ui_status" == "running" ]]; then
         # Already running — check health
@@ -989,7 +1017,7 @@ _ensure_core_infra_running() {
     local compose_rc=0
     $_COMPOSE_CMD -f "$COMPOSE_DIR/core-infrastructure/docker-compose.yml" \
         --env-file "$BASE_DIR/.env" \
-        up -d 2>&1 | while IFS= read -r line; do
+        up -d "${core_flags[@]}" 2>&1 | while IFS= read -r line; do
         [[ -n "$line" ]] && _info "  $line"
     done
     compose_rc=${PIPESTATUS[0]}

@@ -42,6 +42,23 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   root, so a plain user's check reads the zone as Fedora ships it and says "unless opened by hand").
 - **The wizard offered the docker group as PGID** after `newgrp docker` (and setup gave the files
   to that group): both now use the account's own group.
+- **CrowdSec would not deploy on an SELinux system** ("invalid spec: …/var/log/traefik:ro,z:z: too
+  many colons"): the step that adds `:z` to a template's volumes only recognised `:z`, so the
+  template's own `:ro,z` got a second one. It also added `:z` to host paths — `/` (Duplicati, the
+  Prometheus exporters), `/var/log`, `/var/lib/docker`, device nodes — which a Docker that labels
+  would relabel for containers, taking them from the host. Only the stack's own folders (`./…`,
+  `../…`, or under an absolute `APP_DATA_DIR`) are labelled now, `z` or `Z` anywhere in the options
+  counts, and host paths, named volumes and quoted lines stay as written (`_selinux_label_volumes`).
+- **A reinstall kept showing the old wizard**: setup started the dashboard image the machine
+  already had (or left an old DCS-UI running). It now fetches the current image every time and
+  restarts DCS-UI only when that image is newer; a first setup that finds the dashboard or its
+  Redis from an earlier install — a folder deleted under running containers leaves them on
+  mounts that are gone ("unhealthy") — starts the core infrastructure anew.
+- **Building the VMs refused networking-security** ("runs on this server (the hub): its containers
+  are still up here"): the wizard had just deployed Traefik, Authelia and CrowdSec into it on the
+  hub, then asked for it as a VM. The stacks the wizard deploys into — the proxy stack when Traefik
+  is on, the self-hosted ntfy's stack, core-infrastructure — stay on the hub (UI 3.9.8: the VM
+  switch is locked there, with the reason); the hub's Traefik serves every VM's routes anyway.
 
 ### Added
 

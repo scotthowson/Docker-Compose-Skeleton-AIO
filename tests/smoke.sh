@@ -1616,6 +1616,18 @@ check "authelia arrives: middleware placed"   1 "$(grep -c '"authelia-forwardaut
 check "authelia arrives: not twice"           0 "$(PATH="$WORK/fakebin:$PATH" _lib _authelia_protect_existing_routes)"
 check "authelia arrives: bypass untouched"    0 "$(grep -c '"authelia-forwardauth"' "$_ZZR/demo/bypass-tpl.yml")"
 check "authelia arrives: explicit none kept"  0 "$(grep -c '"authelia-forwardauth"' "$_ZZR/demo2/routed-tpl.yml")"
+# SELinux (a fake getenforce says Enforcing): the stack's own folders get :z, a template that carries
+# ",z" already keeps it once (CrowdSec's "…:ro,z" became "…:ro,z:z" and the merge refused it), host paths never
+mkdir -p "$WORK/.templates/selinux-tpl" "$WORK/Stacks/demo3"
+printf '{"name":"selinux-tpl","title":"SELinux","category":"other","auth":"bypass","variables":[]}\n' > "$WORK/.templates/selinux-tpl/template.json"
+printf 'services:\n  selinux-tpl:\n    image: alpine\n    container_name: SeTpl\n    volumes:\n      - ${APP_DATA_DIR:-./App-Data}/SeTpl/logs:/var/log/x:ro,z\n      - ./App-Data/SeTpl/data:/data\n      - ./App-Data/SeTpl/conf:/conf:ro\n      - /var/log:/var/log/host:ro\n      - /srv/media:/media\n' > "$WORK/.templates/selinux-tpl/docker-compose.yml"
+printf 'services:\n  placeholder:\n    image: alpine\n' > "$WORK/Stacks/demo3/docker-compose.yml"
+printf '#!/bin/bash\necho Enforcing\n' > "$WORK/fakebin/getenforce"; chmod +x "$WORK/fakebin/getenforce"
+check "selinux: the template deploys"         200 "$(fake_request POST /templates/selinux-tpl/deploy '{"target_stack":"demo3","auto_start":false}' | status_of)"
+check "selinux: a label already there, once"  1 "$(grep -c '/var/log/x:ro,z$' "$WORK/Stacks/demo3/docker-compose.yml")"
+check "selinux: the stack's folders labelled" 2 "$(grep -cE 'SeTpl/data:/data:z$|SeTpl/conf:/conf:ro,z$' "$WORK/Stacks/demo3/docker-compose.yml")"
+check "selinux: host paths left alone"        2 "$(grep -cE -- '- /var/log:/var/log/host:ro$|- /srv/media:/media$' "$WORK/Stacks/demo3/docker-compose.yml")"
+rm -f "$WORK/fakebin/getenforce"
 # the rebuild: a compose service with a port and a container gets its route; a placeholder that was never created does not
 printf 'services:\n  routed-tpl:\n    image: alpine\n    container_name: Routed\n    ports:\n      - "8123:80"\n  later:\n    image: alpine\n    container_name: Later\n    ports:\n      - "8125:80"\n  ghost:\n    image: alpine\n    container_name: Never\n    ports:\n      - "8126:80"\n' > "$WORK/Stacks/demo/docker-compose.yml"
 _RB=$(fake_request POST /traefik/routes/rebuild '{"stack":"demo"}')
