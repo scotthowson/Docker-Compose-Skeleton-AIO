@@ -8,12 +8,26 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/scotthowson/dcs-orchestrator/tags"><img src="https://img.shields.io/github/v/tag/scotthowson/dcs-orchestrator?sort=semver&style=flat-square&label=version&color=34d399" alt="Latest version"></a>
-  <a href="https://github.com/scotthowson/dcs-orchestrator/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/scotthowson/dcs-orchestrator/ci.yml?style=flat-square&label=CI" alt="CI status"></a>
+  <a href="https://github.com/scotthowson/dcs-orchestrator/releases"><img src="https://img.shields.io/github/v/release/scotthowson/dcs-orchestrator?include_prereleases&sort=semver&style=flat-square&label=release&color=34d399" alt="Latest release"></a>
+  <a href="https://github.com/scotthowson/dcs-orchestrator/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/scotthowson/dcs-orchestrator/ci.yml?style=flat-square&label=CI&logo=githubactions&logoColor=white" alt="CI status"></a>
+  <a href="https://github.com/scotthowson/dcs-orchestrator/actions/workflows/vm-images.yml"><img src="https://img.shields.io/github/actions/workflow/status/scotthowson/dcs-orchestrator/vm-images.yml?style=flat-square&label=VM%20images&logo=githubactions&logoColor=white" alt="VM images build status"></a>
+  <a href="https://github.com/scotthowson/dcs-orchestrator/commits/main"><img src="https://img.shields.io/github/last-commit/scotthowson/dcs-orchestrator?style=flat-square&color=64748b" alt="Last commit"></a>
+  <a href="https://github.com/scotthowson/dcs-orchestrator/stargazers"><img src="https://img.shields.io/github/stars/scotthowson/dcs-orchestrator?style=flat-square&color=fbbf24" alt="GitHub stars"></a>
+</p>
+
+<p align="center">
   <img src="https://img.shields.io/badge/Docker_Compose-v2-2496ED?style=flat-square&logo=docker&logoColor=white" alt="Docker Compose v2">
-  <img src="https://img.shields.io/badge/Proxmox_VE-fleet-E57000?style=flat-square&logo=proxmox&logoColor=white" alt="Proxmox VE fleet">
+  <img src="https://img.shields.io/badge/Proxmox_VE-9-E57000?style=flat-square&logo=proxmox&logoColor=white" alt="Proxmox VE 9">
+  <img src="https://img.shields.io/badge/Debian-13-A81D33?style=flat-square&logo=debian&logoColor=white" alt="Debian 13 image">
+  <img src="https://img.shields.io/badge/Ubuntu-26.04-E95420?style=flat-square&logo=ubuntu&logoColor=white" alt="Ubuntu 26.04 image">
+  <img src="https://img.shields.io/badge/Fedora-44-51A2DA?style=flat-square&logo=fedora&logoColor=white" alt="Fedora 44 image">
+  <img src="https://img.shields.io/badge/Arch-rolling-1793D1?style=flat-square&logo=archlinux&logoColor=white" alt="Arch Linux image">
+</p>
+
+<p align="center">
   <a href="docs/TEMPLATES.md"><img src="https://img.shields.io/badge/templates-150%2B-34d399?style=flat-square" alt="150+ templates"></a>
-  <a href="docs/API.md"><img src="https://img.shields.io/badge/REST_API-330%2B_endpoints-22d3ee?style=flat-square" alt="330+ API endpoints"></a>
+  <a href="docs/API.md"><img src="https://img.shields.io/badge/REST_API-360%2B_endpoints-22d3ee?style=flat-square" alt="360+ API endpoints"></a>
+  <a href="docs/VM-IMAGES.md"><img src="https://img.shields.io/badge/VM_images-8-a78bfa?style=flat-square" alt="8 VM images"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-fbbf24?style=flat-square" alt="MIT license"></a>
 </p>
 
