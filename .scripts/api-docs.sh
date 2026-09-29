@@ -66,7 +66,7 @@ extract_descriptions() {
             next
         }
         { last=""; hint="" }
-    ' "$API"
+    ' "$API" "$BASE_DIR"/.lib/crowdsec.sh "$BASE_DIR"/.lib/crowdsec-config.sh
 }
 
 # Fallback description from the handler name: handle_stack_compose_save → "Stack compose save"
@@ -115,6 +115,11 @@ doc_path() {
         "/proxmox/vms/*/*/*/*")         p="/proxmox/vms/{node}/{type}/{vmid}/{action}" ;;
         "/proxmox/vms/*/*/*")           p="/proxmox/vms/{node}/{type}/{vmid}" ;;
         "/homarr/*"*)                   p="${p/\*/\{name\}}" ;;
+        "/crowdsec/alerts/*")           p="/crowdsec/alerts/{id}" ;;
+        "/crowdsec/decisions/*")        p="/crowdsec/decisions/{value}" ;;
+        "/crowdsec/allowlist/*")        p="/crowdsec/allowlist/{value}" ;;
+        "/crowdsec/trust/*")            p="/crowdsec/trust/{value}" ;;
+        "/crowdsec/bouncers/*")         p="/crowdsec/bouncers/{name}" ;;
         "/themes/*")                    p="/themes/{name}" ;;
     esac
     printf '%s' "$p"
@@ -146,6 +151,7 @@ group_of() {
         networks|networks/*|volumes|volumes/*|topology) printf 'Networks and volumes' ;;
         templates|templates/*|compose/*) printf 'Templates' ;;
         routes|routes/*|dns/*|traefik/*|ddns/*|homarr/*) printf 'Routing and DNS' ;;
+        crowdsec|crowdsec/*) printf 'CrowdSec' ;;
         logs|logs/*|events|audit|stream) printf 'Logs and events' ;;
         status|health|health/*|version|system|system/metrics|metrics/*|disks|config|config/*|export/*) printf 'System' ;;
         system/*) printf 'Updates and maintenance' ;;
@@ -236,7 +242,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 USAGE
     local g
     local IFS_SAVE="$IFS"
-    for g in "System" "Authentication" "Setup wizard" "Stacks" "Containers" "Images" "Networks and volumes" "Templates" "Routing and DNS" "Logs and events" "Updates and maintenance" "Backups and maintenance" "Configuration" "Notifications" "Automation" "Plugins" "Terminal" "Other"; do
+    for g in "System" "Authentication" "Setup wizard" "Stacks" "Containers" "Images" "Networks and volumes" "Templates" "Routing and DNS" "CrowdSec" "Logs and events" "Updates and maintenance" "Backups and maintenance" "Configuration" "Notifications" "Automation" "Plugins" "Terminal" "Other"; do
         local any=0 r
         for r in "${rows[@]}"; do [[ "${r%%$'\t'*}" == "$g" ]] && { any=1; break; }; done
         [[ $any -eq 0 ]] && continue

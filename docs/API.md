@@ -4,7 +4,7 @@ Generated from the router in `.scripts/api-server.sh` by `.scripts/api-docs.sh` 
 Run `.scripts/api-docs.sh` after adding or changing a route; CI fails when this file is stale.
 
 The API listens on `API_BIND:API_PORT` (default `0.0.0.0:9876`) and answers JSON.
-Every endpoint below is `333` in total.
+Every endpoint below is `368` in total.
 
 ## Access levels
 
@@ -226,7 +226,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | GET | `/ddns/status` | admin | Check DDNS status and current IP |
 | GET | `/routes/health` | user | Probe every custom route through Traefik (no changes made) |
 | GET | `/traefik/status` | user | Traefik status |
-| GET | `/routes` | user | Traefik routes: subdomain, service, stack and target |
+| GET | `/routes` | user | Routes |
 | GET | `/routes/certificates` | user | Reverse-proxy health: domain, ACME challenge and account, certificates held, a live probe of every route through Traefik, the last Traefik errors, and hints |
 | GET | `/routes/check` | user | Check if a subdomain is available |
 | GET | `/dns/status` | user | Cloudflare integration: where the token comes from, whether it is valid, the zone |
@@ -247,6 +247,53 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | DELETE | `/homarr/key` | admin | Forget Homarr's API key (apps then land in the library only) |
 | DELETE | `/dns/records/*` | admin | Delete a record (the zone apex and names DCS routes use need force=true) |
 | DELETE | `/routes/{stack}/{service}` | admin | Delete a route file and optionally clean up DNS |
+
+## CrowdSec
+
+| Method | Path | Access | Description |
+|--------|------|--------|-------------|
+| GET | `/crowdsec/status` | user | Which state CrowdSec is in (not deployed, stopped, unhealthy, healthy …), what is wrong and the one-click fixes, plus the numbers for the status strip; the ban list is included for the dashboard card |
+| GET | `/crowdsec/decisions` | user | Active bans, filtered (q, scope, origin, type, country, scenario, simulated, sort, dir, limit, offset), with the facets for the filter chips |
+| GET | `/crowdsec/decisions/export` | user | The active bans as CSV or JSON (format=csv\|json, the list's filters apply): {format, filename, count, content} |
+| GET | `/crowdsec/alerts` | user | Recent detections (window 1h/6h/24h/7d/30d, q, scenario, country, ip, simulated, limit, offset) with facets; each row says whether its source is banned now |
+| GET | `/crowdsec/alerts/{id}` | user | One alert with the requests that raised it (path, status, user agent, target …) |
+| GET | `/crowdsec/allowlist` | user | Everything that is never banned: entries with comment and expiry, which are managed by DCS (the home address) and which can be removed; says which mechanism is in use |
+| GET | `/crowdsec/bouncers` | user | The programs that enforce bans (Traefik's plugin, a firewall …): last pull, type, version, and what DCS registered for Traefik |
+| GET | `/crowdsec/machines` | user | The engines that report to this CrowdSec (this container's own agent, others you enrolled) |
+| GET | `/crowdsec/metrics` | user | What has been happening: alerts over time, top scenarios, top countries, top sources and networks, the map points, log-reading counters (window=24h\|7d\|30d) |
+| GET | `/crowdsec/hub` | user | Installed collections, scenarios and parsers (with which have updates) and a short list of suggestions; ?type=collections\|scenarios\|parsers&available=1&q= lists what can be installed |
+| GET | `/crowdsec/logs` | user | The tail of the container's log: lines (10-500), level (all\|warn\|error), q (text), lapi=1 to include the noisy API request lines |
+| GET | `/crowdsec/simulation` | user | Which scenarios only alert (simulation mode) and which ban |
+| GET | `/crowdsec/community` | user | Is the community blocklist (CAPI) pulled, are signals shared, is the machine enrolled in the CrowdSec console |
+| GET | `/crowdsec/settings` | user | The default ban length CrowdSec uses, repeat-offender escalation and per-scenario lengths; says whether DCS can edit the file safely |
+| GET | `/crowdsec/notifications` | user | The Discord alert settings in force (webhook masked), what is wired, the placeholders for the message, and the last test/delivery outcome |
+| GET | `/crowdsec/plugin` | user | The Traefik bouncer plugin's settings (mode, how often it asks, how long it remembers, timeout, the status a banned visitor sees, trusted networks), the defaults and the limits |
+| POST | `/crowdsec/trust` | admin | Add an address to the whitelist (body {ip}; defaults to the home public address and the caller) |
+| POST | `/crowdsec/unban-me` | user | Unban the caller: its client address and the home public address |
+| POST | `/crowdsec/notifications` | admin | Send CrowdSec's alerts to Discord: {webhook?, test?}. Turns the alerts on with the message settings in force (the shipped message on a fresh install), stores a webhook you pass, restarts CrowdSec and optionally posts a test message. |
+| POST | `/crowdsec/notifications/preview` | user | Render the message for a sample alert (probe, ssh, exploit, manual, simulated) or a real one (alert_id) with the settings you are editing: {settings?, sample?, alert_id?} |
+| POST | `/crowdsec/notifications/test` | admin | Post a real sample message to Discord and say what Discord answered: {sample?, settings?, webhook_url?, include_mention?}; a test never pings anyone unless include_mention is true |
+| POST | `/crowdsec/notifications/reset` | admin | Back to the message CrowdSec ships with (title, text, fields, colours, delivery); the webhook and the on/off switch stay |
+| POST | `/crowdsec/decisions` | admin | Ban an address or a network: {value, duration (90m, 4h, 7d …) or permanent: true, reason}; refuses your own address, this server, the home address, private and far too wide networks |
+| POST | `/crowdsec/decisions/delete` | admin | Lift several bans at once: {ids: [decision ids], values: [addresses or networks]} (at most 200) |
+| POST | `/crowdsec/decisions/import` | admin | Ban many addresses at once: {format: auto\|csv\|json\|values, content, duration?, reason?, permanent?}; every entry is checked like a single ban, refused ones are listed |
+| POST | `/crowdsec/allowlist` | admin | Never ban an address or network: {value, comment?, expires? (30m, 12h, 7d …; CrowdSec 1.6.8+)}; lifts any ban it covers |
+| POST | `/crowdsec/bouncers` | admin | Register a bouncer and show its API key ONCE: {name} |
+| POST | `/crowdsec/bouncers/register-traefik` | admin | Register the Traefik bouncer again: a fresh key, the middleware file and the chain entry (the fix for "bans are not enforced") |
+| POST | `/crowdsec/service` | admin | Start, restart or reload CrowdSec: {action: start\|restart\|reload} |
+| POST | `/crowdsec/traefik/restart` | admin | Restart Traefik (it loads a plugin declared in its static configuration only when it starts) and wait until it runs again |
+| POST | `/crowdsec/hub/update` | admin | Fetch the newest hub index (needs internet on the server) |
+| POST | `/crowdsec/hub/upgrade` | admin | Upgrade every installed collection, scenario and parser, then reload |
+| POST | `/crowdsec/hub/install` | admin | Install a collection, scenario or parser from the hub: {type: collections\|scenarios\|parsers, name}; CrowdSec reloads afterwards |
+| POST | `/crowdsec/hub/remove` | admin | Remove an installed collection, scenario or parser: {type: collections\|scenarios\|parsers, name}; CrowdSec reloads afterwards |
+| POST | `/crowdsec/simulation` | admin | {scenario, enabled}: make one scenario alert-only (enabled true) or ban again; {global: true, enabled} switches the whole engine |
+| PUT | `/crowdsec/settings` | admin | Change the ban profile: {profile: {duration, range_duration, escalate: {enabled, max}, overrides: [{pattern, duration}]}, manual_duration, take_over}; validates with CrowdSec, restarts it and rolls back on failure |
+| PUT | `/crowdsec/notifications` | admin | Save and apply the Discord alert settings: {settings: {…any part…}, webhook_url?: "https://discord.com/api/webhooks/…", clear_custom_webhook?: true}; the URL is stored as a secret and never sent back |
+| PUT | `/crowdsec/plugin` | admin | Change the plugin's settings: {settings: {mode, update_interval, default_decision_seconds, http_timeout, remediation_status_code, log_level, trust_home, client_trusted_ips, forwarded_headers_trusted_ips}} (any part); written to Traefik's middleware file atomically, the old one is kept, Traefik reloads by itself |
+| DELETE | `/crowdsec/decisions/{value}` | admin | Lift the ban on one address or network (the value may be an IP or a CIDR range such as 192.0.2.0/24) |
+| DELETE | `/crowdsec/allowlist/{value}` | admin | Take an entry off the allowlist (the home address DCS keeps in sync cannot be removed here) |
+| DELETE | `/crowdsec/bouncers/{name}` | admin | Unregister a bouncer (its API key stops working at once) |
+| DELETE | `/crowdsec/trust/{value}` | admin | Remove an address from the whitelist |
 
 ## Logs and events
 
@@ -401,8 +448,6 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | GET | `/power` | user | UPS status: mains or battery, charge, runtime, load, and whether the watch loop runs |
 | GET | `/recovery` | admin | Recovery bundles on this box and how they are made (destination, off-box copy, retention, passphrase set?) |
 | GET | `/fleet/images` | user | Every image on the hub and on each member in one list, each tagged with where it runs (member null = the hub); the counts add up across the fleet, registry_checked_at is the oldest check, last_update_at the newest pull |
-| GET | `/crowdsec/status` | user | CrowdSec presence, whitelist state and active decisions |
-| GET | `/crowdsec/decisions` | user | Active CrowdSec decisions (bans) |
 | GET | `/proxmox/status` | user | The Proxmox link: configured, reachable, version, node and VM counts, and what to fix when it is not |
 | GET | `/proxmox/nodes` | user | Every Proxmox node with CPU, memory, disk and uptime |
 | GET | `/proxmox/vms` | user | Every VM and LXC container with status, CPU, memory, disk, uptime and tags |
@@ -461,9 +506,6 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | POST | `/recovery/restore` | admin | Restore a bundle from this box {file, passphrase, confirm, restart}; a pre-restore snapshot is kept |
 | POST | `/recovery/upload` | admin | Store a bundle sent by the browser {filename, content_b64} |
 | POST | `/fleet/images/check` | admin | Registry check on the hub and on every member at once (each compares digests with its registries, no pulls); the answer counts per DCS |
-| POST | `/crowdsec/trust` | admin | Add an address to the whitelist (body {ip}; defaults to the home public address and the caller) |
-| POST | `/crowdsec/unban-me` | user | Unban the caller: its client address and the home public address |
-| POST | `/crowdsec/notifications` | admin | Send CrowdSec's alerts to Discord {webhook?, test?}: renders the template with the webhook (default: the server's), restarts CrowdSec, and optionally posts a test alert |
 | PUT | `/themes/active` | admin | The theme every dashboard follows {name} ("" = the default look); it must be stored here first |
 | PUT | `/fleet/members/{id}/api/{path}` | admin | Forward the call (GET, POST, PUT or DELETE) to that member with the hub's account; the caller's own role is checked against the inner path as if it were local (streams and auth are not forwarded) |
 | PUT | `/fleet/members/{id}` | admin | Change a member's name, address, account, the guest it is mapped to, or the stacks it answers for {name?, url?, username?, password?, vmid?, node?, type?, insecure?, stacks?: ["name", …]} (a placement makes the hub forward that stack's requests to this member; a stack the hub runs itself cannot be placed) |
@@ -474,6 +516,4 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | DELETE | `/fleet/jobs/{id}` | admin | Forget a finished or failed job; ?destroy=true also destroys the VM a failed build (or a by-hand install that never joined) left behind |
 | DELETE | `/fleet/join-tokens/{token}` | admin | Revoke a join code |
 | DELETE | `/fleet/hub` | admin | Leave the hub: forget it and remove its dcs-hub account here (the hub drops this member when it next fails to answer, or when removed there) |
-| DELETE | `/crowdsec/decisions/*` | admin | Remove every decision for an address (unban) |
-| DELETE | `/crowdsec/trust/*` | admin | Remove an address from the whitelist |
 
