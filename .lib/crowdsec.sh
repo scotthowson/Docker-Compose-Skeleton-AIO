@@ -386,8 +386,26 @@ _cs_version_ge() { [[ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -n 1)" == 
 # jq building blocks shared by the readers
 # =============================================================================
 
+# What a scenario is called in plain words, and which family it belongs to. ONE table: the page, the Discord messages
+# (crowdsec-config.sh builds the Go template's if/else chain from it) and the previews all read it. First match wins.
+_CS_LABEL_TABLE='[["crowdsecurity/ssh","SSH brute force","bruteforce"],["crowdsecurity/http-cve","Exploit attempt","exploit"],["crowdsecurity/CVE","Exploit attempt","exploit"],
+ ["crowdsecurity/http-sqli","SQL injection probe","probe"],["crowdsecurity/http-xss","Cross-site scripting probe","probe"],["crowdsecurity/http-path-traversal","Path traversal probe","probe"],
+ ["crowdsecurity/http-backdoors","Backdoor probe","exploit"],["crowdsecurity/http-admin-interface","Admin panel probe","probe"],["crowdsecurity/http-bad-user-agent","Known bad scanner","probe"],
+ ["crowdsecurity/http-probing","Web probing","probe"],["crowdsecurity/http-sensitive-files","Sensitive file probe","probe"],["crowdsecurity/http-crawl","Aggressive crawler","probe"],
+ ["crowdsecurity/http-generic-bf","Web login brute force","bruteforce"],["crowdsecurity/http-open-proxy","Open proxy probe","probe"],["crowdsecurity/http-wordpress","WordPress attack","probe"],
+ ["crowdsecurity/http-dos","HTTP flood","bruteforce"],["crowdsecurity/nginx-req-limit","Request flood","bruteforce"],["LePresidente/","Application brute force","bruteforce"],
+ ["crowdsecurity/traefik","Traefik abuse","probe"]]'
+_CS_JQ_LABELS='
+def label_table: '"$_CS_LABEL_TABLE"';
+def scen_row: (. // "") as $s | ((label_table | map(. as $r | select($s | startswith($r[0]))) | .[0]) // ["", "Attack blocked", "other"]);
+def scen_label: scen_row | .[1];
+def scen_family: scen_row | .[2];
+def alert_label: if (.kind // "") == "cscli" then "Manual ban" else ((.scenario // "") | scen_label) end;
+def alert_family: if (.kind // "") == "cscli" then "manual" else ((.scenario // "") | scen_family) end;
+'
+
 # Go durations ("3h59m47s", "167h59m59s", "1.5s", "-5m") → seconds; ISO stamps with fractions → epoch seconds
-_CS_JQ_DEFS='
+_CS_JQ_DEFS="$_CS_JQ_LABELS"'
 def dur_secs:
   if . == null or . == "" then 0
   else (tostring) as $s
@@ -410,7 +428,10 @@ def decision_rows($asof):
         created_at: ($a.created_at // ""), since: ($a.created_at // ""), alert_id: $a.id, events: ($a.events_count // 0),
         country: ($a.source.cn | cc), as_number: (($a.source.as_number // "") | tostring), as_name: ($a.source.as_name // ""),
         latitude: ($a.source.latitude // null), longitude: ($a.source.longitude // null),
-        machine: ($a.machine_id // ""), kind: ($a.kind // "") } ];
+        machine: ($a.machine_id // ""), kind: ($a.kind // ""),
+        label: (if .origin == "cscli" then "Manual ban" elif .origin == "cscli-import" then "Imported ban" elif .origin == "CAPI" then "Community blocklist"
+                elif (.origin | startswith("lists")) then "Blocklist" elif .origin == "console" then "CrowdSec console" else ((.scenario // $a.scenario // "") | scen_label) end),
+        family: (if .origin == "cscli" or .origin == "cscli-import" then "manual" elif .origin == "CAPI" or (.origin | startswith("lists")) or .origin == "console" then "community" else ((.scenario // $a.scenario // "") | scen_family) end) } ];
 def alert_row:
   { id: .id, scenario: (.scenario // ""), message: (.message // ""), events_count: (.events_count // 0),
     created_at: (.created_at // ""), start_at: (.start_at // ""), stop_at: (.stop_at // ""),
@@ -1073,24 +1094,6 @@ handle_crowdsec_decisions_import() {
 # =============================================================================
 # Alerts, and the numbers behind the charts
 # =============================================================================
-
-# What a scenario is called in plain words, and which family it belongs to. ONE table: the page, the Discord messages
-# (crowdsec-config.sh builds the Go template's if/else chain from it) and the previews all read it. First match wins.
-_CS_LABEL_TABLE='[["crowdsecurity/ssh","SSH brute force","bruteforce"],["crowdsecurity/http-cve","Exploit attempt","exploit"],["crowdsecurity/CVE","Exploit attempt","exploit"],
- ["crowdsecurity/http-sqli","SQL injection probe","probe"],["crowdsecurity/http-xss","Cross-site scripting probe","probe"],["crowdsecurity/http-path-traversal","Path traversal probe","probe"],
- ["crowdsecurity/http-backdoors","Backdoor probe","exploit"],["crowdsecurity/http-admin-interface","Admin panel probe","probe"],["crowdsecurity/http-bad-user-agent","Known bad scanner","probe"],
- ["crowdsecurity/http-probing","Web probing","probe"],["crowdsecurity/http-sensitive-files","Sensitive file probe","probe"],["crowdsecurity/http-crawl","Aggressive crawler","probe"],
- ["crowdsecurity/http-generic-bf","Web login brute force","bruteforce"],["crowdsecurity/http-open-proxy","Open proxy probe","probe"],["crowdsecurity/http-wordpress","WordPress attack","probe"],
- ["crowdsecurity/http-dos","HTTP flood","bruteforce"],["crowdsecurity/nginx-req-limit","Request flood","bruteforce"],["LePresidente/","Application brute force","bruteforce"],
- ["crowdsecurity/traefik","Traefik abuse","probe"]]'
-_CS_JQ_LABELS='
-def label_table: '"$_CS_LABEL_TABLE"';
-def scen_row: (. // "") as $s | ((label_table | map(. as $r | select($s | startswith($r[0]))) | .[0]) // ["", "Attack blocked", "other"]);
-def scen_label: scen_row | .[1];
-def scen_family: scen_row | .[2];
-def alert_label: if (.kind // "") == "cscli" then "Manual ban" else ((.scenario // "") | scen_label) end;
-def alert_family: if (.kind // "") == "cscli" then "manual" else ((.scenario // "") | scen_family) end;
-'
 
 # active community-blocklist decisions (origin CAPI or lists:*), from the metrics; 0 when unknown
 _cs_community_count() {
