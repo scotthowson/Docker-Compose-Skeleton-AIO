@@ -65,7 +65,7 @@ Each one prints its options with `--help`.
 
 The dashboard does everything the commands do, and more:
 
-- **Stacks** (*VMs* on a hub): start, stop, restart and update a stack; follow its progress (pull,
+- **Stacks** (on a hub, the VMs' stacks too): start, stop, restart and update a stack; follow its progress (pull,
   create, start, health); edit its `docker-compose.yml` and `.env`. Every compose save is checked by the
   security scan and `docker compose config`, and the previous version is kept: the history can put any
   version back.

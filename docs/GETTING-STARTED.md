@@ -275,16 +275,16 @@ curl -s -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
 
 On a hub with Proxmox linked (and a token that may build VMs):
 
-1. Open the **Proxmox** page and choose **New VM stack** (on a hub the Stacks page reads *VMs* and has
-   **New VM** too).
+1. Open the **Proxmox** page and choose **New VM stack**, or on the **Stacks** page choose
+   **New stack → In its own VM**.
 2. Name the stack, pick a size (*Small* to *X-Large*, or set cores, memory and disk) and the operating
    system. Keep **Bake a DCS template first** ticked: the first build makes a template, and every later
    VM is a quick clone of it.
 3. Follow the build card: *Image → Create → Cloud-init → Boot → SSH → Install → Join → Stack → Ready*.
    A failed step says why and has a **Retry**.
 
-The new VM shows up as a stack on the VMs page, its containers on the Containers page, and its routes
-behind the hub's Traefik. [Proxmox guide → the fleet](PROXMOX.md#5-the-fleet-the-vm-is-the-stack)
+The new VM shows up as a stack on the Stacks page (with a *VM* chip), its containers on the Containers
+page, and its routes behind the hub's Traefik. [Proxmox guide → the fleet](PROXMOX.md#5-the-fleet-the-vm-is-the-stack)
 explains every step.
 
 ### 5. Make it survive a reboot
