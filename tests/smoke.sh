@@ -753,7 +753,7 @@ _img_reset() {
                   "c4dddddddddd4|tool|local/tool:latest|sha256:tool-cur||||" > "$IMG_ST/containers"
     : > "$IMG_ST/compose.log"; : > "$IMG_ST/pulls.log"
 }
-img_request() { PATH="$IMG_DIR:$PATH" DOCKER_COMPOSE_CMD="$IMG_DIR/compose" API_RESPONSE_CACHE=false auth_request "$@"; }
+img_request() { command rm -f "$WORK/.data/cache/"*.http; PATH="$IMG_DIR:$PATH" DOCKER_COMPOSE_CMD="$IMG_DIR/compose" auth_request "$@"; }
 _img_field() { jq -r --arg i "$1" --arg f "${2:-containers_outdated}" '.images[] | select(.image == $i) | .[$f]'; }
 
 _img_reset
@@ -818,6 +818,32 @@ for _i in $(seq 1 40); do grep -q 'image-update: done' "$WORK/logs/image-update.
 check "schedule: the job ran to the end"           yes "$(grep -q 'image-update: done' "$WORK/logs/image-update.log" && echo yes || echo no)"
 check "schedule: the job recreated the container"  yes "$(grep -q 'ghcr.io/x/app:latest: updated, 1 container(s) recreated' "$WORK/logs/image-update.log" && echo yes || echo no)"
 for _sid in $(auth_request GET /schedules | body_of | jq -r '.schedules[]? | select(.action=="image-update") | .id'); do auth_request DELETE "/schedules/$_sid" >/dev/null; done
+
+echo "Health: a Docker that does not answer is not a healthy server, and neither is a hub with a silent VM"
+# "docker ps" failing is not an empty list: every container is down, so the verdict cannot be "healthy — 0 containers"
+mkdir -p "$WORK/fakebin-dead" "$WORK/fakebin-empty"
+printf '#!/bin/bash\necho "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?" >&2\nexit 1\n' > "$WORK/fakebin-dead/docker"
+printf '#!/bin/bash\nexit 0\n' > "$WORK/fakebin-empty/docker"
+chmod +x "$WORK/fakebin-dead/docker" "$WORK/fakebin-empty/docker"
+_health_with() { command rm -f "$WORK/.data/cache/"*.http; PATH="$1:$PATH" auth_request GET /health | body_of; }   # the .env of the test install keeps the response cache on
+HD=$(_health_with "$WORK/fakebin-dead")
+check "health: Docker down is critical"          critical "$(jq -r '.status' <<< "$HD" 2>/dev/null)"
+check "health: Docker down is reported"          false "$(jq -r '.docker.reachable' <<< "$HD" 2>/dev/null)"
+check "health: the reason is given"              yes "$(jq -r '.docker.error' <<< "$HD" 2>/dev/null | grep -q 'Cannot connect to the Docker daemon' && echo yes || echo no)"
+HE=$(_health_with "$WORK/fakebin-empty")
+check "health: an answering Docker with no containers is healthy" healthy "$(jq -r '.status' <<< "$HE" 2>/dev/null)"
+check "health: ...and says it answers"           true "$(jq -r '.docker.reachable' <<< "$HE" 2>/dev/null)"
+check "health: ...with no error text"            "" "$(jq -r '.docker.error' <<< "$HE" 2>/dev/null)"
+# the score: no containers because Docker is down is not "100 % healthy"
+_score_with() { command rm -f "$WORK/.data/cache/"*.http; PATH="$1:$PATH" auth_request GET /health/score | body_of; }
+SD=$(_score_with "$WORK/fakebin-dead"); SE=$(_score_with "$WORK/fakebin-empty")
+check "score: Docker down is an F"               F "$(jq -r '.grade' <<< "$SD" 2>/dev/null)"
+check "score: ...at most 39"                     yes "$(jq -e '.score <= 39' <<< "$SD" >/dev/null 2>&1 && echo yes || echo no)"
+check "score: the containers factor is zero"     0 "$(jq -r '.factors.stacks.score' <<< "$SD" 2>/dev/null)"
+check "score: it says Docker does not answer"    false "$(jq -r '.docker.reachable' <<< "$SD" 2>/dev/null)"
+check "score: an answering Docker with no containers keeps its 100" 100 "$(jq -r '.factors.stacks.score' <<< "$SE" 2>/dev/null)"
+check "score: ...and says it answers"            true "$(jq -r '.docker.reachable' <<< "$SE" 2>/dev/null)"
+check "score: ...and is not capped"              yes "$(jq -e '.score > 39' <<< "$SE" >/dev/null 2>&1 && echo yes || echo no)"
 
 echo "Round 2: prune safety, power watch, recovery bundles, new schedule actions, deploy switches"
 mkdir -p "$WORK/fakebin"
@@ -1471,6 +1497,8 @@ FLEET_WATCH_STAMP="$WORK/.data/fleet-watch.stamp" _lib _fleet_watch
 check "fleet: member down noticed"      yes "$(grep -q 'fleet_member_down' "$WORK/.data/audit.jsonl" 2>/dev/null && echo yes || echo no)"
 check "fleet: member marked unreachable" false "$(auth_request GET /fleet/members | body_of | jq -r '.members[0].reachable' 2>/dev/null)"
 check "fleet: overview says no answer"  false "$(auth_request GET /fleet/overview | body_of | jq -r '.members[0].reachable' 2>/dev/null)"
+check "fleet: health counts the silent VM"  1 "$(auth_request GET '/health?fleet=1' | body_of | jq -r '.unreachable' 2>/dev/null)"
+check "fleet: health is not healthy then"   yes "$(auth_request GET '/health?fleet=1' | body_of | jq -e '.status != "healthy"' >/dev/null 2>&1 && echo yes || echo no)"
 (cd "$MWORK" && FLEET_IDENTITY_UUID=11111111-2222-3333-4444-555555555555 setsid nohup "$MWORK/.scripts/api-server.sh" --bind 127.0.0.1 --port "$FLEET_PORT" >> "$MWORK/logs/member-listener.log" 2>&1 < /dev/null &)
 timeout 30 bash -c "until curl -s -m 1 http://127.0.0.1:$FLEET_PORT/ping | grep -q '\"ok\"'; do sleep 0.3; done" 2>/dev/null
 touch -d '-2 minutes' "$WORK/.data/fleet-watch.stamp" 2>/dev/null

@@ -2229,8 +2229,18 @@ handle_health() {
 
     # Single docker inspect for ALL containers — include restart count
     local inspect_data=""
-    local all_cids
-    all_cids=$(timeout 5 docker ps -a -q 2>/dev/null | tr '\n' ' ')
+    local all_cids _dps _dps_rc=0 docker_down=false docker_err=""
+    # A Docker that does not answer is not "no containers": every container is down. The empty list must not read as healthy.
+    _dps=$(timeout 5 docker ps -a -q 2>&1) || _dps_rc=$?
+    if (( _dps_rc != 0 )); then
+        docker_down=true
+        if (( _dps_rc == 124 )); then docker_err="Docker did not answer within 5 seconds"
+        elif [[ "$_dps_rc" == 127 ]]; then docker_err="Docker is not installed on this server"
+        else docker_err=$(printf '%s' "$_dps" | tr '\n' ' ' | head -c 200); fi
+        all_cids=""
+    else
+        all_cids=$(printf '%s' "$_dps" | tr '\n' ' ')
+    fi
     if [[ -n "$all_cids" ]] && command -v jq >/dev/null 2>&1; then
         inspect_data=$(timeout 10 docker inspect $all_cids 2>/dev/null | jq -r '.[] | "\(.Name | ltrimstr("/"))\t\(.State.Status)\t\(if .State.Health then .State.Health.Status else "none" end)\t\(.RestartCount // 0)\t\(.Config.Labels["com.docker.compose.project"] // "")"' 2>/dev/null) || inspect_data=""
     fi
@@ -2275,6 +2285,7 @@ handle_health() {
     elif (( unhealthy > 0 )); then
         overall="degraded"
     fi
+    [[ "$docker_down" == "true" ]] && overall="critical"
 
     local containers_json
     containers_json=$(printf '%s,' "${results[@]}")
@@ -2335,7 +2346,7 @@ handle_health() {
 
     local _od_missing
     _od_missing=$(_sablier_missing | tr '\n' ' ')
-    _api_success "{\"status\": \"$overall\", \"summary\": {\"total\": $total, \"healthy\": $healthy, \"unhealthy\": $unhealthy, \"stopped\": $stopped, \"sleeping\": $sleeping, \"on_demand_missing\": $(_upd_json_list ${_od_missing})}, \"containers\": $containers_json, \"api\": {\"uptime_seconds\": $api_uptime, \"requests_total\": ${api_requests:-0}, \"errors_total\": ${api_errors:-0}, \"memory_kb\": ${api_mem_kb:-0}, \"pid\": ${api_pid_val:-0}}}"
+    _api_success "{\"status\": \"$overall\", \"summary\": {\"total\": $total, \"healthy\": $healthy, \"unhealthy\": $unhealthy, \"stopped\": $stopped, \"sleeping\": $sleeping, \"on_demand_missing\": $(_upd_json_list ${_od_missing})}, \"containers\": $containers_json, \"api\": {\"uptime_seconds\": $api_uptime, \"requests_total\": ${api_requests:-0}, \"errors_total\": ${api_errors:-0}, \"memory_kb\": ${api_mem_kb:-0}, \"pid\": ${api_pid_val:-0}}, \"docker\": {\"reachable\": $([[ "$docker_down" == "true" ]] && echo false || echo true), \"error\": \"$(_api_json_escape "$docker_err")\"}}"
 }
 
 # Internal variant — returns JSON to stdout (used by export handler)
@@ -21249,7 +21260,9 @@ handle_health_fleet() {
         | .summary = (reduce ($members[] | .summary // {}) as $s ({total: 0, healthy: 0, unhealthy: 0, stopped: 0, sleeping: 0};
               .total += (($s.total | numbers) // 0) | .healthy += (($s.healthy | numbers) // 0) | .unhealthy += (($s.unhealthy | numbers) // 0) | .stopped += (($s.stopped | numbers) // 0) | .sleeping += (($s.sleeping | numbers) // 0)))
         | .summary.on_demand_missing = ($own.summary.on_demand_missing // [])
-        | .status = ([$members[] | .status] as $st | if ($st | index("critical")) != null then "critical" elif ($st | index("degraded")) != null then "degraded" else $own.status end)
+        | ([$members[] | select(.reachable == false)] | length) as $silent
+        | .status = ([$members[] | .status] as $st | if ($st | index("critical")) != null then "critical" elif ($st | index("degraded")) != null or $silent > 0 then "degraded" else $own.status end)
+        | .unreachable = $silent
         | .fleet = true | .members = $members' <<< "$own")"
 }
 # GET /images?fleet=1 on a hub: every member's images in the same list, each tagged member, member_name, vmid; members[] counts per DCS
@@ -23482,7 +23495,10 @@ handle_health_score() {
     now=$(date +%s)
 
     # ── Factor 1: Stack/container health (40% weight) — one docker call ──
-    local total_containers=0 healthy_count=0 unhealthy_count=0
+    local total_containers=0 healthy_count=0 unhealthy_count=0 _hs_ps _hs_rc=0 docker_down=false
+    # "docker ps" failing is a Docker that does not answer, not an empty list: every container is down
+    _hs_ps=$(timeout 10 docker ps -a --format '{{.State}}\t{{.Status}}' 2>/dev/null) || _hs_rc=$?
+    (( _hs_rc != 0 )) && docker_down=true
     while IFS=$'\t' read -r state status; do
         [[ -z "$state" ]] && continue
         total_containers=$((total_containers + 1))
@@ -23493,12 +23509,13 @@ handle_health_score() {
                 healthy_count=$((healthy_count + 1))
             fi
         fi
-    done < <(timeout 10 docker ps -a --format '{{.State}}\t{{.Status}}' 2>/dev/null)
+    done <<< "$_hs_ps"
 
     local stack_score=100
     if [[ $total_containers -gt 0 ]]; then
         stack_score=$(awk "BEGIN { printf \"%d\", ($healthy_count / $total_containers) * 100 }")
     fi
+    [[ "$docker_down" == "true" ]] && stack_score=0
 
     # ── Factor 2: Resource usage (30% weight) ──
     local load1
@@ -23576,6 +23593,9 @@ handle_health_score() {
     local total_score
     total_score=$(awk "BEGIN { printf \"%d\", ($stack_score * 0.4) + ($resource_score * 0.3) + ($image_score * 0.15) + ($uptime_score * 0.15) }")
 
+    # A server whose Docker does not answer is not a B: the resource and uptime factors cannot carry it
+    [[ "$docker_down" == "true" && $total_score -gt 39 ]] && total_score=39
+
     # Determine grade
     local grade="A"
     if [[ $total_score -ge 90 ]]; then grade="A"
@@ -23592,7 +23612,7 @@ handle_health_score() {
         tail -n 2016 "$HEALTH_SCORE_HISTORY_FILE" > "${HEALTH_SCORE_HISTORY_FILE}.tmp" 2>/dev/null && mv -f "${HEALTH_SCORE_HISTORY_FILE}.tmp" "$HEALTH_SCORE_HISTORY_FILE"
     fi
 
-    _api_success "{\"score\": $total_score, \"grade\": \"$grade\", \"factors\": {\"stacks\": {\"score\": $stack_score, \"weight\": 0.4, \"healthy\": $healthy_count, \"unhealthy\": $unhealthy_count, \"total\": $total_containers}, \"resources\": {\"score\": $resource_score, \"weight\": 0.3, \"cpu_pct\": $cpu_pct, \"mem_pct\": $mem_pct}, \"images\": {\"score\": $image_score, \"weight\": 0.15, \"total\": $total_images, \"stale\": $stale_images}, \"uptime\": {\"score\": $uptime_score, \"weight\": 0.15, \"seconds\": $uptime_seconds}}, \"timestamp\": \"$(date -u '+%Y-%m-%dT%H:%M:%SZ')\"}"
+    _api_success "{\"score\": $total_score, \"grade\": \"$grade\", \"factors\": {\"stacks\": {\"score\": $stack_score, \"weight\": 0.4, \"healthy\": $healthy_count, \"unhealthy\": $unhealthy_count, \"total\": $total_containers}, \"resources\": {\"score\": $resource_score, \"weight\": 0.3, \"cpu_pct\": $cpu_pct, \"mem_pct\": $mem_pct}, \"images\": {\"score\": $image_score, \"weight\": 0.15, \"total\": $total_images, \"stale\": $stale_images}, \"uptime\": {\"score\": $uptime_score, \"weight\": 0.15, \"seconds\": $uptime_seconds}}, \"docker\": {\"reachable\": $([[ "$docker_down" == "true" ]] && echo false || echo true)}, \"timestamp\": \"$(date -u '+%Y-%m-%dT%H:%M:%SZ')\"}"
 }
 
 # GET /health/score?fleet=1 on a hub: the members' scores folded in — containers and images add up across the fleet, the score is
@@ -23603,14 +23623,16 @@ handle_health_score_fleet() {
     merged=$(_fleet_merge_get /health/score stacks)
     _api_success "$(jq -c --argjson m "$merged" --arg n "${SERVER_NAME:-this server}" '
         . as $own
-        | ([{id: null, name: $n, vmid: null, reachable: true, error: "", score: $own.score, grade: $own.grade, factors: $own.factors}]
-           + ($m.members | map({id, name, vmid, reachable, error, score: ((.data.score | numbers) // null), grade: ((.data.grade | strings) // null), factors: (.data.factors | if type == "object" then . else null end)}))) as $members
+        | ([{id: null, name: $n, vmid: null, reachable: true, error: "", score: $own.score, grade: $own.grade, factors: $own.factors, docker: ($own.docker // null)}]
+           + ($m.members | map({id, name, vmid, reachable, error, score: ((.data.score | numbers) // null), grade: ((.data.grade | strings) // null), factors: (.data.factors | if type == "object" then . else null end), docker: (.data.docker | if type == "object" then . else null end)}))) as $members
         | ([$members[] | select(.reachable and .factors != null)]) as $live
         | ($live | map((.factors.stacks | objects | .total | numbers) // 0) | add // 0) as $ct | ($live | map((.factors.stacks | objects | .healthy | numbers) // 0) | add // 0) as $ch | ($live | map((.factors.stacks | objects | .unhealthy | numbers) // 0) | add // 0) as $cu
         | ($live | map((.factors.images | objects | .total | numbers) // 0) | add // 0) as $it | ($live | map((.factors.images | objects | .stale | numbers) // 0) | add // 0) as $is
         | (if $ct > 0 then (($ch / $ct) * 100 | floor) else 100 end) as $cs
         | (if $it > 0 then ((1 - ($is / $it)) * 100 | floor) else 100 end) as $ims
-        | (($cs * 0.4) + ($own.factors.resources.score * 0.3) + ($ims * 0.15) + ($own.factors.uptime.score * 0.15) | floor) as $total
+        | (($cs * 0.4) + ($own.factors.resources.score * 0.3) + ($ims * 0.15) + ($own.factors.uptime.score * 0.15) | floor) as $raw
+        | ([$members[] | select(.reachable and ((.docker.reachable // true) == false))] | length) as $dockerdown
+        | (if $dockerdown > 0 and $raw > 39 then 39 else $raw end) as $total
         | $own
         | .factors.stacks = {score: $cs, weight: 0.4, healthy: $ch, unhealthy: $cu, total: $ct}
         | .factors.images = {score: $ims, weight: 0.15, total: $it, stale: $is}

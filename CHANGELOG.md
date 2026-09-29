@@ -3,6 +3,17 @@
 All notable changes to Docker Compose Skeleton AIO are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Fixed
+
+- **A stopped Docker no longer reads as "All Systems Healthy".** `docker ps` failing (the daemon stopped, the socket
+  refused) was taken for an empty container list, so a host with no Docker at all scored 100/A. `GET /health` now says
+  `critical` with `docker: {reachable: false, error}`, `GET /health/score` puts the stacks at 0 and caps the total at
+  39 (F), and the fleet views do the same for every VM whose Docker does not answer.
+- **A VM that does not answer is no longer left out of the fleet's verdict.** `GET /health?fleet=1` counts it as
+  `unreachable` and reports at least `degraded`; the fleet score is capped when a reachable VM has no Docker.
+
 ## [3.9.9] - 2026-09-29
 
 ### Fixed
