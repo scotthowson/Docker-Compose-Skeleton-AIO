@@ -38,12 +38,14 @@ CS_ERR=""
 
 # 1.2.3.4 (no leading zeros: "010" is octal to some parsers)
 _cs_is_v4() {
+    local LC_ALL=C      # ranges like [0-9] and [a-f] follow the server's language (in en_US.UTF-8 they also match ٣ and ä): here they mean ASCII
     [[ "$1" =~ ^(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})$ ]] || return 1
     (( BASH_REMATCH[1] <= 255 && BASH_REMATCH[2] <= 255 && BASH_REMATCH[3] <= 255 && BASH_REMATCH[4] <= 255 ))
 }
 
 # Expand an IPv6 address (with "::" and an optional dotted tail) to 32 lowercase hex digits
 _cs_v6_expand() {
+    local LC_ALL=C      # (see _cs_is_v4: 2a00::ä must not read as 2a00::)
     local a="${1,,}" head tail n pad
     [[ "$a" =~ ^[0-9a-f:.]+$ && "$a" == *:* && "$a" != *:::* ]] || return 1
     if [[ "$a" =~ ^(.*:)([0-9.]+)$ && "${BASH_REMATCH[2]}" == *.* ]]; then
