@@ -55,14 +55,14 @@ _cs_v6_expand() {
     if [[ "$a" == *::* ]]; then
         [[ "${a#*::}" != *::* ]] || return 1
         head="${a%%::*}"; tail="${a#*::}"
-        local -a h=() t=() g; local out=""
-        [[ -n "$head" ]] && IFS=: read -ra h <<< "$head"
-        [[ -n "$tail" ]] && IFS=: read -ra t <<< "$tail"
-        n=$(( ${#h[@]} + ${#t[@]} ))
+        local -a hgrp=() tgrp=() g; local out=""
+        [[ -n "$head" ]] && IFS=: read -ra hgrp <<< "$head"
+        [[ -n "$tail" ]] && IFS=: read -ra tgrp <<< "$tail"
+        n=$(( ${#hgrp[@]} + ${#tgrp[@]} ))
         (( n <= 7 )) || return 1
-        for g in "${h[@]}"; do [[ "$g" =~ ^[0-9a-f]{1,4}$ ]] || return 1; printf -v g '%04x' "0x$g"; out+="$g"; done
+        for g in "${hgrp[@]}"; do [[ "$g" =~ ^[0-9a-f]{1,4}$ ]] || return 1; printf -v g '%04x' "0x$g"; out+="$g"; done
         for (( pad = 0; pad < 8 - n; pad++ )); do out+="0000"; done
-        for g in "${t[@]}"; do [[ "$g" =~ ^[0-9a-f]{1,4}$ ]] || return 1; printf -v g '%04x' "0x$g"; out+="$g"; done
+        for g in "${tgrp[@]}"; do [[ "$g" =~ ^[0-9a-f]{1,4}$ ]] || return 1; printf -v g '%04x' "0x$g"; out+="$g"; done
         printf '%s' "$out"
     else
         local -a all; local out="" g

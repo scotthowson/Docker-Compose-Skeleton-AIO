@@ -154,7 +154,7 @@ _cs_profile_validate() {
     (( secs <= CS_MAX_AUTO_SECONDS )) || { CS_CFG_ERR="The longest repeat-offender ban can be a year (365d) at most"; return 1; }
     n=$(jq '.overrides | length' <<< "$j")
     (( n <= 12 )) || { CS_CFG_ERR="At most 12 scenario overrides"; return 1; }
-    local -a ov=(); local -A seen=()
+    local -a ovr=(); local -A seen=()
     for (( i = 0; i < n; i++ )); do
         pat=$(jq -r ".overrides[$i].pattern | tostring" <<< "$j")
         _cs_valid_pattern "$pat" || { CS_CFG_ERR="Override $(( i + 1 )): the scenario \"${pat:0:60}\" is not valid. Use a name like crowdsecurity/ssh-bf or a prefix like crowdsecurity/ssh*"; return 1; }
@@ -163,12 +163,12 @@ _cs_profile_validate() {
         dur=$(_cs_norm_duration "$(jq -r ".overrides[$i].duration | tostring" <<< "$j")") || { CS_CFG_ERR="Override $(( i + 1 )) ($pat): the duration is not valid: use 30m, 4h, 7d or 2w"; return 1; }
         secs=$(_cs_duration_seconds "$dur")
         (( secs <= CS_MAX_AUTO_SECONDS )) || { CS_CFG_ERR="Override $(( i + 1 )) ($pat): automatic bans can last at most a year"; return 1; }
-        ov+=("$(jq -nc --arg p "$pat" --arg d "$dur" '{pattern: $p, duration: $d}')")
+        ovr+=("$(jq -nc --arg p "$pat" --arg d "$dur" '{pattern: $p, duration: $d}')")
     done
     if [[ "$esc_on" == true ]]; then
         (( $(_cs_duration_seconds "$esc_max") >= $(_cs_duration_seconds "$d") )) || { CS_CFG_ERR="The longest repeat-offender ban ($esc_max) is shorter than the default ban ($d)"; return 1; }
     fi
-    out=$( ( [[ ${#ov[@]} -gt 0 ]] && printf '%s\n' "${ov[@]}" || true ) | jq -sc --arg d "$d" --arg rd "$rd" --argjson eo "$esc_on" --arg em "$esc_max" '{duration: $d, range_duration: $rd, escalate: {enabled: $eo, max: $em}, overrides: .}')
+    out=$( ( [[ ${#ovr[@]} -gt 0 ]] && printf '%s\n' "${ovr[@]}" || true ) | jq -sc --arg d "$d" --arg rd "$rd" --argjson eo "$esc_on" --arg em "$esc_max" '{duration: $d, range_duration: $rd, escalate: {enabled: $eo, max: $em}, overrides: .}')
     CS_OUT="$out"
 }
 
