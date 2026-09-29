@@ -21,6 +21,7 @@ TASKS = []
 # listener on 127.0.0.1 is "found" there), 101 has no guest agent, the container is unroutable
 UUIDS = {100: '11111111-2222-3333-4444-555555555555', 101: '22222222-3333-4444-5555-666666666666'}
 AGENT_IPS = {100: ['127.0.0.1']}
+OSINFO = {100: {'id': 'debian', 'name': 'Debian GNU/Linux', 'pretty-name': 'Debian GNU/Linux 13 (trixie)', 'version': '13 (trixie)', 'version-id': '13', 'kernel-release': '6.12.111+deb13-cloud-amd64', 'machine': 'x86_64'}}
 LXC_IPS = {200: '10.255.255.1'}
 # provisioning: storages, imported images, per-VM configuration written by the hub
 STORAGES = {'local': {'storage': 'local', 'type': 'dir', 'content': 'images,iso,vztmpl,backup,rootdir', 'total': 214748364800, 'used': 42949672960, 'avail': 171798691840, 'active': 1, 'enabled': 1},
@@ -89,8 +90,12 @@ class H(http.server.BaseHTTPRequestHandler):
                 cfg = {'name': vm['name'], 'cores': vm['maxcpu'], 'memory': vm['maxmem'] // 1048576, 'ostype': 'l26', 'onboot': 1, 'description': 'mock', 'net0': 'virtio=DE:AD:BE:EF:00:01,bridge=vmbr0', 'bootdisk': 'scsi0'}
                 if vm['type'] == 'qemu': cfg['smbios1'] = f"uuid={UUIDS.get(vmid, '00000000-0000-0000-0000-000000000000')}"
                 cfg['tags'] = vm.get('tags', '')
+                if vm['type'] == 'qemu': cfg.update({'bios': 'ovmf' if vmid == 100 else 'seabios', 'machine': 'q35' if vmid == 100 else 'pc-i440fx-9.0', 'meta': 'creation-qemu=9.0.0,ctime=1790000000'})
                 cfg.update(CONFIGS.get(vmid, {}))
                 return self._send(200, {'data': cfg})
+            if parts[5] == 'qemu' and parts[7:9] == ['agent', 'get-osinfo']:
+                if vm['status'] != 'running' or vmid not in OSINFO: return self._send(500, {'message': 'QEMU guest agent is not running', 'data': None})
+                return self._send(200, {'data': {'result': OSINFO[vmid]}})
             # guest addresses, as the hub's scan asks for them
             if parts[5] == 'qemu' and parts[7:10] == ['agent', 'network-get-interfaces']:
                 if vm['status'] != 'running' or vmid not in AGENT_IPS: return self._send(500, {'message': 'QEMU guest agent is not running', 'data': None})

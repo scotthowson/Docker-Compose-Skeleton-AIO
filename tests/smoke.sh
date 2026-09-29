@@ -143,6 +143,31 @@ check "XFF from untrusted peer ignored" yes "$(tail -1 "$LOG" | grep -q '\[192.0
 printf 'GET /version HTTP/1.1\r\nX-Forwarded-For: 127.0.0.1, 192.0.2.9\r\n\r\n' | env "${NOAUTH[@]}" SOCAT_PEERADDR=10.9.9.9 API_TRUSTED_PROXIES=10.0.0.0/8 API_IP_WHITELIST=192.168.1.0/24 "$API" --handle-request 2>/dev/null | status_of | { read -r s; check "spoofed loopback in XFF cannot bypass whitelist" 403 "$s"; }
 printf 'GET /version HTTP/1.1\r\nX-Forwarded-For: 192.168.1.20\r\n\r\n' | env "${NOAUTH[@]}" SOCAT_PEERADDR=10.9.9.9 API_TRUSTED_PROXIES=10.0.0.0/8 API_IP_WHITELIST=192.168.1.0/24 "$API" --handle-request 2>/dev/null | status_of | { read -r s; check "whitelisted client behind trusted proxy admitted" 200 "$s"; }
 
+echo "Heartbeat fast path"
+# GET /ping is answered before the ~26,000 lines of handlers are parsed; every answer has to be the one the normal path gives
+_fp_req() { local raw="$1"; shift; printf '%b' "$raw" | env DOCKER_COMPOSE_CMD="${DOCKER_COMPOSE_CMD:-docker compose}" "${NOAUTH[@]}" "$@" "$API" --handle-request 2>/dev/null | sed -E 's/"time": [0-9]+/"time": T/'; }
+_fp_same() { local name="$1" raw="$2"; shift 2; local fast slow; fast=$(_fp_req "$raw" "$@"); slow=$(_fp_req "$raw" DCS_NO_FAST_PING=1 "$@"); check "heartbeat: $name" yes "$([[ -n "$fast" && "$fast" == "$slow" ]] && echo yes || echo no)"; }
+_fp_same "no Origin"                        'GET /ping HTTP/1.1\r\nHost: x\r\n\r\n'
+_fp_same "a local Origin"                   'GET /ping HTTP/1.1\r\nOrigin: http://localhost:3013\r\n\r\n'
+_fp_same "a foreign Origin is not allowed"  'GET /ping HTTP/1.1\r\nOrigin: http://192.0.2.9:3003\r\n\r\n'
+_fp_same "a configured Origin is allowed"   'GET /ping HTTP/1.1\r\nOrigin: http://192.0.2.9:3003\r\n\r\n' API_CORS_ORIGINS=http://192.0.2.9:3003
+_fp_same "behind a TLS proxy (HSTS)"        'GET /ping HTTP/1.1\r\nHost: x\r\n\r\n' API_BEHIND_TLS_PROXY=true
+_fp_same "a trailing slash"                 'GET /ping/ HTTP/1.1\r\nHost: x\r\n\r\n'
+_fp_same "HTTP/1.0"                         'GET /ping HTTP/1.0\r\n\r\n'
+_fp_same "a query string takes the normal path" 'GET /ping?x=1 HTTP/1.1\r\nHost: x\r\n\r\n'
+_fp_same "HEAD takes the normal path"       'HEAD /ping HTTP/1.1\r\nHost: x\r\n\r\n'
+_fp_same "POST takes the normal path"       'POST /ping HTTP/1.1\r\nContent-Length: 2\r\n\r\n{}'
+_fp_same "another route takes the normal path" 'GET /version HTTP/1.1\r\nHost: x\r\n\r\n'
+_fp_same "garbage takes the normal path"    'GARBAGE\r\n\r\n'
+_fp_same "the IP allow-list decides"        'GET /ping HTTP/1.1\r\nHost: x\r\n\r\n' API_IP_WHITELIST=203.0.113.0/24 SOCAT_PEERADDR=198.51.100.7
+_fp_same "the setup mode's open CORS"       'GET /ping HTTP/1.1\r\nOrigin: http://192.0.2.9:3003\r\n\r\n' DCS_API_SETUP_MODE=true
+check "heartbeat: a second header line cannot inject one" 0 "$(_fp_req 'GET /ping HTTP/1.1\r\nOrigin: http://localhost:1234\r\nSet-Cookie: evil\r\n\r\n' | grep -ci '^set-cookie')"
+check "heartbeat: the answer is the liveness body" 1 "$(_fp_req 'GET /ping HTTP/1.1\r\nHost: x\r\n\r\n' | tail -1 | grep -c '^{"ok": true, "version": ".*", "api_version": ".*", "time": T}$')"
+: > "$LOG"; _fp_req 'GET /ping HTTP/1.1\r\nHost: x\r\n\r\n' >/dev/null
+check "heartbeat: the fast path leaves no access-log line" 0 "$(grep -c 'GET /ping' "$LOG" 2>/dev/null)"
+: > "$LOG"; _fp_req 'GET /ping HTTP/1.1\r\nHost: x\r\n\r\n' DCS_NO_FAST_PING=1 >/dev/null
+check "heartbeat: the normal path still logs it"           1 "$(grep -c 'GET /ping' "$LOG" 2>/dev/null)"
+
 echo "Automations, schedules and the cron matcher"
 _lib() { local -a _c=("$@"); ( set --; source "$API" >/dev/null 2>&1; "${_c[@]}" ) 2>/dev/null; }
 VTOKEN=$(request POST /auth/login '{"username":"viewer","password":"viewer-pass-123"}' "${AUTH[@]}" | body_of | jq -r '.token // empty')
@@ -1818,6 +1843,15 @@ check "provision: image imported"       yes "$(auth_request GET "/fleet/jobs/$JO
 check "provision: VM created"           smoke-photos "$(auth_request GET /proxmox/vms | body_of | jq -r '.vms[] | select(.vmid == 105) | .name' 2>/dev/null)"
 check "provision: cloud-init address"   yes "$(auth_request GET /proxmox/vms/pve/qemu/105 | body_of | jq -r '.config.ipconfig0 // ""' 2>/dev/null | grep -q '127.0.0.1/24' && echo yes || echo no)"
 check "provision: hub key in cloud-init" yes "$(auth_request GET /proxmox/vms/pve/qemu/105 | body_of | jq -r '.config.sshkeys // ""' 2>/dev/null | grep -q 'ssh-ed25519' && echo yes || echo no)"
+check "vm info: the guest's own system"       "Debian GNU/Linux 13 (trixie)" "$(auth_request GET /proxmox/vms/pve/qemu/100 | body_of | jq -r '.os.name // ""' 2>/dev/null)"
+check "vm info: …and its kernel"                "6.12.111+deb13-cloud-amd64" "$(auth_request GET /proxmox/vms/pve/qemu/100 | body_of | jq -r '.os.kernel // ""' 2>/dev/null)"
+check "vm info: a guest without the agent has no system" null "$(auth_request GET /proxmox/vms/pve/qemu/101 | body_of | jq -r '.os | tostring' 2>/dev/null)"
+check "vm info: firmware and machine"           "ovmf q35" "$(auth_request GET /proxmox/vms/pve/qemu/100 | body_of | jq -r '"\(.config.bios) \(.config.machine)"' 2>/dev/null)"
+check "vm info: creation date"                  1790000000 "$(auth_request GET /proxmox/vms/pve/qemu/100 | body_of | jq -r '.config.created' 2>/dev/null)"
+check "vm info: not built by DCS, no image"     null "$(auth_request GET /proxmox/vms/pve/qemu/100 | body_of | jq -r '.image | tostring' 2>/dev/null)"
+check "vm info: a built VM names its image"     ubuntu-24.04 "$(auth_request GET /proxmox/vms/pve/qemu/105 | body_of | jq -r '.image.id // ""' 2>/dev/null)"
+check "vm info: …with the catalogue's label"    yes "$(auth_request GET /proxmox/vms/pve/qemu/105 | body_of | jq -r '.image.label // ""' 2>/dev/null | grep -q 'Ubuntu Server 24.04' && echo yes || echo no)"
+check "vm info: the description names the image" yes "$(auth_request GET /proxmox/vms/pve/qemu/105 | body_of | jq -r '.config.description // ""' 2>/dev/null | grep -q 'image ubuntu-24.04' && echo yes || echo no)"
 check "provision: member registered"    105 "$(auth_request GET /fleet/members | body_of | jq -r '.members[] | select(.name == "smoke-photos") | .vmid' 2>/dev/null)"
 check "provision: member runs the stack" smoke-photos "$(auth_request GET /fleet/members | body_of | jq -r '.members[] | select(.name == "smoke-photos") | .stacks[0]' 2>/dev/null)"
 check "provision: stack moved into the VM" yes "$(auth_request GET "/fleet/jobs/$JOB" | body_of | jq -r '.steps[] | select(.id == "stack") | .detail' 2>/dev/null | grep -q 'started in the VM' && echo yes || echo no)"

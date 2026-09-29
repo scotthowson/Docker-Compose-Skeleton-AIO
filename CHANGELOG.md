@@ -7,11 +7,28 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Purpose-built VM images** (`vm-images/`, [docs/VM-IMAGES.md](docs/VM-IMAGES.md)). A hub image that boots straight into the
+  setup wizard and a node image the hub clones for every stack, for Debian 13, Ubuntu 26.04 LTS and Fedora 44 (SELinux
+  enforcing): a Docker host and nothing else, 250-440 MB to download, a fresh disk of 640-830 MB, ssh a few seconds after
+  power-on. One disk boots under BIOS and UEFI; `dcs-init` reads the Proxmox seed in place of cloud-init and survives a power
+  cut at its first boot; `dcs-proxmox.sh` turns a release image into a hub VM or a node template on the Proxmox host in one
+  command. `build.sh` builds and tests them (17 checks per node image, 22 per hub image) without root.
+- **The VM sheet says what the VM runs and what it was built from.** Info on a VM card lists the operating system the guest
+  reports through the guest agent (or the DCS inside it, or Proxmox's OS type), the image the hub built it from and the DCS
+  template it was cloned from, the firmware (BIOS or UEFI) and the creation date. New VMs carry the image in their Proxmox
+  description; `GET /proxmox/vms/{node}/{type}/{vmid}` returns `os`, `image` and `config.bios`, `machine`, `created`.
 - **The hub's own VM is tagged in Proxmox.** The VMs the hub builds already carried `dcs;<stack>`; the VM that runs the
   hub now gets `dcs;hub`, put on when the wizard finishes with Proxmox linked (the completion screen says so) and by
   an *Add …* button naming the missing tags on the *This server* card of the Proxmox page (`GET /proxmox/self`, `POST /proxmox/self/tag`).
   DCS only adds tags, finds its VM by SMBIOS id, address or name, tags a non-hub DCS `dcs` alone, leaves a machine that
   is no guest of the linked host alone, and explains a token without `VM.Config.Options` instead of failing the setup.
+
+### Changed
+
+- **The heartbeat answers in about 30 ms instead of 70.** `GET /ping` is answered before the ~26,000 lines of handlers are
+  parsed (they were about 85 of every request's 105 ms), with the same response function, so the headers are the ones every
+  answer carries. A server with an IP allow-list or in setup mode, and every other route, takes the normal path. A heartbeat
+  is no longer written to the access log or counted. `DCS_NO_FAST_PING=1` turns it off.
 
 ### Fixed
 

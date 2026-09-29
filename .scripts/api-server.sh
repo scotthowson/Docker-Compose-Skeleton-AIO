@@ -629,6 +629,40 @@ _api_success() {
     _api_response 200 "$body"
 }
 
+# =============================================================================
+# FAST PATH: the dashboard's heartbeat (GET /ping)
+# =============================================================================
+# Bash reads a script as it runs it, and this one is ~26,000 lines of functions that every request parses again
+# (about 85 of the 105 ms a heartbeat used to take, so a busy server queued its own heartbeat behind the page's other
+# calls). The heartbeat is answered here, before the rest is parsed, in a few milliseconds — with the same
+# response function, so the headers (CORS, security, HSTS) are the ones every answer carries.
+# It is answered here only when nothing else could change the answer: an IP allow-list, the setup mode's open CORS
+# and the rate limiter all live below, so a server that uses one of them, and every other request, takes the
+# normal path with the request line already read (_API_PREREAD_LINE). A heartbeat is neither written to the access
+# log nor counted. DCS_NO_FAST_PING=1 turns it off (the smoke test compares both answers).
+if [[ "$HANDLE_REQUEST" == "true" && -z "${DCS_NO_FAST_PING:-}" && -z "$API_IP_WHITELIST" && "$SETUP_MODE" != "true" ]]; then
+    set +e
+    if read -r -t 10 _API_PREREAD_LINE; then
+        _API_PREREAD_SET=1
+        _fp_line="${_API_PREREAD_LINE%%$'\r'}"
+        if [[ "$_fp_line" == "GET /ping HTTP/1."[01] || "$_fp_line" == "GET /ping/ HTTP/1."[01] ]]; then
+            REQUEST_ORIGIN_HEADER=""; _fp_n=0
+            while IFS= read -r -t 10 _fp_h; do
+                (( ++_fp_n > 100 )) && break
+                _fp_h="${_fp_h%%$'\r'}"
+                [[ -z "$_fp_h" ]] && break
+                if [[ "${_fp_h,,}" == origin:* ]]; then
+                    REQUEST_ORIGIN_HEADER="${_fp_h#*: }"; REQUEST_ORIGIN_HEADER="${REQUEST_ORIGIN_HEADER## }"
+                    REQUEST_ORIGIN_HEADER="${REQUEST_ORIGIN_HEADER//$'\r'/}"; REQUEST_ORIGIN_HEADER="${REQUEST_ORIGIN_HEADER//$'\n'/}"
+                fi
+            done
+            REQUEST_METHOD=GET; REQUEST_PATH=/ping
+            _api_success "{\"ok\": true, \"version\": \"$(_api_json_escape "$DCS_VERSION")\", \"api_version\": \"$API_VERSION\", \"time\": $(printf '%(%s)T' -1)}"
+            exit 0
+        fi
+    fi
+fi
+
 # Response cache for the read endpoints every open dashboard polls. The Docker
 # daemon answers once per TTL however many clients ask, and a poll never waits
 # for it: an answer past its TTL is served at once and refreshed in the
@@ -19083,7 +19117,20 @@ handle_proxmox_vm_detail() {
     _pve_explain "$cur" || { _api_error 502 "$PVE_ERR"; return; }
     _pve_call cfg GET "/nodes/$node/$type/$vmid/config"
     _pve_explain "$cfg" || cfg='{"data":{}}'
-    _api_success "$(jq -nc --arg node "$node" --arg type "$type" --argjson vmid "$vmid" --argjson cur "$cur" --argjson cfg "$cfg" '
+    # the operating system the guest itself reports (the guest agent answers only while it runs), and the image the hub built it from
+    local os_j='null' img_j='null' osr mem_j
+    if [[ "$type" == qemu && "$(jq -r '.data.status // ""' <<< "$cur")" == running && "$(jq -r '(.data.agent // 0) | tostring' <<< "$cur")" != 0 ]]; then
+        PVE_TIMEOUT=4 _pve_call osr GET "/nodes/$node/qemu/$vmid/agent/get-osinfo"
+        [[ "$_PVE_HTTP" == 200 ]] && os_j=$(jq -c '(.data.result // .data // {}) | {name: (."pretty-name" // .name // ""), id: (.id // ""), version: (."version-id" // .version // ""), kernel: (."kernel-release" // ""), arch: (.machine // "")} | select(.name != "")' <<< "$osr" 2>/dev/null)
+        [[ "$os_j" == \{* ]] || os_j='null'
+    fi
+    mem_j=$(jq -c --argjson v "$vmid" --arg n "$node" '[(.members // [])[] | select(.vmid == $v and .node == $n)] | .[0] // null' "$FLEET_FILE" 2>/dev/null); [[ -n "$mem_j" ]] || mem_j='null'
+    if [[ "$mem_j" != null && "$(jq -r '.image_id // ""' <<< "$mem_j")" != "" ]]; then
+        img_j=$(jq -nc --argjson m "$mem_j" --argjson cat "$(_fleet_image_catalogue_json)" '
+            ($cat | map(select(.id == $m.image_id)) | .[0] // {}) as $c
+            | {id: $m.image_id, label: ($c.label // $m.image_id), kind: ($m.image_kind // "cloud"), template_vmid: ($m.cloned_from // null)}')
+    fi
+    _api_success "$(jq -nc --arg node "$node" --arg type "$type" --argjson vmid "$vmid" --argjson cur "$cur" --argjson cfg "$cfg" --argjson os "$os_j" --argjson image "$img_j" '
         ($cur.data // {}) as $c | ($cfg.data // {}) as $f
         | {vmid: $vmid, node: $node, type: $type, name: ($c.name // $f.name // $f.hostname // ""), status: ($c.status // "unknown"),
            qmpstatus: ($c.qmpstatus // ""), uptime: ($c.uptime // 0), cpu: (($c.cpu // 0) * 1000 | round / 10), cpus: ($c.cpus // $f.cores // 0),
@@ -19091,8 +19138,9 @@ handle_proxmox_vm_detail() {
            balloon: (if ($f.balloon // null) != null then (($f.balloon | tostring | tonumber?) // 0) elif (($c.balloon // 0) | tonumber? // 0) > 0 then (($c.balloon / 1048576) | floor) else 0 end),
            guest_mem_free: ($c.ballooninfo.free_mem // 0), guest_mem_total: ($c.ballooninfo.total_mem // 0),
            netin: ($c.netin // 0), netout: ($c.netout // 0), diskread: ($c.diskread // 0), diskwrite: ($c.diskwrite // 0),
-           agent: (($c.agent // $f.agent // 0) | tostring), lock: ($c.lock // ""),
-           config: {cores: ($f.cores // null), sockets: ($f.sockets // null), memory: ($f.memory // null), ostype: ($f.ostype // ""), boot: ($f.boot // ""), scsi0: ($f.scsi0 // ""), ide2: ($f.ide2 // ""), net0: ($f.net0 // ""), ipconfig0: ($f.ipconfig0 // ""), ciuser: ($f.ciuser // ""), nameserver: ($f.nameserver // ""), sshkeys: ($f.sshkeys // ""), agent: (($f.agent // "") | tostring), tags: ($f.tags // ""),
+           agent: (($c.agent // $f.agent // 0) | tostring), lock: ($c.lock // ""), os: $os, image: $image,
+           config: {bios: ($f.bios // ""), machine: ($f.machine // ""), created: ((($f.meta // "") | capture("ctime=(?<t>[0-9]+)")?.t | tonumber?) // null),
+                    cores: ($f.cores // null), sockets: ($f.sockets // null), memory: ($f.memory // null), ostype: ($f.ostype // ""), boot: ($f.boot // ""), scsi0: ($f.scsi0 // ""), ide2: ($f.ide2 // ""), net0: ($f.net0 // ""), ipconfig0: ($f.ipconfig0 // ""), ciuser: ($f.ciuser // ""), nameserver: ($f.nameserver // ""), sshkeys: ($f.sshkeys // ""), agent: (($f.agent // "") | tostring), tags: ($f.tags // ""),
                     onboot: (($f.onboot // 0) | tostring), description: ($f.description // ""), tags: ($f.tags // ""),
                     net0: ($f.net0 // ""), bootdisk: ($f.bootdisk // ""), hostname: ($f.hostname // "")}}')"
 }
@@ -21976,7 +22024,7 @@ _fleet_job_run() {
         if [[ -n "$tvmid" ]]; then
             # a baked template exists for this image: a full clone, then the VM's own size, network and name
             _job_log "$id" "cloning the DCS template VM $tvmid ($iid) as VM $vmid ($stack) — no installs ahead"
-            PVE_TIMEOUT=120 _pve_call res POST "/nodes/$node/qemu/$tvmid/clone" "newid=$vmid" "name=$stack" "full=1" "storage=$st" "description=DCS member for the stack $stack — cloned from the DCS template $tvmid by the hub $(hostname 2>/dev/null) on $(date +%F)"
+            PVE_TIMEOUT=120 _pve_call res POST "/nodes/$node/qemu/$tvmid/clone" "newid=$vmid" "name=$stack" "full=1" "storage=$st" "description=DCS member for the stack $stack — cloned from the DCS template $tvmid by the hub $(hostname 2>/dev/null) on $(date +%F) (image ${iid:-unknown})"
             _pve_explain "$res" || { _job_fail "$id" create "Proxmox refused to clone the template: $PVE_ERR"; return 1; }
             upid=$(jq -r '.data // ""' <<< "$res"); _job_update "$id" --argjson v "$vmid" '.vmid = $v' >/dev/null
             [[ "$upid" == UPID:* ]] && { _pve_wait_task "$node" "$upid" 900 "$id" || { _job_fail "$id" create "$FLEET_JOB_ERR"; return 1; }; }
@@ -21989,13 +22037,13 @@ _fleet_job_run() {
             PVE_TIMEOUT=60 _pve_call res POST "/nodes/$node/qemu" "vmid=$vmid" "name=$stack" "cores=$cores" "sockets=1" "cpu=host" "memory=$mem" "balloon=$(_vm_balloon_floor "$mem")" \
                 "net0=virtio,bridge=$bridge" "scsihw=virtio-scsi-single" "scsi0=$st:${disk},discard=on" "ide2=$iso,media=cdrom" \
                 "boot=order=ide2;scsi0" "agent=enabled=1" "ostype=l26" "onboot=1" "tags=dcs;$stack" \
-                "description=DCS member for the stack $stack — created by the hub $(hostname 2>/dev/null) on $(date +%F); install $file by hand, then join"
+                "description=DCS member for the stack $stack — created by the hub $(hostname 2>/dev/null) on $(date +%F) (installer $file); install it by hand, then join"
         else
             _job_log "$id" "creating VM $vmid ($stack) from $ist:import/$file on $st"
             PVE_TIMEOUT=60 _pve_call res POST "/nodes/$node/qemu" "vmid=$vmid" "name=$stack" "cores=$cores" "sockets=1" "cpu=host" "memory=$mem" "balloon=$(_vm_balloon_floor "$mem")" \
                 "net0=virtio,bridge=$bridge" "scsihw=virtio-scsi-single" "scsi0=$st:0,import-from=$ist:import/$file,discard=on" "ide2=$st:cloudinit" \
                 "boot=order=scsi0" "serial0=socket" "vga=serial0" "agent=enabled=1" "ostype=l26" "onboot=1" "tags=dcs;$stack" \
-                "description=DCS member for the stack $stack — created by the hub $(hostname 2>/dev/null) on $(date +%F)"
+                "description=DCS member for the stack $stack — created by the hub $(hostname 2>/dev/null) on $(date +%F) (image ${iid:-unknown})"
         fi
         _pve_explain "$res" || { _job_fail "$id" create "Proxmox refused to create the VM: $PVE_ERR"; return 1; }
         upid=$(jq -r '.data // ""' <<< "$res")
@@ -22118,7 +22166,7 @@ _fleet_job_run() {
         sleep 3; i2=$((i2 + 3))
     done
     [[ -n "$mid" ]] || { _job_fail "$id" join "the VM installed DCS but never registered with the hub (its setup.sh log: ~/.Docker-Compose-Skeleton-AIO/logs on $ip)"; return 1; }
-    _fleet_update --arg id "$mid" --argjson v "$vmid" --arg n "$node" --arg s "$stack" '.members = [(.members // [])[] | if .id == $id then .vmid = $v | .node = $n | .type = "qemu" | .matched_by = (.matched_by // "provision") | .stacks = ((.stacks // []) + [$s] | unique) | .provisioned = true else . end]' || true
+    _fleet_update --arg id "$mid" --argjson v "$vmid" --arg n "$node" --arg s "$stack" --arg iid "$iid" --arg ik "$kind" --argjson tv "${tvmid:-null}" '.members = [(.members // [])[] | if .id == $id then .vmid = $v | .node = $n | .type = "qemu" | .matched_by = (.matched_by // "provision") | .stacks = ((.stacks // []) + [$s] | unique) | .provisioned = true | .image_id = $iid | .image_kind = $ik | .cloned_from = $tv else . end]' || true
     _job_update "$id" --arg m "$mid" '.member_id = $m' >/dev/null
     _job_step "$id" join "done" "member $mid"
     # 8. the VM is born as the stack: the hub's Stacks/<source> (compose, .env, config files — never App-Data,
@@ -25172,7 +25220,9 @@ handle_request() {
     # Read the HTTP request line (bounded wait: an idle connection must not pin
     # a handler process forever)
     local request_line=""
-    if ! read -r -t 10 request_line; then
+    if [[ -n "${_API_PREREAD_SET:-}" ]]; then
+        request_line="$_API_PREREAD_LINE"; unset _API_PREREAD_SET _API_PREREAD_LINE   # read by the heartbeat's fast path
+    elif ! read -r -t 10 request_line; then
         printf 'HTTP/1.1 408 Request Timeout\r\nContent-Length: 0\r\nConnection: close\r\n\r\n'
         return
     fi
