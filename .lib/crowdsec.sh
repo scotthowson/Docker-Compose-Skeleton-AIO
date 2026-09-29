@@ -388,7 +388,7 @@ _cs_version_ge() { [[ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -n 1)" == 
 
 # What a scenario is called in plain words, and which family it belongs to. ONE table: the page, the Discord messages
 # (crowdsec-config.sh builds the Go template's if/else chain from it) and the previews all read it. First match wins.
-_CS_LABEL_TABLE='[["crowdsecurity/ssh","SSH brute force","bruteforce"],["crowdsecurity/http-cve","Exploit attempt","exploit"],["crowdsecurity/CVE","Exploit attempt","exploit"],
+_CS_LABEL_TABLE='[["crowdsecurity/ssh-slow-bf","SSH slow brute force","bruteforce"],["crowdsecurity/ssh-cve","SSH exploit attempt","exploit"],["crowdsecurity/ssh","SSH brute force","bruteforce"],["crowdsecurity/http-cve","Exploit attempt","exploit"],["crowdsecurity/CVE","Exploit attempt","exploit"],
  ["crowdsecurity/http-sqli","SQL injection probe","probe"],["crowdsecurity/http-xss","Cross-site scripting probe","probe"],["crowdsecurity/http-path-traversal","Path traversal probe","probe"],
  ["crowdsecurity/http-backdoors","Backdoor probe","exploit"],["crowdsecurity/http-admin-interface","Admin panel probe","probe"],["crowdsecurity/http-bad-user-agent","Known bad scanner","probe"],
  ["crowdsecurity/http-probing","Web probing","probe"],["crowdsecurity/http-sensitive-files","Sensitive file probe","probe"],["crowdsecurity/http-crawl","Aggressive crawler","probe"],
@@ -397,7 +397,11 @@ _CS_LABEL_TABLE='[["crowdsecurity/ssh","SSH brute force","bruteforce"],["crowdse
  ["crowdsecurity/traefik","Traefik abuse","probe"]]'
 _CS_JQ_LABELS='
 def label_table: '"$_CS_LABEL_TABLE"';
-def scen_row: (. // "") as $s | ((label_table | map(. as $r | select($s | startswith($r[0]))) | .[0]) // ["", "Attack blocked", "other"]);
+def scen_row: (. // "") as $s | ((label_table | map(. as $r | select($s | startswith($r[0]))) | .[0])
+    // (if ($s | test("cve"; "i")) then ["", "Exploit attempt", "exploit"]
+        elif ($s | test("(^|[-_/])bf($|[-_])|brute"; "i")) then ["", "Brute force", "bruteforce"]
+        elif ($s | test("spam"; "i")) then ["", "Spam", "other"]
+        else ["", "Attack blocked", "other"] end));
 def scen_label: scen_row | .[1];
 def scen_family: scen_row | .[2];
 def alert_label: if (.kind // "") == "cscli" then "Manual ban" else ((.scenario // "") | scen_label) end;
@@ -517,7 +521,7 @@ _cs_preflight_json() {
     [[ -n "$tstack" ]] || blockers+=("There is no stack to deploy into. Create a stack first")
     local discord=false
     _discord_webhook >/dev/null 2>&1 && discord=true
-    [[ "$discord" == true ]] || warnings+=("No Discord webhook is set: CrowdSec will not send alerts anywhere until you add one on the Notifications tab")
+    [[ "$discord" == true ]] || warnings+=("No Discord webhook is set: CrowdSec will not send alerts anywhere until you add one on the Discord tab")
     jq -nc --argjson template "$tmeta" --argjson traefik "$CS_TRAEFIK" --arg target "$tstack" --arg stacks "$stacks" --argjson discord "$discord" \
         --arg blockers "$(printf '%s\n' "${blockers[@]}")" --arg warnings "$(printf '%s\n' "${warnings[@]}")" --arg dockerv "$(timeout 5 docker version --format '{{.Server.Version}}' 2>/dev/null)" \
         --argjson enforce "$([[ -n "$traefik_stack" ]] && echo true || echo false)" '
@@ -944,7 +948,13 @@ handle_crowdsec_decision_add() {
     args+=(--duration "$dur" "--reason=$reason" --type ban)
     if ! _cs_run out "${args[@]}"; then
         local e; e=$(_cs_errline)
-        if [[ "$e" == *allowlisted* ]]; then _api_response 409 "$(jq -nc --arg m "$e" '{error: true, code: 409, message: $m, reason: "allowlisted"}')"; return; fi
+        if [[ "$e" == *allowlisted* ]]; then
+            # cscli's advice is a command-line flag; on the page the way out is the allowlist
+            if [[ "$e" =~ ^(.+)\ is\ allowlisted\ by\ item\ (.+)\ from\ ([^\ ,]+) ]]; then
+                e="${BASH_REMATCH[1]} is on the allowlist (${BASH_REMATCH[2]}, list ${BASH_REMATCH[3]}), so it is never banned. Take it off the allowlist first if you really want to ban it."
+            fi
+            _api_response 409 "$(jq -nc --arg m "$e" '{error: true, code: 409, message: $m, reason: "allowlisted"}')"; return
+        fi
         _api_error 502 "CrowdSec refused the ban: $e"; return
     fi
     _cs_cache_clear

@@ -206,7 +206,7 @@ def emit($name; $cond; $dur; $expr; $notify; $on_success):
       else emit($g.name; $g.cond; $g.dur; $expr; false; "break") end ] as $blocks
 | ($blocks + (if $on and ($n.events.detect_only == true) then
       ["name: dcs_notify_detect_only\nfilters:\n  - " + (("Alert.Remediation == false" + (if $nf_detect != "" then " && " + $nf_detect else "" end)) | sq) + "\nnotifications:\n  - http_default\non_success: continue\n"] else [] end)) as $all
-| "# Managed by DCS: the CrowdSec page writes this file (Settings and Notifications tabs). Change it there; a backup of the previous file is kept.\n"
+| "# Managed by DCS: the CrowdSec page writes this file (Settings and Discord tabs). Change it there; a backup of the previous file is kept.\n"
   + "# dcs-settings: " + ({v: 1, profile: $p, notify: {enabled: $n.enabled, events: $n.events, filters: $n.filters}} | tojson) + "\n"
   + ($all | join("---\n"))
 '
@@ -227,7 +227,8 @@ _cs_validate_candidates() {
     local prof="$1" http="$2" tmp out rc cfg="/tmp/dcs-vtest"
     CS_CFG_ERR=""
     tmp=$(mktemp -d "${TMPDIR:-/tmp}/dcs-cs-val.XXXXXX") || { CS_CFG_ERR="no temporary directory"; return 1; }
-    timeout 10 docker exec "$CS_NAME" sh -c 'rm -rf /tmp/dcs-vtest && mkdir -p /tmp/dcs-vtest/notifications' >/dev/null 2>&1 </dev/null || { CS_CFG_ERR="could not prepare a scratch directory in the container"; rm -rf "$tmp"; return 1; }
+    # two plain commands, never a shell string
+    { timeout 10 docker exec "$CS_NAME" rm -rf "$cfg" && timeout 10 docker exec "$CS_NAME" mkdir -p "$cfg/notifications"; } >/dev/null 2>&1 </dev/null || { CS_CFG_ERR="could not prepare a scratch directory in the container"; rm -rf "$tmp"; return 1; }
     local live_cfg
     live_cfg=$(_cs_live_file /etc/crowdsec/config.yaml)
     [[ -n "$live_cfg" ]] || { CS_CFG_ERR="could not read CrowdSec's config.yaml"; rm -rf "$tmp"; return 1; }
@@ -592,7 +593,7 @@ _cs_webhook_resolve() {
 # =============================================================================
 
 # The fixed part of the template. @@NAME@@ marks what is filled in below (jq split/join: no regex, no & surprises).
-_CS_GOTPL_HEAD='{{- /* Managed by DCS: the CrowdSec page writes this file. Change the message on the Notifications tab. */ -}}
+_CS_GOTPL_HEAD='{{- /* Managed by DCS: the CrowdSec page writes this file. Change the message on the Discord tab. */ -}}
 @@STATICVARS@@
 {
   "username": @@USERNAME@@,
@@ -713,7 +714,7 @@ _cs_notify_render_yaml() {
     server="${SERVER_NAME:-}"; [[ -n "$server" ]] || server=$(hostname 2>/dev/null || echo DCS)
     tpl=$(_cs_notify_go_template "$s" "$domain" "$server") || return 1
     jq -nr --argjson s "$s" --arg url "$url" --arg tpl "$tpl" '
-        "# Managed by DCS: the CrowdSec page writes this file (Notifications tab). Change it there; a backup of the previous file is kept.\n"
+        "# Managed by DCS: the CrowdSec page writes this file (Discord tab). Change it there; a backup of the previous file is kept.\n"
         + "# dcs-notify: " + ({v: 1, settings: $s} | tojson) + "\n"
         + "type: http\nname: http_default\nlog_level: info\n"
         + "group_wait: \($s.delivery.group_wait)s\ngroup_threshold: \($s.delivery.group_threshold)\nmax_retry: \($s.delivery.max_retry)\ntimeout: \($s.delivery.timeout)s\n"
