@@ -2349,6 +2349,7 @@ cst_setup() {
 #!/bin/bash
 printf '%s\n' "\$(printf '%q ' "\$@")" >> "$CST/argv.log"      # one write per call: parallel calls do not mix their lines
 [[ "\$1" == cp ]] && printf '%s %s\n' "\$(stat -c %a "\$2" 2>/dev/null)" "\$3" >> "$CST/cp-modes.log"
+[[ "\$1 \$2" == "restart Traefik" && -e "$CST/fail-traefik-restart" ]] && { echo "Error response from daemon: cannot restart container Traefik" >&2; exit 1; }
 export FAKE_CS_DIR="$CST/fake"
 exec python3 "$CST_MOCK_RUN" "\$@"
 SH
@@ -2360,6 +2361,12 @@ args=(); cfg=""
 while (( \$# )); do
     if [[ "\$1" == -K && "\${2:-}" == - ]]; then cfg=\$(cat); shift 2; continue; fi
     args+=("\$1"); shift
+done
+for a in "\${args[@]}"; do
+    case "\$a" in
+        http://Traefik:8080/api/version) [[ -e "$CST/traefik-api/routers.json" ]] && { echo '{"Version":"3.1.4"}'; exit 0; }; exit 22 ;;
+        http://Traefik:8080/api/http/routers) [[ -e "$CST/traefik-api/routers.json" ]] && { cat "$CST/traefik-api/routers.json"; exit 0; }; exit 22 ;;
+    esac
 done
 port=\$(cat "$CST/discord.port" 2>/dev/null)
 url=\$(sed -n 's/^url = "\(.*\)"\$/\1/p' <<< "\$cfg")
@@ -2539,6 +2546,7 @@ cst_stack() {
         plain) mkdir -p "$CST/Stacks/demo"; printf 'services:\n  demo:\n    image: alpine:3\n' > "$CST/Stacks/demo/docker-compose.yml" ;;
         traefik|traefik-cs)
             mkdir -p "$st/App-Data/Traefik"; cp -r "$ROOT/.templates/traefik/config/." "$st/App-Data/Traefik/"
+            touch -d '30 days ago' "$st/App-Data/Traefik/traefik.yml"      # (the stand-in's Traefik started three days ago: a newer static config would mean "not loaded yet")
             printf 'services:\n  traefik:\n    container_name: Traefik\n    image: traefik:v3.1\n' > "$st/docker-compose.yml"
             [[ "$1" == traefik-cs ]] && printf '  crowdsec:\n    container_name: CrowdSec\n    image: crowdsecurity/crowdsec:latest\n' >> "$st/docker-compose.yml"
             printf 'TRAEFIK_DOMAIN=lab.example.test\nTRAEFIK_TRUSTED_LAN=10.1.0.0/24\n' > "$st/.env" ;;
@@ -2557,6 +2565,15 @@ cst_world() {
 # the stand-in itself, as the API would call it (docker exec CrowdSec cscli …)
 cst_dk() { "$CST/bin/docker" "$@"; }
 cst_cs() { "$CST/bin/docker" exec CrowdSec cscli "$@"; }
+
+# cst_lock_hold FILE — somebody else holds the lock on FILE (for 25 s at most; cst_lock_release lets go). The process that holds it is the one that sleeps: killing it frees the lock.
+cst_lock_hold() {
+    local i
+    ( exec 9> "$1"; flock -x 9; exec sleep 25 ) &
+    CST_HOLDER=$!
+    for i in $(seq 1 50); do flock -n -x "$1" true 2>/dev/null || break; sleep 0.1; done      # (until the lock is held)
+}
+cst_lock_release() { kill "$CST_HOLDER" 2>/dev/null; wait "$CST_HOLDER" 2>/dev/null; return 0; }
 
 cst_secrets_n() { find "$CST/.secrets" -maxdepth 1 -name "$1" 2>/dev/null | wc -l | tr -d ' '; }   # how many of the secrets DCS keeps match a name
 
@@ -3985,6 +4002,754 @@ cst_part_hub() {
     cst_simulation
 }
 
+# ---- the Traefik bouncer plugin: what Traefik's own files say about it, its settings, and which routes it checks -----------------------------
+
+cst_tr()  { printf '%s' "$CST/Stacks/networking-security/App-Data/Traefik"; }                 # Traefik's App-Data in the test install
+cst_mwf() { printf '%s' "$(cst_tr)/custom_routes/networking-security/crowdsec-bouncer.yml"; }  # the middleware file DCS writes when it registers the bouncer
+cst_uncache() { rm -rf "$CST/.data/cache"; }                                                   # the API's cached answers (status 5 s, routes 10 s)
+cst_mw_key() { sed -n 's/^ *crowdsecLapiKey: *//p' "$1" | tr -d '"'; }                        # the bouncer's key, as a middleware file has it
+
+# cst_tf_set BLOCK — the "experimental:" section of Traefik's static config becomes BLOCK (nothing: it is taken out); the file stays older than Traefik's start
+cst_tf_set() {
+    local tf; tf="$(cst_tr)/traefik.yml"
+    awk -v blk="$1" '/^experimental:/ { if (blk != "") print blk; skip = 1; next } skip && /^[^ \t#]/ { skip = 0 } !skip { print }' "$tf" > "$tf.new" && mv -f "$tf.new" "$tf"
+    touch -d '30 days ago' "$tf"; cst_uncache
+}
+
+# the paths of every file below Traefik's stack and the state DCS keeps for CrowdSec (a fingerprint: what is there, not what it holds)
+cst_files() { find "$CST/Stacks" "$CST/.data/crowdsec" -type f 2>/dev/null | LC_ALL=C sort | sha1sum | cut -c1-40; }
+
+# how many of the files that the arguments name are there (a glob that matches nothing stays as it is, and is not a file)
+cst_count() { local f n=0; for f in "$@"; do [[ -e "$f" ]] && n=$(( n + 1 )); done; printf '%s' "$n"; }
+
+# cst_tf_newer — Traefik's static configuration changed after Traefik started (it started ten minutes ago, the file was written now)
+cst_tf_newer() {
+    local s="$CST/fake/state.json"
+    touch "$(cst_tr)/traefik.yml"
+    jq --argjson t "$(( $(date +%s) - 600 ))" '.containers.Traefik.started = $t' "$s" > "$s.new" && mv -f "$s.new" "$s"
+    cst_uncache
+}
+
+# cst_pulled NAME SECONDS — the stand-in says that the bouncer NAME last asked CrowdSec for decisions SECONDS ago
+cst_pulled() {
+    local s="$CST/fake/state.json"
+    jq --arg n "$1" --argjson t "$(( $(date +%s) - $2 ))" '(.cs.bouncers[] | select(.name == $n) | .last_pull) = $t' "$s" > "$s.new" && mv -f "$s.new" "$s"
+    cst_uncache
+}
+
+# the world of this part: CrowdSec with data, Traefik with the shipped configuration, the bouncer registered (unless "bare")
+cst_plugin_world() {
+    cst_world data traefik --traefik
+    [[ "${1:-}" == bare ]] && return 0
+    cst_call admin POST /crowdsec/bouncers/register-traefik
+    [[ "$CST_ST" == 200 ]] || check "plugin: the bouncer can be registered in the test world" 200 "$CST_ST"
+    cst_uncache
+}
+
+# ---- what Traefik's own files say (the status) -------------------------------------------------------------------------------------
+
+cst_plugin_status() {
+    local i what block ok name ver crlf mw k mark
+    local -a decl=(
+        'another name for the module|experimental:\n  plugins:\n    crowdsec:\n      moduleName: github.com/maxlerebourg/crowdsec-bouncer-traefik-plugin\n      version: v1.5.0|true|crowdsec|v1.5.0|no'
+        'single quotes, capitals, after another plugin|experimental:\n  plugins:\n    geoblock:\n      moduleName: "github.com/PascalMinder/geoblock"\n      version: "v0.3.3"\n    bouncer:\n      moduleName: \047github.com/MaxLeRebourg/CrowdSec-Bouncer-Traefik-Plugin\047\n      version: \047v1.4.0\047|true|bouncer|v1.4.0|no'
+        'other plugins only|experimental:\n  plugins:\n    geoblock:\n      moduleName: "github.com/PascalMinder/geoblock"\n      version: "v0.3.3"|false|||no'
+        'the plugin commented out|experimental:\n  plugins:\n    #crowdsec-bouncer-traefik-plugin:\n    #  moduleName: "github.com/maxlerebourg/crowdsec-bouncer-traefik-plugin"\n    #  version: "v1.4.4"\n    geoblock:\n      moduleName: "github.com/PascalMinder/geoblock"\n      version: "v0.3.3"|false|||no'
+        'no version|experimental:\n  plugins:\n    crowdsec-bouncer-traefik-plugin:\n      moduleName: "github.com/maxlerebourg/crowdsec-bouncer-traefik-plugin"|true|crowdsec-bouncer-traefik-plugin||no'
+        'outside the experimental section|plugins:\n  crowdsec-bouncer-traefik-plugin:\n    moduleName: "github.com/maxlerebourg/crowdsec-bouncer-traefik-plugin"\n    version: "v1.4.4"|false|||no'
+        'a module with a longer name|experimental:\n  plugins:\n    crowdsec:\n      moduleName: "github.com/maxlerebourg/crowdsec-bouncer-traefik-plugin-fork"\n      version: "v1"|false|||no'
+        'no experimental section at all||false|||no'
+        'a comment after experimental:|experimental:  # what Traefik downloads\n  plugins:\n    crowdsec-bouncer-traefik-plugin:\n      moduleName: "github.com/maxlerebourg/crowdsec-bouncer-traefik-plugin"\n      version: "v1.4.4"|true|crowdsec-bouncer-traefik-plugin|v1.4.4|no'
+        'comments after the module and the version|experimental:\n  plugins:\n    crowdsec-bouncer-traefik-plugin:\n      moduleName: "github.com/maxlerebourg/crowdsec-bouncer-traefik-plugin"  # the bouncer\n      version: "v1.4.4"  # pinned|true|crowdsec-bouncer-traefik-plugin|v1.4.4|no'
+        'Windows line ends|experimental:\n  plugins:\n    crowdsec-bouncer-traefik-plugin:\n      moduleName: "github.com/maxlerebourg/crowdsec-bouncer-traefik-plugin"\n      version: "v1.4.4"|true|crowdsec-bouncer-traefik-plugin|v1.4.4|yes'
+    )
+    # -- as shipped, the bouncer not registered yet: Traefik knows the plugin, there is no middleware to configure
+    cst_plugin_world bare
+    cst_call admin GET /crowdsec/status
+    cst_is "plugin/status: Traefik's configuration as shipped" 200
+    cst_j "plugin/status: the plugin is declared" '.enforcement.plugin.declared' true '.enforcement.plugin.name' crowdsec-bouncer-traefik-plugin '.enforcement.plugin.version' v1.4.4 \
+        '.enforcement.plugin.module' github.com/maxlerebourg/crowdsec-bouncer-traefik-plugin '.enforcement.plugin.traefik_running' true '.enforcement.plugin.loaded' true
+    cst_j "plugin/status: …there is no middleware file yet" '.enforcement.plugin.settings' '{}' '.enforcement.plugin.mode' null '.enforcement.plugin.managed' false '.enforcement.plugin.key_present' false \
+        '.enforcement.middleware_present' false '.enforcement.middleware_mtime' 0 '.issues | map(.code) | join(",")' bouncer_unchained,hub_updates
+    # -- registered: what the middleware file says
+    cst_call admin POST /crowdsec/bouncers/register-traefik
+    cst_is "plugin/status: registering the bouncer" 200
+    mw=$(cst_mwf); k=$(cst_mw_key "$mw"); cst_uncache
+    cst_call admin GET /crowdsec/status
+    cst_j "plugin/status: the middleware file as the template writes it" '.enforcement.plugin.mode' live '.enforcement.plugin.managed' false '.enforcement.plugin.key_present' true '.enforcement.plugin.loaded' true \
+        '.enforcement.plugin.settings.enabled' true '.enforcement.plugin.settings.log_level' INFO '.enforcement.plugin.settings.update_interval' 60 '.enforcement.plugin.settings.default_decision_seconds' 60 \
+        '.enforcement.plugin.settings.http_timeout' 10 '.enforcement.plugin.settings.mode' live '.enforcement.plugin.settings.has_key' true \
+        '.enforcement.plugin.settings.client_trusted_ips | join(",")' 10.1.0.0/24 '.enforcement.plugin.settings.forwarded_headers_trusted_ips | length' 23 \
+        '.enforcement.plugin.settings.forwarded_headers_trusted_ips | last' 10.1.0.0/24 '.enforcement.middleware_present' true '.enforcement.in_chain' true
+    cst_t "plugin/status: …the middleware's age is the file's" '.enforcement.middleware_mtime > 1700000000 and .enforcement.middleware_mtime <= now'
+    check "plugin/status: …and the bouncer's key is nowhere in it" 0 "$(grep -cF -- "$k" <<< "$CST_BODY")"
+    cst_j "plugin/status: a bouncer that has not been asked for anything is idle, nothing else is wrong" '.issues | map(.code) | join(",")' bouncer_idle,hub_updates
+    cst_call viewer GET /crowdsec/status
+    cst_j "plugin/status: a viewer sees the same" '.enforcement.plugin.declared' true '.enforcement.plugin.loaded' true '.enforcement.plugin.key_present' true
+    check "plugin/status: …without the key" 0 "$(grep -cF -- "$k" <<< "$CST_BODY")"
+    # -- every way Traefik's static configuration may declare the plugin
+    for i in "${!decl[@]}"; do
+        IFS='|' read -r what block ok name ver crlf <<< "${decl[$i]}"
+        block=$(printf '%b' "$block"); [[ "$crlf" != yes ]] || block=$(sed 's/$/\r/' <<< "$block")
+        cst_tf_set "$block"
+        cst_call admin GET /crowdsec/status
+        cst_j "plugin/status/declared ($what)" '.enforcement.plugin.declared' "$ok" '.enforcement.plugin.name' "$name" '.enforcement.plugin.version' "$ver" \
+            '.enforcement.plugin.loaded' "$([[ "$ok" == true ]] && echo true || echo null)"
+    done
+    # -- the plugin is not declared: the middleware would be refused, every route in the chain would answer 404
+    cst_plugin_world
+    cst_tf_set $'experimental:\n  plugins:\n    geoblock:\n      moduleName: "github.com/PascalMinder/geoblock"\n      version: "v0.3.3"'
+    cst_call admin GET /crowdsec/status
+    cst_j "plugin/status/undeclared: the warning and its fix" '.issues | map(.code) | join(",")' plugin_undeclared,bouncer_idle,hub_updates '.issues[0].severity' warning '.issues[0].fix.id' register_bouncer \
+        '.issues[0].fix.kind' api '.issues[0].fix.method' POST '.issues[0].fix.path' /crowdsec/bouncers/register-traefik '.issues[0].fix.primary' true '.issues[0].title | length > 5' true '.issues[0].detail | test("404")' true
+    mark=$(cst_argv_n)
+    cst_call admin POST /crowdsec/bouncers/register-traefik
+    cst_is "plugin/status/undeclared: the fix" 200
+    cst_t "plugin/status/undeclared: …says that Traefik was restarted to load the plugin" '.message | test("Traefik restarted to load the bouncer plugin")'
+    check "plugin/status/undeclared: …the plugin is declared once, in the version the template pins" "1 v1.4.4" "$(grep -c 'moduleName: "github.com/maxlerebourg/crowdsec-bouncer-traefik-plugin"' "$(cst_tr)/traefik.yml") $(sed -n '/crowdsec-bouncer-traefik-plugin"/{n;s/.*version: "\(.*\)"/\1/p}' "$(cst_tr)/traefik.yml")"
+    check "plugin/status/undeclared: …and Traefik was restarted once" 1 "$(cst_argv_since "$mark" | grep -c '^restart Traefik')"
+    check "plugin/status/undeclared: …the other plugins are still there" 1 "$(grep -c 'PascalMinder/geoblock' "$(cst_tr)/traefik.yml")"
+    cst_uncache; cst_call admin GET /crowdsec/status
+    cst_j "plugin/status/undeclared: after the fix nothing is wrong" '.enforcement.plugin.declared' true '.enforcement.plugin.loaded' true '.issues | map(.code) | join(",")' bouncer_idle,hub_updates
+    # -- declared after Traefik started: Traefik loads plugins only when it starts
+    cst_tf_newer
+    cst_call admin GET /crowdsec/status
+    cst_j "plugin/status/not loaded: the warning and its fix" '.enforcement.plugin.declared' true '.enforcement.plugin.loaded' false '.issues | map(.code) | join(",")' plugin_not_loaded,bouncer_idle,hub_updates \
+        '.issues[0].fix.id' restart_traefik '.issues[0].fix.kind' api '.issues[0].fix.method' POST '.issues[0].fix.path' /crowdsec/traefik/restart '.issues[0].fix.primary' true
+    cst_call admin POST /crowdsec/traefik/restart
+    cst_is "plugin/status/not loaded: the fix" 200
+    cst_uncache; cst_call admin GET /crowdsec/status
+    cst_j "plugin/status/not loaded: after the restart the plugin is loaded" '.enforcement.plugin.loaded' true '.issues | map(.code) | join(",")' bouncer_idle,hub_updates
+    # -- Traefik is not running: nothing can be said about what it loaded, and it is not asked for anything
+    cst_tf_newer; cst_dk stop Traefik >/dev/null; cst_uncache
+    cst_call admin GET /crowdsec/status
+    cst_j "plugin/status/stopped: a Traefik that is not running loaded nothing, and is not blamed" '.enforcement.plugin.traefik_running' false '.enforcement.plugin.loaded' null '.enforcement.plugin.declared' true \
+        '.issues | map(.code) | join(",")' bouncer_idle,hub_updates
+    cst_dk start Traefik >/dev/null; touch -d '30 days ago' "$(cst_tr)/traefik.yml"; cst_uncache
+    # -- the bouncer was registered again after the middleware file was written: the key in the file is a dead one
+    touch -d '10 minutes ago' "$mw"; cst_uncache
+    cst_call admin GET /crowdsec/status
+    cst_j "plugin/status/key stale: the warning and its fix" '.issues | map(.code) | join(",")' bouncer_key_stale,bouncer_idle,hub_updates '.issues[0].fix.id' register_bouncer '.issues[0].severity' warning \
+        '.issues[0].detail | test("key")' true '.enforcement.plugin.key_present' true
+    touch -d '60 seconds ago' "$mw"; cst_uncache
+    cst_call admin GET /crowdsec/status
+    cst_j "plugin/status/key stale: a file a minute older than the bouncer is fine (two minutes of grace)" '.issues | map(.code) | join(",")' bouncer_idle,hub_updates
+    touch -d '10 minutes ago' "$mw"
+    cst_call admin POST /crowdsec/bouncers/register-traefik
+    cst_uncache; cst_call admin GET /crowdsec/status
+    cst_j "plugin/status/key stale: registering again writes a fresh key and the warning is gone" '.issues | map(.code) | join(",")' bouncer_idle,hub_updates
+    check "plugin/status/key stale: …the key changed" yes "$([[ -n "$(cst_mw_key "$mw")" && "$(cst_mw_key "$mw")" != "$k" ]] && echo yes || echo no)"
+    # -- Traefik has not asked for a decision for over half an hour
+    cst_pulled dcs-traefik-bouncer 2400
+    cst_call admin GET /crowdsec/status
+    cst_j "plugin/status/stale: the warning" '.issues | map(.code) | join(",")' bouncer_stale,hub_updates '.issues[0].fix.id' register_bouncer '.issues[0].fix.primary' false '.issues[0].severity' warning
+    cst_pulled dcs-traefik-bouncer 1700
+    cst_call admin GET /crowdsec/status
+    cst_j "plugin/status/stale: 28 minutes are not yet" '.issues | map(.code) | join(",")' hub_updates
+    cst_pulled dcs-traefik-bouncer 1900
+    cst_call admin GET /crowdsec/status
+    cst_j "plugin/status/stale: 32 minutes are" '.issues | map(.code) | join(",")' bouncer_stale,hub_updates
+    cst_dk stop Traefik >/dev/null; cst_uncache
+    cst_call admin GET /crowdsec/status
+    cst_j "plugin/status/stale: …but not while Traefik is stopped" '.issues | map(.code) | join(",")' hub_updates
+    cst_dk start Traefik >/dev/null; cst_tf_newer
+    cst_call admin GET /crowdsec/status
+    cst_j "plugin/status: several warnings at once come in a fixed order" '.issues | map(.code) | join(",")' plugin_not_loaded,bouncer_stale,hub_updates
+}
+
+# ---- GET /crowdsec/plugin: the settings, the defaults, the limits ------------------------------------------------------------------
+
+cst_plugin_get() {
+    local mw k dflt
+    cst_world data none
+    cst_call admin GET /crowdsec/plugin
+    cst_is "plugin/get: no Traefik on this server" 200
+    cst_j "plugin/get: …nothing to set up, and why" '.available' false '.reason | test("Traefik was not found")' true '.plugin.declared' false '.plugin.settings' '{}'
+    cst_call admin PUT /crowdsec/plugin '{"settings":{"mode":"stream"}}'
+    cst_is "plugin/put: no Traefik on this server" 409
+    cst_world data traefik --traefik
+    cst_call admin GET /crowdsec/plugin
+    cst_is "plugin/get: Traefik, the bouncer not registered" 200
+    cst_j "plugin/get: …it must be registered first" '.available' false '.reason | test("not registered yet")' true '.plugin.declared' true '.plugin.name' crowdsec-bouncer-traefik-plugin
+    cst_call admin PUT /crowdsec/plugin '{"settings":{"mode":"stream"}}'
+    cst_is "plugin/put: the bouncer is not registered" 409
+    cst_t "plugin/put: …and the answer says to register it first" '.message | test("register it first")'
+    cst_call admin PUT /crowdsec/plugin '{"settings":{"mode":"turbo"}}'
+    cst_is "plugin/put: …a bad setting is not looked at before that" 409
+    cst_call admin PUT /crowdsec/plugin 'nope'
+    cst_is "plugin/put: …but a body that is no JSON object is refused first" 400
+    check "plugin/put: none of it wrote anything" "0 0" "$(find "$(cst_tr)/custom_routes" -name 'crowdsec-bouncer.yml*' | wc -l | tr -d ' ') $([[ -e "$CST/.data/crowdsec/plugin.json" ]] && echo 1 || echo 0)"
+    # -- registered: what the template wrote, what the page shows
+    cst_call admin POST /crowdsec/bouncers/register-traefik
+    mw=$(cst_mwf); k=$(cst_mw_key "$mw")
+    cst_call admin GET /crowdsec/plugin
+    cst_is "plugin/get: registered" 200
+    cst_j "plugin/get: the file and who manages it" '.available' true '.file | endswith("networking-security/crowdsec-bouncer.yml")' true '.managed' false '.plugin.managed' false '.plugin.key_present' true
+    cst_j "plugin/get: the settings the template wrote" '.settings.mode' live '.settings.update_interval' 60 '.settings.default_decision_seconds' 60 '.settings.http_timeout' 10 '.settings.remediation_status_code' 403 \
+        '.settings.log_level' INFO '.settings.trust_home' false '.settings.client_trusted_ips | length' 0 '.settings.forwarded_headers_trusted_ips | length' 22 '.settings.forwarded_headers_trusted_ips | index("10.1.0.0/24")' null \
+        '.settings.forwarded_headers_trusted_ips | first' 173.245.48.0/20
+    cst_j "plugin/get: the defaults" '.defaults.mode' live '.defaults.update_interval' 60 '.defaults.default_decision_seconds' 60 '.defaults.http_timeout' 10 '.defaults.remediation_status_code' 403 \
+        '.defaults.log_level' INFO '.defaults.trust_home' true '.defaults.client_trusted_ips | length' 0 '.defaults.forwarded_headers_trusted_ips | length' 22 \
+        '(.defaults.forwarded_headers_trusted_ips | sort) == (.settings.forwarded_headers_trusted_ips | sort)' true
+    cst_j "plugin/get: the limits" '.limits.update_interval | join("-")' 10-3600 '.limits.default_decision_seconds | join("-")' 10-3600 '.limits.http_timeout | join("-")' 1-60 \
+        '.limits.remediation_status_code | join("-")' 400-599 '.limits.list_max' 64 '.limits.forwarded_max' 128
+    cst_j "plugin/get: the LAN Traefik trusts, no home address yet, no backups" '.lan' 10.1.0.0/24 '.home' '' '.backups' '[]'
+    cst_t "plugin/get: every setting is explained" '(.help | keys | sort) == ["client_trusted_ips","default_decision_seconds","forwarded_headers_trusted_ips","http_timeout","log_level","mode","remediation_status_code","update_interval"] and (.help | all(length > 20))'
+    check "plugin/get: the key is nowhere in the answer" 0 "$(grep -cF -- "$k" <<< "$CST_BODY")"
+    cst_call admin GET /crowdsec/status
+    local st_running st_loaded
+    st_running=$(jq -r '.enforcement.plugin.traefik_running' <<< "$CST_BODY"); st_loaded=$(jq -r '.enforcement.plugin.loaded' <<< "$CST_BODY")
+    cst_call admin GET /crowdsec/plugin
+    check "plugin/get: what it says about Traefik running the plugin is what the status says" "$st_running $st_loaded" "$(jq -r '"\(.plugin.traefik_running) \(.plugin.loaded)"' <<< "$CST_BODY")"
+    cst_call viewer GET /crowdsec/plugin
+    cst_is "plugin/get: a viewer may look" 200
+    cst_j "plugin/get: …at the same" '.available' true '.settings.mode' live '.lan' 10.1.0.0/24
+    check "plugin/get: …without the key" 0 "$(grep -cF -- "$k" <<< "$CST_BODY")"
+    cst_call none GET /crowdsec/plugin
+    cst_is "plugin/get: nobody may not" 401
+    cst_call admin POST /crowdsec/plugin '{}'
+    cst_is "plugin: POST is no way to change it" 404
+    cst_call admin DELETE /crowdsec/plugin
+    cst_is "plugin: nor is DELETE" 404
+    # -- the LAN: the proxy's stack first, then the install's .env
+    printf 'TRAEFIK_DOMAIN=lab.example.test\n' > "$CST/Stacks/networking-security/.env"; cst_env TRAEFIK_TRUSTED_LAN 172.20.0.0/16
+    cst_call admin GET /crowdsec/plugin
+    cst_j "plugin/get: no LAN in the proxy's stack: the install's .env" '.lan' 172.20.0.0/16
+    cst_env TRAEFIK_TRUSTED_LAN
+    dflt=$(jq -r '.variables[] | select(.name == "TRAEFIK_TRUSTED_LAN") | .default' "$ROOT/.templates/traefik/template.json")
+    cst_call admin GET /crowdsec/plugin
+    cst_j "plugin/get: no LAN anywhere: the template's own default" '.lan' "$dflt" '.lan | test("^[0-9.]+/[0-9]+$")' true
+    # -- the file is not in the form DCS writes: the settings are read as far as they are found, and are not changed
+    printf 'http:\n  middlewares:\n    crowdsec-bouncer:\n      plugin:\n        crowdsec-bouncer-traefik-plugin:\n          crowdsecMode: "stream"\n          updateIntervalSeconds: 30 # often\n          logLevel: DEBUG\n          crowdsecLapiKey: %s\n' "$k" > "$mw"
+    cst_call admin GET /crowdsec/plugin
+    cst_j "plugin/get: a hand-written file: quotes and comments are understood" '.settings.mode' stream '.settings.update_interval' 30 '.settings.log_level' DEBUG '.settings.default_decision_seconds' 60 '.managed' false
+}
+
+# ---- PUT /crowdsec/plugin: everything that is refused, and that nothing is written when it is -----------------------------------------
+
+cst_plugin_refuse() {
+    local i mw sha0 n0 many65 many129 b msg longkey i_json=0 i_unk=0 i_long=0
+    cst_plugin_world
+    mw=$(cst_mwf); sha0=$(sha1sum < "$mw"); n0=$(cst_files)
+    longkey=$(head -c 100 /dev/zero | tr '\0' 'k')
+    many65=$(jq -nc '[range(1; 66) | "198.18.\(. / 250 | floor).\(. % 250)"]')
+    many129=$(jq -nc '[range(1; 130) | "198.18.\(. / 250 | floor).\(. % 250)"]')
+    local -a cases=(
+        # label ⇒ body ⇒ what the message must contain
+        'no JSON ⇒ nope ⇒ Send a JSON body'
+        'an array ⇒ [] ⇒ Send a JSON body'
+        'a string ⇒ "x" ⇒ Send a JSON body'
+        'a number ⇒ 5 ⇒ Send a JSON body'
+        'nothing ⇒  ⇒ Send a JSON body'
+        'settings a number ⇒ {"settings":5} ⇒ settings must be an object'
+        'settings a list ⇒ {"settings":[]} ⇒ settings must be an object'
+        'settings a string ⇒ {"settings":"x"} ⇒ settings must be an object'
+        'an unknown setting ⇒ {"settings":{"foo":1}} ⇒ unknown setting: foo'
+        'an unknown setting with a command in its name ⇒ {"settings":{"a;touch x":1}} ⇒ unknown setting'
+        'a long name is cut ⇒ {"settings":{"'"$longkey"'":1}} ⇒ unknown setting: '"${longkey:0:40}"
+        'the key of the bouncer is not a setting ⇒ {"settings":{"crowdsecLapiKey":"x"}} ⇒ unknown setting'
+        'mode turbo ⇒ {"settings":{"mode":"turbo"}} ⇒ mode must be live or stream'
+        'mode a number ⇒ {"settings":{"mode":5}} ⇒ mode must be live or stream'
+        'mode null ⇒ {"settings":{"mode":null}} ⇒ mode must be live or stream'
+        'mode in capitals ⇒ {"settings":{"mode":"Live"}} ⇒ mode must be live or stream'
+        'mode empty ⇒ {"settings":{"mode":""}} ⇒ mode must be live or stream'
+        'mode a list ⇒ {"settings":{"mode":["live"]}} ⇒ mode must be live or stream'
+        'mode a command ⇒ {"settings":{"mode":"live\n  evil: true"}} ⇒ mode must be live or stream'
+        'log level in small letters ⇒ {"settings":{"log_level":"info"}} ⇒ log_level must be'
+        'log level TRACE ⇒ {"settings":{"log_level":"TRACE"}} ⇒ log_level must be'
+        'log level empty ⇒ {"settings":{"log_level":""}} ⇒ log_level must be'
+        'log level null ⇒ {"settings":{"log_level":null}} ⇒ log_level must be'
+        'trust_home a word ⇒ {"settings":{"trust_home":"yes"}} ⇒ trust_home must be true or false'
+        'trust_home 1 ⇒ {"settings":{"trust_home":1}} ⇒ trust_home must be true or false'
+        'trust_home null ⇒ {"settings":{"trust_home":null}} ⇒ trust_home must be true or false'
+        'trust_home "true" ⇒ {"settings":{"trust_home":"true"}} ⇒ trust_home must be true or false'
+        'update_interval 9 ⇒ {"settings":{"update_interval":9}} ⇒ update_interval must be between 10 and 3600'
+        'update_interval 3601 ⇒ {"settings":{"update_interval":3601}} ⇒ update_interval must be between 10 and 3600'
+        'update_interval 0 ⇒ {"settings":{"update_interval":0}} ⇒ update_interval must be between 10 and 3600'
+        'update_interval a fraction ⇒ {"settings":{"update_interval":60.5}} ⇒ update_interval must be a whole number'
+        'update_interval a string ⇒ {"settings":{"update_interval":"60"}} ⇒ update_interval must be a whole number'
+        'update_interval negative ⇒ {"settings":{"update_interval":-1}} ⇒ update_interval must be a whole number'
+        'update_interval true ⇒ {"settings":{"update_interval":true}} ⇒ update_interval must be a whole number'
+        'update_interval null ⇒ {"settings":{"update_interval":null}} ⇒ update_interval must be a whole number'
+        'update_interval a list ⇒ {"settings":{"update_interval":[60]}} ⇒ update_interval must be a whole number'
+        'update_interval a huge number ⇒ {"settings":{"update_interval":99999999999999999999}} ⇒ update_interval must be'
+        'default_decision_seconds 9 ⇒ {"settings":{"default_decision_seconds":9}} ⇒ default_decision_seconds must be between 10 and 3600'
+        'default_decision_seconds 3601 ⇒ {"settings":{"default_decision_seconds":3601}} ⇒ default_decision_seconds must be between 10 and 3600'
+        'default_decision_seconds a fraction ⇒ {"settings":{"default_decision_seconds":10.5}} ⇒ default_decision_seconds must be a whole number'
+        'http_timeout 0 ⇒ {"settings":{"http_timeout":0}} ⇒ http_timeout must be between 1 and 60'
+        'http_timeout 61 ⇒ {"settings":{"http_timeout":61}} ⇒ http_timeout must be between 1 and 60'
+        'http_timeout a fraction ⇒ {"settings":{"http_timeout":5.5}} ⇒ http_timeout must be a whole number'
+        'status code 399 ⇒ {"settings":{"remediation_status_code":399}} ⇒ remediation_status_code must be between 400 and 599'
+        'status code 600 ⇒ {"settings":{"remediation_status_code":600}} ⇒ remediation_status_code must be between 400 and 599'
+        'status code 200 ⇒ {"settings":{"remediation_status_code":200}} ⇒ remediation_status_code must be between 400 and 599'
+        'status code a fraction ⇒ {"settings":{"remediation_status_code":429.5}} ⇒ remediation_status_code must be a whole number'
+        'client list a string ⇒ {"settings":{"client_trusted_ips":"1.2.3.4"}} ⇒ client_trusted_ips: must be a list'
+        'client list an object ⇒ {"settings":{"client_trusted_ips":{"a":1}}} ⇒ client_trusted_ips: must be a list'
+        'client list null ⇒ {"settings":{"client_trusted_ips":null}} ⇒ client_trusted_ips: must be a list'
+        'client list a word ⇒ {"settings":{"client_trusted_ips":["not-an-ip"]}} ⇒ client_trusted_ips: not an IP address or network'
+        'client list everything ⇒ {"settings":{"client_trusted_ips":["0.0.0.0/0"]}} ⇒ far too wide'
+        'client list all of IPv6 ⇒ {"settings":{"client_trusted_ips":["::/1"]}} ⇒ far too wide'
+        'client list a /7 ⇒ {"settings":{"client_trusted_ips":["10.0.0.0/7"]}} ⇒ far too wide'
+        'client list an IPv6 /15 ⇒ {"settings":{"client_trusted_ips":["2001:db8::/15"]}} ⇒ far too wide'
+        'client list a number ⇒ {"settings":{"client_trusted_ips":[12]}} ⇒ not an IP address or network'
+        'client list an object in it ⇒ {"settings":{"client_trusted_ips":[{"a":1}]}} ⇒ not an IP address or network'
+        'client list a /33 ⇒ {"settings":{"client_trusted_ips":["1.2.3.4/33"]}} ⇒ not an IP address or network'
+        'client list an octet of 999 ⇒ {"settings":{"client_trusted_ips":["999.1.1.1"]}} ⇒ not an IP address or network'
+        'client list a URL ⇒ {"settings":{"client_trusted_ips":["http://1.2.3.4"]}} ⇒ not an IP address or network'
+        'client list only blanks ⇒ {"settings":{"client_trusted_ips":["   "]}} ⇒ not an IP address or network'
+        'client list a comment ⇒ {"settings":{"client_trusted_ips":["1.2.3.4 # mine"]}} ⇒ not an IP address or network'
+        'client list a line of YAML ⇒ {"settings":{"client_trusted_ips":["10.0.0.1\n    evil: true"]}} ⇒ not an IP address or network'
+        'client list a command substitution ⇒ {"settings":{"client_trusted_ips":["$(touch '"$CST"'/pwned-plugin)"]}} ⇒ not an IP address or network'
+        'client list backticks ⇒ {"settings":{"client_trusted_ips":["`touch '"$CST"'/pwned-plugin`"]}} ⇒ not an IP address or network'
+        'client list a second command ⇒ {"settings":{"client_trusted_ips":["1.2.3.4;touch '"$CST"'/pwned-plugin"]}} ⇒ not an IP address or network'
+        'client list a quote and a colon ⇒ {"settings":{"client_trusted_ips":["\"1.2.3.4\": {a: b}"]}} ⇒ not an IP address or network'
+        "client list 65 entries ⇒ {\"settings\":{\"client_trusted_ips\":$many65}} ⇒ at most 64 entries"
+        'forwarded list a string ⇒ {"settings":{"forwarded_headers_trusted_ips":"1.2.3.4"}} ⇒ forwarded_headers_trusted_ips: must be a list'
+        'forwarded list null ⇒ {"settings":{"forwarded_headers_trusted_ips":null}} ⇒ forwarded_headers_trusted_ips: must be a list'
+        'forwarded list a /33 ⇒ {"settings":{"forwarded_headers_trusted_ips":["1.2.3.4/33"]}} ⇒ forwarded_headers_trusted_ips: not an IP address or network'
+        'forwarded list everything ⇒ {"settings":{"forwarded_headers_trusted_ips":["0.0.0.0/0"]}} ⇒ far too wide'
+        'forwarded list a command ⇒ {"settings":{"forwarded_headers_trusted_ips":["$(touch '"$CST"'/pwned-plugin)"]}} ⇒ not an IP address or network'
+        "forwarded list 129 entries ⇒ {\"settings\":{\"forwarded_headers_trusted_ips\":$many129}} ⇒ at most 128 entries"
+    )
+    for i in "${!cases[@]}"; do
+        b="${cases[$i]#* ⇒ }"; b="${b% ⇒ *}"
+        case "${cases[$i]%% ⇒ *}" in "no JSON") i_json=$i ;; "an unknown setting") i_unk=$i ;; "a long name is cut") i_long=$i ;; esac
+        cst_q "pr$i" admin PUT /crowdsec/plugin "$b"
+    done
+    cst_q pr-viewer viewer PUT /crowdsec/plugin '{"settings":{"mode":"stream"}}'
+    cst_q pr-nobody none PUT /crowdsec/plugin '{"settings":{"mode":"stream"}}'
+    cst_q pr-viewer-bad viewer PUT /crowdsec/plugin '{"settings":{"mode":"turbo"}}'
+    cst_q pr-get-body admin GET /crowdsec/plugin '{"settings":{"mode":"stream"}}'
+    cst_run
+    for i in "${!cases[@]}"; do
+        msg="${cases[$i]##* ⇒ }"
+        cst_use "pr$i"
+        check "plugin/refuse: ${cases[$i]%% ⇒ *}" "400 yes" "$CST_ST $(jq -r --arg m "$msg" '.message | contains($m) | if . then "yes" else "no" end' <<< "$CST_BODY" 2>/dev/null)"
+        [[ "$CST_ST" == 400 && "$(jq -r --arg m "$msg" '.message | contains($m)' <<< "$CST_BODY" 2>/dev/null)" == true ]] || printf '       (the answer said: %s)\n' "$(jq -r '.message // empty' <<< "$CST_BODY" 2>/dev/null | head -c 200)"
+    done
+    cst_use pr-viewer;     cst_is "plugin/refuse: a viewer may not" 403
+    cst_use pr-nobody;     cst_is "plugin/refuse: nobody may not" 401
+    cst_use pr-viewer-bad; cst_is "plugin/refuse: a viewer is told it may not before its settings are looked at" 403
+    cst_use pr-get-body;   cst_is "plugin/refuse: a GET with a body changes nothing" 200
+    cst_use "pr$i_json"; cst_j "plugin/refuse: a body that is no JSON has no reason (it is not a setting)" '.error' true '.code' 400 '.reason' null
+    cst_use "pr$i_unk";  cst_j "plugin/refuse: a refused setting says so" '.error' true '.code' 400 '.reason' invalid
+    cst_use "pr$i_long"; cst_t "plugin/refuse: a long name is cut in the message" '.message | length < 80'
+    check "plugin/refuse: the middleware file is byte for byte what it was" "$sha0" "$(sha1sum < "$mw")"
+    check "plugin/refuse: …no file was made anywhere (a backup, a state file, a temporary one, the result of a command)" "$n0" "$(cst_files)"
+    check "plugin/refuse: …no command in a value ran" no "$([[ -e "$CST/pwned-plugin" ]] && echo yes || echo no)"
+    cst_call admin GET /crowdsec/plugin
+    cst_j "plugin/refuse: …and the settings are the ones there were" '.managed' false '.settings.mode' live '.backups' '[]'
+}
+
+# ---- PUT /crowdsec/plugin: saving ---------------------------------------------------------------------------------------------------
+
+cst_plugin_apply() {
+    local mw rd bk k0 sha0 ino0 ino1 a0 i fake newbk
+    cst_plugin_world
+    mw=$(cst_mwf); rd=${mw%/*}; bk="$CST/.data/crowdsec/backups"
+    k0=$(cst_mw_key "$mw"); sha0=$(sha1sum < "$mw"); ino0=$(stat -c %i "$mw")
+    a0=$(cst_audit_n '"action":"auth.crowdsec_plugin"')
+    # -- the first save takes the file over: a marker on top, the managed keys, everything else as it was
+    cst_call admin PUT /crowdsec/plugin '{}'
+    cst_is "plugin/save: even nothing asked for is a first save (the file becomes the page's)" 200
+    cst_j "plugin/save" '.success' true '.applied.changed' true '.managed' true '.plugin.managed' true '.applied.message | test("Saved")' true '.applied.backup | test("^plugin-[0-9]{8}T[0-9]{6}Z\\.yml$")' true \
+        '.settings.mode' live '.settings.trust_home' false
+    check "plugin/save: the marker is the first line of the file" 1 "$(head -n 1 "$mw" | grep -c '^# dcs-plugin: {"v":1,"settings":{')"
+    check "plugin/save: …and the only one" 1 "$(grep -c '^# dcs-plugin:' "$mw")"
+    check "plugin/save: …it holds what was saved" "live 60 60 10 403 INFO false" "$(head -n 1 "$mw" | sed 's/^# dcs-plugin: //' | jq -r '.settings | "\(.mode) \(.update_interval) \(.default_decision_seconds) \(.http_timeout) \(.remediation_status_code) \(.log_level) \(.trust_home)"')"
+    check "plugin/save: the key of the bouncer is the one it was" "$k0" "$(cst_mw_key "$mw")"
+    check "plugin/save: …and so is the rest of the file" 'crowdsecAppsecEnabled: "false" crowdsecLapiHost: "CrowdSec:8080" crowdsecLapiScheme: http enabled: "true"' \
+        "$(grep -E '^ +(enabled|crowdsecAppsecEnabled|crowdsecLapiHost|crowdsecLapiScheme):' "$mw" | sed 's/^ *//' | LC_ALL=C sort | tr '\n' ' ' | sed 's/ $//')"
+    check "plugin/save: every managed key is there once" "6 1 1" "$(grep -cE '^ +(crowdsecMode|updateIntervalSeconds|defaultDecisionSeconds|httpTimeoutSeconds|remediationStatusCode|logLevel):' "$mw") $(grep -cE '^ +forwardedHeadersTrustedIPs:' "$mw") $(grep -cE '^ +clientTrustedIPs:' "$mw")"
+    check "plugin/save: written atomically: private, nothing left behind" "600 0" "$(stat -c %a "$mw") $(find "$rd" -name '*.dcs-new*' | wc -l | tr -d ' ')"
+    check "plugin/save: …a new file took the old one's place" yes "$([[ "$(stat -c %i "$mw")" != "$ino0" ]] && echo yes || echo no)"
+    check "plugin/save: Traefik is told to look again (.reload, where the route writers touch it)" "yes yes" "$([[ -e "$rd/.reload" ]] && echo yes || echo no) $([[ -e "${rd%/*}/.reload" ]] && echo yes || echo no)"
+    check "plugin/save: the file before was kept, private, in a private folder" "1 600 700 yes" "$(cst_count "$bk"/plugin-*.yml) $(stat -c %a "$bk"/plugin-*.yml) $(stat -c %a "$bk") $([[ "$(sha1sum < "$(printf '%s\n' "$bk"/plugin-*.yml | head -n 1)")" == "$sha0" ]] && echo yes || echo no)"
+    check "plugin/save: it is written in the audit log (once)" $(( a0 + 1 )) "$(cst_audit_n '"action":"auth.crowdsec_plugin"')"
+    check "plugin/save: …with the settings, not the key" "yes no" "$(tail -n 1 "$CST/.data/audit.jsonl" | jq -r '.detail | contains("\"mode\":\"live\"") | if . then "yes" else "no" end') $(tail -n 1 "$CST/.data/audit.jsonl" | grep -cF -- "$k0" | sed 's/^0$/no/;s/^[1-9].*$/yes/')"
+    check "plugin/save: the page's state is on disk, private" "600 live" "$(stat -c %a "$CST/.data/crowdsec/plugin.json") $(jq -r '.settings.mode' "$CST/.data/crowdsec/plugin.json")"
+    check "plugin/save: the key is not in the answer" 0 "$(grep -cF -- "$k0" <<< "$CST_BODY")"
+    # -- the same again changes nothing at all
+    ino1=$(stat -c %i "$mw"); touch -d '1 hour ago' "$rd/.reload" "${rd%/*}/.reload"
+    cst_call admin PUT /crowdsec/plugin '{}'
+    cst_j "plugin/save: the same again" '.success' true '.applied.changed' false '.applied.backup' null '.applied.message' 'Nothing changed.'
+    check "plugin/save: …the file was not written (same file), no new backup, no new audit line, no new reload" "yes 1 $(( a0 + 1 )) yes" \
+        "$([[ "$(stat -c %i "$mw")" == "$ino1" ]] && echo yes || echo no) $(cst_count "$bk"/plugin-*.yml) $(cst_audit_n '"action":"auth.crowdsec_plugin"') $([[ -n "$(find "$rd/.reload" -mmin +30)" ]] && echo yes || echo no)"
+    # -- every setting at once
+    cst_call admin PUT /crowdsec/plugin '{"settings":{"mode":"stream","update_interval":30,"default_decision_seconds":120,"http_timeout":5,"remediation_status_code":429,"log_level":"WARN"}}'
+    cst_is "plugin/save: every setting" 200
+    cst_j "plugin/save: …in the answer" '.applied.changed' true '.settings.mode' stream '.settings.update_interval' 30 '.settings.default_decision_seconds' 120 '.settings.http_timeout' 5 '.settings.remediation_status_code' 429 '.settings.log_level' WARN
+    check "plugin/save: …in the file, each once" "stream 30 120 5 429 WARN" "$(for i in crowdsecMode updateIntervalSeconds defaultDecisionSeconds httpTimeoutSeconds remediationStatusCode logLevel; do grep -E "^ +$i:" "$mw" | sed 's/.*: *//'; done | tr '\n' ' ' | sed 's/ $//')"
+    check "plugin/save: …the key survived, the marker is on top once" "$k0 1 1" "$(cst_mw_key "$mw") $(grep -c '^# dcs-plugin:' "$mw") $(head -n 1 "$mw" | grep -c '^# dcs-plugin:')"
+    cst_call admin GET /crowdsec/plugin
+    cst_j "plugin/save: what the page shows next" '.managed' true '.settings.mode' stream '.settings.update_interval' 30 '.settings.log_level' WARN '.plugin.mode' stream '.plugin.settings.remediation_status_code' 429
+    # -- a part of the settings: the rest stays
+    cst_call admin PUT /crowdsec/plugin '{"settings":{"mode":"live"}}'
+    cst_j "plugin/save: one setting only" '.applied.changed' true '.settings.mode' live '.settings.update_interval' 30 '.settings.default_decision_seconds' 120 '.settings.remediation_status_code' 429
+    cst_call admin PUT /crowdsec/plugin '{"settings":null}'
+    cst_j "plugin/save: settings null is nothing asked for" '.success' true '.applied.changed' false
+    cst_call admin PUT /crowdsec/plugin '{"settings":{},"other":"ignored"}'
+    cst_j "plugin/save: …so is an empty object, and a field of another kind is ignored" '.success' true '.applied.changed' false
+    # -- the lists: normalised, without duplicates, sorted as the file keeps them; the LAN is not shown among them
+    cst_call admin PUT /crowdsec/plugin '{"settings":{"client_trusted_ips":["192.0.2.0/24","192.0.2.7","192.0.2.0/24","2001:DB8::/32","::ffff:198.51.100.7","10.1.0.0/24"]}}'
+    cst_is "plugin/save: a client list" 200
+    cst_j "plugin/save: …normalised and without duplicates (the LAN is always there and is not shown)" '.settings.client_trusted_ips | join(",")' 192.0.2.0/24,192.0.2.7,198.51.100.7,2001:db8::/32
+    check "plugin/save: …in the file: the LAN with them" "10.1.0.0/24 192.0.2.0/24 192.0.2.7 198.51.100.7 2001:db8::/32" \
+        "$(awk '/clientTrustedIPs:/ { f = 1; next } f && /^ +- / { sub(/^ +- /, ""); printf "%s ", $0; next } f { exit }' "$mw" | sed 's/ $//')"
+    cst_call admin PUT /crowdsec/plugin '{"settings":{"forwarded_headers_trusted_ips":["203.0.113.0/24"]}}'
+    cst_j "plugin/save: a list of proxies replaces the ones of the CDN" '.settings.forwarded_headers_trusted_ips | join(",")' 203.0.113.0/24
+    check "plugin/save: …in the file: the LAN with it" "10.1.0.0/24 203.0.113.0/24" \
+        "$(awk '/forwardedHeadersTrustedIPs:/ { f = 1; next } f && /^ +- / { sub(/^ +- /, ""); printf "%s ", $0; next } f { exit }' "$mw" | sed 's/ $//')"
+    cst_call admin PUT /crowdsec/plugin '{"settings":{"forwarded_headers_trusted_ips":[]}}'
+    cst_j "plugin/save: no proxies at all" '.settings.forwarded_headers_trusted_ips' '[]'
+    check "plugin/save: …in the file: the LAN alone" "10.1.0.0/24" "$(awk '/forwardedHeadersTrustedIPs:/ { f = 1; next } f && /^ +- / { sub(/^ +- /, ""); printf "%s ", $0; next } f { exit }' "$mw" | sed 's/ $//')"
+    cst_call admin GET /crowdsec/plugin
+    cst_call admin PUT /crowdsec/plugin "$(jq -c '{settings: {forwarded_headers_trusted_ips: .defaults.forwarded_headers_trusted_ips}}' <<< "$CST_BODY")"
+    cst_j "plugin/save: the defaults can be put back" '(.settings.forwarded_headers_trusted_ips | sort) == (.defaults.forwarded_headers_trusted_ips | sort)' true
+    cst_call admin PUT /crowdsec/plugin "$(jq -nc '{settings: {client_trusted_ips: [range(1; 65) | "198.18.\(. / 250 | floor).\(. % 250)"]}}')"
+    cst_j "plugin/save: 64 addresses are the most for a client list" '.success' true '.settings.client_trusted_ips | length' 64
+    cst_call admin PUT /crowdsec/plugin "$(jq -nc '{settings: {forwarded_headers_trusted_ips: [range(1; 129) | "198.18.\(. / 250 | floor).\(. % 250)"]}}')"
+    cst_j "plugin/save: 128 for the proxies" '.success' true '.settings.forwarded_headers_trusted_ips | length' 128
+    cst_call admin PUT /crowdsec/plugin '{"settings":{"client_trusted_ips":[],"forwarded_headers_trusted_ips":[]}}'
+    cst_j "plugin/save: emptied again" '.success' true '.settings.client_trusted_ips' '[]'
+    # -- the copies kept: ten at most, the oldest go, other files of the folder stay
+    rm -f "$bk"/plugin-*.yml
+    for i in $(seq 1 12); do
+        fake=$(printf '%s/plugin-202601%02dT000000Z.yml' "$bk" "$i")
+        printf '# a copy of %s\n' "$i" > "$fake"; touch -d "@$(( $(date +%s) - 86400 * (40 - i) ))" "$fake"
+    done
+    printf 'profiles copy\n' > "$bk/profiles-20260101T000000Z.yml"
+    cst_call admin PUT /crowdsec/plugin '{"settings":{"http_timeout":7}}'
+    cst_is "plugin/copies: a save with 12 copies kept" 200
+    newbk=$(jq -r '.applied.backup' <<< "$CST_BODY")
+    check "plugin/copies: ten are left: the new one and the nine newest of the others" "10 yes 0 1" \
+        "$(cst_count "$bk"/plugin-*.yml) $([[ -e "$bk/$newbk" ]] && echo yes || echo no) $(cst_count "$bk"/plugin-2026010[123]T000000Z.yml) $(cst_count "$bk"/plugin-20260104T000000Z.yml)"
+    check "plugin/copies: …the copies of other files are not touched" yes "$([[ -e "$bk/profiles-20260101T000000Z.yml" ]] && echo yes || echo no)"
+    cst_call admin GET /crowdsec/plugin
+    cst_j "plugin/copies: the page lists them, the newest first" '.backups | length' 10 '.backups[0].name' "$newbk" '.backups | map(.created_at) == (map(.created_at) | sort | reverse)' true \
+        '.backups | all(.name | test("^plugin-[0-9]{8}T[0-9]{6}Z\\.yml$"))' true '.backups | all(.size > 0)' true '.backups | all(.created_at | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))' true
+    check "plugin/copies: …names, times and sizes, no key" 0 "$(grep -cF -- "$k0" <<< "$CST_BODY")"
+}
+
+# ---- PUT /crowdsec/plugin: two changes at once, and a file that is not the one DCS wrote --------------------------------------------
+
+cst_plugin_files() {
+    local mw rd bk sha0 k0
+    cst_plugin_world
+    mw=$(cst_mwf); rd=${mw%/*}; bk="$CST/.data/crowdsec/backups"; k0=$(cst_mw_key "$mw")
+    # -- somebody else is saving right now: this one waits for the lock (8 s) and then says so; a reader does not wait at all
+    mkdir -p "$CST/.data/crowdsec"
+    cst_lock_hold "$CST/.data/crowdsec/plugin.lock"
+    sha0=$(sha1sum < "$mw")
+    cst_q busy admin PUT /crowdsec/plugin '{"settings":{"mode":"stream"}}'
+    cst_q busy-read admin GET /crowdsec/plugin
+    cst_q busy-status admin GET /crowdsec/status
+    cst_run
+    cst_lock_release
+    cst_use busy;        cst_is "plugin/busy: another change holds the lock" 409
+    cst_t "plugin/busy: …and the answer says to try again" '.message | test("Another change")'
+    cst_use busy-read;   cst_is "plugin/busy: reading does not wait" 200
+    cst_use busy-status; cst_is "plugin/busy: …nor does the status" 200
+    check "plugin/busy: nothing was written" "$sha0 0" "$(sha1sum < "$mw") $(cst_count "$bk"/plugin-*.yml)"
+    cst_call admin PUT /crowdsec/plugin '{"settings":{"mode":"stream"}}'
+    cst_is "plugin/busy: the lock is free again" 200
+    # -- a file with another indentation than the one DCS writes: it is not understood, so it is not touched
+    python3 - "$mw" <<'PY'
+import sys
+p = sys.argv[1]
+out = []
+for l in open(p).read().split("\n"):
+    n = len(l) - len(l.lstrip(" "))
+    out.append(" " * (n * 2) + l.lstrip(" ") if l.strip() and not l.startswith("#") else l)
+open(p, "w").write("\n".join(out))
+PY
+    sha0=$(sha1sum < "$mw"); chmod 600 "$mw"
+    cst_call admin PUT /crowdsec/plugin '{"settings":{"mode":"live"}}'
+    cst_is "plugin/foreign: a file with the indentation doubled" 500
+    cst_j "plugin/foreign: …refused as not written" '.error' true '.reason' write_failed '.message | test("did not read back")' true '.message | test("previous file was put back")' true
+    check "plugin/foreign: …the file is what it was, private, and nothing is left beside it" "$sha0 600 0" "$(sha1sum < "$mw") $(stat -c %a "$mw") $(find "$rd" -name '*.dcs-new*' | wc -l | tr -d ' ')"
+    printf 'http:\n  middlewares:\n    x:\n      headers: {}\n' > "$mw"; sha0=$(sha1sum < "$mw")
+    cst_call admin PUT /crowdsec/plugin '{"settings":{"mode":"live"}}'
+    cst_is "plugin/foreign: a middleware file of something else" 500
+    cst_j "plugin/foreign: …it says so, and that nothing was changed" '.reason' write_failed '.message | test("does not look like the bouncer")' true '.message | test("nothing was changed")' true
+    check "plugin/foreign: …the file is what it was" "$sha0" "$(sha1sum < "$mw")"
+    : > "$mw"
+    cst_call admin PUT /crowdsec/plugin '{"settings":{"mode":"live"}}'
+    cst_is "plugin/foreign: an empty file" 500
+    cst_call admin GET /crowdsec/plugin
+    cst_j "plugin/foreign: …is still shown, with the defaults" '.available' true '.managed' false '.settings.mode' live
+    cst_call admin POST /crowdsec/bouncers/register-traefik
+    cst_is "plugin/foreign: registering the bouncer writes a proper file again" 200
+    cst_call admin PUT /crowdsec/plugin '{"settings":{"mode":"live"}}'
+    cst_is "plugin/foreign: …and then a save works" 200
+    check "plugin/foreign: …with the new key, the marker on top" "yes 1" "$([[ "$(cst_mw_key "$mw")" != "$k0" && -n "$(cst_mw_key "$mw")" ]] && echo yes || echo no) $(head -n 1 "$mw" | grep -c '^# dcs-plugin:')"
+}
+
+# ---- the home address, the LAN, and registering the bouncer again ----------------------------------------------------------------
+
+cst_client_list() { awk '/clientTrustedIPs:/ { f = 1; next } f && /^ +- / { sub(/^ +- /, ""); printf "%s ", $0; next } f { exit }' "$1" | sed 's/ $//'; }
+
+cst_plugin_home() {
+    local mw k0 k1 rd
+    cst_plugin_world
+    mw=$(cst_mwf); rd=${mw%/*}; k0=$(cst_mw_key "$mw")
+    printf '198.51.100.99\n' > "$CST/.data/ddns-current-ip"            # the home address the DDNS loop keeps (no lookup on the network is needed)
+    # -- the page does not manage the plugin yet: the whitelist sync leaves the file alone
+    cst_call admin POST /crowdsec/trust '{"ip":"203.0.113.44"}'
+    cst_is "plugin/home: a trusted address is added" 200
+    check "plugin/home: …the plugin's file is untouched (the page does not manage it yet)" "10.1.0.0/24 no" "$(cst_client_list "$mw") $([[ -e "$CST/.data/crowdsec/plugin.json" ]] && echo yes || echo no)"
+    # -- an address that is not one is not a home address
+    cp -p "$CST/.data/crowdsec-whitelist.json" "$CST/whitelist.keep"
+    printf '{"public_ip":"not-an-address"}\n' > "$CST/.data/crowdsec-whitelist.json"
+    cst_call admin PUT /crowdsec/plugin '{"settings":{"trust_home":true}}'
+    cst_is "plugin/home: trust_home on, and the home address is garbage" 200
+    cst_j "plugin/home: …there is no home address" '.home' '' '.settings.trust_home' true
+    check "plugin/home: …and none is written into the file" "10.1.0.0/24" "$(cst_client_list "$mw")"
+    cp -p "$CST/whitelist.keep" "$CST/.data/crowdsec-whitelist.json"; rm -f "$CST/whitelist.keep"
+    # -- trust_home: the home address is one of the visitors that are never checked (the whitelist sync puts it there)
+    cst_call admin POST /crowdsec/trust '{"ip":"203.0.113.47"}'
+    cst_is "plugin/home: the whitelist is synced with trust_home on" 200
+    cst_call admin GET /crowdsec/plugin
+    cst_j "plugin/home: …the home address is the one the sync found" '.home' 198.51.100.99 '.settings.trust_home' true '.settings.client_trusted_ips' '[]' '.lan' 10.1.0.0/24
+    check "plugin/home: …the file has the LAN and the home address" "10.1.0.0/24 198.51.100.99" "$(cst_client_list "$mw")"
+    # -- the public address changes: the sync moves it in the plugin's file
+    printf '198.51.100.100\n' > "$CST/.data/ddns-current-ip"
+    cst_call admin POST /crowdsec/trust '{"ip":"203.0.113.45"}'
+    cst_is "plugin/home: the home address changed, the whitelist is synced" 200
+    check "plugin/home: …the plugin follows: the new address in, the old one out" "10.1.0.0/24 198.51.100.100" "$(cst_client_list "$mw")"
+    cst_call admin GET /crowdsec/plugin
+    cst_j "plugin/home: …and the page shows it as the home, not as a client of the person's" '.home' 198.51.100.100 '.settings.client_trusted_ips' '[]' '.settings.trust_home' true
+    # -- trust_home off: the home address goes, and a sync does not bring it back
+    cst_call admin PUT /crowdsec/plugin '{"settings":{"trust_home":false}}'
+    check "plugin/home: trust_home off: the file has the LAN alone" "10.1.0.0/24" "$(cst_client_list "$mw")"
+    printf '198.51.100.101\n' > "$CST/.data/ddns-current-ip"
+    cst_call admin POST /crowdsec/trust '{"ip":"203.0.113.46"}'
+    check "plugin/home: …and a new address is not added" "10.1.0.0/24" "$(cst_client_list "$mw")"
+    # -- the person's own addresses, and the home address with them
+    cst_call admin PUT /crowdsec/plugin '{"settings":{"trust_home":true,"client_trusted_ips":["192.0.2.0/24"]}}'
+    check "plugin/home: the LAN, the person's own and the home address" "10.1.0.0/24 192.0.2.0/24 198.51.100.101" "$(cst_client_list "$mw")"
+    cst_j "plugin/home: …the page keeps them apart" '.settings.client_trusted_ips | join(",")' 192.0.2.0/24 '.home' 198.51.100.101
+    # -- registering the bouncer again: a fresh key, the settings of the page stay
+    printf '{"public_ip":"198.51.100.101"}\n' > "$CST/.data/crowdsec-whitelist.json"
+    cst_call admin PUT /crowdsec/plugin '{"settings":{"mode":"stream","update_interval":45,"log_level":"DEBUG","remediation_status_code":429}}'
+    k0=$(cst_mw_key "$mw")
+    cst_call admin POST /crowdsec/bouncers/register-traefik
+    cst_is "plugin/register: the bouncer again" 200
+    k1=$(cst_mw_key "$mw")
+    check "plugin/register: …a new key" yes "$([[ -n "$k1" && "$k1" != "$k0" ]] && echo yes || echo no)"
+    cst_call admin GET /crowdsec/plugin
+    cst_j "plugin/register: …the settings of the page are in the fresh file" '.managed' true '.settings.mode' stream '.settings.update_interval' 45 '.settings.log_level' DEBUG '.settings.remediation_status_code' 429 '.settings.trust_home' true \
+        '.settings.client_trusted_ips | join(",")' 192.0.2.0/24 '.home' 198.51.100.101 '.plugin.key_present' true
+    check "plugin/register: …the LAN, the person's own and the home address are in the file" "10.1.0.0/24 192.0.2.0/24 198.51.100.101" "$(cst_client_list "$mw")"
+    check "plugin/register: …one marker on top, private, nothing left beside it, the new key only once" "1 600 0 1" "$(grep -c '^# dcs-plugin:' "$mw") $(stat -c %a "$mw") $(find "$rd" -name '*.dcs-new*' | wc -l | tr -d ' ') $(grep -c 'crowdsecLapiKey:' "$mw")"
+    check "plugin/register: …and the old key is nowhere in it" 0 "$(grep -cF -- "$k0" "$mw")"
+    cst_uncache; cst_call admin GET /crowdsec/status
+    cst_j "plugin/register: …the status agrees" '.enforcement.plugin.managed' true '.enforcement.plugin.mode' stream '.enforcement.plugin.key_present' true '.issues | map(.code) | join(",")' bouncer_idle,hub_updates
+    # -- the page's state is unreadable: registering still works, with the template's settings
+    printf '{nope' > "$CST/.data/crowdsec/plugin.json"
+    cst_call admin POST /crowdsec/bouncers/register-traefik
+    cst_is "plugin/register: the page's own state is damaged" 200
+    cst_call admin GET /crowdsec/plugin
+    cst_j "plugin/register: …the fresh file is the template's" '.managed' false '.settings.mode' live '.settings.update_interval' 60 '.settings.log_level' INFO
+    cst_call admin PUT /crowdsec/plugin '{"settings":{"mode":"stream"}}'
+    cst_is "plugin/register: …and a save repairs the state" 200
+    check "plugin/register: …the state is JSON again" stream "$(jq -r '.settings.mode' "$CST/.data/crowdsec/plugin.json" 2>/dev/null)"
+}
+
+# ---- POST /crowdsec/traefik/restart ---------------------------------------------------------------------------------------------------
+
+cst_plugin_restart() {
+    local mark a0 a1 s0 s1
+    cst_plugin_world bare
+    a0=$(cst_audit_n '"action":"auth.crowdsec_traefik_restart"'); mark=$(cst_argv_n)
+    s0=$(jq -r '.containers.Traefik.started' "$CST/fake/state.json")
+    cst_call admin POST /crowdsec/traefik/restart
+    cst_is "plugin/restart: Traefik" 200
+    cst_j "plugin/restart" '.success' true '.message | test("Traefik was restarted")' true
+    s1=$(jq -r '.containers.Traefik.started' "$CST/fake/state.json")
+    check "plugin/restart: …Traefik was restarted (and nothing else): docker restart Traefik, once" "1 yes" "$(cst_argv_since "$mark" | grep -c '^restart Traefik') $(awk -v a="$s0" -v b="$s1" 'BEGIN { print (b > a + 86400) ? "yes" : "no" }')"
+    check "plugin/restart: …CrowdSec was not restarted" 0 "$(cst_argv_since "$mark" | grep -c 'restart CrowdSec')"
+    check "plugin/restart: …it is audited once" $(( a0 + 1 )) "$(cst_audit_n '"action":"auth.crowdsec_traefik_restart"')"
+    cst_call viewer POST /crowdsec/traefik/restart
+    cst_is "plugin/restart: a viewer may not" 403
+    cst_call none POST /crowdsec/traefik/restart
+    cst_is "plugin/restart: nobody may not" 401
+    cst_call admin GET /crowdsec/traefik/restart
+    cst_is "plugin/restart: GET is no way to restart it" 404
+    check "plugin/restart: …the refusals restarted nothing and left no audit line" "1 $(( a0 + 1 ))" "$(cst_argv_since "$mark" | grep -c '^restart Traefik') $(cst_audit_n '"action":"auth.crowdsec_traefik_restart"')"
+    # -- Traefik that is stopped is started
+    cst_dk stop Traefik >/dev/null
+    cst_call admin POST /crowdsec/traefik/restart
+    cst_is "plugin/restart: a stopped Traefik" 200
+    check "plugin/restart: …runs again" true "$(cst_dk inspect -f '{{.State.Running}}' Traefik)"
+    # -- CrowdSec does not have to be there
+    cst_world absent none --traefik
+    cst_call admin POST /crowdsec/traefik/restart
+    cst_is "plugin/restart: no CrowdSec container, but a Traefik" 200
+    a1=$(cst_audit_n '"action":"auth.crowdsec_traefik_restart"')
+    # -- when it cannot be done
+    cst_world data none
+    mark=$(cst_argv_n)
+    cst_call admin POST /crowdsec/traefik/restart
+    cst_is "plugin/restart: no Traefik on this server" 409
+    cst_t "plugin/restart: …says so" '.message | test("Traefik was not found")'
+    check "plugin/restart: …and no restart was tried" 0 "$(cst_argv_since "$mark" | grep -c '^restart')"
+    cst_world data traefik --traefik
+    cst_mock --mock-set docker_down=1
+    cst_call admin POST /crowdsec/traefik/restart
+    cst_is "plugin/restart: Docker does not answer" 503
+    cst_t "plugin/restart: …says why" '.message | test("Docker does not answer")'
+    cst_mock --mock-set docker_down=0
+    : > "$CST/fail-traefik-restart"
+    cst_call admin POST /crowdsec/traefik/restart
+    cst_is "plugin/restart: docker cannot restart it" 502
+    cst_t "plugin/restart: …says so" '.message | test("could not restart Traefik")'
+    check "plugin/restart: …and it is not in the audit log as done" "$a1" "$(cst_audit_n '"action":"auth.crowdsec_traefik_restart"')"
+    rm -f "$CST/fail-traefik-restart"
+}
+
+# ---- GET /routes: does the bouncer check a route? -------------------------------------------------------------------------------------
+
+# cst_route_file STACK NAME HOST [MIDDLEWARE…] — a route file of the kind DCS writes for a service, in Traefik's routes folder
+cst_route_file() {
+    local dir; dir="$(cst_tr)/custom_routes/$1"
+    local name="$2" host="$3"; shift 3
+    mkdir -p "$dir"
+    {
+        printf 'http:\n  routers:\n    %s-router:\n      rule: "Host(`%s`)"\n      service: %s\n' "$name" "$host" "$name"
+        if (( $# )); then printf '      middlewares:\n'; printf '        - %s\n' "$@"; fi
+        printf '  services:\n    %s:\n      loadBalancer:\n        servers:\n          - url: "http://%s:8080"\n' "$name" "$name"
+    } > "$dir/$name.yml"
+}
+# GET /routes (fresh); CST_RS = "service=state" of every route of the files, sorted the way cst_sorted sorts
+cst_route_states() {
+    cst_uncache; cst_call admin GET /routes
+    CST_RS=$(jq -r '[.routes[] | select(.member == null) | "\(.service)=\(.crowdsec)"] | join(" ")' <<< "$CST_BODY")
+}
+cst_sorted() { printf '%s\n' "$@" | LC_ALL=C sort | tr '\n' ' ' | sed 's/ $//'; }
+
+cst_plugin_routes() {
+    local chain tmpl
+    cst_world data traefik --traefik
+    chain="$(cst_tr)/custom_routes/core-infrastructure/traefik.yml"; tmpl="$ROOT/.templates/traefik/config/custom_routes/core-infrastructure/traefik.yml"
+    cst_route_file media-services plain plain.lab.example.test compress-gzip
+    cst_route_file media-services nomw nomw.lab.example.test
+    cst_route_file media-services chain-plain chain-plain.lab.example.test traefik-chain
+    cst_route_file media-services chain-quoted chain-quoted.lab.example.test '"traefik-chain"' compress-gzip
+    cst_route_file media-services chain-single chain-single.lab.example.test "'traefik-chain'"
+    cst_route_file media-services direct direct.lab.example.test crowdsec-bouncer
+    cst_route_file media-services direct-quoted direct-quoted.lab.example.test '"crowdsec-bouncer"'
+    cst_route_file media-services both both.lab.example.test traefik-chain crowdsec-bouncer
+    cst_route_file media-services lookalike lookalike.lab.example.test traefik-chain-2 crowdsec-bouncer-2 my-traefik-chain
+    printf 'http:\n  routers:\n    commented-router:\n      rule: "Host(`commented.lab.example.test`)"\n      service: commented\n      middlewares:\n        # - traefik-chain\n        - compress-gzip\n' > "$(cst_tr)/custom_routes/media-services/commented.yml"
+    # -- CrowdSec is not set up on this proxy: nothing is checked, and no route is blamed
+    cst_route_states
+    cst_is "routes: the list" 200
+    check "routes: no bouncer registered: every route says CrowdSec is off" "$(cst_sorted chain-plain=off chain-quoted=off chain-single=off commented=off dcs-ui=off both=off direct=off direct-quoted=off lookalike=off nomw=off plain=off traefik=off)" "$(cst_sorted $CST_RS)"
+    # -- registered: the chain holds the bouncer
+    cst_call admin POST /crowdsec/bouncers/register-traefik
+    cst_is "routes: registering the bouncer" 200
+    cst_route_states
+    check "routes: the bouncer is in the chain: a route is protected when it uses the chain or names the bouncer" \
+        "$(cst_sorted both=protected chain-plain=protected chain-quoted=protected chain-single=protected commented=bypass dcs-ui=protected direct=protected direct-quoted=protected lookalike=bypass nomw=bypass plain=bypass traefik=protected)" "$(cst_sorted $CST_RS)"
+    cst_j "routes: …the list is the list" '.total' 12 '.domain' lab.example.test '.routes | all(.crowdsec | IN("protected", "bypass", "off"))' true
+    cst_call viewer GET /routes
+    cst_is "routes: a viewer may look" 200
+    cst_j "routes: …at the same" '[.routes[] | select(.crowdsec == "protected")] | length' 8 '[.routes[] | select(.crowdsec == "bypass")] | length' 4
+    cst_call none GET /routes
+    cst_is "routes: nobody may not" 401
+    # -- registered, but the chain does not hold the bouncer: only the routes that name it are checked
+    cp -p "$tmpl" "$chain"
+    cst_route_states
+    check "routes: the bouncer is not in the chain: only a route that names the bouncer is protected" \
+        "$(cst_sorted both=protected chain-plain=bypass chain-quoted=bypass chain-single=bypass commented=bypass dcs-ui=bypass direct=protected direct-quoted=protected lookalike=bypass nomw=bypass plain=bypass traefik=bypass)" "$(cst_sorted $CST_RS)"
+    cst_call admin GET /crowdsec/status
+    cst_j "routes: …and the status says the bouncer is not in the chain" '.enforcement.in_chain' false '.issues[0].code' bouncer_unchained
+    # -- the middleware file is gone: CrowdSec is off again for every route
+    rm -f "$(cst_mwf)"
+    cst_route_states
+    check "routes: no middleware file: off for every route" "12 0" "$(tr ' ' '\n' <<< "$CST_RS" | grep -c '=off$') $(tr ' ' '\n' <<< "$CST_RS" | grep -vc '=off$')"
+    # -- Traefik is not on this server; its own API lists routes (the file provider's), and CrowdSec is off for them
+    cst_world data none --traefik
+    mkdir -p "$CST/traefik-api"
+    printf '%s\n' '[{"name":"api-router@file","rule":"Host(`api.lab.example.test`)","service":"api@file","provider":"file"},{"name":"app-router@docker","rule":"Host(`app.lab.example.test`)","service":"app@docker","provider":"docker"},{"name":"dashboard@internal","rule":"Host(`traefik.lab.example.test`)","service":"api@internal","provider":"internal"},{"name":"second-router@file","rule":"Host(`second.lab.example.test`) && PathPrefix(`/x`)","service":"second@file","provider":"file"}]' > "$CST/traefik-api/routers.json"
+    cst_uncache; cst_call admin GET /routes
+    cst_j "routes: from Traefik's own API (no route files): the file provider's routes only" '.total' 2 '.routes | map(.subdomain) | join(",")' api.lab.example.test,second.lab.example.test '.routes | all(.crowdsec == "off")' true \
+        '.routes | all(.stack == "traefik")' true
+    rm -rf "$CST/traefik-api"
+}
+
+# ---- the routes of the VMs a hub serves ------------------------------------------------------------------------------------------------
+
+cst_plugin_fleet() {
+    local body chain tmpl f mw
+    body='{"http":{"routers":{"vm1-jellyfin-dcs":{"rule":"Host(`jellyfin.lab.example.test`)","service":"vm1-jellyfin-dcs","entryPoints":["websecure"],"tls":{}},"vm1-sonarr-dcs":{"rule":"Host(`sonarr.lab.example.test`)","service":"vm1-sonarr-dcs"}},"services":{"vm1-jellyfin-dcs":{"loadBalancer":{"servers":[{"url":"http://192.0.2.50:8096"}]}},"vm1-sonarr-dcs":{"loadBalancer":{"servers":[{"url":"http://192.0.2.50:8989"}]}}}}}'
+    cst_plugin_world
+    f="$(cst_tr)/custom_routes/fleet-members.yml"; chain="$(cst_tr)/custom_routes/core-infrastructure/traefik.yml"; tmpl="$ROOT/.templates/traefik/config/custom_routes/core-infrastructure/traefik.yml"; mw=$(cst_mwf)
+    printf '{"members":[{"id":"vm1","name":"Media VM","vmid":101,"stacks":["media-services"]}],"join_tokens":[],"hub":null}\n' > "$CST/.data/fleet.json"
+    cst_call admin POST /fleet/routes "$body"
+    cst_is "fleet: the routes of a VM are handed to this Traefik" 200
+    cst_j "fleet: …two routes" '.success' true '.routes' 2
+    check "fleet: …each router gets the hub's chain, which holds the bouncer (and nothing else is changed)" 'traefik-chain,compress-gzip|traefik-chain,compress-gzip|Host(`jellyfin.lab.example.test`)|websecure|vm1-jellyfin-dcs' \
+        "$(jq -r '.http.routers | ([.["vm1-jellyfin-dcs"].middlewares, .["vm1-sonarr-dcs"].middlewares] | map(join(",")) | join("|")), .["vm1-jellyfin-dcs"].rule, .["vm1-jellyfin-dcs"].entryPoints[0], .["vm1-jellyfin-dcs"].service' "$f" | tr '\n' '|' | sed 's/|$//')"
+    check "fleet: …the file is sorted and complete" "yes 2" "$([[ "$(jq -S . "$f")" == "$(cat "$f")" ]] && echo yes || echo no) $(jq -r '.http.services | length' "$f")"
+    cst_call admin POST /fleet/routes '{"http":{"routers":"x","services":{}}}'
+    cst_is "fleet: routers that are no routers" 400
+    check "fleet: …the routes there were are still there" 2 "$(jq -r '.http.routers | length' "$f")"
+    cst_uncache; cst_call admin GET /routes
+    cst_j "fleet: a VM's route in the list, checked by the bouncer" '[.routes[] | select(.fleet == true)] | length' 2 '[.routes[] | select(.fleet == true)] | map(.crowdsec) | unique | join(",")' protected \
+        '.routes | map(select(.service == "jellyfin"))[0] | "\(.member) \(.member_name) \(.vmid) \(.stack) \(.subdomain) \(.target)"' 'vm1 Media VM 101 media-services jellyfin.lab.example.test http://192.0.2.50:8096'
+    # -- the chain does not hold the bouncer any more: the VM's routes are open
+    cp -p "$tmpl" "$chain"; cst_uncache; cst_call admin GET /routes
+    cst_j "fleet: the bouncer is not in the chain: the VM's routes are not checked" '[.routes[] | select(.fleet == true)] | map(.crowdsec) | unique | join(",")' bypass
+    # -- no bouncer at all
+    rm -f "$mw"; cst_uncache; cst_call admin GET /routes
+    cst_j "fleet: no middleware file: off" '[.routes[] | select(.fleet == true)] | map(.crowdsec) | unique | join(",")' off
+    # -- a Traefik with no chain: the routers get what there is, and none at all when there is nothing
+    cst_plugin_world
+    printf '{"members":[{"id":"vm1","name":"Media VM","vmid":101,"stacks":["media-services"]}],"join_tokens":[],"hub":null}\n' > "$CST/.data/fleet.json"
+    sed -i 's/^    traefik-chain:/    traefik-chain-renamed:/' "$chain"
+    cst_call admin POST /fleet/routes "$body"
+    check "fleet: no traefik-chain here: the routers get compress-gzip only" "compress-gzip" "$(jq -r '.http.routers["vm1-jellyfin-dcs"].middlewares | join(",")' "$f")"
+    cst_uncache; cst_call admin GET /routes
+    cst_j "fleet: …and are not checked" '[.routes[] | select(.fleet == true)] | map(.crowdsec) | unique | join(",")' bypass
+    sed -i 's/^    compress-gzip:/    compress-gzip-renamed:/' "$chain"
+    cst_call admin POST /fleet/routes "$body"
+    check "fleet: no chain and no compression: the routers stay as they came" "null" "$(jq -r '.http.routers["vm1-jellyfin-dcs"].middlewares' "$f")"
+    cst_uncache; cst_call admin GET /routes
+    cst_j "fleet: …not checked either" '[.routes[] | select(.fleet == true)] | map(.crowdsec) | unique | join(",")' bypass
+    # -- what is refused is refused whether this Traefik has a chain or not
+    cst_call admin POST /fleet/routes '{"http":{"routers":"x","services":{}}}'
+    cst_is "fleet: routers that are no routers, on a Traefik without a chain" 400
+    check "fleet: …nothing malformed was written for Traefik to trip over" "null" "$(jq -r '.http.routers | if type == "string" then "string" else null end' "$f" 2>/dev/null)"
+    # -- who may, and what is refused
+    cst_call viewer POST /fleet/routes "$body"
+    cst_is "fleet: a viewer may not hand out routes" 403
+    cst_call none POST /fleet/routes "$body"
+    cst_is "fleet: nobody may not" 401
+    cst_call admin POST /fleet/routes 'nope'
+    cst_is "fleet: a body that is no JSON" 400
+    cst_call admin POST /fleet/routes '{"http":{"routers":{}}}'
+    cst_is "fleet: no routes at all takes the file away" 200
+    check "fleet: …the file is gone" no "$([[ -e "$f" ]] && echo yes || echo no)"
+    cst_world data none
+    cst_call admin POST /fleet/routes "$body"
+    cst_is "fleet: no Traefik here" 409
+}
+
+cst_part_plugin() {
+    echo "CrowdSec page: the Traefik bouncer plugin, its settings, and the routes it checks"
+    cst_plugin_status
+    cst_plugin_get
+    cst_plugin_refuse
+    cst_plugin_apply
+    cst_plugin_files
+    cst_plugin_home
+    cst_plugin_restart
+    cst_plugin_routes
+    cst_plugin_fleet
+}
+
 # ---- the ban profile: settings.json, profiles.yaml, backups, the restart and the way back ---------------------------------------------
 
 CST_LIVE() { printf '%s/fake/rootfs/etc/crowdsec/%s' "$CST" "$1"; }   # a file of the container, as the stand-in keeps it
@@ -4102,7 +4867,7 @@ cst_settings_write() {
 }
 
 cst_settings_invalid() {
-    local live orig i holder mark
+    local live orig i mark
     live=$(CST_LIVE profiles.yaml)
     cst_world data traefik --traefik
     orig=$(cat "$live")
@@ -4120,9 +4885,7 @@ cst_settings_invalid() {
     )
     # somebody else applies a configuration right now: this one waits for the lock (8 s) and then says so. It goes first, so that it starts at once
     mkdir -p "$CST/.data/crowdsec"
-    flock -x "$CST/.data/crowdsec/apply.lock" sleep 25 &
-    holder=$!
-    for i in $(seq 1 50); do flock -n -x "$CST/.data/crowdsec/apply.lock" true 2>/dev/null || break; sleep 0.1; done      # (until the lock is held)
+    cst_lock_hold "$CST/.data/crowdsec/apply.lock"
     cst_q "si-busy" admin PUT /crowdsec/settings '{"profile":{"duration":"9h"}}'
     for i in "${!bodies[@]}"; do cst_q "si$i" admin PUT /crowdsec/settings "${bodies[$i]}"; done
     cst_q "si-long" admin PUT /crowdsec/settings "$(jq -nc --arg p "$(head -c 130 /dev/zero | tr '\0' 'p')" '{profile: {overrides: [{pattern: $p, duration: "1h"}]}}')"
@@ -4130,7 +4893,7 @@ cst_settings_invalid() {
     cst_q "si-nobody" none PUT /crowdsec/settings '{"profile":{"duration":"1h"}}'
     cst_q "si-post" admin POST /crowdsec/settings '{"profile":{"duration":"1h"}}'
     cst_run
-    kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
+    cst_lock_release
     for i in "${!bodies[@]}"; do cst_use "si$i"; cst_is "settings/refuse: ${bodies[$i]}" 400; done
     cst_use "si-long";   cst_is "settings/refuse: a scenario of 130 characters" 400
     cst_use "si-viewer"; cst_is "settings/refuse: a viewer" 403
@@ -4758,6 +5521,7 @@ cst_notify_redeploy() {
 CST_READS=(
     'GET /crowdsec/status' 'GET /crowdsec/decisions' 'GET /crowdsec/decisions/export' 'GET /crowdsec/alerts' 'GET /crowdsec/alerts/10' 'GET /crowdsec/allowlist' 'GET /crowdsec/bouncers'
     'GET /crowdsec/machines' 'GET /crowdsec/metrics' 'GET /crowdsec/hub' 'GET /crowdsec/logs' 'GET /crowdsec/simulation' 'GET /crowdsec/community' 'GET /crowdsec/settings' 'GET /crowdsec/notifications'
+    'GET /crowdsec/plugin' 'GET /routes'
 )
 CST_WRITES=(
     'POST /crowdsec/decisions {"value":"198.18.9.9"}' 'POST /crowdsec/decisions/delete {"values":["198.18.9.9"]}' 'POST /crowdsec/decisions/import {"format":"values","content":"198.18.9.9"}'
@@ -4767,6 +5531,7 @@ CST_WRITES=(
     'POST /crowdsec/simulation {"scenario":"crowdsecurity/ssh-bf","enabled":true}' 'PUT /crowdsec/settings {"profile":{"duration":"5h"}}' 'PUT /crowdsec/notifications {"settings":{"enabled":false}}'
     'POST /crowdsec/notifications {"webhook":"https://discord.com/api/webhooks/111111111111111111/NOTAREALTOKEN_0123456789-abcdefghij"}' 'POST /crowdsec/notifications/preview {}'
     'POST /crowdsec/notifications/test {}' 'POST /crowdsec/notifications/reset -' 'POST /crowdsec/trust {"ip":"198.18.9.9"}' 'DELETE /crowdsec/trust/198.18.9.9 -'
+    'PUT /crowdsec/plugin {"settings":{"mode":"stream"}}' 'POST /crowdsec/traefik/restart -' 'POST /fleet/routes {"http":{"routers":{}}}'
 )
 
 cst_security_roles() {
@@ -4814,6 +5579,10 @@ cst_security_roles() {
         cst_try "security: a bot may not lift many at once" 403 viewer POST /crowdsec/decisions/delete '{"values":["198.18.9.9"]}'
         cst_try "security: a bot may not change the profile" 403 viewer PUT /crowdsec/settings '{"profile":{"duration":"5h"}}'
         cst_try "security: a bot may not restart CrowdSec" 403 viewer POST /crowdsec/service '{"action":"restart"}'
+        cst_try "security: a bot may read the Traefik plugin's settings and the routes" 200 viewer GET /crowdsec/plugin
+        cst_try "security: …and the routes" 200 viewer GET /routes
+        cst_try "security: a bot may not change the plugin's settings" 403 viewer PUT /crowdsec/plugin '{"settings":{"mode":"stream"}}'
+        cst_try "security: a bot may not restart Traefik" 403 viewer POST /crowdsec/traefik/restart
         CST_VWR="$vwr_saved"
     else
         check "security: a bot account can be made" yes no
@@ -5416,8 +6185,8 @@ cst_main() {
     mkdir -p "$CST_ROOT"
     # the stand-in is a script of 7000 lines and every docker call of every request starts it: from its bytecode that costs a third
     python3 -c 'import py_compile, sys; py_compile.compile(sys.argv[1], cfile=sys.argv[2], doraise=True)' "$CST_MOCK" "$CST_ROOT/mock.pyc" 2>/dev/null && CST_MOCK_RUN="$CST_ROOT/mock.pyc"
-    local -a lanes=("a:status allowlist alerts units" "b:bans" "c:settings" "d:notify" "e:services hub" "f:security" "g:large")
-    [[ "${SMOKE_CS_LANES:-}" != 1 ]] || lanes=("all:status bans alerts allowlist services hub settings notify security units large")
+    local -a lanes=("a:status allowlist alerts units" "b:bans" "c:settings" "d:notify" "e:services hub" "f:security" "g:large" "h:plugin")
+    [[ "${SMOKE_CS_LANES:-}" != 1 ]] || lanes=("all:status bans alerts allowlist services hub settings notify security units large plugin")
     for lane in "${lanes[@]}"; do
         name="${lane%%:*}"; want=""
         for part in ${lane#*:}; do
