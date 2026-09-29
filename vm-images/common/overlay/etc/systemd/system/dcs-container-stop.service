@@ -1,0 +1,18 @@
+[Unit]
+Description=DCS: stop the containers when the system goes down
+# daemon.json has live-restore on, so Docker's own stop leaves the containers running (an engine update or a Docker restart must not
+# bounce the stacks). At power off systemd then has to end them, sends SIGTERM, and waits up to 90 s for one that ignores it
+# (PID 1 of a container often does: "sleep infinity", "tail -f", a shell). This unit stops before docker.service does
+# and gives them what "docker stop" gives: SIGTERM, ten seconds, SIGKILL. It is not touched when Docker alone is restarted.
+Wants=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/true
+ExecStop=-/bin/sh -c 'ids=$(docker ps -q); [ -z "$ids" ] || docker stop --time 10 $ids'
+TimeoutStopSec=40
+
+[Install]
+WantedBy=multi-user.target

@@ -9949,14 +9949,21 @@ _detect_pkg_manager() {
 # ProtectSystem=full, which makes /usr and /etc read-only for everything it starts, sudo included, so an update started from here could
 # not install a file; and everything it starts dies with it, while an engine update restarts Docker (and, in units installed before the
 # dependency was loosened, the API with it). systemd-run starts the command as a service of the manager's own: its namespace, its
-# cgroup, the exit status and the output come back through --wait --pipe.
+# cgroup. The exit status comes back through --wait, the output through the journal (not through --pipe: that hands this service's
+# pipes to the unit over D-Bus, and on Fedora dbus-broker may not write to a pipe of this service's SELinux domain; and not through a
+# file: systemd may not open one in a home directory there).
 _run_host() {
-    if [[ -d /run/systemd/system ]] && command -v systemd-run >/dev/null 2>&1; then
-        local _pw="$1" _user="$2"; shift 2
-        _run_privileged "$_pw" "$_user" systemd-run --quiet --pipe --wait --collect "$@"
-    else
-        _run_privileged "$@"
+    local _pw="$1" _user="$2" _rc=0 _sdv _unit
+    _sdv=$(systemctl --version 2>/dev/null | awk 'NR==1 {print $2}')
+    if [[ -d /run/systemd/system ]] && command -v systemd-run >/dev/null 2>&1 && [[ "$_sdv" =~ ^[0-9]+$ ]] && (( _sdv >= 236 )); then
+        _unit="dcs-hostrun-$$-$RANDOM"
+        shift 2
+        _run_privileged "$_pw" "$_user" systemd-run --quiet --wait --collect --unit "$_unit" "$@" || _rc=$?
+        _run_privileged "$_pw" "$_user" journalctl --sync >/dev/null 2>&1 || true   # the unit's last lines may still be on their way to the journal
+        _run_privileged "$_pw" "$_user" journalctl --no-pager -o cat -u "$_unit.service" 2>/dev/null | grep -v -F "$_unit.service: " || true
+        return $_rc
     fi
+    _run_privileged "$@"
 }
 
 # Run a command with root privileges using the best available method.

@@ -54,7 +54,7 @@ jobs:
           ls -la /dev/kvm; df -h / | tail -1
 
       - name: Tools for the boot test
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq qemu-system-x86 qemu-utils ovmf genisoimage
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq qemu-system-x86 qemu-utils ovmf genisoimage socat jq
 
       - name: Build and boot-test (BIOS and UEFI)
         run: vm-images/build.sh ${{ matrix.distro }} ${{ matrix.role }} --test

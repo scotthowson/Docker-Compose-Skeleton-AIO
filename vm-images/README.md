@@ -24,7 +24,7 @@ Needs Docker, and for `--test` QEMU with KVM, OVMF and genisoimage. The tools co
 | `hub/overlay/` | The hub only: `dcs-hub-init` and its unit |
 | `<distro>/overlay/` | Distribution specifics (Fedora: dracut, the kernel-install plugin. Arch: the mkinitcpio settings, the pacman hook that writes `grub.cfg`, the keyring timer) |
 | `tools/` | The tools image and `assemble.sh` (tar → ext4 with `mke2fs -d` → GPT with a BIOS boot partition, an ESP and the root → qcow2), `grub-bios-embed.py` (GRUB's BIOS boot code written to a plain file, the work `grub-bios-setup` does on a block device) |
-| `tests/` | `boot-test.sh` (the Proxmox-like boot and its checks; `--seed-bus scsi` puts the cloud-init drive on SCSI), `dcs-init-test.sh` (the first-boot script against the seeds Proxmox writes), `dcs-grubcfg-test.sh` (the boot menu writer against every distribution's kernel names), `measure.sh` (the same numbers for any running VM) |
+| `tests/` | `boot-test.sh` (the Proxmox-like boot and its checks; `--seed-bus scsi` puts the cloud-init drive on SCSI), `member-check.sh` (a node image's BIOS run also makes it a member of a hub started from this checkout; `--no-member` skips it), `dcs-init-test.sh` (the first-boot script against the seeds Proxmox writes), `dcs-grubcfg-test.sh` (the boot menu writer against every distribution's kernel names), `measure.sh` (the same numbers for any running VM) |
 | `proxmox/dcs-proxmox.sh` | The one-command importer for the Proxmox host |
 
 ## How a disk boots

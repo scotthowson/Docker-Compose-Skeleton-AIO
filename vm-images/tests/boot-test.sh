@@ -5,8 +5,9 @@
 #   the cloud-init drive as a CD-ROM labelled cidata, virtio network, balloon and guest agent, the serial
 #   port as the only console.
 #   usage: boot-test.sh IMAGE.qcow2 [--role node|hub] [--firmware bios|uefi] [--ram MB] [--cpus N] [--grow-to GB]
-#                                   [--keep] [--hold] [--no-net] [--no-power-cut]
+#                                   [--keep] [--hold] [--no-net] [--no-power-cut] [--member|--no-member]
 # A hub image is also checked for its first start: the API and the dashboard answer and the wizard waits for its admin.
+# A node image (BIOS run, with a network) is also made a member of a hub started from this checkout: see member-check.sh (--member forces it, --no-member skips it).
 # DCS_TEST_REGISTRY=public.ecr.aws/docker/library/ pulls the test containers from a mirror (CI).
 # Prints what it measured (time to ssh, memory, disk, failed units); exit status = failed checks.
 # The last step (node images) cuts the power the moment a fresh VM first answers and boots it again: the files
@@ -15,14 +16,15 @@
 # =============================================================================
 set -u
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-IMG=""; RAM=2048; CPUS=2; GROW=8; KEEP=0; NET=1; HOLD=0; FW=bios; CUT=1; ROLE=node; FORCE_CUT=0; UUID=""; SEEDBUS=ide
+IMG=""; RAM=2048; CPUS=2; GROW=8; KEEP=0; NET=1; HOLD=0; FW=bios; CUT=1; ROLE=node; FORCE_CUT=0; UUID=""; SEEDBUS=ide; MEMBER=auto; HUBPID=""
 while [[ $# -gt 0 ]]; do case "$1" in
     --ram) RAM=$2; shift 2 ;; --cpus) CPUS=$2; shift 2 ;; --grow-to) GROW=$2; shift 2 ;;
     --keep) KEEP=1; shift ;; --no-net) NET=0; shift ;; --hold) HOLD=1; KEEP=1; CUT=0; shift ;;
+    --member) MEMBER=yes; shift ;; --no-member) MEMBER=no; shift ;;
     --firmware) FW=$2; shift 2 ;; --no-power-cut) CUT=0; shift ;; --power-cut) FORCE_CUT=1; shift ;; --role) ROLE=$2; shift 2 ;; --uuid) UUID=$2; shift 2 ;; --seed-bus) SEEDBUS=$2; shift 2 ;;
     -h|--help) sed -n "2,13p" "$0"; exit 0 ;; *) IMG=$1; shift ;;
 esac; done
-USAGE="usage: $0 IMAGE.qcow2 [--role node|hub] [--firmware bios|uefi] [--ram MB] [--cpus N] [--grow-to GB] [--keep] [--hold] [--no-net] [--no-power-cut]"
+USAGE="usage: $0 IMAGE.qcow2 [--role node|hub] [--firmware bios|uefi] [--ram MB] [--cpus N] [--grow-to GB] [--keep] [--hold] [--no-net] [--no-power-cut] [--member|--no-member]"
 [[ -f "$IMG" ]] || { echo "$USAGE" >&2; exit 2; }
 [[ "$FW" == bios || "$FW" == uefi ]] || { echo "--firmware is bios or uefi" >&2; exit 2; }
 [[ "$ROLE" == node || "$ROLE" == hub ]] || { echo "--role is node or hub" >&2; exit 2; }
@@ -46,7 +48,7 @@ T=$(mktemp -d /tmp/dcs-boot.XXXXXX); PASS=0; FAIL=0; QPID=""
 # in its main loop and the guest's first second of reads stalls, which is not what a Proxmox VM does with the imported copy)
 qemu-img convert -f qcow2 -O qcow2 "$IMG" "$T/base.qcow2" || { echo "cannot read $IMG" >&2; rm -rf "$T"; exit 2; }
 BASE="$T/base.qcow2"
-cleanup() { [[ $HOLD == 1 ]] && return; [[ -n "$QPID" ]] && kill -0 "$QPID" 2>/dev/null && kill "$QPID" 2>/dev/null; [[ $KEEP == 1 ]] && echo "kept: $T" || rm -rf "$T"; }
+cleanup() { [[ -n "$HUBPID" ]] && kill -- -"$HUBPID" 2>/dev/null; [[ $HOLD == 1 ]] && return; [[ -n "$QPID" ]] && kill -0 "$QPID" 2>/dev/null && kill "$QPID" 2>/dev/null; [[ $KEEP == 1 ]] && echo "kept: $T" || rm -rf "$T"; }
 trap cleanup EXIT
 ok()  { PASS=$((PASS+1)); printf "  ok    %s\n" "$*"; }
 bad() { FAIL=$((FAIL+1)); printf "  FAIL  %s\n" "$*"; }
@@ -168,6 +170,12 @@ docker compose down >/dev/null 2>&1
 PUBTEST
 )
     chk "a published port answers (docker compose up, port 18080)" [ "${PUB:-0}" = 200 ]
+fi
+
+# a hub built from this checkout makes a member of the VM: once per image (the BIOS run), where there is a network
+if [[ $ROLE == node && $NET == 1 && ( $MEMBER == yes || ( $MEMBER == auto && $FW == bios ) ) ]]; then
+    . "$HERE/member-check.sh"
+    member_check
 fi
 
 if [[ $ROLE == hub ]]; then

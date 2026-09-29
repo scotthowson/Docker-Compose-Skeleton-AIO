@@ -33,7 +33,7 @@ GPU, a Zigbee/Z-Wave stick, a Coral or a physical network card by passthrough, t
 - **The system:** systemd with `systemd-networkd`, `openssh-server` (keys only, no root login, no passwords), `sudo`,
   `qemu-guest-agent`, `fstrim.timer`, journald capped at 32 MB, kernel settings for a container host (inotify, `vm.max_map_count`).
 - **The container stack:** Docker Engine and the Compose plugin from Docker's own repository (Arch: from Arch's), `containerd`,
-  json-file logs rotated at 3 × 10 MB, `live-restore` on so containers survive a Docker restart.
+  json-file logs rotated at 3 × 10 MB, `live-restore` on so containers survive a Docker restart (`dcs-container-stop.service` stops them, with `docker stop`'s ten seconds, when the VM powers off, so a container that ignores SIGTERM cannot hold the shutdown for 90 s).
 - **The tools DCS runs on:** `bash`, `curl`, `jq`, `git`, `socat`, `openssl`, `python3`.
 - **Not inside:** cloud-init, snapd, flatpak, a desktop, man pages and documentation, extra locales, a firewall manager
   (Docker manages its own rules; use the Proxmox firewall for the rest).
@@ -92,7 +92,10 @@ The four are as quick as each other on Proxmox: what they differ in is disk, RAM
 Every image passes 22 checks (hub: 27) before it is published, on both BIOS and UEFI: the seed is applied, Docker and Compose
 answer, no unit failed and the kernel logged no error, the guest agent runs, the login prompt is on the VGA console, ssh takes
 keys only and root has no password, the disk grows, a container runs, reaches the internet and answers on a published port,
-the VM powers off in about a second and survives a power cut at its first boot.
+the VM powers off in about a second and survives a power cut at its first boot. A node image also passes 8 more on BIOS, as the
+member of a hub: a hub started from the repository runs the same member bootstrap the dashboard runs, the VM joins and reports its
+host name, the Docker Engine card names where Docker comes from, a stack with a healthy and an unhealthy container starts from the
+hub, a Docker restart leaves the API running, and the one-click engine update runs to its end (`vm-images/tests/member-check.sh`).
 
 ### Hardware you pass through
 

@@ -22,6 +22,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Docker Engine on Arch.** The engine card and its update know Arch's `docker` package: the newest version is read from a private
   copy of the sync databases (the system's own are never refreshed alone) and the update is a whole-system `pacman -Syu`, with the
   engine restarted, or a reboot note when the kernel changed.
+- **The boot test makes a member of every node image.** On its BIOS run a node image is joined to a hub started from the checkout, with
+  the same bootstrap the dashboard runs, and used through it: host name, the Docker Engine card, the Cron Jobs page, a stack with a healthy
+  and an unhealthy container, a Docker restart, an engine update (`vm-images/tests/member-check.sh`). It found the problems listed under
+  Fixed below.
 - **Each image says what its kernel drives.** `vm-images/images.json` holds a `hardware` line per image (Debian's cloud kernel drives
   virtual hardware only, the others carry the drivers of real GPUs, USB devices and network cards), the image catalogue passes it on, lint
   fails when one is missing, and the *New VM* sheet shows it under the operating system.
@@ -83,6 +87,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   every script reads the name from `uname -n` (the API from `/proc`) and the first address from `ip`.
 - **The Cron Jobs page listed "command not found" as a job** on a machine without cron, which is every DCS VM image. It shows an empty
   list. `maintenance.sh` no longer needs `bc` to print sizes.
+- **A VM with running containers took 90 s to power off.** The images keep Docker's `live-restore` on, so stopping Docker leaves the
+  containers to systemd, which sends SIGTERM and waits 90 s for one that ignores it (`sleep infinity`, `tail -f`, a shell as PID 1).
+  `dcs-container-stop.service` stops them first, the way `docker stop` does: ten seconds at most.
 - **A dashboard on another origin got a CORS error from a cached answer.** The response cache kept the headers of the request that
   filled it, `Access-Control-Allow-Origin` included, and served them to whoever asked next. The cache now drops the stored CORS
   lines and writes the ones for the request it answers.
