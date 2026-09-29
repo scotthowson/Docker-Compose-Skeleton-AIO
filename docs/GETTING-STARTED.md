@@ -219,7 +219,7 @@ Open `http://<server>:3000`. The setup wizard has five steps.
 |---|---|
 | **Connect** | The dashboard finds its API by itself and shows what it detected: host name, time zone, Docker and Compose versions, user and group IDs. |
 | **Admin** | Create the first admin account (at least 8 characters, with an uppercase letter and a number). Moving house? *Restore a recovery bundle* here instead. |
-| **Server** | Name, time zone, domain, data folder, user and group IDs. Notifications (ntfy, Discord), Traefik with Authelia and CrowdSec, dynamic DNS. On a Proxmox guest a **Proxmox** section opens by itself; on a member, *Join a DCS hub*. |
+| **Server** | Name, time zone, domain, data folder, user and group IDs. Notifications (ntfy, Discord), Traefik with Authelia and CrowdSec, dynamic DNS. On a Proxmox guest a **Proxmox** section opens by itself. Anywhere but on a hub, *Join a DCS hub* makes this server a member. |
 | **Stacks** | The stacks to create and their start order. On a hub with Proxmox linked, each stack has a **Hub / VM** switch with its size, and a VM settings panel. |
 | **Review** | Check everything, then **Complete Setup**. The wizard deploys the proxy services, makes the DNS records, starts the core stack and, on a hub, hands the VM plan over. |
 
