@@ -1,0 +1,88 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="360" viewBox="0 0 1000 360" role="img" aria-labelledby="ff-title ff-desc">
+  <title id="ff-title">The VM is the stack</title>
+  <desc id="ff-desc">Four steps. Plan: the wizard or New VM chooses a VM for a stack, its size and system. Build: the hub has Proxmox create the VM from a purpose-built image, with a cloud-init drive. Join: over ssh the hub installs what is missing, hands over its own DCS code and the VM joins. Run: the stack's folder moves into the VM and starts, and the hub's Traefik serves its apps. Below, the nine steps of a build job: Image, Create, Cloud-init, Boot, SSH, Install, Join, Stack, Ready.</desc>
+  <style>
+    .sans { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+    .card { fill: #111a2e; stroke: #1f2b45; stroke-width: 1.2; }
+    .h { fill: #e6edf7; font-size: 17px; font-weight: 800; }
+    .p { fill: #8ea0bd; font-size: 12.5px; }
+    .cap { font-size: 11.5px; font-weight: 700; letter-spacing: 1.6px; }
+    .step { fill: #0b1220; stroke: #1f2b45; }
+    .stept { fill: #b9c6da; font-size: 12px; font-weight: 600; }
+    .num { font-size: 10.5px; font-weight: 700; }
+  </style>
+  <defs>
+    <marker id="ff-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M0 0 L10 5 L0 10 z" fill="#8ea0bd"/>
+    </marker>
+  </defs>
+
+  <rect x="0.5" y="0.5" width="999" height="359" rx="22" fill="#0b1220" stroke="#1f2b45"/>
+  <text class="sans" x="32" y="44" font-size="20" font-weight="800" fill="#e6edf7">The VM is the stack</text>
+  <text class="sans p" x="32" y="67" font-size="13.5">What happens when the hub builds a VM for a stack. Every step shows on a progress card and can be retried.</text>
+
+  <!-- four cards -->
+  <g class="sans">
+    <g transform="translate(32 92)">
+      <rect class="card" width="214" height="150" rx="14"/>
+      <rect x="16" width="182" height="3" rx="1.5" fill="#34d399"/>
+      <text class="cap" x="18" y="30" fill="#34d399">1 · PLAN</text>
+      <text class="h" x="18" y="56">Choose a VM</text>
+      <text class="p" x="18" y="80">The wizard's Stacks step, or</text>
+      <text class="p" x="18" y="98"><tspan font-weight="700" fill="#e6edf7">New VM</tspan>: a switch per stack,</text>
+      <text class="p" x="18" y="116">its size, its system, the</text>
+      <text class="p" x="18" y="134">address it gets.</text>
+    </g>
+    <g transform="translate(274 92)">
+      <rect class="card" width="214" height="150" rx="14"/>
+      <rect x="16" width="182" height="3" rx="1.5" fill="#22d3ee"/>
+      <text class="cap" x="18" y="30" fill="#22d3ee">2 · BUILD</text>
+      <text class="h" x="18" y="56">Proxmox makes it</text>
+      <text class="p" x="18" y="80">From a purpose-built image:</text>
+      <text class="p" x="18" y="98">a DCS template the hub bakes</text>
+      <text class="p" x="18" y="116">once, then clones. Cloud-init</text>
+      <text class="p" x="18" y="134">gives it an address and a key.</text>
+    </g>
+    <g transform="translate(516 92)">
+      <rect class="card" width="214" height="150" rx="14"/>
+      <rect x="16" width="182" height="3" rx="1.5" fill="#fbbf24"/>
+      <text class="cap" x="18" y="30" fill="#fbbf24">3 · JOIN</text>
+      <text class="h" x="18" y="56">It becomes a member</text>
+      <text class="p" x="18" y="80">Over ssh: Docker if missing,</text>
+      <text class="p" x="18" y="98">the hub's own DCS code, an</text>
+      <text class="p" x="18" y="116">unattended setup, the join,</text>
+      <text class="p" x="18" y="134">the boot services.</text>
+    </g>
+    <g transform="translate(758 92)">
+      <rect class="card" width="210" height="150" rx="14"/>
+      <rect x="16" width="178" height="3" rx="1.5" fill="#fb7185"/>
+      <text class="cap" x="18" y="30" fill="#fb7185">4 · RUN</text>
+      <text class="h" x="18" y="56">The stack moves in</text>
+      <text class="p" x="18" y="80"><tspan class="mono" font-size="12" fill="#e6edf7">Stacks/&lt;name&gt;</tspan> starts in</text>
+      <text class="p" x="18" y="98">the VM. The hub lists it, its</text>
+      <text class="p" x="18" y="116">Traefik serves its apps, and</text>
+      <text class="p" x="18" y="134">its events reach the hub.</text>
+    </g>
+  </g>
+  <g fill="none" stroke="#5b6b86" stroke-width="1.6">
+    <path d="M248 167 H270" marker-end="url(#ff-arrow)"/>
+    <path d="M490 167 H512" marker-end="url(#ff-arrow)"/>
+    <path d="M732 167 H754" marker-end="url(#ff-arrow)"/>
+  </g>
+
+  <!-- the build job's steps -->
+  <text class="sans cap" x="32" y="278" fill="#8ea0bd">THE BUILD JOB</text>
+  <g class="sans">
+    <g transform="translate(32 290)"><rect class="step" width="90" height="32" rx="16"/><text class="num" x="14" y="20.5" fill="#22d3ee">1</text><text class="stept" x="28" y="20.5">Image</text></g>
+    <g transform="translate(130 290)"><rect class="step" width="94" height="32" rx="16"/><text class="num" x="14" y="20.5" fill="#22d3ee">2</text><text class="stept" x="28" y="20.5">Create</text></g>
+    <g transform="translate(232 290)"><rect class="step" width="112" height="32" rx="16"/><text class="num" x="14" y="20.5" fill="#22d3ee">3</text><text class="stept" x="28" y="20.5">Cloud-init</text></g>
+    <g transform="translate(352 290)"><rect class="step" width="84" height="32" rx="16"/><text class="num" x="14" y="20.5" fill="#22d3ee">4</text><text class="stept" x="28" y="20.5">Boot</text></g>
+    <g transform="translate(444 290)"><rect class="step" width="80" height="32" rx="16"/><text class="num" x="14" y="20.5" fill="#fbbf24">5</text><text class="stept" x="28" y="20.5">SSH</text></g>
+    <g transform="translate(532 290)"><rect class="step" width="92" height="32" rx="16"/><text class="num" x="14" y="20.5" fill="#fbbf24">6</text><text class="stept" x="28" y="20.5">Install</text></g>
+    <g transform="translate(632 290)"><rect class="step" width="80" height="32" rx="16"/><text class="num" x="14" y="20.5" fill="#fbbf24">7</text><text class="stept" x="28" y="20.5">Join</text></g>
+    <g transform="translate(720 290)"><rect class="step" width="86" height="32" rx="16"/><text class="num" x="14" y="20.5" fill="#fb7185">8</text><text class="stept" x="28" y="20.5">Stack</text></g>
+    <g transform="translate(814 290)"><rect class="step" width="86" height="32" rx="16" stroke="#34d399" stroke-opacity="0.7"/><text class="num" x="14" y="20.5" fill="#34d399">9</text><text class="stept" x="28" y="20.5" fill="#e6edf7">Ready</text></g>
+  </g>
+  <text class="sans p" x="32" y="344" font-size="12">Also from a cloud image (Debian, Ubuntu, Fedora, AlmaLinux) or an installer ISO. New in 4.0: ready-made DCS images in <tspan class="mono" font-size="11.5" fill="#e6edf7">vm-images/</tspan>.</text>
+</svg>

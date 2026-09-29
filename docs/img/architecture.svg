@@ -1,0 +1,180 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="660" viewBox="0 0 1000 660" role="img" aria-labelledby="arch-title arch-desc">
+  <title id="arch-title">How DCS fits together</title>
+  <desc id="arch-desc">Browsers and apps reach the hub through Traefik; Discord reaches it through the bot. On the hub, the dashboard and the bot call the DCS API, which runs Docker Compose for the hub's own stacks, writes Cloudflare DNS records, talks to the Proxmox API with a token, and joins, forwards to and updates the member VMs, each of which runs one stack.</desc>
+  <style>
+    .sans { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+    .t { fill: #e6edf7; font-weight: 700; font-size: 16px; }
+    .s { fill: #8ea0bd; font-size: 12.5px; }
+    .cap { font-size: 11.5px; font-weight: 700; letter-spacing: 1.6px; }
+    .lbl { fill: #8ea0bd; font-size: 11.5px; }
+    .box { fill: #111a2e; stroke: #1f2b45; stroke-width: 1.2; }
+    .wire { fill: none; stroke: #5b6b86; stroke-width: 1.6; }
+    .chip { fill: #0b1220; stroke: #1f2b45; }
+    .chipt { fill: #b9c6da; font-size: 11.5px; }
+  </style>
+  <defs>
+    <marker id="ar-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#8ea0bd"/>
+    </marker>
+    <linearGradient id="ar-hub" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#34d399" stop-opacity="0.10"/>
+      <stop offset="0.35" stop-color="#34d399" stop-opacity="0.02"/>
+      <stop offset="1" stop-color="#34d399" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="ar-pve" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fbbf24" stop-opacity="0.09"/>
+      <stop offset="0.35" stop-color="#fbbf24" stop-opacity="0.02"/>
+      <stop offset="1" stop-color="#fbbf24" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="ar-glow" x="-20%" y="-40%" width="140%" height="180%"><feGaussianBlur stdDeviation="8"/></filter>
+  </defs>
+
+  <!-- card -->
+  <rect x="0.5" y="0.5" width="999" height="659" rx="22" fill="#0b1220" stroke="#1f2b45"/>
+  <text class="sans" x="32" y="44" font-size="20" font-weight="800" fill="#e6edf7">How DCS fits together</text>
+  <text class="sans s" x="32" y="68" font-size="13.5">A hub on Proxmox and three member VMs. Without Proxmox, the hub box alone is a complete DCS.</text>
+
+  <!-- ===== left: people and services outside ===== -->
+  <g class="sans">
+    <rect class="box" x="32" y="110" width="170" height="58" rx="12"/>
+    <rect x="46" y="126" width="24" height="18" rx="3" fill="none" stroke="#22d3ee" stroke-width="1.6"/>
+    <line x1="46" y1="131" x2="70" y2="131" stroke="#22d3ee" stroke-width="1.6"/>
+    <text class="t" x="80" y="135">Browser</text>
+    <text class="s" x="80" y="154">the dashboard</text>
+
+    <rect class="box" x="32" y="182" width="170" height="58" rx="12"/>
+    <rect x="50" y="195" width="15" height="24" rx="3" fill="none" stroke="#22d3ee" stroke-width="1.6"/>
+    <circle cx="57.5" cy="214" r="1.4" fill="#22d3ee"/>
+    <text class="t" x="80" y="207">Apps</text>
+    <text class="s" x="80" y="226">Android, desktop</text>
+
+    <rect class="box" x="32" y="254" width="170" height="58" rx="12"/>
+    <path d="M47 270 h22 a3 3 0 0 1 3 3 v10 a3 3 0 0 1 -3 3 h-13 l-6 5 v-5 h-3 a3 3 0 0 1 -3 -3 v-10 a3 3 0 0 1 3 -3 z" fill="none" stroke="#fb7185" stroke-width="1.6" stroke-linejoin="round"/>
+    <text class="t" x="80" y="279">Discord</text>
+    <text class="s" x="80" y="298">commands, alerts</text>
+
+    <rect class="box" x="32" y="360" width="170" height="58" rx="12"/>
+    <path d="M50 398 h18 a6 6 0 0 0 0 -12 a8 8 0 0 0 -15 -2 a5 5 0 0 0 -3 14 z" fill="none" stroke="#fbbf24" stroke-width="1.6" stroke-linejoin="round"/>
+    <text class="t" x="80" y="385">Cloudflare</text>
+    <text class="s" x="80" y="404">DNS, certificates</text>
+  </g>
+
+  <!-- ===== middle: the hub ===== -->
+  <rect x="236" y="96" width="376" height="540" rx="16" fill="url(#ar-hub)" stroke="#1f2b45"/>
+  <rect x="254" y="96" width="340" height="3" rx="1.5" fill="#34d399" fill-opacity="0.8"/>
+  <text class="sans cap" x="254" y="124" fill="#34d399">HUB</text>
+  <text class="sans s" x="290" y="124">DCS in a VM or an LXC container</text>
+
+  <g class="sans">
+    <rect class="box" x="252" y="140" width="210" height="62" rx="12"/>
+    <text class="t" x="268" y="166">Traefik</text>
+    <text class="s" x="268" y="187">:443 · HTTPS for every app</text>
+
+    <rect class="box" x="474" y="140" width="122" height="28" rx="14"/>
+    <circle cx="490" cy="154" r="4" fill="#fb7185"/>
+    <text class="sans" x="501" y="158.5" font-size="12.5" font-weight="600" fill="#e6edf7">CrowdSec</text>
+    <rect class="box" x="474" y="174" width="122" height="28" rx="14"/>
+    <circle cx="490" cy="188" r="4" fill="#fbbf24"/>
+    <text class="sans" x="501" y="192.5" font-size="12.5" font-weight="600" fill="#e6edf7">Authelia SSO</text>
+
+    <rect class="box" x="252" y="232" width="165" height="58" rx="12"/>
+    <text class="t" x="268" y="257">Discord bot</text>
+    <text class="s" x="268" y="276">a bot account</text>
+
+    <rect class="box" x="431" y="232" width="165" height="58" rx="12"/>
+    <text class="t" x="447" y="257">Dashboard</text>
+    <text class="s" x="447" y="276">DCS-UI · :3000</text>
+
+    <rect x="252" y="320" width="344" height="78" rx="14" fill="#34d399" fill-opacity="0.18" filter="url(#ar-glow)"/>
+    <rect x="252" y="320" width="344" height="78" rx="14" fill="#10241f" stroke="#34d399" stroke-width="1.6"/>
+    <text class="sans" x="270" y="350" font-size="18" font-weight="800" fill="#e6edf7">DCS API <tspan fill="#34d399" class="mono" font-size="15" font-weight="600">:9876</tspan></text>
+    <text class="s" x="270" y="374">Bash behind socat · 330+ endpoints</text>
+    <text class="s" x="270" y="390">every caller's role checked here</text>
+
+    <rect class="box" x="252" y="430" width="344" height="190" rx="14"/>
+    <text class="t" x="268" y="457">Docker Engine</text>
+    <text class="s" x="385" y="457">the hub's own stacks</text>
+    <g>
+      <rect class="chip" x="268" y="474" width="312" height="40" rx="9"/>
+      <text class="mono" x="282" y="498" font-size="12.5" fill="#34d399">core-infrastructure</text>
+      <text class="s" x="452" y="498">dashboard, Redis</text>
+      <rect class="chip" x="268" y="522" width="312" height="40" rx="9"/>
+      <text class="mono" x="282" y="546" font-size="12.5" fill="#34d399">networking-security</text>
+      <text class="s" x="452" y="546">Traefik, SSO, bans</text>
+      <text class="mono" x="268" y="596" font-size="11.5" fill="#8ea0bd">Stacks/&lt;name&gt;/docker-compose.yml</text>
+    </g>
+  </g>
+
+  <!-- ===== right: the Proxmox host ===== -->
+  <rect x="652" y="96" width="316" height="540" rx="16" fill="url(#ar-pve)" stroke="#1f2b45"/>
+  <rect x="670" y="96" width="280" height="3" rx="1.5" fill="#fbbf24" fill-opacity="0.85"/>
+  <text class="sans cap" x="670" y="124" fill="#fbbf24">PROXMOX VE HOST</text>
+
+  <g class="sans">
+    <rect class="box" x="668" y="140" width="284" height="62" rx="12" stroke="#fbbf24" stroke-opacity="0.6"/>
+    <text class="t" x="684" y="166">Proxmox API <tspan class="mono" font-size="14" font-weight="600" fill="#fbbf24">:8006</tspan></text>
+    <text class="s" x="684" y="187">guests, power, tasks, VM builds</text>
+
+    <!-- member VMs -->
+    <g>
+      <rect class="box" x="668" y="236" width="284" height="112" rx="12" stroke="#22d3ee" stroke-opacity="0.55"/>
+      <text class="t" x="684" y="261">VM · <tspan class="mono" font-size="14.5" fill="#22d3ee">media-services</tspan></text>
+      <text class="s" x="684" y="281">DCS member, API only, one stack</text>
+      <rect class="chip" x="684" y="298" width="72" height="30" rx="8"/><text class="mono chipt" x="694" y="317">jellyfin</text>
+      <rect class="chip" x="764" y="298" width="64" height="30" rx="8"/><text class="mono chipt" x="774" y="317">sonarr</text>
+      <rect class="chip" x="836" y="298" width="64" height="30" rx="8"/><text class="mono chipt" x="846" y="317">radarr</text>
+    </g>
+    <g>
+      <rect class="box" x="668" y="362" width="284" height="112" rx="12" stroke="#22d3ee" stroke-opacity="0.55"/>
+      <text class="t" x="684" y="387">VM · <tspan class="mono" font-size="14.5" fill="#22d3ee">monitoring-management</tspan></text>
+      <text class="s" x="684" y="407">DCS member, API only, one stack</text>
+      <rect class="chip" x="684" y="424" width="70" height="30" rx="8"/><text class="mono chipt" x="694" y="443">grafana</text>
+      <rect class="chip" x="762" y="424" width="96" height="30" rx="8"/><text class="mono chipt" x="772" y="443">uptime-kuma</text>
+    </g>
+    <g>
+      <rect class="box" x="668" y="488" width="284" height="112" rx="12" stroke="#22d3ee" stroke-opacity="0.55"/>
+      <text class="t" x="684" y="513">VM · <tspan class="mono" font-size="14.5" fill="#22d3ee">development-tools</tspan></text>
+      <text class="s" x="684" y="533">DCS member, API only, one stack</text>
+      <rect class="chip" x="684" y="550" width="56" height="30" rx="8"/><text class="mono chipt" x="694" y="569">gitea</text>
+      <rect class="chip" x="748" y="550" width="96" height="30" rx="8"/><text class="mono chipt" x="758" y="569">code-server</text>
+    </g>
+    <text class="s" x="668" y="616" font-size="12">The hub calls each VM on :9876, builds it</text>
+    <text class="s" x="668" y="631" font-size="12">over ssh, and its Traefik serves their apps.</text>
+  </g>
+
+  <!-- ===== wires ===== -->
+  <g class="wire">
+    <!-- browser and apps into Traefik -->
+    <path d="M202 139 H226 V171 H248" marker-end="url(#ar-arrow)"/>
+    <path d="M202 211 H226 V171"/>
+    <!-- Traefik to the dashboard -->
+    <path d="M446 202 V228" marker-end="url(#ar-arrow)"/>
+    <!-- Discord to the bot -->
+    <path d="M202 283 H226 V261 H248" marker-end="url(#ar-arrow)"/>
+    <!-- bot and dashboard to the API -->
+    <path d="M334 290 V316" marker-end="url(#ar-arrow)"/>
+    <path d="M513 290 V316" marker-end="url(#ar-arrow)"/>
+    <!-- API to Docker -->
+    <path d="M424 398 V426" marker-end="url(#ar-arrow)"/>
+    <!-- API to Cloudflare -->
+    <path d="M252 389 H206" marker-end="url(#ar-arrow)"/>
+    <!-- API to the Proxmox API -->
+    <path d="M596 334 H622 V171 H664" marker-end="url(#ar-arrow)"/>
+    <!-- API to the members, both ways -->
+    <path d="M596 380 H640 V292"/>
+    <path d="M640 380 V544"/>
+    <path d="M640 292 H664" marker-end="url(#ar-arrow)"/>
+    <path d="M640 418 H664" marker-end="url(#ar-arrow)"/>
+    <path d="M640 544 H664" marker-end="url(#ar-arrow)"/>
+  </g>
+  <g class="sans lbl">
+    <text x="453" y="220">ui.your-domain</text>
+    <text x="341" y="309">bot account</text>
+    <text x="520" y="309">/api/</text>
+    <text x="431" y="418">docker compose</text>
+    <text x="209" y="381">records</text>
+    <text x="628" y="232" transform="rotate(-90 628 232)" text-anchor="middle">token</text>
+    <text x="652" y="410" transform="rotate(-90 652 410)" text-anchor="start">:9876 · ssh</text>
+  </g>
+</svg>
