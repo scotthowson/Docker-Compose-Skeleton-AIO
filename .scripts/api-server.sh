@@ -754,6 +754,7 @@ _api_parse_query() {
         read -ra pairs <<< "$query_string"
         for pair in "${pairs[@]}"; do
             local key="${pair%%=*}"
+            [[ -n "$key" ]] || continue      # "a=1&&b=2" or "=x": no name, no parameter (bash refuses "" as an array index and the request died without an answer)
             local value="${pair#*=}"
             value="${value//+/ }"
             # URL-decode percent-encoded characters
