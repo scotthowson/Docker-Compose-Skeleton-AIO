@@ -49,27 +49,27 @@ vm-images/build.sh debian-13 hub
 This writes `vm-images/out/dcs-hub-debian-13.qcow2` and its `.sha256`. Add `--test` to boot the image
 in QEMU and check it the way Proxmox runs it (this needs `qemu-system-x86_64`, `qemu-img` and `genisoimage`).
 
-**2. Copy it to Proxmox.** The `local` storage keeps imports in `/var/lib/vz/import/`.
+**2. Copy it to the Proxmox host.**
 
 ```bash
-scp vm-images/out/dcs-hub-debian-13.qcow2 root@192.168.1.2:/var/lib/vz/import/
+scp vm-images/out/dcs-hub-debian-13.qcow2 root@192.168.1.2:/root/
 ```
 
-If Proxmox later says the storage cannot hold imports, tick **Import** under
-*Datacenter → Storage → local → Content*.
-
-**3. Create the VM.** On the Proxmox shell. These are the settings the hub itself uses for the VMs it
-builds. Change the VM ID (`120`), the storages, the bridge and the addresses to match your host.
+**3. Create the VM.** On the Proxmox shell, as root. These are the settings the hub itself uses for the
+VMs it builds. Change the VM ID (`120`), the storage, the bridge and the addresses to match your host.
 
 ```bash
 qm create 120 --name dcs-hub --cores 2 --cpu host --memory 4096 --balloon 3072 \
   --net0 virtio,bridge=vmbr0 --scsihw virtio-scsi-single \
-  --scsi0 local-lvm:0,import-from=local:import/dcs-hub-debian-13.qcow2,discard=on \
+  --scsi0 local-lvm:0,import-from=/root/dcs-hub-debian-13.qcow2,discard=on \
   --ide2 local-lvm:cloudinit --boot order=scsi0 --serial0 socket --vga serial0 \
   --agent enabled=1 --ostype l26 --onboot 1 --tags 'dcs;hub'
 
 qm disk resize 120 scsi0 32G
+rm /root/dcs-hub-debian-13.qcow2
 ```
+
+`import-from` copies the image into a new disk on `local-lvm`; after that the file is no longer needed.
 
 **4. Give it a user, a key and an address** through cloud-init, then start it. `--sshkeys` takes a file
 on the Proxmox host that holds your public ssh key.
@@ -102,7 +102,7 @@ The wizard waits for its first admin. Carry on with [the first ten minutes](#the
    `DCS_UNATTENDED=true DCS_FLEET_ROLE=hub ./setup.sh` as that user.
 3. It installs the boot services (`dcs-api`, `dcs-stacks`), so DCS comes back after every reboot.
 4. It writes the dashboard address to the console and marks itself done. If something was not ready
-   (the network, a registry), it tries again at the next boot.
+   (the network, a registry), systemd runs it again 30 seconds later, until it succeeds.
 
 </details>
 
