@@ -14,7 +14,7 @@ set -u
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/dcs-smoke-XXXXXX")"
-trap '[[ -n "${RIP_MAIN:-}" ]] && kill "$RIP_MAIN" 2>/dev/null; [[ -n "${RIP_DDNS:-}" ]] && kill "$RIP_DDNS" 2>/dev/null; rm -rf "$WORK"' EXIT
+trap '[[ -n "${RIP_MAIN:-}" ]] && kill "$RIP_MAIN" 2>/dev/null; [[ -n "${RIP_DDNS:-}" ]] && kill "$RIP_DDNS" 2>/dev/null; [[ -n "${RIP_CS:-}" ]] && kill "$RIP_CS" 2>/dev/null; rm -rf "$WORK" "$WORK-cs"' EXIT
 
 # Minimal isolated installation: scripts, config, one stack, an .env
 mkdir -p "$WORK/.scripts" "$WORK/.lib" "$WORK/.config" "$WORK/Stacks/demo" "$WORK/.data" "$WORK/logs" "$WORK/.api-auth" "$WORK/.templates"
@@ -61,6 +61,9 @@ check() {
 NOAUTH=(DCS_API_EFFECTIVE_AUTH=false DCS_API_EFFECTIVE_BIND=127.0.0.1)
 # Auth enabled, no account yet: first-run window
 AUTH=(DCS_API_EFFECTIVE_AUTH=true DCS_API_EFFECTIVE_BIND=127.0.0.1)
+
+# SMOKE_ONLY=crowdsec runs the "CrowdSec page" section alone: the sections before it are skipped by this if, which closes right above it
+if [[ "${SMOKE_ONLY:-}" != crowdsec ]]; then
 
 echo "Request parsing"
 check "root endpoint answers"           200 "$(request GET / '' "${NOAUTH[@]}" | status_of)"
@@ -2301,12 +2304,395 @@ check "wizard: a listed stack is never removed"      yes "$([[ -d "$SCFG/Stacks/
 check "wizard: an empty placeholder is still tidied" no "$([[ -d "$SCFG/Stacks/zz-placeholder" ]] && echo yes || echo no)"
 rm -rf "$SCFG"
 
+fi   # (end of the sections SMOKE_ONLY=crowdsec skips)
+
+# >>> CrowdSec page
+# =============================================================================
+# CrowdSec page: the API behind /crowdsec/* (.lib/crowdsec.sh, .lib/crowdsec-config.sh) through the real router, as admin and as
+# viewer, against tests/mock-crowdsec.py (a stateful stand-in for `docker` and `cscli`).
+#
+# Nothing here can touch a real container or the network: the stand-in is the only `docker` on the PATH of every request, `curl` only
+# reaches a fake Discord on loopback (it refuses everything else), `hostname -I` answers a fixed address and `sleep` does not wait
+# (the stand-in keeps its own clock). The install these requests run against is a copy of the scripts in a directory of its own.
+#
+#   SMOKE_ONLY=crowdsec tests/smoke.sh                       just this section
+#   SMOKE_ONLY=crowdsec SMOKE_CS_PARTS="status bans" tests/smoke.sh   only some of its parts (see cst_main)
+# =============================================================================
+CST="$WORK-cs"
+CST_MOCK="${SMOKE_CS_MOCK:-$ROOT/tests/mock-crowdsec.py}"
+CST_API="$CST/.scripts/api-server.sh"
+CST_SERVER_IP="203.0.113.250"       # what `hostname -I` says inside these requests (the "this server" address of the ban guard)
+CST_HOOK_ID=111111111111111111; CST_HOOK_TOKEN=NOTAREALTOKEN_0123456789-abcdefghij     # placeholders: this webhook is never a real one
+CST_HOOK="https://discord.com/api/webhooks/$CST_HOOK_ID/$CST_HOOK_TOKEN"
+CST_ENV=(DOCKER_COMPOSE_CMD="docker compose" API_RATE_LIMIT=0 DCS_API_EFFECTIVE_AUTH=true DCS_API_EFFECTIVE_BIND=127.0.0.1)
+CST_ADM=""; CST_VWR=""; CST_RAW=""; CST_ST=""; CST_BODY=""
+CST_QN=0; declare -A CST_QLABEL=() CST_RST=() CST_RBODY=()
+export CST_RUN_BIN CST_RUN_API CST_RUN_Q
+
+cst_setup() {
+    local b inv dport i
+    rm -rf "$CST"
+    mkdir -p "$CST"/{.scripts,.lib,.config,.data,logs,.api-auth,.templates,Stacks,bin,fake,q}
+    cp "$ROOT/.scripts/api-server.sh" "$CST/.scripts/"; cp "$ROOT/VERSION" "$CST/"
+    cp -r "$ROOT/.lib/." "$CST/.lib/"; cp -r "$ROOT/.config/." "$CST/.config/"; cp -r "$ROOT/.templates/crowdsec" "$CST/.templates/"
+    grep -vE '^(API_BIND|API_AUTH_ENABLED|API_INSECURE_NO_AUTH|API_TRUSTED_PROXIES|API_IP_WHITELIST|API_PORT)=' "$ROOT/.env.example" > "$CST/.env"
+    printf 'API_PORT=9876\nMETRICS_ENABLED=false\n' >> "$CST/.env"
+    : > "$CST/argv.log"; : > "$CST/curl-argv.log"; : > "$CST/api-stderr.log"
+
+    # the only docker: it writes down every argument list it gets (shell-quoted: one line per call), then is the stand-in
+    cat > "$CST/bin/docker" <<SH
+#!/bin/bash
+{ printf '%q ' "\$@"; printf '\n'; } >> "$CST/argv.log"
+export FAKE_CS_DIR="$CST/fake"
+exec python3 "$CST_MOCK" "\$@"
+SH
+    # the only curl: Discord's webhook host is rewritten to the fake Discord on loopback, anything else is refused without a connection
+    cat > "$CST/bin/curl" <<SH
+#!/bin/bash
+{ printf '%q ' "\$@"; printf '\n'; } >> "$CST/curl-argv.log"
+args=(); cfg=""
+while (( \$# )); do
+    if [[ "\$1" == -K && "\${2:-}" == - ]]; then cfg=\$(cat); shift 2; continue; fi
+    args+=("\$1"); shift
+done
+port=\$(cat "$CST/discord.port" 2>/dev/null)
+url=\$(sed -n 's/^url = "\(.*\)"\$/\1/p' <<< "\$cfg")
+[[ "\$url" =~ ^https://(discord\.com|discordapp\.com|ptb\.discord\.com|canary\.discord\.com)/(.*)\$ && -n "\$port" ]] || { echo "curl: (7) refused by the test" >&2; exit 7; }
+tmp=\$(mktemp); printf 'url = "http://127.0.0.1:%s/%s"\n' "\$port" "\${BASH_REMATCH[2]}" > "\$tmp"
+"$(command -v curl)" -K "\$tmp" "\${args[@]}"; rc=\$?; rm -f "\$tmp"; exit \$rc
+SH
+    {
+        printf '#!/bin/bash\n[[ "$1" == -I ]] && { echo "%s 10.77.0.5"; exit 0; }\n' "$CST_SERVER_IP"
+        if command -v hostname >/dev/null 2>&1; then printf 'exec %q "$@"\n' "$(command -v hostname)"; else printf 'echo cst-host\n'; fi
+    } > "$CST/bin/hostname"
+    printf '#!/bin/bash\nexit 0\n' > "$CST/bin/sleep"
+    chmod +x "$CST/bin/"*
+
+    # the fake Discord: every POST is appended to discord.log as {"path", "body"}; discord.status holds the answer to give (204)
+    cat > "$CST/discord.py" <<'PY'
+import http.server, json, os, sys
+LOG, PORTF, STATUS = sys.argv[1:4]
+class H(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def do_POST(self):
+        raw = self.rfile.read(int(self.headers.get('Content-Length') or 0)).decode('utf-8', 'replace')
+        with open(LOG, 'a') as f: f.write(json.dumps({'path': self.path, 'body': raw}) + '\n')
+        try: code = int(open(STATUS).read().strip())
+        except Exception: code = 204
+        body = b'' if code == 204 else (b'{"message": "You are being rate limited.", "retry_after": 2.5}' if code == 429 else b'{"message": "Invalid Form Body", "code": 50035}')
+        self.send_response(code); self.send_header('Content-Length', str(len(body)))
+        if body: self.send_header('Content-Type', 'application/json')
+        self.end_headers(); self.wfile.write(body)
+srv = http.server.ThreadingHTTPServer(('127.0.0.1', 0), H)
+open(PORTF, 'w').write(str(srv.server_address[1]))
+srv.serve_forever()
+PY
+    : > "$CST/discord.log"
+    python3 "$CST/discord.py" "$CST/discord.log" "$CST/discord.port" "$CST/discord.status" >/dev/null 2>&1 &
+    RIP_CS=$!
+    for i in $(seq 1 100); do [[ -s "$CST/discord.port" ]] && break; sleep 0.05; done
+    dport=$(cat "$CST/discord.port" 2>/dev/null)
+
+    # what the parallel batches run (cst_q / cst_run)
+    cat > "$CST/run1.sh" <<'SH'
+#!/bin/bash
+n="$1"; mapfile -t e < "$CST_RUN_Q/$n.env"
+timeout 180 env -u SOCAT_PEERADDR -u NCAT_REMOTE_ADDR -u DISCORD_WEBHOOK_URL -u CROWDSEC_TRUSTED_IPS PATH="$CST_RUN_BIN:$PATH" DOCKER_COMPOSE_CMD="docker compose" API_RATE_LIMIT=0 DCS_API_EFFECTIVE_AUTH=true DCS_API_EFFECTIVE_BIND=127.0.0.1 \
+    "${e[@]}" "$CST_RUN_API" --handle-request < "$CST_RUN_Q/$n.req" > "$CST_RUN_Q/$n.out" 2>>"$CST_RUN_Q/../api-stderr.log"
+SH
+    CST_RUN_BIN="$CST/bin"; CST_RUN_API="$CST_API"; CST_RUN_Q="$CST/q"
+
+    # the accounts: an admin and a viewer (role "user")
+    b='{"username":"admin","password":"correct horse battery"}'
+    CST_ADM=$(printf 'POST /auth/setup HTTP/1.1\r\nContent-Length: %d\r\n\r\n%s' "${#b}" "$b" | env "${AUTH[@]}" "$CST_API" --handle-request 2>>"$CST/api-stderr.log" | sed -n '/^\r*$/,$p' | sed '1d' | jq -r '.token // empty')
+    cst_call admin POST /auth/invite '{"role":"user"}'
+    inv=$(jq -r '.code // empty' <<< "$CST_BODY")
+    cst_call none POST /auth/register "{\"username\":\"viewer\",\"password\":\"viewer-pass-123\",\"invite_code\":\"$inv\"}"
+    CST_VWR=$(jq -r '.token // empty' <<< "$CST_BODY")
+    [[ -n "$CST_ADM" && -n "$CST_VWR" && -n "$dport" ]]
+}
+
+cst_teardown() {
+    if [[ -n "${RIP_CS:-}" ]]; then kill "$RIP_CS" 2>/dev/null; wait "$RIP_CS" 2>/dev/null; RIP_CS=""; fi
+    rm -rf "$CST"
+}
+
+# ---- requests ---------------------------------------------------------------------------------------------------------------------
+
+# cst_call ROLE METHOD PATH [BODY] [NAME=value …] — one request through the router. ROLE: admin | viewer | none.
+# Sets CST_ST (status), CST_BODY and CST_RAW (the whole answer). The extra NAME=value pairs are environment for that request only
+# (SOCAT_PEERADDR=… is the caller's address, DISCORD_WEBHOOK_URL=… the server's webhook).
+cst_call() {
+    local role="$1" m="$2" p="$3" b="${4:-}" hdr=""
+    shift 4 2>/dev/null || shift $#
+    case "$role" in admin) hdr=$'Authorization: Bearer '"$CST_ADM"$'\r\n' ;; viewer) hdr=$'Authorization: Bearer '"$CST_VWR"$'\r\n' ;; esac
+    CST_RAW=$(printf '%s %s HTTP/1.1\r\nHost: test\r\n%sContent-Length: %d\r\n\r\n%s' "$m" "$p" "$hdr" "$(printf '%s' "$b" | wc -c)" "$b" \
+        | timeout 180 env -u SOCAT_PEERADDR -u NCAT_REMOTE_ADDR -u DISCORD_WEBHOOK_URL -u CROWDSEC_TRUSTED_IPS PATH="$CST/bin:$PATH" "${CST_ENV[@]}" "$@" "$CST_API" --handle-request 2>>"$CST/api-stderr.log")
+    CST_ST="${CST_RAW:9:3}"; CST_BODY="${CST_RAW#*$'\r\n\r\n'}"
+}
+
+# cst_q LABEL ROLE METHOD PATH [BODY] [NAME=value …] — queue a request; cst_run sends the whole queue in parallel (only for requests
+# that do not depend on each other), then cst_use LABEL makes one answer the current one for cst_is / cst_j / cst_t.
+cst_q() {
+    local label="$1" role="$2" m="$3" p="$4" b="${5:-}" hdr="" n
+    shift 5 2>/dev/null || shift $#
+    case "$role" in admin) hdr=$'Authorization: Bearer '"$CST_ADM"$'\r\n' ;; viewer) hdr=$'Authorization: Bearer '"$CST_VWR"$'\r\n' ;; esac
+    n=$(( ++CST_QN )); CST_QLABEL[$label]=$n
+    printf '%s %s HTTP/1.1\r\nHost: test\r\n%sContent-Length: %d\r\n\r\n%s' "$m" "$p" "$hdr" "$(printf '%s' "$b" | wc -c)" "$b" > "$CST/q/$n.req"
+    if (( $# )); then printf '%s\n' "$@" > "$CST/q/$n.env"; else : > "$CST/q/$n.env"; fi
+}
+cst_run() {
+    local n=1 out label
+    (( CST_QN > 0 )) || return 0
+    seq 1 "$CST_QN" | xargs -P "${SMOKE_CS_JOBS:-6}" -I{} bash "$CST/run1.sh" {}
+    for label in "${!CST_QLABEL[@]}"; do
+        n="${CST_QLABEL[$label]}"
+        out=$(cat "$CST/q/$n.out" 2>/dev/null)
+        CST_RST[$label]="${out:9:3}"; CST_RBODY[$label]="${out#*$'\r\n\r\n'}"
+    done
+    rm -f "$CST"/q/*; CST_QN=0; CST_QLABEL=()
+}
+cst_use() { CST_ST="${CST_RST[$1]:-}"; CST_BODY="${CST_RBODY[$1]:-}"; }
+
+# ---- checks over the current answer ---------------------------------------------------------------------------------------------
+
+cst_is() { check "$1" "$2" "$CST_ST"; }                                   # cst_is NAME STATUS
+cst_t()  { check "$1" true "$(jq -r "$2" <<< "$CST_BODY" 2>/dev/null)"; } # cst_t NAME 'jq expression that must be true'
+cst_j()  {                                                                # cst_j NAME EXPR VALUE [EXPR VALUE …]: jq -r EXPR over the body equals VALUE
+    local n="$1" e v
+    shift
+    while (( $# >= 2 )); do e="$1"; v="$2"; shift 2; check "$n $e" "$v" "$(jq -r "$e" <<< "$CST_BODY" 2>/dev/null)"; done
+}
+# cst_try NAME STATUS ROLE METHOD PATH [BODY] [ENV…] — one request and its status in one line
+cst_try() { local n="$1" s="$2"; shift 2; cst_call "$@"; cst_is "$n" "$s"; }
+
+# ---- the world of the requests ----------------------------------------------------------------------------------------------------
+
+# the stand-in's control verbs (--mock-init PRESET [--traefik], --mock-set K=V, --mock-tick S); the API's cached answers go with them
+cst_mock() { FAKE_CS_DIR="$CST/fake" python3 "$CST_MOCK" "$@" >/dev/null 2>&1 || echo "  (the stand-in refused: $*)"; rm -rf "$CST/.data/cache/crowdsec"; }
+
+# cst_env KEY [VALUE] — a key of the install's .env (the API reads it on every request; an empty VALUE is "not set")
+cst_env() { sed -i "/^${1}=/d" "$CST/.env"; printf '%s=%s\n' "$1" "${2:-}" >> "$CST/.env"; rm -rf "$CST/.data/cache/crowdsec"; }
+
+# cst_stack KIND: none | plain (a stack without Traefik or CrowdSec) | traefik (Traefik's stack with the shipped config) | traefik-cs (… and it defines CrowdSec)
+cst_stack() {
+    local st="$CST/Stacks/networking-security"
+    rm -rf "$CST/Stacks"; mkdir -p "$CST/Stacks"
+    case "$1" in
+        plain) mkdir -p "$CST/Stacks/demo"; printf 'services:\n  demo:\n    image: alpine:3\n' > "$CST/Stacks/demo/docker-compose.yml" ;;
+        traefik|traefik-cs)
+            mkdir -p "$st/App-Data/Traefik"; cp -r "$ROOT/.templates/traefik/config/." "$st/App-Data/Traefik/"
+            printf 'services:\n  traefik:\n    container_name: Traefik\n    image: traefik:v3.1\n' > "$st/docker-compose.yml"
+            [[ "$1" == traefik-cs ]] && printf '  crowdsec:\n    container_name: CrowdSec\n    image: crowdsecurity/crowdsec:latest\n' >> "$st/docker-compose.yml"
+            printf 'TRAEFIK_DOMAIN=lab.example.test\nTRAEFIK_TRUSTED_LAN=10.1.0.0/24\n' > "$st/.env" ;;
+    esac
+}
+
+# cst_world PRESET [STACK] [mock-init flags…] — a clean start: the install forgets the CrowdSec files it wrote, the stand-in starts over
+cst_world() {
+    local preset="$1" stack="${2:-none}"
+    shift 2 2>/dev/null || shift $#
+    rm -rf "$CST/.data/crowdsec" "$CST/.data/cache" "$CST/.data/crowdsec-trusted.json" "$CST/.data/crowdsec-whitelist.json" "$CST/.data/ddns-current-ip" "$CST/.secrets"
+    cst_stack "$stack"
+    cst_mock --mock-init "$preset" "$@"
+}
+
+cst_argv_n() { wc -l < "$CST/argv.log" | tr -d ' '; }          # how many docker calls so far (a mark for cst_argv_since)
+cst_argv_since() { tail -n +$(( $1 + 1 )) "$CST/argv.log"; }
+cst_calls_n() { wc -l < "$CST/fake/calls.log" 2>/dev/null | tr -d ' '; }
+cst_audit_n() { grep -c "$1" "$CST/.data/audit.jsonl" 2>/dev/null || true; }
+cst_disc_n() { wc -l < "$CST/discord.log" | tr -d ' '; }
+cst_disc_last() { tail -n 1 "$CST/discord.log" | jq -r '.body' 2>/dev/null; }
+
+# ---------------------------------------------------------------------------------------------------------------------------------
+
+# ---- GET /crowdsec/status in every state ---------------------------------------------------------------------------------------------
+
+cst_part_status() {
+    local n0 n1
+    echo "CrowdSec page: the status in every state"
+
+    # -- not deployed: no container, and no stack file that defines one
+    cst_world absent none
+    cst_call admin GET /crowdsec/status
+    cst_is "status/absent: answers" 200
+    cst_j "status/absent" '.state' not_deployed '.installed' false '.deployed' false '.running' false '.container' '' '.fixes[0].id' deploy '.fixes[0].kind' ui \
+        '.fixes[0].primary' true '.docker.ok' true '.traefik.present' false '.log_tail | length' 0 '.preflight.template.name' crowdsec \
+        '.preflight.target_stack' '' '.preflight.can_deploy' false '.preflight.blockers | length' 1 '.preflight.enforcement' false '.preflight.stacks | length' 0
+    cst_t "status/absent: a warning says Traefik is missing and another that no webhook is set" '.preflight.warnings | length == 2'
+    cst_t "status/absent: the template's variables are described" '.preflight.template.variables | map(.name) | index("DISCORD_WEBHOOK_URL") != null'
+    cst_t "status/absent: no counts, no ban list before there is a CrowdSec" 'has("counts") | not'
+
+    cst_world absent plain
+    cst_call admin GET /crowdsec/status
+    cst_j "status/absent+stack" '.state' not_deployed '.preflight.target_stack' demo '.preflight.can_deploy' true '.preflight.blockers | length' 0 '.preflight.stacks[0]' demo
+    cst_env DISCORD_WEBHOOK_URL "$CST_HOOK"
+    cst_call admin GET /crowdsec/status
+    cst_env DISCORD_WEBHOOK_URL
+    cst_j "status/absent+webhook" '.preflight.discord.configured' true '.preflight.warnings | length' 1
+
+    cst_world absent traefik --traefik
+    cst_call admin GET /crowdsec/status
+    cst_j "status/absent+Traefik" '.state' not_deployed '.traefik.present' true '.traefik.running' true '.preflight.target_stack' networking-security \
+        '.preflight.enforcement' true '.preflight.can_deploy' true '.preflight.warnings | length' 1
+    cst_mock --mock-set traefik=0
+    cst_mock --mock-set traefik=1
+    cst_world absent plain
+    mv "$CST/.templates/crowdsec" "$CST/.templates/.crowdsec-away"
+    cst_call admin GET /crowdsec/status
+    mv "$CST/.templates/.crowdsec-away" "$CST/.templates/crowdsec"
+    cst_j "status/absent, template missing" '.state' not_deployed '.preflight.template' null '.preflight.can_deploy' false '.preflight.blockers | length' 1
+
+    # -- the stack file defines CrowdSec but there is no container
+    cst_world defined traefik-cs --traefik
+    cst_call admin GET /crowdsec/status
+    cst_j "status/defined" '.state' stopped '.defined_in' networking-security '.container_state' missing '.deployed' false '.fixes[0].id' start_stack \
+        '.fixes[0].kind' api '.fixes[0].method' POST '.fixes[0].path' /stacks/networking-security/start '.fixes[0].primary' true '.fixes[1].id' deploy '.log_tail | length' 0
+
+    # -- the container exists but is not running
+    cst_world stopped traefik-cs --traefik
+    cst_call admin GET /crowdsec/status
+    cst_j "status/stopped" '.state' stopped '.container' CrowdSec '.container_state' exited '.exit_code' 137 '.deployed' true '.running' false '.installed' false \
+        '.fixes[0].id' start '.fixes[0].method' POST '.fixes[0].path' /crowdsec/service '.fixes[0].body.action' start '.fixes[0].primary' true '.fixes[1].id' logs \
+        '.log_tail | type' array
+
+    cst_world crashloop traefik-cs --traefik
+    cst_call admin GET /crowdsec/status
+    cst_j "status/crashloop" '.state' crash_loop '.restart_count' 17 '.container_state' restarting '.running' false '.fixes | map(.id) | join(",")' logs,restart \
+        '.fixes[1].body.action' restart
+    cst_t "status/crashloop: the log tail names the fatal error" '.log_tail | length > 0 and (map(test("level=fatal")) | any)'
+
+    cst_world starting traefik-cs --traefik
+    cst_call admin GET /crowdsec/status
+    cst_j "status/starting" '.state' starting '.health' starting '.installed' true '.running' true '.fixes | map(.id) | join(",")' logs '.log_tail | type' array
+
+    cst_world unhealthy traefik-cs --traefik
+    cst_call admin GET /crowdsec/status
+    cst_j "status/unhealthy" '.state' unhealthy '.health' unhealthy '.installed' true '.fixes[0].id' restart '.fixes[0].primary' true '.fixes[1].id' logs
+
+    cst_world lapi-down traefik-cs --traefik
+    cst_call admin GET /crowdsec/status
+    cst_j "status/lapi-down" '.state' lapi_unreachable '.installed' true '.fixes[0].id' restart '.fixes[0].primary' true '.log_tail | type' array
+    cst_t "status/lapi-down: the detail carries cscli's own words" '.detail | test("refused")'
+
+    cst_world data traefik-cs --traefik
+    cst_mock --mock-set docker_down=1
+    cst_call admin GET /crowdsec/status
+    cst_j "status/docker down" '.state' docker_unavailable '.docker.ok' false '.installed' false '.fixes[0].id' retry '.fixes[0].kind' ui '.preflight' null '.container' ''
+    cst_t "status/docker down: the detail is the daemon's message" '.detail | test("Docker daemon")'
+    cst_try "status/docker down: the ban list is a 503, not a crash" 503 admin GET /crowdsec/decisions
+
+    # -- healthy: an empty CrowdSec
+    cst_world empty traefik --traefik
+    cst_call admin GET /crowdsec/status
+    cst_j "status/empty" '.state' healthy '.installed' true '.counts.decisions' 0 '.counts.decisions_active' 0 '.counts.alerts_24h' 0 '.counts.bouncers' 0 '.counts.community' 0 \
+        '.decisions | length' 0 '.bouncer.registered' false '.allowlist_mechanism' native '.features.allowlists' true
+    cst_j "status/empty: the missing bouncer is the issue" '.issues | map(.code) | join(",")' bouncer_missing
+    cst_t "status/empty: the bouncer issue offers the fix that registers it" '.issues | map(select(.code == "bouncer_missing"))[0].fix | .path == "/crowdsec/bouncers/register-traefik" and .method == "POST"'
+    cst_t "status/empty: a warning means the title is not the healthy one" '(.issues | map(select(.severity == "warning")) | length) > 0 and (.title | test("attention"))'
+
+    # a CrowdSec that reads no log at all (the stand-in has no knob for it: its state file is edited, when it looks as expected)
+    if jq -e '.cs.machines[0].datasources' "$CST/fake/state.json" >/dev/null 2>&1; then
+        jq -c '.cs.machines |= map(.datasources = {})' "$CST/fake/state.json" > "$CST/fake/state.tmp" && mv "$CST/fake/state.tmp" "$CST/fake/state.json"
+        rm -rf "$CST/.data/cache/crowdsec"
+        cst_call admin GET /crowdsec/status
+        cst_j "status/empty, nothing to read" '.issues | map(.code) | join(",")' bouncer_missing,no_datasource
+        cst_t "status/empty, nothing to read: it is a warning" '.issues | map(select(.code == "no_datasource"))[0].severity == "warning"'
+    fi
+
+    # -- healthy: the full data set, Traefik's stack present but the bouncer not wired into it yet
+    cst_world data traefik --traefik
+    cst_call admin GET /crowdsec/status
+    cst_j "status/data" '.state' healthy '.installed' true '.running' true '.health' healthy '.container' CrowdSec '.stack' networking-security '.version_number' 1.8.1 \
+        '.allowlist_mechanism' native '.features.allowlists' true '.features.decisions_import' true '.counts.decisions' 12 '.counts.decisions_active' 11 '.counts.simulated' 1 \
+        '.counts.community' 40 '.counts.alerts_24h' 16 '.counts.machines' 1 '.counts.bouncers' 2 '.counts.collections' 6 '.counts.scenarios' 53 '.counts.parsers' 11 \
+        '.counts.updates' 1 '.counts.countries_24h' 9 '.counts.sources_24h' 14 '.bouncer.registered' true '.bouncer.name' dcs-traefik-bouncer '.bouncers | length' 2 \
+        '.machines | length' 1 '.machines[0].validated' true '.acquisition.sources | length' 2 '.decisions | length' 12 '.traefik.present' true '.docker.ok' true
+    cst_t "status/data: the ban list on the card is complete rows" '.decisions | all(has("value") and has("label") and has("seconds_left") and has("permanent"))'
+    cst_t "status/data: the permanent ban is flagged and the simulated one too" '(.decisions | map(select(.value == "192.0.2.66"))[0].permanent) and (.decisions | map(select(.value == "78.128.113.9"))[0].simulated)'
+    cst_j "status/data: enforcement before the bouncer is wired in" '.enforcement.middleware_present' false '.enforcement.in_chain' false
+    cst_t "status/data: the routes directory is the stack's" '.enforcement.routes_dir | endswith("networking-security/App-Data/Traefik/custom_routes")'
+    cst_j "status/data: the issues" '.issues | map(.code) | join(",")' bouncer_unchained,hub_updates '.issues[0].severity' warning '.issues[0].fix.id' register_bouncer '.issues[1].code' hub_updates \
+        '.issues[1].fix.kind' ui
+    cst_call admin POST /crowdsec/bouncers/register-traefik
+    cst_is "status/data: registering the Traefik bouncer" 200
+    cst_call admin GET /crowdsec/status
+    cst_j "status/data after the bouncer is registered" '.enforcement.middleware_present' true '.enforcement.in_chain' true '.issues | map(.code) | join(",")' bouncer_idle,hub_updates \
+        '.bouncer.registered' true '.bouncer.last_pull' null
+    cst_t "status/data after: the middleware file is in the stack's routes directory" '.enforcement.middleware_file | endswith("networking-security/crowdsec-bouncer.yml")'
+
+    # -- an old CrowdSec: no native allowlists
+    cst_world old traefik --traefik
+    cst_call admin GET /crowdsec/status
+    cst_j "status/old" '.state' healthy '.version_number' 1.6.5 '.allowlist_mechanism' parser '.features.allowlists' false '.features.decisions_import' true '.features.simulation' true \
+        '.counts.decisions' 12
+
+    # -- what the caller sees of its own address
+    cst_world data traefik --traefik
+    cst_call admin GET /crowdsec/status
+    cst_j "status/client: the default caller is loopback" '.client_ip' 127.0.0.1 '.client_banned' false
+    cst_call admin GET /crowdsec/status '' SOCAT_PEERADDR=91.240.118.11
+    cst_j "status/client: a banned address" '.client_ip' 91.240.118.11 '.client_banned' true
+    cst_call admin GET /crowdsec/status '' SOCAT_PEERADDR=192.0.2.130
+    cst_j "status/client: an address inside a banned range" '.client_ip' 192.0.2.130 '.client_banned' true
+    cst_call admin GET /crowdsec/status '' SOCAT_PEERADDR=78.128.113.9
+    cst_j "status/client: a simulated ban does not count" '.client_banned' false
+    cst_call admin GET /crowdsec/status '' SOCAT_PEERADDR=198.18.7.7
+    cst_j "status/client: an address nobody banned" '.client_banned' false
+    cst_call admin GET /crowdsec/status '' SOCAT_PEERADDR=2001:db8::99
+    cst_j "status/client: IPv6 callers are answered" '.client_ip' 2001:db8::99 '.client_banned' false
+    cst_call admin GET /crowdsec/status '' SOCAT_PEERADDR=not-an-address
+    cst_j "status/client: a peer that is no address is never banned" '.client_banned' false
+
+    # -- the trusted list rides along
+    printf '{"ips":["198.18.20.1","198.18.21.0/24"]}\n' > "$CST/.data/crowdsec-trusted.json"
+    cst_env CROWDSEC_TRUSTED_IPS 198.18.22.2
+    cst_call admin GET /crowdsec/status
+    cst_env CROWDSEC_TRUSTED_IPS
+    cst_j "status/trusted" '.trusted | join(",")' 198.18.20.1,198.18.21.0/24,198.18.22.2
+    rm -f "$CST/.data/crowdsec-trusted.json"
+
+    # -- the short cache: a second look inside five seconds does not ask the stand-in again
+    cst_mock --mock-init data --traefik
+    cst_call admin GET /crowdsec/status
+    n0=$(cst_calls_n)
+    touch "$CST/.data/cache/crowdsec/status.json"
+    cst_call admin GET /crowdsec/status
+    n1=$(cst_calls_n)
+    check "status/cache: the second call reads the cache (no docker call)" "$n0" "$n1"
+    cst_j "status/cache: …and answers the same state" '.state' healthy
+    cst_call admin POST /crowdsec/decisions '{"value":"198.18.30.1","duration":"1h"}'
+    cst_call admin GET /crowdsec/status
+    cst_j "status/cache: a ban empties the cache, the next look counts it" '.counts.decisions' 13
+    cst_call viewer GET /crowdsec/status
+    cst_is "status/viewer: may look" 200
+    cst_j "status/viewer" '.state' healthy '.counts.decisions' 13
+}
+
+# ---- run the parts -------------------------------------------------------------------------------------------------------------------
+
+cst_main() {
+    local part t0=$SECONDS
+    echo "CrowdSec page"
+    if ! cst_setup; then check "CrowdSec page: the test install starts" yes no; cst_teardown; return; fi
+    for part in ${SMOKE_CS_PARTS:-status bans alerts allowlist services hub settings notify security units}; do
+        if declare -F "cst_part_$part" >/dev/null; then "cst_part_$part"; else check "CrowdSec page: part $part exists" yes no; fi
+    done
+    cst_teardown
+    echo "  (the CrowdSec page took $(( SECONDS - t0 )) s)"
+}
+cst_main
+# <<< CrowdSec page
+
+if [[ "${SMOKE_ONLY:-}" != crowdsec ]]; then
 echo "Factory reset (last: it removes the accounts)"
 cp "$ROOT/.env.example" "$WORK/.env.example"   # what the reset copies back over .env
 _envset FLEET_ROLE hub
 check "factory reset: done"              200 "$(auth_request POST /auth/factory-reset '{"confirm":"FACTORY_RESET"}' | status_of)"
 check "factory reset: .env from the example" yes "$(grep -q '^PROXMOX_URL=$' "$WORK/.env" && echo yes || echo no)"
 check "factory reset: the hub stays a hub" hub "$(grep -m1 '^FLEET_ROLE=' "$WORK/.env" | cut -d= -f2)"
+
+fi
 
 echo
 printf '%d passed, %d failed\n' "$PASS" "$FAIL"
