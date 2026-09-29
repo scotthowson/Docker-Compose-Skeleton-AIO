@@ -1,0 +1,143 @@
+#!/bin/bash
+# =============================================================================
+# dcs-init — first-boot setup of a DCS VM from the seed Proxmox attaches as a
+# CD-ROM (label "cidata"): hostname, user, ssh keys, network, DNS.
+#
+# A small stand-in for cloud-init that understands exactly what Proxmox writes:
+# user-data (#cloud-config: hostname, fqdn, user, ssh_authorized_keys, password),
+# network-config (version 1: physical NICs with static or dhcp subnets, a
+# nameserver block) and meta-data (instance-id). It runs before the network
+# comes up, and again only when the instance-id changes, so a VM boots in
+# seconds and carries no Python for it.
+# =============================================================================
+set -u
+# DCS_ROOT (a directory) and DCS_SEED_DIR (a ready seed) exist for the tests: without them this runs on the real system
+R="${DCS_ROOT:-}"
+TEST=false; [[ -n "$R" ]] && TEST=true
+STATE=$R/var/lib/dcs-init
+SEED=${DCS_SEED_DIR:-$R/run/dcs-seed}
+NETDIR=$R/etc/systemd/network
+log() { echo "dcs-init: $*"; }
+
+mkdir -p "$STATE" "$SEED" "$R/etc/sudoers.d"
+
+# --- the seed: a CD-ROM labelled cidata (Proxmox names it so) ---------------------------------------
+if [[ -z "${DCS_SEED_DIR:-}" ]]; then
+    dev=""
+    for _ in $(seq 1 60); do
+        dev=$(blkid -L cidata 2>/dev/null || true)
+        [[ -n "$dev" ]] && break
+        sleep 0.25
+    done
+    if [[ -z "$dev" ]] || ! mount -t iso9660 -o ro "$dev" "$SEED" 2>/dev/null; then
+        log "no cloud-init drive: the first network card asks DHCP"
+        if [[ ! -e "$STATE/instance-id" ]]; then
+            mkdir -p "$NETDIR"
+            printf '[Match]\nName=eth0 en* ens* eno*\n\n[Network]\nDHCP=yes\n' > "$NETDIR/10-dcs.network"
+            ssh-keygen -A >/dev/null 2>&1 || true
+        fi
+        exit 0
+    fi
+    trap 'umount "$SEED" 2>/dev/null' EXIT
+fi
+
+iid=$(sed -n 's/^instance-id:[[:space:]]*//p' "$SEED/meta-data" 2>/dev/null | head -1)
+if [[ -n "$iid" && "$iid" == "$(cat "$STATE/instance-id" 2>/dev/null)" ]]; then
+    exit 0   # the same instance as last boot: everything is in place
+fi
+log "applying instance ${iid:-unknown}"
+
+UD="$SEED/user-data"
+val() { sed -n "s/^$1:[[:space:]]*//p" "$UD" 2>/dev/null | head -1 | sed "s/^['\"]//; s/['\"]\$//"; }
+
+# --- host name -------------------------------------------------------------------------------------------
+host=$(val hostname); fqdn=$(val fqdn)
+[[ -n "$host" ]] || host=dcs
+[[ -n "$fqdn" ]] || fqdn=$host
+mkdir -p "$R/etc"
+echo "$host" > "$R/etc/hostname"
+$TEST || hostname "$host" 2>/dev/null || true
+{
+    echo "127.0.0.1 localhost"
+    echo "127.0.1.1 $fqdn $host"
+    echo "::1 localhost ip6-localhost ip6-loopback"
+} > "$R/etc/hosts"
+
+# --- the user, with passwordless sudo (the hub runs "sudo -n"), the docker group and the ssh keys ---
+user=$(val user); [[ -n "$user" ]] || user=dcs
+if ! $TEST; then
+    if ! id "$user" >/dev/null 2>&1; then
+        useradd -m -s /bin/bash "$user" 2>/dev/null || log "could not create $user"
+    fi
+    for g in docker adm systemd-journal; do getent group "$g" >/dev/null 2>&1 && usermod -aG "$g" "$user" 2>/dev/null; done
+fi
+printf '%s ALL=(ALL) NOPASSWD:ALL\n' "$user" > "$R/etc/sudoers.d/90-dcs-user"
+chmod 440 "$R/etc/sudoers.d/90-dcs-user"
+if $TEST; then home=$R/home/$user; else home=$(getent passwd "$user" | cut -d: -f6); [[ -n "$home" ]] || home=/home/$user; fi
+mkdir -p "$home/.ssh"; chmod 700 "$home/.ssh"; $TEST || chown "$user:$user" "$home/.ssh" 2>/dev/null
+awk '
+    /^ssh_authorized_keys:/ { inkeys = 1; next }
+    inkeys && /^[[:space:]]*-[[:space:]]/ { sub(/^[[:space:]]*-[[:space:]]*/, ""); gsub(/^["\x27]|["\x27]$/, ""); print; next }
+    inkeys && /^[^[:space:]]/ { inkeys = 0 }
+' "$UD" > "$home/.ssh/authorized_keys" 2>/dev/null
+$TEST || chown "$user:$user" "$home/.ssh/authorized_keys" 2>/dev/null
+chmod 600 "$home/.ssh/authorized_keys"
+pw=$(val password)
+if ! $TEST && [[ -n "$pw" && "$pw" == \$* ]]; then usermod -p "$pw" "$user" 2>/dev/null || true; fi
+$TEST || ssh-keygen -A >/dev/null 2>&1 || true
+
+# --- network: version 1 config -> systemd-networkd + resolv.conf -------------------------------------------
+NC="$SEED/network-config"
+rm -f "$NETDIR"/10-dcs*.network
+mkdir -p "$NETDIR"
+if [[ -s "$NC" ]]; then
+    awk -v dir="$NETDIR" '
+        function q(s) { gsub(/^[[:space:]]+|[[:space:]]+$/, "", s); gsub(/^["\x27]|["\x27]$/, "", s); return s }
+        function prefix(mask,   n, i, p, bits, b) {
+            n = split(mask, o, "."); bits = 0
+            for (i = 1; i <= n; i++) { b = o[i] + 0; while (b > 0) { bits += b % 2; b = int(b / 2) } }
+            return bits
+        }
+        function flush() {
+            if (mac == "") return
+            f = dir "/10-dcs-" nic ".network"
+            printf "[Match]\nMACAddress=%s\n\n[Network]\n", mac > f
+            if (dhcp) printf "DHCP=%s\n", dhcp > f
+            if (addr != "") printf "Address=%s/%s\n", addr, plen > f
+            if (gw != "") printf "Gateway=%s\n", gw > f
+            close(f); nic++
+        }
+        /^[[:space:]]*- type: physical/ { flush(); mac = ""; addr = ""; gw = ""; plen = 24; dhcp = ""; sect = "phys"; next }
+        /^[[:space:]]*- type: nameserver/ { flush(); mac = ""; sect = "ns"; next }
+        sect == "phys" && /mac_address:/ { sub(/.*mac_address:/, ""); mac = tolower(q($0)); next }
+        sect == "phys" && /- type: dhcp4/ { dhcp = "ipv4"; next }
+        sect == "phys" && /- type: dhcp6/ { dhcp = (dhcp == "ipv4" ? "yes" : "ipv6"); next }
+        sect == "phys" && /address:/ { sub(/.*address:/, ""); addr = q($0); next }
+        sect == "phys" && /netmask:/ { sub(/.*netmask:/, ""); plen = prefix(q($0)); next }
+        sect == "phys" && /gateway:/ { sub(/.*gateway:/, ""); gw = q($0); next }
+        END { flush() }
+    ' "$NC"
+    # DNS: the nameserver block (addresses, search domains) is the same for every card; resolv.conf takes ONE search line
+    awk '
+        /^[[:space:]]*- type: nameserver/ { ns = 1; sect = ""; next }
+        ns && /^[[:space:]]*- type:/ { ns = 0 }
+        ns && /address:/ { sect = "a"; next }
+        ns && /search:/ { sect = "s"; next }
+        ns && /^[[:space:]]*-[[:space:]]/ {
+            v = $0; sub(/^[[:space:]]*-[[:space:]]*/, "", v); gsub(/["\x27 ]/, "", v)
+            if (sect == "a") addrs[++na] = v; else if (sect == "s") doms[++nd] = v
+        }
+        END {
+            for (i = 1; i <= na; i++) print "nameserver " addrs[i]
+            if (nd) { line = "search"; for (i = 1; i <= nd; i++) line = line " " doms[i]; print line }
+        }
+    ' "$NC" > "$R/etc/resolv.conf.dcs"
+    if [[ -s "$R/etc/resolv.conf.dcs" ]]; then mv -f "$R/etc/resolv.conf.dcs" "$R/etc/resolv.conf"; else rm -f "$R/etc/resolv.conf.dcs"; fi
+fi
+if ! ls "$NETDIR"/10-dcs*.network >/dev/null 2>&1; then
+    printf '[Match]\nName=eth0 en* ens* eno*\n\n[Network]\nDHCP=yes\n' > "$NETDIR/10-dcs.network"
+fi
+
+[[ -n "$iid" ]] && echo "$iid" > "$STATE/instance-id"
+log "done ($host)"
+exit 0

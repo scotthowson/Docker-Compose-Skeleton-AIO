@@ -1,0 +1,15 @@
+[Unit]
+Description=DCS first-boot setup from the Proxmox cloud-init drive
+DefaultDependencies=no
+After=local-fs.target systemd-udevd.service
+Before=network-pre.target systemd-networkd.service ssh.service sysinit.target
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/dcs-init
+TimeoutStartSec=45
+
+[Install]
+WantedBy=sysinit.target

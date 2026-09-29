@@ -1,0 +1,16 @@
+version: 1
+config:
+    - type: physical
+      name: eth0
+      mac_address: 'bc:24:11:71:6f:be'
+      subnets:
+      - type: static
+        address: '192.168.2.100'
+        netmask: '255.255.255.0'
+        gateway: '192.168.2.1'
+    - type: nameserver
+      address:
+      - '192.168.2.1'
+      search:
+      - 'howson.dev'
+

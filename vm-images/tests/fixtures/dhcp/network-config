@@ -1,0 +1,12 @@
+version: 1
+config:
+    - type: physical
+      name: eth0
+      mac_address: 'bc:24:11:aa:bb:cc'
+      subnets:
+      - type: dhcp4
+    - type: nameserver
+      address:
+      - '9.9.9.9'
+      - '1.1.1.1'
+

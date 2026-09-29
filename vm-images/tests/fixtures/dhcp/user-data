@@ -1,0 +1,13 @@
+#cloud-config
+hostname: monitoring-management
+manage_etc_hosts: true
+fqdn: monitoring-management
+user: dcs
+ssh_authorized_keys:
+  - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDcsDummyKeyForTheFixtureOnlyNotARealKeyXXXXXXXX dcs-hub@dcs-hub
+  - ssh-rsa AAAAB3NzaC1yc2EDummySecondKey user@laptop
+chpasswd:
+  expire: False
+users:
+  - default
+
