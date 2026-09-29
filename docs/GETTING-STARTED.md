@@ -26,7 +26,7 @@ There are four ways to run DCS. Pick one, install, then read
 - **A domain (optional).** For `https://app.your-domain` addresses you need a domain on Cloudflare and an
   API token with *Zone → DNS → Edit*. Without a token, Traefik uses the HTTP challenge on port 80 instead.
   You can add both later.
-- **A Proxmox API token (for the fleet).** The wizard asks for it. [Link Proxmox](#link-proxmox) below
+- **A Proxmox API token (for the fleet).** The wizard asks for it. [Link Proxmox](#2-link-proxmox) below
   shows how to make one.
 
 ## A. The hub VM image on Proxmox

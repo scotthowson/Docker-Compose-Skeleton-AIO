@@ -1,3 +1,5 @@
+<sub>[← Proxmox and the fleet](PROXMOX.md) · [Docs index](README.md) · Next: [API reference →](API.md)</sub>
+
 # Discord × DCS — the complete setup guide
 
 Everything DCS can do with Discord, and every click it takes. Four pieces, each optional:

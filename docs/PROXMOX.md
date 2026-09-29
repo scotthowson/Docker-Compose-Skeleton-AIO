@@ -1,4 +1,10 @@
+<sub>[← Development](DEVELOPMENT.md) · [Docs index](README.md) · Next: [Discord →](DISCORD.md)</sub>
+
 # DCS on Proxmox
+
+> **See also:** [Getting started](GETTING-STARTED.md) for the four ways to install a hub ·
+> [Hub in an LXC container](INSTALL-LXC.md) for a tested LXC walk-through ·
+> [Troubleshooting](TROUBLESHOOTING.md) for problems outside Proxmox.
 
 DCS runs anywhere Docker runs. On a Proxmox host it can also **see and power the VMs and
 containers around it**, and it fits a layout where every Docker VM runs its own DCS and one hub
@@ -651,5 +657,5 @@ Command line, on any DCS: `.scripts/api-server.sh --join-hub URL CODE [NAME]`, `
 | A VM's own Updates page says *Updated by its hub* | By design: a VM built by the hub has no git checkout, its code comes from the hub's Updates page (*Update all VMs*). |
 | Detection says nothing about Proxmox | Detection reads `systemd-detect-virt` and the DMI vendor; a VM without the guest agent still shows as *QEMU/KVM*, which is treated as a probable Proxmox VM. The probe looks for port 8006 on the default gateway and on `pve`, `proxmox`, `pve.local`, `proxmox.local`; if your host has another name, just type the URL. |
 
-Related: [README → Running inside a VM](../README.md#running-inside-a-vm-proxmox-kvm-qemu),
+Related: [Getting started → a VM from an installer ISO](GETTING-STARTED.md#d-a-vm-from-an-installer-iso),
 [docs/DISCORD.md](DISCORD.md) for the bot and webhooks, [docs/API.md](API.md) for every endpoint.
