@@ -89,13 +89,15 @@ fi
 # ── API Server Service ──
 # The API server runs in the foreground and stops cleanly on SIGTERM, so a
 # simple service is all that is needed (no PID file, no ExecStop).
+# It Wants Docker, it does not Require it: a Docker restart (an engine update, which
+# this service runs) would restart a service that requires Docker, and end the update
+# with it; and a stopped Docker is something the API has to be up to report.
 cat > /etc/systemd/system/dcs-api.service << EOF
 [Unit]
 Description=DCS API Server
 Documentation=https://github.com/scotthowson/Docker-Compose-Skeleton-AIO
 After=network-online.target docker.service
-Requires=docker.service
-Wants=network-online.target
+Wants=network-online.target docker.service
 RequiresMountsFor=$BASE_DIR
 
 [Service]

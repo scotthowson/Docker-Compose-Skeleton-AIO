@@ -373,7 +373,7 @@ if [[ -z "$FLEET_ROLE" && -t 0 && "$UNATTENDED" != "true" && ! -f "$BASE_DIR/.ap
             FLEET_ROLE="member"
             read -r -p "  Hub address [http://<hub-ip>:9876]: " FLEET_HUB_URL
             read -r -p "  Join code (Proxmox page → Members on the hub): " FLEET_JOIN_CODE
-            read -r -p "  Name for this server on the hub [$(hostname)]: " FLEET_MEMBER_NAME
+            read -r -p "  Name for this server on the hub [$(uname -n)]: " FLEET_MEMBER_NAME
             FLEET_HUB_URL="${FLEET_HUB_URL%/}"
             if [[ -z "$FLEET_HUB_URL" || -z "$FLEET_JOIN_CODE" ]]; then
                 _warn "Hub address or join code missing — the join can be done later: ./setup.sh --join <hub-url> <code>"
@@ -427,7 +427,7 @@ if [[ "$UNATTENDED" == "true" && -f "$BASE_DIR/.env" ]]; then
     [[ -n "${DCS_API_BIND:-}" ]] && _env_set API_BIND "$DCS_API_BIND"
     [[ -n "${DCS_ADMIN_PASSWORD:-}" ]] && _env_set API_AUTH_ENABLED true
     set -a; source "$BASE_DIR/.env"; set +a
-    _ok "Unattended: .env prepared (stacks: ${DCS_STACKS:-default}, name: ${DCS_MEMBER_NAME:-$(hostname)})"
+    _ok "Unattended: .env prepared (stacks: ${DCS_STACKS:-default}, name: ${DCS_MEMBER_NAME:-$(uname -n)})"
 fi
 
 # The DCS-UI container reaches the API through host.docker.internal, so the
@@ -887,7 +887,7 @@ _detect_ip() {
     local ip
     ip=$(ip route get 1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if ($i=="src") print $(i+1)}' | head -1)
     [[ -n "$ip" ]] && { echo "$ip"; return; }
-    ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+    ip=$(ip -4 -o addr show scope global 2>/dev/null | awk '{sub(/\/.*/, "", $4); print $4; exit}')
     [[ -n "$ip" ]] && { echo "$ip"; return; }
     echo "localhost"
 }

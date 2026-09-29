@@ -97,11 +97,11 @@ _mt_kv() {
 _mt_human_size() {
     local bytes="$1"
     if [[ "$bytes" -ge 1073741824 ]]; then
-        printf "%.1f GB" "$(echo "scale=1; $bytes/1073741824" | bc)"
+        awk -v b="$bytes" 'BEGIN {printf "%.1f GB", b/1073741824}'
     elif [[ "$bytes" -ge 1048576 ]]; then
-        printf "%.1f MB" "$(echo "scale=1; $bytes/1048576" | bc)"
+        awk -v b="$bytes" 'BEGIN {printf "%.1f MB", b/1048576}'
     elif [[ "$bytes" -ge 1024 ]]; then
-        printf "%.1f KB" "$(echo "scale=1; $bytes/1024" | bc)"
+        awk -v b="$bytes" 'BEGIN {printf "%.1f KB", b/1024}'
     else
         printf "%d B" "$bytes"
     fi

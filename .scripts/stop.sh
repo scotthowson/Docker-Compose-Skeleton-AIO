@@ -361,11 +361,11 @@ stop_docker_services() {
 
     if stop_docker_compose_services "${services_to_stop[@]}"; then
         log_highlight "All specified Docker service stacks stopped successfully"
-        send_success_notification "Successfully stopped ${#services_to_stop[@]} Docker service stacks on ${SERVER_NAME:-$(hostname)}"
+        send_success_notification "Successfully stopped ${#services_to_stop[@]} Docker service stacks on ${SERVER_NAME:-$(uname -n)}"
         exit_code=0
     else
         log_warning "Shutdown completed with some failures"
-        send_failure_notification "Docker services shutdown encountered issues on ${SERVER_NAME:-$(hostname)}"
+        send_failure_notification "Docker services shutdown encountered issues on ${SERVER_NAME:-$(uname -n)}"
         exit_code=1
     fi
 

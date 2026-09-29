@@ -409,7 +409,7 @@ scan_images_json() {
 
     echo "{"
     echo "  \"timestamp\": \"$(date -Iseconds)\","
-    echo "  \"hostname\": \"$(hostname)\","
+    echo "  \"hostname\": \"$(uname -n)\","
     echo "  \"total_images\": ${#json_entries[@]},"
     echo "  \"images\": ["
 

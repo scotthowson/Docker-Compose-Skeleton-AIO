@@ -1090,7 +1090,7 @@ log_keyvalue() {
 # Log system information as a set of key-value pairs.
 log_system_info() {
     log_info_header "System Information"
-    log_keyvalue "Hostname"  "$(hostname)"
+    log_keyvalue "Hostname"  "$(uname -n)"
     log_keyvalue "User"      "$(whoami)"
     log_keyvalue "PWD"       "$(pwd)"
     log_keyvalue "Shell"     "$SHELL"

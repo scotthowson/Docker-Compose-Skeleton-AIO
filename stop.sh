@@ -179,7 +179,7 @@ main() {
     # ── Session Metadata ─────────────────────────────────────────────
     log_separator "-" 60
     log_keyvalue "User"            "$(whoami)"
-    log_keyvalue "Hostname"        "$(hostname)"
+    log_keyvalue "Hostname"        "$(uname -n)"
     log_keyvalue "Base Dir"        "$BASE_DIR"
     log_keyvalue "Stacks Dir"      "$COMPOSE_DIR"
     log_keyvalue "App Data"        "$APP_DATA_DIR"

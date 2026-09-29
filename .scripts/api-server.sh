@@ -503,6 +503,14 @@ _sed_escape_val() {
     printf '%s' "$v"
 }
 
+# The machine's name and first address without the hostname command: Arch's minimal image has none (and its inetutils has no -I)
+_hostname() {
+    local h; h=$(cat /proc/sys/kernel/hostname 2>/dev/null) || h=""
+    [[ -n "$h" ]] || h=$(uname -n 2>/dev/null) || h=""
+    printf '%s' "${h:-${1:-}}"
+}
+_primary_ip() { ip -4 -o addr show scope global 2>/dev/null | awk '{sub(/\/.*/, "", $4); print $4; exit}'; }
+
 # The CORS response headers for this request's Origin (nothing for a request without one or from an origin that is not allowed).
 # The response writer and the response cache both use it: a cached answer must carry the CORS headers of the request it is
 # served to, not those of the request that filled the cache.
@@ -2269,7 +2277,7 @@ handle_status() {
         fi
     fi
 
-    _api_success "{\"timestamp\": \"$(date -u '+%Y-%m-%dT%H:%M:%SZ')\", \"hostname\": \"$(_api_json_escape "$(hostname)")\", \"uptime_seconds\": $uptime_seconds, \"docker\": {\"containers\": {\"total\": $total_containers, \"running\": $running_containers, \"stopped\": $stopped_containers}, \"images\": $total_images, \"volumes\": $total_volumes, \"networks\": $total_networks}, \"stacks\": {\"total\": ${#stacks[@]}, \"running\": $running_stacks}, \"system\": {\"load_average\": $load_avg, \"memory_mb\": {\"total\": $mem_total, \"available\": $mem_available}, \"swap_mb\": {\"total\": $swap_total, \"free\": $swap_free}, \"gpu\": $gpu_json, \"disk\": $disk_usage, \"cpu_count\": $cpu_count}}"
+    _api_success "{\"timestamp\": \"$(date -u '+%Y-%m-%dT%H:%M:%SZ')\", \"hostname\": \"$(_api_json_escape "$(_hostname)")\", \"uptime_seconds\": $uptime_seconds, \"docker\": {\"containers\": {\"total\": $total_containers, \"running\": $running_containers, \"stopped\": $stopped_containers}, \"images\": $total_images, \"volumes\": $total_volumes, \"networks\": $total_networks}, \"stacks\": {\"total\": ${#stacks[@]}, \"running\": $running_stacks}, \"system\": {\"load_average\": $load_avg, \"memory_mb\": {\"total\": $mem_total, \"available\": $mem_available}, \"swap_mb\": {\"total\": $swap_total, \"free\": $swap_free}, \"gpu\": $gpu_json, \"disk\": $disk_usage, \"cpu_count\": $cpu_count}}"
 }
 
 # Internal variant — returns JSON to stdout (used by export handler)
@@ -2283,7 +2291,7 @@ handle_system_info_internal() {
     disk_usage=$(df -hP "$BASE_DIR" 2>/dev/null | tail -1 | awk '{printf "{\"total\":\"%s\",\"used\":\"%s\",\"available\":\"%s\",\"percent\":\"%s\"}", $2, $3, $4, $5}')
     [[ -z "$disk_usage" || "$disk_usage" == *'""'* ]] && disk_usage=$(df -hP / 2>/dev/null | tail -1 | awk '{printf "{\"total\":\"%s\",\"used\":\"%s\",\"available\":\"%s\",\"percent\":\"%s\"}", $2, $3, $4, $5}')
     printf '{"hostname":"%s","uptime_seconds":%d,"system":{"load_average":%s,"memory_mb":{"total":%d,"available":%d},"disk":%s,"cpu_count":%d}}' \
-        "$(_api_json_escape "$(hostname)")" "$uptime_seconds" "$load_avg" "$mem_total" "$mem_available" "${disk_usage:-{}}" "$cpu_count"
+        "$(_api_json_escape "$(_hostname)")" "$uptime_seconds" "$load_avg" "$mem_total" "$mem_available" "${disk_usage:-{}}" "$cpu_count"
 }
 
 # GET /health — Health report for every container (running, unhealthy, stopped, restart loops) On a hub, ?fleet=1 adds every member's containers (member, member_name, vmid) and per-member summaries
@@ -3427,7 +3435,7 @@ handle_system() {
     pgrep -x qemu-ga >/dev/null 2>&1 && ga_active=true
     [[ -e /dev/virtio-ports/org.qemu.guest_agent.0 ]] && ga_channel=true
 
-    _api_success "{\"hostname\": \"$(_api_json_escape "$(hostname)")\", \"virtualization\": \"$(_api_json_escape "$virt")\", \"guest_agent\": {\"installed\": $ga_installed, \"active\": $ga_active, \"channel\": $ga_channel}, \"kernel\": \"$(_api_json_escape "$kernel_version")\", \"cpu_count\": $cpu_count, \"memory_total_mb\": $mem_total_mb, \"swap_total_mb\": $swap_total_mb, \"docker_version\": \"$docker_version\", \"docker_disk_usage\": $df_json}"
+    _api_success "{\"hostname\": \"$(_api_json_escape "$(_hostname)")\", \"virtualization\": \"$(_api_json_escape "$virt")\", \"guest_agent\": {\"installed\": $ga_installed, \"active\": $ga_active, \"channel\": $ga_channel}, \"kernel\": \"$(_api_json_escape "$kernel_version")\", \"cpu_count\": $cpu_count, \"memory_total_mb\": $mem_total_mb, \"swap_total_mb\": $swap_total_mb, \"docker_version\": \"$docker_version\", \"docker_disk_usage\": $df_json}"
 }
 
 # GET /disks — Mounted filesystems and their usage
@@ -7877,8 +7885,9 @@ handle_alerts_config_update() {
 handle_crontab() {
     if ! _api_check_admin; then _api_error 403 "Admin access required"; return; fi
 
-    local raw_crontab
-    raw_crontab=$(crontab -l 2>&1 || echo "")
+    # no cron on a machine without it (none of the DCS VM images has one): an empty list, not the shell's "command not found" as an entry
+    local raw_crontab=""
+    command -v crontab >/dev/null 2>&1 && raw_crontab=$(crontab -l 2>&1 || echo "")
 
     # Parse cron entries into structured format
     local entries_json="["
@@ -8643,7 +8652,7 @@ _dcs_power_loop() {
     trap 'kill "${_sleep_pid:-}" 2>/dev/null; exit 0' TERM INT
     local interval prev_on_batt="" stopped=false sample on_batt low charge runtime ok host_name event=""
     interval="${UPS_POLL_INTERVAL:-15}"; [[ "$interval" =~ ^[0-9]+$ && "$interval" -ge 5 ]] || interval=15
-    host_name=$(hostname 2>/dev/null || echo dcs)
+    host_name=$(_hostname dcs)
     local thr_charge thr_runtime
     thr_charge="${UPS_SHUTDOWN_CHARGE:-20}"; [[ "$thr_charge" =~ ^[0-9]+$ ]] || thr_charge=20
     thr_runtime="${UPS_SHUTDOWN_RUNTIME:-300}"; [[ "$thr_runtime" =~ ^[0-9]+$ ]] || thr_runtime=300
@@ -8760,7 +8769,7 @@ _recovery_bundle_create() {
     command -v rsync >/dev/null 2>&1 || { RCV_ERROR="rsync is required to build a bundle"; return 1; }
     dest=$(_recovery_dir)
     mkdir -p "$dest" 2>/dev/null && chmod 700 "$dest" 2>/dev/null || { RCV_ERROR="Cannot write to $dest"; return 1; }
-    stamp=$(date +%Y%m%d-%H%M%S); host=$(hostname -s 2>/dev/null | tr -c 'A-Za-z0-9_-' '-' | sed 's/-$//'); [[ -n "$host" ]] || host=dcs
+    stamp=$(date +%Y%m%d-%H%M%S); host=$(_hostname | cut -d. -f1 | tr -c 'A-Za-z0-9_-' '-' | sed 's/-$//'); [[ -n "$host" ]] || host=dcs
     tmp=$(mktemp -d /tmp/dcs-recovery-XXXXXX 2>/dev/null) || { RCV_ERROR="Cannot create a temporary directory"; return 1; }
     chmod 700 "$tmp"; b="$tmp/bundle"; mkdir -p "$b"
     [[ -f "$BASE_DIR/.env" ]] && cp -p "$BASE_DIR/.env" "$b/root.env"
@@ -9936,6 +9945,20 @@ _detect_pkg_manager() {
     fi
 }
 
+# Run a package operation (an OS or Docker Engine update) on the host itself: same arguments as _run_privileged. This service runs with
+# ProtectSystem=full, which makes /usr and /etc read-only for everything it starts, sudo included, so an update started from here could
+# not install a file; and everything it starts dies with it, while an engine update restarts Docker (and, in units installed before the
+# dependency was loosened, the API with it). systemd-run starts the command as a service of the manager's own: its namespace, its
+# cgroup, the exit status and the output come back through --wait --pipe.
+_run_host() {
+    if [[ -d /run/systemd/system ]] && command -v systemd-run >/dev/null 2>&1; then
+        local _pw="$1" _user="$2"; shift 2
+        _run_privileged "$_pw" "$_user" systemd-run --quiet --pipe --wait --collect "$@"
+    else
+        _run_privileged "$@"
+    fi
+}
+
 # Run a command with root privileges using the best available method.
 # Args: $1=password $2=username $3...=command
 # Tries: root > NOPASSWD sudo > sudo.ws -S > sudo -S > su via python pty
@@ -10193,7 +10216,7 @@ handle_os_update_apply() {
     (
         local output=""
         local exit_code=0
-        output=$(_run_privileged "$password" "$term_user" bash -c "$update_cmd" 2>&1) || exit_code=$?
+        output=$(_run_host "$password" "$term_user" bash -c "$update_cmd" 2>&1) || exit_code=$?
 
         # Extract summary
         local summary=""
@@ -11470,7 +11493,7 @@ _fire_notifications() {
     # the event's own facts come last: nothing in a context (a member's relayed one included) can pose as this host
     ctx[event]="$event"
     ctx[timestamp]=$(date '+%Y-%m-%d %H:%M:%S')
-    ctx[hostname]=$(hostname 2>/dev/null || echo "unknown")
+    ctx[hostname]=$(_hostname unknown)
 
     # Read all enabled rules matching this event
     local rules_json
@@ -11707,7 +11730,7 @@ handle_snapshot_create() {
 
     # Create manifest
     local hostname_val
-    hostname_val=$(hostname 2>/dev/null || echo "unknown")
+    hostname_val=$(_hostname unknown)
     cat > "$tmpdir/manifest.json" <<MANIFESTEOF
 {"version": "1.0", "label": "$(_api_json_escape "$label")", "created_at": "$(date -u '+%Y-%m-%dT%H:%M:%SZ')", "hostname": "$hostname_val", "dcs_version": "${DCS_VERSION}"}
 MANIFESTEOF
@@ -15886,7 +15909,7 @@ AUTH_ROUTE_EOF
                         if [[ "$_ro_host_ip" == "true" ]]; then
                             # Detect the host's LAN IP for the route target
                             _ro_target=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}' | head -1)
-                            [[ -z "$_ro_target" ]] && _ro_target=$(hostname -I 2>/dev/null | awk '{print $1}')
+                            [[ -z "$_ro_target" ]] && _ro_target=$(_primary_ip)
                         fi
                         if [[ -z "$_ro_target" ]]; then
                             # Fallback to container name from route_override
@@ -17572,11 +17595,11 @@ _webhook_body() {
     if _discord_is_webhook "$url"; then
         _discord_payload "$label" "$detail" default "$event" '{}'
     elif [[ "$url" == https://hooks.slack.com/* ]]; then
-        jq -nc --arg l "$label" --arg d "$detail" --arg h "$(hostname 2>/dev/null || echo DCS)" --arg v "${DCS_VERSION:-}" \
+        jq -nc --arg l "$label" --arg d "$detail" --arg h "$(_hostname DCS)" --arg v "${DCS_VERSION:-}" \
             '{text: ("*" + $l + "* — " + $d + "\n_" + $h + (if $v != "" then " · DCS " + $v else "" end) + "_")}'
     else
         jq -nc --arg e "$event" --arg l "$label" --arg d "$detail" --arg ts "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
-            --arg h "$(hostname 2>/dev/null || echo DCS)" --arg s "${SERVER_NAME:-}" --arg v "${DCS_VERSION:-}" \
+            --arg h "$(_hostname DCS)" --arg s "${SERVER_NAME:-}" --arg v "${DCS_VERSION:-}" \
             '{event: $e, title: $l, detail: $d, timestamp: $ts, hostname: $h, server: $s, version: $v}'
     fi
 }
@@ -18298,7 +18321,7 @@ _discord_payload() {
     # Titles that already start with their own emoji keep it
     if [[ "${title:0:1}" == [A-Za-z0-9\(\[\"\'\`\*\{] ]]; then title="$emoji $title"; fi
     [[ "$embed_fields" =~ ^\{ ]] || embed_fields='{}'
-    host=$(hostname 2>/dev/null || echo DCS)
+    host=$(_hostname DCS)
     jq -nc --arg t "${title:0:256}" --arg m "${message:0:4000}" --arg host "$host" --arg sname "${SERVER_NAME:-}" \
         --arg ver "${DCS_VERSION:-}" --arg link "$(_dashboard_public_url)" --argjson c "$color" --arg label "$label" \
         --arg uname "${DISCORD_WEBHOOK_NAME:-DCS Manager}" --arg avatar "${DISCORD_WEBHOOK_AVATAR:-$_DISCORD_AVATAR}" \
@@ -18469,7 +18492,7 @@ _automation_execute() {
             ;;
         notification_send)
             local text="${target}"
-            [[ -z "$text" || "$text" == "*" ]] && text="Automation '${name}' fired${context:+ (${context})} on $(hostname 2>/dev/null)"
+            [[ -z "$text" || "$text" == "*" ]] && text="Automation '${name}' fired${context:+ (${context})} on $(_hostname)"
             local code
             code=$(_notify_send "DCS: ${name}" "$text" default "robot" "automation_run" "$(jq -nc --arg a "$name" '{automation: $a}')")
             if [[ "$code" =~ ^2 ]]; then _AE_MESSAGE="notification sent"; else _AE_SUCCESS="false"; _AE_MESSAGE="ntfy answered ${code} (check NTFY_URL/NTFY_TOPIC)"; fi
@@ -19335,7 +19358,7 @@ _feed_enabled() { [[ "${TRAEFIK_FEED_ENABLED:-false}" == "true" && -n "${TRAEFIK
 _feed_detected_host() {
     local ip
     ip=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}' | head -1)
-    [[ -n "$ip" ]] || ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+    [[ -n "$ip" ]] || ip=$(_primary_ip)
     printf '%s' "$ip"
 }
 _feed_target_host() { local h="${TRAEFIK_FEED_TARGET_HOST:-}"; [[ -n "$h" ]] || h=$(_feed_detected_host); printf '%s' "$h"; }
@@ -19705,12 +19728,12 @@ _fleet_placements_from_claim() {
 # What this server tells a hub about itself (the hub matches it to a guest)
 _fleet_identity_json() {
     local host uuid mid ips port
-    host=$(hostname 2>/dev/null || echo "")
+    host=$(_hostname)
     mid=$(cut -c1-32 /etc/machine-id 2>/dev/null || echo "")
     uuid="${FLEET_IDENTITY_UUID:-}"
     [[ -n "$uuid" ]] || uuid=$(cat /sys/class/dmi/id/product_uuid 2>/dev/null || echo "")
     # a VM's uuid is root-only in sysfs: the bootstrap keeps a copy the API's user can read (the hub matches guests by it)
-    [[ -n "$uuid" ]] || uuid=$(tr -d ' \n' < "$BASE_DIR/.data/product_uuid" 2>/dev/null || echo "")
+    [[ -n "$uuid" || ! -r "$BASE_DIR/.data/product_uuid" ]] || uuid=$(tr -d ' \n' < "$BASE_DIR/.data/product_uuid" 2>/dev/null || echo "")
     # whether this DCS serves a dashboard of its own (an API-only member does not)
     local dash=false; [[ "$(docker container inspect DCS-UI --format '{{.State.Running}}' 2>/dev/null)" == "true" ]] && dash=true
     ips=$(ip -4 -o addr show scope global 2>/dev/null | awk '$2 !~ /^(docker|br-|veth|virbr|lo)/ {split($4, a, "/"); print a[1]}' | head -8 | jq -R . | jq -sc .)
@@ -20154,8 +20177,12 @@ _docker_engine_candidate_refresh() {
 _docker_engine_candidate() {   # prints the cached candidate (empty while unknown) and starts a refresh when the cache is stale
     local f="$BASE_DIR/.data/docker-engine-candidate.json" now age=999999
     now=$(date +%s); mkdir -p "$BASE_DIR/.data" 2>/dev/null
-    [[ -f "$f" ]] && age=$(( now - $(stat -c %Y "$f" 2>/dev/null || echo 0) ))
-    if (( age > ${DOCKER_ENGINE_CHECK_TTL:-3600} )) && ! { [[ -f "$f.lock" ]] && (( now - $(stat -c %Y "$f.lock" 2>/dev/null || echo 0) < 300 )); }; then
+    local ttl=${DOCKER_ENGINE_CHECK_TTL:-3600}
+    if [[ -f "$f" ]]; then
+        age=$(( now - $(stat -c %Y "$f" 2>/dev/null || echo 0) ))
+        [[ -n "$(jq -r '.candidate // ""' "$f" 2>/dev/null)" ]] || ttl=300   # a lookup that found nothing (no network yet, the keyring not made) is asked again in five minutes
+    fi
+    if (( age > ttl )) && ! { [[ -f "$f.lock" ]] && (( now - $(stat -c %Y "$f.lock" 2>/dev/null || echo 0) < 300 )); }; then
         touch "$f.lock"
         ( _docker_engine_candidate_refresh "$f"; rm -f "$f.lock" ) </dev/null >/dev/null 2>&1 &
         disown 2>/dev/null || true
@@ -20174,7 +20201,7 @@ _docker_engine_json() {
     if [[ "$src" == "docker.io" ]] && (( major < 27 )) && docker info --format '{{.SecurityOptions}}' 2>/dev/null | grep -q apparmor && [[ -f /sys/module/apparmor/parameters/enabled ]]; then apparmor=true; fi
     local st; st=$(cat "$API_AUTH_DIR/docker-engine-status.json" 2>/dev/null); [[ "$st" == \{* ]] || st='{"status":"idle"}'
     local checked_at; checked_at=$(jq -r '.checked_at // 0' "$BASE_DIR/.data/docker-engine-candidate.json" 2>/dev/null); [[ "$checked_at" =~ ^[0-9]+$ ]] || checked_at=0
-    jq -nc --arg v "$ver" --arg src "$src" --arg cand "$cand" --arg pm "$pm" --argjson up "$upgradable" --argjson sudo "$sudo_ready" --argjson aa "$apparmor" --argjson st "$st" --arg host "$(hostname 2>/dev/null)" --argjson chk "$checking" --argjson cat "$checked_at" '
+    jq -nc --arg v "$ver" --arg src "$src" --arg cand "$cand" --arg pm "$pm" --argjson up "$upgradable" --argjson sudo "$sudo_ready" --argjson aa "$apparmor" --argjson st "$st" --arg host "$(_hostname)" --argjson chk "$checking" --argjson cat "$checked_at" '
         {version: $v, source: (if $src == "" then "unknown" else $src end), candidate: $cand, checking: $chk, candidate_checked_at: $cat, package_manager: $pm, upgradable: $up, sudo_ready: $sudo, hostname: $host,
          apparmor_issue: $aa, recommended: (if $src == "docker-ce" or $src == "docker-arch" then true else false end),
          switch_command: (if $src == "docker-ce" or $src == "docker-arch" then "" else "curl -fsSL https://get.docker.com | sh" end),
@@ -20219,18 +20246,34 @@ handle_docker_engine_update() {
         [[ -n "$term_user" ]] || { _api_error 401 "Invalid or expired terminal session"; return; }
         password=$(jq -r '.password // empty' <<< "$body" 2>/dev/null); [[ -n "$password" ]] || { _api_error 403 "Sudo password required"; return; }
     fi
+    _docker_engine_status_heal "$status_file"
     if [[ -s "$status_file" ]] && [[ "$(jq -r '.status // ""' "$status_file" 2>/dev/null)" == "running" ]]; then _api_error 409 "An engine update is already running"; return; fi
     local cmd
     case "$pm" in
         apt) cmd="export DEBIAN_FRONTEND=noninteractive; apt-get update -qq; if dpkg -s docker-ce >/dev/null 2>&1; then apt-get install -y -q --only-upgrade docker-ce docker-ce-cli containerd.io docker-compose-plugin docker-buildx-plugin; else apt-get install -y -q --only-upgrade docker.io docker-compose-v2 containerd; fi" ;;
         dnf|yum) cmd="if rpm -q docker-ce >/dev/null 2>&1; then $pm upgrade -y docker-ce docker-ce-cli containerd.io docker-compose-plugin; else $pm upgrade -y moby-engine docker-compose; fi" ;;
-        pacman) cmd="pacman -Syu --noconfirm; rc=\$?; if [ -e \"/usr/lib/modules/\$(uname -r)\" ]; then systemctl try-restart containerd docker; else echo 'The kernel was upgraded: reboot to load it (until then the running kernel cannot load new modules)'; fi; exit \$rc" ;;
+        pacman) cmd=$(cat <<'PACMAN_UPDATE'
+pk() { pacman -Q docker containerd runc 2>/dev/null; }
+# a DCS image makes its pacman keyring a minute after the first boot: an update in that minute waits for it
+[ -e /var/lib/dcs-init/pacman-keyring ] || systemctl start dcs-pacman-keyring.service 2>/dev/null
+before=$(pk)
+pacman -Syu --noconfirm; rc=$?
+if [ -e "/usr/lib/modules/$(uname -r)" ]; then
+    [ "$before" != "$(pk)" ] && systemctl try-restart containerd docker
+else
+    echo 'The kernel was upgraded: reboot to load it (until then the running kernel cannot load new modules)'
+fi
+exit $rc
+PACMAN_UPDATE
+) ;;
         *) _api_error 500 "Docker Engine updates need apt, dnf or pacman here (found: $pm)"; return ;;
     esac
     mkdir -p "$API_AUTH_DIR" 2>/dev/null
     jq -nc --arg t "$(date -Iseconds)" --arg by "${AUTH_USERNAME:-api}" '{status: "running", started_at: $t, by: $by}' > "$status_file"
     (
-        local _eng_out rc=0; _eng_out=$(_run_privileged "$password" "$term_user" bash -c "$cmd" 2>&1) || rc=$?
+        # the pid a status request checks: a job that is gone (the API was restarted under it) must not read "running" for good
+        jq --argjson p "$BASHPID" '.pid = $p' "$status_file" > "$status_file.tmp.$$" 2>/dev/null && mv -f "$status_file.tmp.$$" "$status_file"
+        local _eng_out rc=0; _eng_out=$(_run_host "$password" "$term_user" bash -c "$cmd" 2>&1) || rc=$?
         local ver; ver=$(timeout 8 docker version --format '{{.Server.Version}}' 2>/dev/null || echo "")
         jq -nc --arg st "$([[ $rc -eq 0 ]] && echo "done" || echo "failed")" --arg v "$ver" --argjson rc "$rc" --arg out "$(printf '%s' "$_eng_out" | tail -c 4000)" --arg t "$(date -Iseconds)" '{status: $st, version: $v, exit_code: $rc, output: $out, finished_at: $t}' > "$status_file"
         _audit_log "docker_engine_update" "Docker Engine update $([[ $rc -eq 0 ]] && echo "done, now $ver" || echo "failed (exit $rc)")"
@@ -20241,7 +20284,21 @@ handle_docker_engine_update() {
     _api_success '{"success": true, "status": "running", "message": "Engine update started; follow it on GET /system/docker-engine/status"}'
 }
 # GET /system/docker-engine/status — The engine update in progress or the last one (idle, running, done, failed)
-handle_docker_engine_status() { local f="$API_AUTH_DIR/docker-engine-status.json"; if [[ -s "$f" ]]; then _api_success "$(cat "$f")"; else _api_success '{"status":"idle"}'; fi; }
+handle_docker_engine_status() { local f="$API_AUTH_DIR/docker-engine-status.json"; if [[ -s "$f" ]]; then _docker_engine_status_heal "$f"; _api_success "$(cat "$f")"; else _api_success '{"status":"idle"}'; fi; }
+# An update that reads "running" while its job is gone: the API was restarted under it (Docker was restarted, and a service that requires
+# Docker went along; units installed before 3.9.10 do). Say what is known, so the next update is not refused for good.
+_docker_engine_status_heal() {
+    local f="$1" st pid ver
+    [[ -s "$f" ]] || return 0
+    st=$(jq -r '.status // ""' "$f" 2>/dev/null); [[ "$st" == running ]] || return 0
+    pid=$(jq -r '.pid // empty' "$f" 2>/dev/null)
+    if [[ -z "$pid" ]]; then (( $(date +%s) - $(stat -c %Y "$f" 2>/dev/null || echo 0) < 30 )) && return 0; fi   # the job has not written its pid yet
+    [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null && return 0
+    ver=$(timeout 8 docker version --format '{{.Server.Version}}' 2>/dev/null || echo "")
+    jq -nc --arg v "$ver" --arg t "$(date -Iseconds)" --arg out "The API restarted while the update ran, so its end was not seen. Docker is at ${ver:-an unknown version} now: compare it with the version the card offers." \
+        '{status: "failed", version: $v, exit_code: -1, output: $out, finished_at: $t}' > "$f.tmp.$$" 2>/dev/null && mv -f "$f.tmp.$$" "$f"
+    return 0
+}
 # POST /fleet/docker-engine/update — Bring the Docker Engine up to date on members {members: ["id", …] or "all"} (each VM the hub built has passwordless sudo, so no password travels); the answer says what each member started
 handle_fleet_docker_engine_update() {
     local body="$1" sel ids id r _eng_results='[]'
@@ -20573,7 +20630,7 @@ handle_fleet_status() {
     [[ "$pending" == \{* ]] || pending=null
     _api_success "$(jq -nc --arg role "$role" --argjson n "$n" --argjson hub "$hub" --argjson t "$tokens" --argjson pending "$pending" \
         --arg url "$(_fleet_self_url)" --arg ports "${FLEET_SCAN_PORTS:-9876}" --argjson pve "$(_pve_configured && echo true || echo false)" \
-        --arg host "$(hostname 2>/dev/null)" --arg name "${SERVER_NAME:-}" --arg v "$DCS_VERSION" --arg acct "$FLEET_HUB_ACCOUNT" \
+        --arg host "$(_hostname)" --arg name "${SERVER_NAME:-}" --arg v "$DCS_VERSION" --arg acct "$FLEET_HUB_ACCOUNT" \
         '{role: $role, members: $n, hub: $hub, join_tokens: $t, pending_join: $pending, self_url: $url, scan_ports: $ports, proxmox_linked: $pve,
           hostname: $host, server_name: $name, version: $v, hub_account: $acct}')"
 }
@@ -20874,7 +20931,7 @@ handle_fleet_join() {
     _audit_log "fleet_member_joined" "member $mname ($murl) joined with a join code from $client_ip$where"
     _fire_notifications "fleet_member_joined" "member=$mname" "url=$murl" "message=DCS on $mname ($murl) joined this hub$where" 2>/dev/null
     local rt; rt=$(_fleet_relay_new); _fleet_relay_set "$(jq -r .id <<< "$m")" "$rt"
-    _api_success "$(jq -nc --argjson m "$m" --arg hn "${SERVER_NAME:-$(hostname 2>/dev/null)}" --arg hv "$DCS_VERSION" --arg hu "$(_fleet_self_url)" --arg rt "$rt" --arg dom "$(_fleet_domain)" \
+    _api_success "$(jq -nc --argjson m "$m" --arg hn "${SERVER_NAME:-$(_hostname)}" --arg hv "$DCS_VERSION" --arg hu "$(_fleet_self_url)" --arg rt "$rt" --arg dom "$(_fleet_domain)" \
         '{success: true, member: ($m | del(.identity)), hub: {name: $hn, version: $hv, url: $hu}, relay_token: $rt, domain: $dom}')"
 }
 
@@ -21529,7 +21586,7 @@ _fleet_overview_json() {
     local live; live=$(jq -sc . "$tmp"/*.json 2>/dev/null); [[ "$live" == \[* ]] || live='[]'
     rm -rf "$tmp"
     local out
-    out=$(jq -nc --argjson j "$j" --argjson live "$live" --arg v "$DCS_VERSION" --arg n "${SERVER_NAME:-}" --arg host "$(hostname 2>/dev/null)" --argjson t "$(date +%s)" \
+    out=$(jq -nc --argjson j "$j" --argjson live "$live" --arg v "$DCS_VERSION" --arg n "${SERVER_NAME:-}" --arg host "$(_hostname)" --argjson t "$(date +%s)" \
         '{at: $t, hub: {version: $v, name: $n, hostname: $host},
           members: [$j.members[] | . as $m | (([$live[] | select(.id == $m.id)] | .[0]) // {reachable: false, error: "no answer", stacks: [], containers: [], stacks_total: 0, containers_running: 0, containers_total: 0}) as $l | (del(.identity) + $l) | .placements = ($m.stacks // [])],
           totals: {members: ($j.members | length), reachable: ([$live[] | select(.reachable)] | length), stacks: ([$live[].stacks_total] | add // 0), containers_running: ([$live[].containers_running] | add // 0), containers_total: ([$live[].containers_total] | add // 0)}}')
@@ -21821,7 +21878,7 @@ _fleet_ssh_key() {
     local k="$FLEET_SSH_DIR/id_ed25519"
     if [[ ! -s "$k" ]]; then
         mkdir -p "$FLEET_SSH_DIR" 2>/dev/null; chmod 700 "$FLEET_SSH_DIR" 2>/dev/null
-        ssh-keygen -q -t ed25519 -N '' -C "dcs-hub@$(hostname 2>/dev/null)" -f "$k" </dev/null >/dev/null 2>&1 || return 1
+        ssh-keygen -q -t ed25519 -N '' -C "dcs-hub@$(_hostname)" -f "$k" </dev/null >/dev/null 2>&1 || return 1
     fi
     printf '%s' "$k"
 }
@@ -22152,7 +22209,7 @@ _fleet_job_run() {
         if [[ -n "$tvmid" ]]; then
             # a baked template exists for this image: a full clone, then the VM's own size, network and name
             _job_log "$id" "cloning the DCS template VM $tvmid ($iid) as VM $vmid ($stack) — no installs ahead"
-            PVE_TIMEOUT=120 _pve_call res POST "/nodes/$node/qemu/$tvmid/clone" "newid=$vmid" "name=$stack" "full=1" "storage=$st" "description=DCS member for the stack $stack — cloned from the DCS template $tvmid by the hub $(hostname 2>/dev/null) on $(date +%F) (image ${iid:-unknown})"
+            PVE_TIMEOUT=120 _pve_call res POST "/nodes/$node/qemu/$tvmid/clone" "newid=$vmid" "name=$stack" "full=1" "storage=$st" "description=DCS member for the stack $stack — cloned from the DCS template $tvmid by the hub $(_hostname) on $(date +%F) (image ${iid:-unknown})"
             _pve_explain "$res" || { _job_fail "$id" create "Proxmox refused to clone the template: $PVE_ERR"; return 1; }
             upid=$(jq -r '.data // ""' <<< "$res"); _job_update "$id" --argjson v "$vmid" '.vmid = $v' >/dev/null
             [[ "$upid" == UPID:* ]] && { _pve_wait_task "$node" "$upid" 900 "$id" || { _job_fail "$id" create "$FLEET_JOB_ERR"; return 1; }; }
@@ -22165,13 +22222,13 @@ _fleet_job_run() {
             PVE_TIMEOUT=60 _pve_call res POST "/nodes/$node/qemu" "vmid=$vmid" "name=$stack" "cores=$cores" "sockets=1" "cpu=host" "memory=$mem" "balloon=$(_vm_balloon_floor "$mem")" \
                 "net0=virtio,bridge=$bridge" "scsihw=virtio-scsi-single" "scsi0=$st:${disk},discard=on" "ide2=$iso,media=cdrom" \
                 "boot=order=ide2;scsi0" "agent=enabled=1" "ostype=l26" "onboot=1" "tags=dcs;$stack" \
-                "description=DCS member for the stack $stack — created by the hub $(hostname 2>/dev/null) on $(date +%F) (installer $file); install it by hand, then join"
+                "description=DCS member for the stack $stack — created by the hub $(_hostname) on $(date +%F) (installer $file); install it by hand, then join"
         else
             _job_log "$id" "creating VM $vmid ($stack) from $ist:import/$file on $st"
             PVE_TIMEOUT=60 _pve_call res POST "/nodes/$node/qemu" "vmid=$vmid" "name=$stack" "cores=$cores" "sockets=1" "cpu=host" "memory=$mem" "balloon=$(_vm_balloon_floor "$mem")" \
                 "net0=virtio,bridge=$bridge" "scsihw=virtio-scsi-single" "scsi0=$st:0,import-from=$ist:import/$file,discard=on" "ide2=$st:cloudinit" \
                 "boot=order=scsi0" "serial0=socket" "vga=serial0" "agent=enabled=1" "ostype=l26" "onboot=1" "tags=dcs;$stack" \
-                "description=DCS member for the stack $stack — created by the hub $(hostname 2>/dev/null) on $(date +%F) (image ${iid:-unknown})"
+                "description=DCS member for the stack $stack — created by the hub $(_hostname) on $(date +%F) (image ${iid:-unknown})"
         fi
         _pve_explain "$res" || { _job_fail "$id" create "Proxmox refused to create the VM: $PVE_ERR"; return 1; }
         upid=$(jq -r '.data // ""' <<< "$res")
@@ -22554,7 +22611,7 @@ handle_setup_defaults() {
 
     # Auto-detect system values
     local sys_hostname sys_tz sys_puid sys_pgid sys_docker sys_compose
-    sys_hostname="$(hostname 2>/dev/null || echo 'unknown')"
+    sys_hostname="$(_hostname unknown)"
     sys_tz="$(timedatectl show -p Timezone --value 2>/dev/null || echo 'UTC')"
     sys_puid="$(id -u 2>/dev/null || echo '1000')"
     # the account's own group, not the one a login switched to (newgrp docker makes docker the current group)

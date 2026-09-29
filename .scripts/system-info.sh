@@ -132,7 +132,7 @@ _si_get_architecture() {
 }
 
 _si_get_hostname() {
-    hostname -f 2>/dev/null || hostname 2>/dev/null || echo "Unknown"
+    hostname -f 2>/dev/null || uname -n 2>/dev/null || echo "Unknown"
 }
 
 _si_get_uptime() {

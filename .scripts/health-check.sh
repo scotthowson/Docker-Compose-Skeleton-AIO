@@ -398,7 +398,7 @@ _hc_json_output() {
 
     echo "{"
     echo "  \"timestamp\": \"$(date -u '+%Y-%m-%dT%H:%M:%SZ')\","
-    echo "  \"hostname\": \"$(hostname)\","
+    echo "  \"hostname\": \"$(uname -n)\","
     echo "  \"summary\": {"
     echo "    \"total\": $total,"
     echo "    \"healthy\": $healthy,"

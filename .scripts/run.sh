@@ -467,17 +467,17 @@ start_docker_services() {
 
     if start_docker_compose_services "${services_to_start[@]}"; then
         log_highlight "All specified Docker service stacks started successfully"
-        _send_success_notification "Successfully started ${#services_to_start[@]} Docker service stacks on ${SERVER_NAME:-$(hostname)}"
+        _send_success_notification "Successfully started ${#services_to_start[@]} Docker service stacks on ${SERVER_NAME:-$(uname -n)}"
         exit_code=0
     else
         # Some stacks failed — decide how to handle based on CONTINUE_ON_FAILURE
         if [[ "${CONTINUE_ON_FAILURE:-true}" == "true" ]]; then
             log_warning "Startup completed with failures, but CONTINUE_ON_FAILURE is enabled"
-            _send_general_failure_notification "Docker services startup encountered issues on ${SERVER_NAME:-$(hostname)}"
+            _send_general_failure_notification "Docker services startup encountered issues on ${SERVER_NAME:-$(uname -n)}"
             exit_code=0
         else
             log_error "Startup completed with errors. CONTINUE_ON_FAILURE is disabled — returning failure"
-            _send_general_failure_notification "Docker services startup failed on ${SERVER_NAME:-$(hostname)}"
+            _send_general_failure_notification "Docker services startup failed on ${SERVER_NAME:-$(uname -n)}"
             exit_code=1
         fi
     fi

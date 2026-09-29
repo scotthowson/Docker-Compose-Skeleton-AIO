@@ -22,6 +22,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Docker Engine on Arch.** The engine card and its update know Arch's `docker` package: the newest version is read from a private
   copy of the sync databases (the system's own are never refreshed alone) and the update is a whole-system `pacman -Syu`, with the
   engine restarted, or a reboot note when the kernel changed.
+- **Each image says what its kernel drives.** `vm-images/images.json` holds a `hardware` line per image (Debian's cloud kernel drives
+  virtual hardware only, the others carry the drivers of real GPUs, USB devices and network cards), the image catalogue passes it on, lint
+  fails when one is missing, and the *New VM* sheet shows it under the operating system.
 - **The hub builds VMs from the purpose-built images.** The OS pickers (the wizard's VM step, *New VM stack*) list the DCS
   images first and recommend them; a VM from one is created straight from the imported image (nothing to install, so
   nothing to bake), and the hub has Proxmox check the download against the release's `SHA256SUMS`. The images come from the
@@ -68,6 +71,18 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   39 (F), and the fleet views do the same for every VM whose Docker does not answer.
 - **A VM that does not answer is no longer left out of the fleet's verdict.** `GET /health?fleet=1` counts it as
   `unreachable` and reports at least `degraded`; the fleet score is capped when a reachable VM has no Docker.
+- **An engine or OS update started from the dashboard could not finish.** Two things ended it. The API service runs with
+  `ProtectSystem=full`, which makes `/usr` and `/etc` read-only for everything it starts, sudo included, so no package file could be
+  installed. And the service *required* Docker: an engine update restarts Docker, systemd restarted the API with it, the job died with
+  the service and its status read "running" for good (every later update was refused with 409). Both updates start through
+  `systemd-run` now (the manager's own namespace and cgroup), the API unit *wants* Docker (a stopped Docker is something the API has to
+  be up to report), Arch restarts Docker only when its packages changed, and an update whose job is gone reads "failed" with what is
+  known instead of "running". Tested with a real upgrade in an Arch VM.
+- **An Arch node could not be built.** The member bootstrap used `sg`, which Arch does not have, and stopped at "Docker Compose is not
+  available"; it uses `newgrp` there. Arch's minimal image has no `hostname` command either, so a member reported an empty host name:
+  every script reads the name from `uname -n` (the API from `/proc`) and the first address from `ip`.
+- **The Cron Jobs page listed "command not found" as a job** on a machine without cron, which is every DCS VM image. It shows an empty
+  list. `maintenance.sh` no longer needs `bc` to print sizes.
 - **A dashboard on another origin got a CORS error from a cached answer.** The response cache kept the headers of the request that
   filled it, `Access-Control-Allow-Origin` included, and served them to whoever asked next. The cache now drops the stored CORS
   lines and writes the ones for the request it answers.

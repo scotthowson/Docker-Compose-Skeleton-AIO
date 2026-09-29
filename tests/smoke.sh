@@ -2173,6 +2173,16 @@ check "engine: shape"                        true "$(printf '%s' "$_EN" | body_o
 check "engine: status idle"                  idle "$(fake_request GET /system/docker-engine/status | body_of | jq -r '.status')"
 check "engine: update viewer denied"         403 "$(viewer_request POST /system/docker-engine/update '{}' | status_of)"
 check "engine: fleet update needs members"   409 "$(fake_request POST /fleet/docker-engine/update '{"members":"all"}' | status_of)"
+# an engine update whose job is gone (the API was restarted under it) must not read "running" for good
+_ES="$WORK/.api-auth/docker-engine-status.json"
+printf '{"status":"running","started_at":"2026-09-29T10:00:00+00:00","by":"smoke","pid":999999}\n' > "$_ES"
+check "engine: a job that is gone reads failed"    "failed -1" "$(fake_request GET /system/docker-engine/status | body_of | jq -r '"\(.status) \(.exit_code)"' 2>/dev/null)"
+check "engine: …and says what happened"            yes "$(fake_request GET /system/docker-engine/status | body_of | jq -r '.output' 2>/dev/null | grep -q 'restarted while the update ran' && echo yes || echo no)"
+printf '{"status":"running","started_at":"2026-09-29T10:00:00+00:00","by":"smoke","pid":%s}\n' "$$" > "$_ES"
+check "engine: a job that runs stays running"      running "$(fake_request GET /system/docker-engine/status | body_of | jq -r '.status' 2>/dev/null)"
+printf '{"status":"running","started_at":"2026-09-29T10:00:00+00:00","by":"smoke"}\n' > "$_ES"
+check "engine: a job that has no pid yet is young" running "$(fake_request GET /system/docker-engine/status | body_of | jq -r '.status' 2>/dev/null)"
+command rm -f "$_ES"
 # …on Arch: pacman is asked through a private copy of its databases (and a config of its own), the real /var/lib/pacman is never touched
 _AB="$WORK/fakebin-arch"; _AT="$WORK/tmp-arch"; _AF="$WORK/.data/docker-engine-candidate.arch.json"; _AL="$WORK/pacman-calls.log"
 mkdir -p "$_AB" "$_AT"; command rm -f "$_AF" "$_AL"
@@ -2202,6 +2212,13 @@ PATH="$_AB:$PATH" TMPDIR="$_AT" FAKE_PACMAN_FAIL=1 _lib _docker_engine_candidate
 check "engine (arch): a refused sync says unknown" 'docker-arch ' "$(jq -r '"\(.source) \(.candidate)"' "$_AF" 2>/dev/null)"
 check "engine (arch): …and still cleans up"        0 "$(find "$_AT" -mindepth 1 | wc -l)"
 command rm -rf "$_AB" "$_AT" "$_AF" "$_AL"
+# a machine without the hostname and crontab commands: Arch's minimal image has no hostname, and none of the DCS VM images has cron
+_NB="$WORK/nocmd-bin"; mkdir -p "$_NB"; ln -sf /usr/bin/* /bin/* "$_NB"/ 2>/dev/null || true; command rm -f "$_NB/hostname" "$_NB/crontab"
+command rm -f "$WORK/.data/cache/"*.http
+check "no hostname command: the name is still known"   "$(uname -n)" "$(PATH="$_NB" auth_request GET /status | body_of | jq -r '.hostname' 2>/dev/null)"
+check "no hostname command: the helper answers"        "$(uname -n)" "$(PATH="$_NB" _lib _hostname)"
+check "no crontab command: an empty list, no error line" "0 " "$(PATH="$_NB" auth_request GET /system/crontab | body_of | jq -r '"\(.entries | length) \(.raw)"' 2>/dev/null)"
+command rm -rf "$_NB"
 # the fleet's proxy domain: what the hub hands over, and what a member does with it
 check "fleet domain: from the proxy stack"   smoke.test "$(_lib _fleet_domain)"
 check "domain: hostname accepted"            0 "$(_lib _domain_valid home.example.org; echo $?)"

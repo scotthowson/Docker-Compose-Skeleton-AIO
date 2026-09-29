@@ -16,6 +16,14 @@ export DEBIAN_FRONTEND=noninteractive
 if [[ "${DCS_BAKE:-false}" != "true" ]]; then : "${DCS_HUB_URL:?}" "${DCS_JOIN_TOKEN:?}" "${DCS_STACKS:?}" "${DCS_BUNDLE_URL:?}"; fi
 DIR="$HOME/.Docker-Compose-Skeleton-AIO"
 have() { command -v "$1" >/dev/null 2>&1; }
+# dg "command": runs it with the docker group. A session that started before the account joined the group needs sg (or,
+# where a distribution has none, as Arch does not, newgrp reading the command from stdin); every DCS image has the group at login.
+dg() {
+    if id -nG 2>/dev/null | tr ' ' '\n' | grep -qx docker; then bash -c "$1"
+    elif have sg; then sg docker -c "$1"
+    elif have newgrp; then newgrp docker <<< "$1"
+    else bash -c "$1"; fi
+}
 
 APT_OPTS=(-o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 -o Acquire::Retries=2 -o DPkg::Lock::Timeout=600 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold)
 pkg_install() {   # best effort, bounded in time, quiet; the caller checks what it needed
@@ -43,7 +51,7 @@ fi
 
 # a VM cloned from a baked template has all of this already: nothing to install, nothing to wait for
 baked=false
-if have curl && have git && have jq && have socat && have openssl && have python3 && have docker && sg docker -c "docker compose version" >/dev/null 2>&1; then
+if have curl && have git && have jq && have socat && have openssl && have python3 && have docker && dg "docker compose version" >/dev/null 2>&1; then
     baked=true; say "Tools, Docker and Compose are already here (a baked template) — skipping the installs"
 else
     say "Installing curl, git, jq, socat, openssl, python3 and the QEMU guest agent…"
@@ -62,18 +70,18 @@ if [[ "$baked" != true ]] && ! have docker; then
 fi
 sudo -n systemctl enable --now docker >/dev/null 2>&1 || true
 sudo -n usermod -aG docker "$USER" >/dev/null 2>&1 || true
-if ! sg docker -c "docker compose version" >/dev/null 2>&1; then
+if ! dg "docker compose version" >/dev/null 2>&1; then
     say "Adding the Docker Compose plugin…"
     pkg_install docker-compose-plugin
-    sg docker -c "docker compose version" >/dev/null 2>&1 || pkg_install docker-compose
-    if ! sg docker -c "docker compose version" >/dev/null 2>&1; then
+    dg "docker compose version" >/dev/null 2>&1 || pkg_install docker-compose
+    if ! dg "docker compose version" >/dev/null 2>&1; then
         arch=$(uname -m); case "$arch" in aarch64) arch=aarch64 ;; *) arch=x86_64 ;; esac
         sudo -n mkdir -p /usr/local/lib/docker/cli-plugins
         curl -fsSL "https://github.com/docker/compose/releases/latest/download/docker-compose-linux-$arch" -o /tmp/docker-compose && sudo -n install -m 755 /tmp/docker-compose /usr/local/lib/docker/cli-plugins/docker-compose && rm -f /tmp/docker-compose
     fi
 fi
-sg docker -c "docker compose version" >/dev/null 2>&1 || die "Docker Compose is not available (docker compose version fails)"
-say "Docker: $(docker --version 2>/dev/null | head -1) · $(sg docker -c 'docker compose version' 2>/dev/null | head -1)"
+dg "docker compose version" >/dev/null 2>&1 || die "Docker Compose is not available (docker compose version fails)"
+say "Docker: $(docker --version 2>/dev/null | head -1) · $(dg 'docker compose version' 2>/dev/null | head -1)"
 
 # a host firewall (Fedora, AlmaLinux and friends): the hub must reach the API port
 if command -v firewall-cmd >/dev/null 2>&1 && sudo -n systemctl is-active --quiet firewalld 2>/dev/null; then
@@ -102,7 +110,7 @@ mkdir -p .data && { sudo -n cat /sys/class/dmi/id/product_uuid 2>/dev/null | tr 
 chmod +x setup.sh start.sh stop.sh compose.sh .scripts/*.sh 2>/dev/null
 say "DCS $(cat VERSION 2>/dev/null) unpacked; running the unattended member setup for stack $DCS_STACKS…"
 # the docker group is new to this session: run setup under it
-sg docker -c "DCS_UNATTENDED=true DCS_NO_UI=true DCS_FLEET_ROLE=member ./setup.sh" 2>&1 | sed -u 's/\x1b\[[0-9;]*m//g' | grep -v '^\s*$'
+dg "DCS_UNATTENDED=true DCS_NO_UI=true DCS_FLEET_ROLE=member ./setup.sh" 2>&1 | sed -u 's/\x1b\[[0-9;]*m//g' | grep -v '^\s*$'
 rc=${PIPESTATUS[0]}
 [[ $rc -eq 0 ]] || die "setup.sh exited with $rc"
 if [[ -x .scripts/install-service.sh ]]; then
@@ -110,5 +118,5 @@ if [[ -x .scripts/install-service.sh ]]; then
     # shellcheck disable=SC2024
     sudo -n env DCS_UNATTENDED=true .scripts/install-service.sh </dev/null >/tmp/dcs-install-service.log 2>&1 && say "DCS starts at boot (dcs-api, dcs-stacks services)" || say "boot services not installed (run: sudo .scripts/install-service.sh)"
 fi
-say "Member ready: $DCS_STACKS on $(hostname) ($(hostname -I 2>/dev/null | awk '{print $1}'))"
+say "Member ready: $DCS_STACKS on $(uname -n) ($(ip -4 -o addr show scope global 2>/dev/null | awk '{sub(/\/.*/, "", $4); print $4; exit}'))"
 exit 0
