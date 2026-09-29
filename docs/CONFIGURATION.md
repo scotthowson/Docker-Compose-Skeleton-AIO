@@ -51,7 +51,7 @@ the API restarts: `sudo systemctl restart dcs-api`, or `POST /system/restart`.
 | Key | Default | Meaning |
 |---|---|---|
 | `SERVER_NAME` | `Docker Server` | The name in the dashboard, in notifications and on the hub's lists |
-| `SERVER_SUBTITLE` | `Docker Compose Skeleton` | The line under the name |
+| `SERVER_SUBTITLE` | `DCS Orchestrator` | The line under the name |
 | `TZ` | `UTC` | Time zone for DCS and every container that takes `${TZ}` |
 | `PUID`, `PGID` | `1000` | The user and group containers run as; setup uses your own IDs |
 | `APP_DATA_DIR` | `./App-Data` | Where app data goes, relative to each stack's folder |

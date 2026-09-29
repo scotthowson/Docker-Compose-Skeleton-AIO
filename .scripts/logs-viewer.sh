@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-# Docker Compose Skeleton — Log Viewer
+# DCS Orchestrator — Log Viewer
 # Quick access to service logs with formatting, filtering, and color coding
 #
 # Usage:

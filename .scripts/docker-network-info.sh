@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-# Docker Compose Skeleton — Docker Network Inspector
+# DCS Orchestrator — Docker Network Inspector
 # Visualizes Docker networks, container connections, and port mappings
 # with beautiful formatted output.
 #

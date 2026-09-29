@@ -95,7 +95,7 @@ fi
 cat > /etc/systemd/system/dcs-api.service << EOF
 [Unit]
 Description=DCS API Server
-Documentation=https://github.com/scotthowson/Docker-Compose-Skeleton-AIO
+Documentation=https://github.com/scotthowson/dcs-orchestrator
 After=network-online.target docker.service
 Wants=network-online.target docker.service
 RequiresMountsFor=$BASE_DIR
@@ -114,12 +114,13 @@ RestartSec=10
 TimeoutStopSec=20
 
 # Hardening. NoNewPrivileges is deliberately NOT set: the web terminal and the
-# OS-update feature escalate with sudo when the admin asks them to.
+# OS-update feature escalate with sudo when the admin asks them to. ProtectSystem is not
+# set either: it makes /usr and /etc read-only for everything the service starts, sudo
+# included, and the terminal could not install a package or edit a file in /etc.
 # RestrictSUIDSGID is not set either: under it systemd answers tar's openat2()
 # with ENOSYS (seen on Fedora 44, systemd 259), so a code update the API
 # unpacks over itself (a VM following its hub) fails to create files.
 PrivateTmp=true
-ProtectSystem=full
 ProtectKernelTunables=true
 ProtectControlGroups=true
 
@@ -137,7 +138,7 @@ echo -e "${GREEN}✓${RST} Created dcs-api.service"
 cat > /etc/systemd/system/dcs-stacks.service << EOF
 [Unit]
 Description=DCS Stack Startup (ordered start, health check, proxy reconciliation)
-Documentation=https://github.com/scotthowson/Docker-Compose-Skeleton-AIO
+Documentation=https://github.com/scotthowson/dcs-orchestrator
 After=network-online.target docker.service dcs-api.service
 Wants=network-online.target
 Requires=docker.service

@@ -4,8 +4,8 @@ Guidance for Claude Code (claude.ai/code) when working in this repository.
 
 ## Project overview
 
-Docker Compose Skeleton All-In-One (AIO) is the batteries-included edition of DCS: the Bash
-orchestration framework plus the web UI ([DCS-UI](https://github.com/scotthowson/Docker-Compose-Skeleton-UI))
+DCS Orchestrator All-In-One (AIO) is the batteries-included edition of DCS: the Bash
+orchestration framework plus the web UI ([DCS-UI](https://github.com/scotthowson/dcs-orchestrator-ui))
 as a container in `Stacks/core-infrastructure/`. `./setup.sh` creates `.env`, checks Docker, starts
 the REST API on port 9876 and the core stack (Redis + DCS-UI on port 3000), and the user finishes
 setup in the browser. Everything is Bash 4+, Docker Compose v2 and jq; there is no build step.

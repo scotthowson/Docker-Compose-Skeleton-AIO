@@ -1,7 +1,7 @@
 #!/bin/bash
 # =============================================================================
 # Banner Display Library
-# Beautiful ASCII art banners for Docker Compose Skeleton
+# Beautiful ASCII art banners for DCS Orchestrator
 #
 # Provides elegant startup banners with system information, color support,
 # and graceful fallback for non-interactive terminals.

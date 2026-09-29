@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-# Docker Compose Skeleton — System Information Reporter
+# DCS Orchestrator — System Information Reporter
 # Comprehensive system and Docker environment information display
 #
 # Usage:
@@ -433,7 +433,7 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
                 ;;
             --help|-h)
                 cat <<'HELP'
-Docker Compose Skeleton — System Information Reporter
+DCS Orchestrator — System Information Reporter
 
 Usage: ./system-info.sh [OPTIONS]
 

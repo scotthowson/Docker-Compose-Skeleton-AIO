@@ -1,7 +1,7 @@
 #!/bin/bash
 # =============================================================================
 # Plugin System v1.0
-# Discover, install, and manage extensions for Docker Compose Skeleton
+# Discover, install, and manage extensions for DCS Orchestrator
 # Plugins live in .plugins/ and follow a standard manifest format (plugin.json)
 #
 # Dependencies: git (for install from URL)

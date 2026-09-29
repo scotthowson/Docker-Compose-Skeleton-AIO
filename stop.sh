@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-# Docker Compose Skeleton — Stop Script (Graceful Shutdown)
+# DCS Orchestrator — Stop Script (Graceful Shutdown)
 #
 # Orchestrates the full shutdown sequence:
 #   1. Environment verification       3. Post-shutdown verification
@@ -58,7 +58,7 @@ done
 
 if [[ "$SHOW_HELP" == "true" ]]; then
     cat <<'EOF'
-Docker Compose Skeleton — Stop
+DCS Orchestrator — Stop
 
 Usage: ./stop.sh [OPTIONS]
 

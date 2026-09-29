@@ -1,7 +1,7 @@
 # =============================================================================
 # Traefik Static Configuration
 # =============================================================================
-# Main Traefik configuration — deployed by Docker Compose Skeleton.
+# Main Traefik configuration — deployed by DCS Orchestrator.
 # Template variables (${TRAEFIK_DOMAIN:-example.com}, etc.) are substituted at deploy time.
 # Documentation: https://doc.traefik.io/traefik/
 # =============================================================================

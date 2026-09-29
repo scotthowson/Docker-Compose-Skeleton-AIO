@@ -51,6 +51,21 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **DCS Orchestrator is the name wherever DCS speaks.** The banners and `--help` of the scripts, the API's name (`GET /`), the default
+  server subtitle, the systemd units' Documentation line, SECURITY.md, the setup hints and the templates' comments say DCS Orchestrator,
+  and the repository links use `dcs-orchestrator`. The install directory `~/.Docker-Compose-Skeleton-AIO` keeps its name (the VMs a hub
+  builds and the updater use it), and so does the dashboard's container image until it is published under both names.
+- **Sixteen settings that nothing read are gone.** `SCHEDULER_ENABLED`, `HEALTH_SCORE_ENABLED`, `MAX_PARALLEL_OPERATIONS`,
+  `INCLUDE_RESOURCE_METRICS`, `DOCKER_TIMEOUT`, `STACK_START_TIMEOUT`, `FORCE_RECREATE`, `REMOVE_ORPHANED_CONTAINERS`, `COLOR_THEME`,
+  `LOG_DATE_FORMAT`, `ENABLE_MILLISECONDS`, `ENABLE_LOG_MOOD`, `ENABLE_LOG_PID`, `ENABLE_LOG_HOSTNAME`, `LOG_MAX_SIZE` and
+  `LOG_RETENTION_DAYS` were in `.env.example`, the schema, `settings.cfg` and the Config page, and switching them did nothing (their
+  defaults did not even agree). They are not offered any more; a `.env` that still has them keeps working, and `POST /config` accepts and
+  ignores them so an older dashboard can still save.
+
+- **`sudo` in the web terminal can write `/usr` and `/etc`.** The API service no longer sets `ProtectSystem=full` (it made both read-only
+  for everything the service starts, sudo included, so `sudo apt install` failed with "Read-only file system"). `PrivateTmp` and the
+  kernel and cgroup protections stay, and the OS and Docker Engine updates still run through `systemd-run`. Units installed before are
+  rewritten the next time an update changes `install-service.sh`. Lint keeps the line out.
 - **CI runs on Ubuntu 24.04 and 26.04** (what `ubuntu-latest` becomes on October 19, 2026) with Node 24 actions, checks the
   first-boot script and the boot menu writer of the VM images, and a new workflow (its matrix comes from `images.json`) builds all
   eight images, boots each on BIOS and UEFI under KVM and, on a version tag, attaches them to the release with `SHA256SUMS`,

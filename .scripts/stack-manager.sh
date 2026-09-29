@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-# Docker Compose Skeleton — Stack Manager
+# DCS Orchestrator — Stack Manager
 # CLI for managing individual Docker Compose stacks
 #
 # Usage:
@@ -543,7 +543,7 @@ show_help() {
     cat <<EOF
 
   ${_SM_BOLD}${_SM_BLUE}╔$(printf '%0.s═' $(seq 1 50))╗${_SM_RESET}
-  ${_SM_BOLD}${_SM_BLUE}║${_SM_RESET}  ${_SM_BOLD}${_SM_CYAN}Docker Compose Skeleton — Stack Manager${_SM_RESET}  ${_SM_BOLD}${_SM_BLUE}  ║${_SM_RESET}
+  ${_SM_BOLD}${_SM_BLUE}║${_SM_RESET}  ${_SM_BOLD}${_SM_CYAN}DCS Orchestrator — Stack Manager${_SM_RESET}                ${_SM_BOLD}${_SM_BLUE}║${_SM_RESET}
   ${_SM_BOLD}${_SM_BLUE}╚$(printf '%0.s═' $(seq 1 50))╝${_SM_RESET}
 
 ${_SM_BOLD}Usage:${_SM_RESET}

@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-# Docker Compose Skeleton - Restart Script
+# DCS Orchestrator - Restart Script
 # Convenience wrapper: runs stop.sh followed by start.sh
 # =============================================================================
 
@@ -31,7 +31,7 @@ done
 
 if [[ "$SHOW_HELP" == "true" ]]; then
     cat <<EOF
-Docker Compose Skeleton - Restart
+DCS Orchestrator - Restart
 
 Usage: ./restart.sh [OPTIONS]
 
@@ -71,7 +71,7 @@ fi
 # =============================================================================
 
 echo ""
-echo -e "${C_BOLD}${C_CYAN}=== Docker Compose Skeleton -- Restart ===${C_RESET}"
+echo -e "${C_BOLD}${C_CYAN}=== DCS Orchestrator -- Restart ===${C_RESET}"
 echo ""
 
 # --- Phase 1: Stop ---

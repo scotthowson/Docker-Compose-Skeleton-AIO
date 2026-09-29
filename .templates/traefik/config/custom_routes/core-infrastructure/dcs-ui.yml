@@ -1,7 +1,7 @@
 # =============================================================================
 # DCS-UI Route
 # =============================================================================
-# Serves the Docker Compose Skeleton web UI behind Traefik with automatic TLS.
+# Serves the DCS Orchestrator web UI behind Traefik with automatic TLS.
 # Template variables are substituted during deployment.
 #
 # The service URL uses the port nginx listens on INSIDE the container, which

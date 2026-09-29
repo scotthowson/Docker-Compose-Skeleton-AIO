@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-# Docker Compose Skeleton — Health Check System
+# DCS Orchestrator — Health Check System
 # Comprehensive container health monitoring with beautiful formatted output
 #
 # Usage:
@@ -324,7 +324,7 @@ _hc_show_banner() {
 
     echo ""
     echo "${_HC_BOLD}${_HC_BLUE}${border}${_HC_RESET}"
-    printf "${_HC_BOLD}${_HC_CYAN}%*s${_HC_RESET}\n" $(( (width + 34) / 2 )) "Docker Compose Skeleton"
+    printf "${_HC_BOLD}${_HC_CYAN}%*s${_HC_RESET}\n" $(( (width + 34) / 2 )) "DCS Orchestrator"
     printf "${_HC_DIM}${_HC_GRAY}%*s${_HC_RESET}\n" $(( (width + 37) / 2 )) "Container Health Check Report"
     printf "${_HC_DIM}${_HC_GRAY}%*s${_HC_RESET}\n" $(( (width + ${#border}) / 2 )) "$(date '+%Y-%m-%d %H:%M:%S')"
     echo "${_HC_BOLD}${_HC_BLUE}${border}${_HC_RESET}"
@@ -646,7 +646,7 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
                 ;;
             --help|-h)
                 cat <<'HELP'
-Docker Compose Skeleton — Health Check
+DCS Orchestrator — Health Check
 
 Usage: ./health-check.sh [OPTIONS]
 

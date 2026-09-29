@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "Docker Compose Skeleton Configuration",
+  "title": "DCS Orchestrator Configuration",
   "description": "Complete configuration schema for DCS framework \u2014 used by /config/schema endpoint and the UI for dynamic form generation",
   "type": "object",
   "sections": {
@@ -55,7 +55,7 @@
         },
         "SERVER_SUBTITLE": {
           "type": "string",
-          "default": "Docker Compose Skeleton",
+          "default": "DCS Orchestrator",
           "description": "Subtitle shown in the UI header"
         }
       }
@@ -85,13 +85,6 @@
           "description": "Seconds between starting stacks",
           "minimum": 0,
           "maximum": 60
-        },
-        "STACK_START_TIMEOUT": {
-          "type": "integer",
-          "default": 300,
-          "description": "Max seconds to wait for a single stack to start",
-          "minimum": 10,
-          "maximum": 600
         },
         "SERVICE_STOP_DELAY": {
           "type": "integer",
@@ -136,30 +129,6 @@
             "v1",
             "v2"
           ]
-        },
-        "DOCKER_TIMEOUT": {
-          "type": "integer",
-          "default": 120,
-          "description": "Timeout for Docker operations (seconds)",
-          "minimum": 30,
-          "maximum": 3600
-        },
-        "REMOVE_ORPHANED_CONTAINERS": {
-          "type": "boolean",
-          "default": true,
-          "description": "Remove orphaned containers during startup cleanup"
-        },
-        "FORCE_RECREATE": {
-          "type": "boolean",
-          "default": false,
-          "description": "Force recreate containers on every start"
-        },
-        "MAX_PARALLEL_OPERATIONS": {
-          "type": "integer",
-          "default": 3,
-          "description": "Max parallel Docker operations",
-          "minimum": 1,
-          "maximum": 10
         },
         "AGGRESSIVE_IMAGE_PRUNE": {
           "type": "boolean",
@@ -238,15 +207,6 @@
           "default": true,
           "description": "Enable colored log output"
         },
-        "COLOR_THEME": {
-          "type": "string",
-          "default": "dark",
-          "description": "Color theme for log output",
-          "enum": [
-            "dark",
-            "light"
-          ]
-        },
         "VERBOSE_MODE": {
           "type": "boolean",
           "default": false,
@@ -257,50 +217,12 @@
           "default": true,
           "description": "Show date in log entries"
         },
-        "ENABLE_MILLISECONDS": {
-          "type": "boolean",
-          "default": false,
-          "description": "Show milliseconds in log timestamps"
-        },
-        "LOG_DATE_FORMAT": {
-          "type": "string",
-          "default": "%Y-%m-%d %H:%M:%S",
-          "description": "strftime format for log timestamps"
-        },
-        "ENABLE_LOG_MOOD": {
-          "type": "boolean",
-          "default": true,
-          "description": "Show mood icons in log entries"
-        },
-        "ENABLE_LOG_PID": {
-          "type": "boolean",
-          "default": false,
-          "description": "Show process ID in log entries"
-        },
-        "ENABLE_LOG_HOSTNAME": {
-          "type": "boolean",
-          "default": false,
-          "description": "Show hostname in log entries"
-        },
-        "LOG_MAX_SIZE": {
-          "type": "string",
-          "default": "10M",
-          "description": "Max log file size before rotation",
-          "pattern": "^[0-9]+[KMG]$"
-        },
         "LOG_BACKUP_COUNT": {
           "type": "integer",
           "default": 12,
           "description": "Number of rotated log files to keep",
           "minimum": 1,
           "maximum": 100
-        },
-        "LOG_RETENTION_DAYS": {
-          "type": "integer",
-          "default": 30,
-          "description": "Days to retain log archives",
-          "minimum": 1,
-          "maximum": 365
         },
         "ENABLE_STRUCTURED_LOGGING": {
           "type": "boolean",
@@ -421,16 +343,6 @@
           "minimum": 0,
           "maximum": 120
         },
-        "INCLUDE_RESOURCE_METRICS": {
-          "type": "boolean",
-          "default": true,
-          "description": "Include CPU/memory in health reports"
-        },
-        "HEALTH_SCORE_ENABLED": {
-          "type": "boolean",
-          "default": true,
-          "description": "Enable 0-100 health scoring system"
-        },
         "CRITICAL_CONTAINERS": {
           "type": "string",
           "default": "",
@@ -495,11 +407,6 @@
       "title": "Scheduled Operations",
       "description": "Background scheduler for automated tasks",
       "properties": {
-        "SCHEDULER_ENABLED": {
-          "type": "boolean",
-          "default": true,
-          "description": "Enable background scheduler daemon"
-        },
         "SCHEDULER_CHECK_INTERVAL": {
           "type": "integer",
           "default": 60,

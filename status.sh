@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-# Docker Compose Skeleton - Status Script
+# DCS Orchestrator - Status Script
 # Standalone status checker for all managed Docker Compose stacks
 # Does not require the full logger -- uses its own lightweight output
 # =============================================================================
@@ -47,7 +47,7 @@ done
 
 if [[ "$SHOW_HELP" == "true" ]]; then
     cat <<EOF
-Docker Compose Skeleton - Status
+DCS Orchestrator - Status
 
 Usage: ./status.sh [OPTIONS]
 
@@ -179,7 +179,7 @@ _format_uptime() {
 
 echo ""
 echo -e "${C_BOLD}${C_CYAN}+============================================================+${C_RESET}"
-echo -e "${C_BOLD}${C_CYAN}|           Docker Compose Skeleton  --  Status              |${C_RESET}"
+echo -e "${C_BOLD}${C_CYAN}|                DCS Orchestrator  --  Status                |${C_RESET}"
 echo -e "${C_BOLD}${C_CYAN}+============================================================+${C_RESET}"
 echo ""
 echo -e "  ${C_DIM}Checked at:${C_RESET} $(date '+%Y-%m-%d %H:%M:%S')"

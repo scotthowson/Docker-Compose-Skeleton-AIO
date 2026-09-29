@@ -3,7 +3,7 @@
 ## Reporting a vulnerability
 
 Please report security issues privately through
-[GitHub Security Advisories](https://github.com/scotthowson/Docker-Compose-Skeleton-AIO/security/advisories/new)
+[GitHub Security Advisories](https://github.com/scotthowson/dcs-orchestrator/security/advisories/new)
 rather than in a public issue. Include the version (`cat VERSION`), how to reproduce, and what an
 attacker gains. You will get an acknowledgement within a few days.
 

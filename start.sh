@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-# Docker Compose Skeleton — Start Script (Main Entry Point)
+# DCS Orchestrator — Start Script (Main Entry Point)
 #
 # Orchestrates the full startup sequence:
 #   1. Environment verification       4. Service startup (dependency order)
@@ -67,7 +67,7 @@ fi
 
 if [[ "$SHOW_HELP" == "true" ]]; then
     cat <<'EOF'
-Docker Compose Skeleton — Start
+DCS Orchestrator — Start
 
 Usage: ./start.sh [OPTIONS]
 

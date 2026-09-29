@@ -1,5 +1,5 @@
 # =============================================================================
-# Docker Compose Skeleton AIO — ignore rules
+# DCS Orchestrator — ignore rules
 # Everything the framework writes at runtime stays out of git. Only the
 # template files that ship with the repository are tracked.
 # =============================================================================

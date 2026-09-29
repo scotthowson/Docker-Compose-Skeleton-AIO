@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-# Docker Compose Skeleton — Maintenance & Cleanup Utility
+# DCS Orchestrator — Maintenance & Cleanup Utility
 # Comprehensive Docker system maintenance with disk usage analysis,
 # orphaned resource detection, and safe cleanup operations.
 #
@@ -502,7 +502,7 @@ cmd_log_rotate() {
 
 show_help() {
     cat <<EOF
-${_MT_BOLD}${_MT_CYAN}Docker Compose Skeleton — Maintenance Utility${_MT_RESET}
+${_MT_BOLD}${_MT_CYAN}DCS Orchestrator — Maintenance Utility${_MT_RESET}
 
 ${_MT_BOLD}Usage:${_MT_RESET}
   $0 [command]

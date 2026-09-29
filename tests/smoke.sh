@@ -124,6 +124,11 @@ check "env file mode private"           600 "$(stat -c %a "$WORK/.env" 2>/dev/nu
 check "config update rejects backticks" 400 "$(auth_request POST /config '{"TZ":"`id`"}' | status_of)"
 check "config update rejects bad key"   400 "$(auth_request POST /config '{"PATH":"/x"}' | status_of)"
 check "config update accepts value"     200 "$(auth_request POST /config '{"TZ":"Europe/London"}' | status_of)"
+# settings that did nothing were removed in 4.0: an older dashboard may still send them; they are accepted, ignored, and no longer offered
+check "config update accepts a retired setting"   200 "$(auth_request POST /config '{"SCHEDULER_ENABLED":"true"}' | status_of)"
+check "config: …and does not write it"            0 "$(grep -c '^SCHEDULER_ENABLED' "$WORK/.env" 2>/dev/null || true)"
+check "config: the retired settings are not offered" "" "$(auth_request GET /config | body_of | jq -r '[.scheduler_enabled, .health_score_enabled, .max_parallel_operations, .include_resource_metrics, .docker_timeout, .force_recreate, .log_max_size, .color_theme] | map(select(. != null)) | join(",")' 2>/dev/null)"
+check "config: the schema does not describe them"  0 "$(jq -r '[.. | objects | keys[]? | select(. == "SCHEDULER_ENABLED" or . == "HEALTH_SCORE_ENABLED" or . == "MAX_PARALLEL_OPERATIONS" or . == "INCLUDE_RESOURCE_METRICS")] | length' "$ROOT/.config/schema.json" 2>/dev/null)"
 check "config value written"            yes "$(grep -q '^TZ=Europe/London$' "$WORK/.env" && echo yes || echo no)"
 check "bad stack name rejected"         400 "$(auth_request GET '/stacks/..evil' | status_of)"
 check "batch stacks validates names"    400 "$(auth_request POST /batch/stacks '{"action":"start","stacks":["../../etc"]}' | status_of)"

@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-# Docker Compose Skeleton - First-Run Setup Script
+# DCS Orchestrator - First-Run Setup Script
 # Configures permissions, creates directories, and validates the environment
 # =============================================================================
 
@@ -95,7 +95,7 @@ _sudo() { if [[ $EUID -eq 0 ]]; then "$@"; else sudo "$@"; fi; }   # root (an LX
 
 show_help() {
     cat <<EOF
-${C_BOLD}Docker Compose Skeleton - Setup${C_RESET}
+${C_BOLD}DCS Orchestrator - Setup${C_RESET}
 
 Usage: ./setup.sh [OPTIONS]
 
@@ -189,7 +189,7 @@ _run() {
 
 echo ""
 echo -e "${C_BOLD}${C_CYAN}+======================================================+${C_RESET}"
-echo -e "${C_BOLD}${C_CYAN}|    Docker Compose Skeleton AIO  --  Setup             |${C_RESET}"
+echo -e "${C_BOLD}${C_CYAN}|    DCS Orchestrator  --  Setup                       |${C_RESET}"
 echo -e "${C_BOLD}${C_CYAN}+======================================================+${C_RESET}"
 echo ""
 
@@ -1209,7 +1209,7 @@ _fleet_closing() {
             [[ -n "$tok" && -n "$url" ]] || return 0
             echo ""
             _info "This DCS is the hub. On each Docker VM (join code valid 24 h, more on the Proxmox page):"
-            echo -e "      ${C_BOLD}git clone https://github.com/scotthowson/Docker-Compose-Skeleton-AIO.git ~/.Docker-Compose-Skeleton-AIO${C_RESET}"
+            echo -e "      ${C_BOLD}git clone https://github.com/scotthowson/dcs-orchestrator.git ~/.Docker-Compose-Skeleton-AIO${C_RESET}"
             echo -e "      ${C_BOLD}cd ~/.Docker-Compose-Skeleton-AIO && DCS_HUB_URL=$url DCS_JOIN_TOKEN=$tok ./setup.sh${C_RESET}"
             _info "A VM that already runs DCS:  ./setup.sh --join $url $tok"
             _info "The wizard's Proxmox step scans the VMs for DCS installs and links them too." ;;

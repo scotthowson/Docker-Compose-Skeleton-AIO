@@ -37,10 +37,14 @@ echo "API reference freshness"
 
 # One list of VM images (vm-images/images.json) feeds the build, CI, the Proxmox importer, the API catalogue and the documentation:
 # a distribution added to one and forgotten in another is a lint error, not a surprise at release time
-echo "systemd units: the API does not require Docker"
+echo "systemd units: the API does not require Docker or seal /usr and /etc"
 # a service that Requires Docker is restarted with it: an engine update (which the API runs) would end itself
 if awk '/cat > \/etc\/systemd\/system\/dcs-api.service/ {u=1} u && /^EOF$/ {exit} u && /^Requires=.*docker/ {bad=1} END {exit !bad}' .scripts/install-service.sh; then
     echo "  .scripts/install-service.sh: dcs-api.service Requires docker.service (use Wants=: a Docker restart would restart the API and end the engine update it runs)"; rc=1
+fi
+# ProtectSystem makes /usr and /etc read-only for what the service starts, sudo included: the web terminal could not install a package
+if awk '/cat > \/etc\/systemd\/system\/dcs-api.service/ {u=1} u && /^EOF$/ {exit} u && /^ProtectSystem=/ {bad=1} END {exit !bad}' .scripts/install-service.sh; then
+    echo "  .scripts/install-service.sh: dcs-api.service sets ProtectSystem (sudo in the web terminal could not write /usr or /etc)"; rc=1
 fi
 
 echo "VM images: one list everywhere"

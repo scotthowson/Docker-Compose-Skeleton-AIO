@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-# Docker Compose Skeleton — Image Update Tracker v2.0
+# DCS Orchestrator — Image Update Tracker v2.0
 # Compares local Docker image digests against remote registry digests to
 # detect available updates. Supports pull mode, full JSON output, and
 # per-image staleness detection.

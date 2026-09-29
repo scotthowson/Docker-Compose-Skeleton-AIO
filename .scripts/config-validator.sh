@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-# Docker Compose Skeleton — Configuration Validator
+# DCS Orchestrator — Configuration Validator
 # Validates all .env files, docker-compose.yml files, directory structure,
 # and system requirements. Run before startup to catch issues early.
 #
@@ -93,7 +93,7 @@ while [[ $# -gt 0 ]]; do
         --json)  JSON_MODE=true; shift ;;
         --help|-h)
             cat <<EOF
-Configuration Validator — Validates your Docker Compose Skeleton setup
+Configuration Validator — Validates your DCS Orchestrator setup
 
 Usage: $0 [--fix] [--quiet] [--json]
 
@@ -553,7 +553,7 @@ print_summary() {
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     if [[ "$JSON_MODE" != "true" ]]; then
         echo ""
-        echo "  ${_CV_BOLD}${_CV_CYAN}Docker Compose Skeleton — Configuration Validator${_CV_RESET}"
+        echo "  ${_CV_BOLD}${_CV_CYAN}DCS Orchestrator — Configuration Validator${_CV_RESET}"
         echo "  ${_CV_GRAY}Checking your setup...${_CV_RESET}"
     fi
 
