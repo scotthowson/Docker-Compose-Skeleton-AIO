@@ -3,6 +3,47 @@
 All notable changes to Docker Compose Skeleton AIO are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [3.9.7] - 2026-09-29
+
+### Fixed
+
+- **Linking Proxmox during setup failed on `http://`.** `http://192.168.2.12:8006/` ended in
+  "Proxmox did not answer (HTTP 301)": on 8006 Proxmox answers plain HTTP with a redirect and
+  nothing else. Setup now takes the address any way it is typed: https for http (and any
+  redirect followed), `:8006` added when no port is given, a path or the `#…` of an address
+  pasted from the browser dropped. The dashboard's Proxmox forms (the wizard, Server Config →
+  Proxmox) clean the address the same way before they test or save it.
+- **The token secret prompt showed nothing** while typing or pasting, so it looked as if it
+  took no input. It now prints a `*` for every character (Backspace and Ctrl-U edit; paste marks
+  and arrow keys are ignored), checks that the text is a Proxmox secret (the UUID shown when the
+  token is made) and says how many characters it received. The token ID is checked as well
+  (`user@realm!name`), and `user@realm!name=secret` pasted in one go fills both.
+- **A refused token or a wrong address is asked again** (three rounds; an empty line skips)
+  instead of setup giving up, with the reason: the token refused, nothing listening (with
+  curl's reason), or something that is not Proxmox.
+- **A fresh server no longer runs every step and then stops on "Docker daemon is not running
+  or not accessible".** Setup checks Docker first and offers the fix: start it now and at boot
+  (`systemctl enable --now docker`), add the user to the docker group — and carries on in the
+  same run under the new group, without logging out. Missing jq, socat or curl are named and
+  offered for install with the system's package manager. When Docker still needs a hand, setup
+  says to run `./setup.sh` again (`./start.sh` does not finish a first setup).
+
+### Added
+
+- **The token's privileges are checked when the link is made**: a token that works but lacks
+  `VM.Audit`, `VM.PowerMgmt` or `Sys.Audit` on `/` (Privilege Separation ticked and no role for
+  the token itself) is named right away, with the fix.
+- **Fedora and friends set up by hand** (the VMs a hub builds get this from their bootstrap):
+  a hub or member offers to open the API port in firewalld, since the hub and its VMs talk on
+  it; Docker that confines containers with SELinux (Fedora's own Docker package, not Docker CE)
+  is noticed — under it a container may not write its App-Data folder, nor Traefik read the
+  Docker socket — and setup offers to run containers the way Docker CE does (SELinux stays on
+  for the rest of the system); the first setup offers the boot service
+  (`.scripts/install-service.sh`), so DCS comes back after a reboot.
+- Smoke suite: the setup checks against a stand-in that answers like Proxmox on 8006 (HTTPS
+  with a self-signed certificate, plain HTTP redirected), the secret prompt through a pty, and
+  the API's address clean-up.
+
 ## [3.9.6] - 2026-09-29
 
 ### Fixed

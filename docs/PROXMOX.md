@@ -74,6 +74,17 @@ Answer `y`, confirm the URL, paste the token ID and secret. Setup tests the toke
 `PROXMOX_URL`, `PROXMOX_TOKEN_ID`, `PROXMOX_TOKEN_SECRET` (and `PROXMOX_VERIFY_TLS=false` when
 Proxmox still uses its self-signed certificate) to `.env`. Say `n` to do it later.
 
+- **The address** can be typed any way: `192.168.1.2`, `http://192.168.1.2:8006/` or the
+  address bar of the Proxmox web UI (`https://192.168.1.2:8006/#v1:0:…`) all become
+  `https://192.168.1.2:8006`. On 8006 Proxmox answers plain HTTP with a redirect only, so
+  `http://` never works as is; setup (and the dashboard's forms) take the https address.
+- **The secret** shows as `***` while you type or paste it, and setup says how many
+  characters it got. It is the UUID Proxmox shows once, when the token is made;
+  `dcs@pve!dcs=<secret>` pasted into the token ID fills both.
+- **A refused token or a wrong address** is asked again (three rounds, an empty line skips),
+  with the reason. A token that works but lacks `VM.Audit`, `VM.PowerMgmt` or `Sys.Audit` on
+  `/` is named right away: with *Privilege Separation* ticked, the token itself needs the role.
+
 **The setup wizard** — the *Server* step shows a **Proxmox** section, opened automatically on a
 Proxmox guest with the detected URL filled in. *Test connection* checks the token before you
 continue; the review page lists the result.
@@ -588,7 +599,11 @@ Command line, on any DCS: `.scripts/api-server.sh --join-hub URL CODE [NAME]`, `
 |---------|---------------|
 | *Proxmox rejected the API token* (401) | The token ID must be `user@realm!name`; the secret is the one shown when the token was made. Make a new token if it was lost. |
 | *The API token lacks permission* (403) | Give `VM.Audit`, `VM.PowerMgmt`, `Sys.Audit` on `/` to the user (privilege separation off) or to the token itself. |
-| *did not answer* | Wrong URL or port (the web UI's, `:8006`), a firewall in front of it, or certificate verification on with the self-signed certificate — switch it off, or install a real certificate on Proxmox. |
+| *did not answer* | Wrong URL or port (the web UI's, `:8006`), a firewall in front of it, or certificate verification on with the self-signed certificate — switch it off, or install a real certificate on Proxmox. *HTTP 301* from a setup before 3.9.7: the address was `http://`; Proxmox wants `https://…:8006` (3.9.7 switches it by itself). |
+| Setup stops on *Docker is not running* or *may not use Docker* | A fresh server: Docker installed but not started (Fedora does not start it), or your user outside the `docker` group. Setup offers both fixes and carries on; by hand: `sudo systemctl enable --now docker`, `sudo usermod -aG docker $USER`, log out and back in (or `newgrp docker`), then `./setup.sh` again. |
+| A hub on Fedora (set up by hand): the VMs cannot join, *the hub does not answer* | firewalld blocks the API port. Setup offers to open it; by hand: `sudo firewall-cmd --permanent --add-port=9876/tcp && sudo firewall-cmd --reload`. |
+| Fedora: containers cannot write their `App-Data`, Traefik cannot read the Docker socket | Fedora's own Docker package (moby-engine) confines containers with SELinux. Setup offers to run them the way Docker CE does (`--selinux-enabled` off in `/etc/sysconfig/docker`, then `sudo systemctl restart docker`); SELinux stays on for the rest of the system. Or keep it and add `:z` to every volume. |
+| The dashboard is gone after a reboot of the hub | The API ran from setup, outside systemd. `sudo .scripts/install-service.sh` installs the boot services (setup 3.9.7 offers it). |
 | Guests missing | *Only this node* is set, or they are templates (never listed). |
 | `reset` refused for a container | Containers have no hardware reset; use *Reboot*. |
 | The Terminal says *the hub cannot open a shell in* a VM | The hub reaches a VM's shell with its own ssh key as the VM's DCS account (`dcs`): a VM the hub built accepts it; one you made yourself needs the hub's public key (`.data/fleet-ssh/id_ed25519.pub` on the hub) in `~dcs/.ssh/authorized_keys`, and a VM that is off does not answer. The reason shown names which. |

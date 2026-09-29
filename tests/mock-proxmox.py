@@ -3,8 +3,10 @@
 /cluster/tasks, /nodes/{n}/{qemu|lxc}/{id}/status/current, /config, the guest-agent and
 container interfaces (for the fleet scan), POST status/{action}, and what the hub uses to build VMs:
 nextid, storages, download-url, qemu create/config/resize/destroy, task status, access/permissions.
-Checks the PVEAPIToken header. Usage: mock-pve.py PORT TOKEN_ID TOKEN_SECRET [statefile]"""
-import http.server, json, sys, time, urllib.parse, pathlib
+Checks the PVEAPIToken header. Usage: mock-pve.py PORT TOKEN_ID TOKEN_SECRET [statefile]
+MOCK_PVE_TLS=1: HTTPS with a self-signed certificate, and plain HTTP on the same port answered with
+a 301 to https (what pveproxy does on 8006). MOCK_PVE_PRIVS=none: a token without privileges."""
+import http.server, json, os, socket, ssl, subprocess, sys, tempfile, time, urllib.parse, pathlib
 
 PORT = int(sys.argv[1]); TOKEN = f"PVEAPIToken={sys.argv[2]}={sys.argv[3]}"
 STATE = pathlib.Path(sys.argv[4]) if len(sys.argv) > 4 else None
@@ -26,7 +28,8 @@ STORAGES = {'local': {'storage': 'local', 'type': 'dir', 'content': 'images,iso,
 IMPORTS = {}        # storage -> [volid]
 CONFIGS = {}        # vmid -> dict of config keys the hub set
 NEXT_ID = [105]
-PRIVS = ['VM.Allocate', 'VM.Clone', 'VM.Config.Disk', 'VM.Config.CDROM', 'VM.Config.Network', 'VM.Config.Options', 'VM.Config.Cloudinit', 'VM.Config.Memory', 'VM.Config.CPU', 'VM.Config.HWType',
+TLS = os.environ.get('MOCK_PVE_TLS') == '1'
+PRIVS = [] if os.environ.get('MOCK_PVE_PRIVS') == 'none' else ['VM.Allocate', 'VM.Clone', 'VM.Config.Disk', 'VM.Config.CDROM', 'VM.Config.Network', 'VM.Config.Options', 'VM.Config.Cloudinit', 'VM.Config.Memory', 'VM.Config.CPU', 'VM.Config.HWType',
          'VM.PowerMgmt', 'VM.Audit', 'VM.Console', 'Datastore.AllocateSpace', 'Datastore.AllocateTemplate', 'Datastore.Audit', 'Datastore.Allocate', 'Sys.Audit', 'SDN.Use']
 def mk_upid(kind, vmid=''):
     u = f"UPID:pve:0000{len(TASKS)+1:04d}:00000001:{int(time.time()):08X}:{kind}:{vmid}:root@pam!dcs:"
@@ -51,7 +54,12 @@ class H(http.server.BaseHTTPRequestHandler):
     def _auth(self):
         if self.headers.get('Authorization') != TOKEN: self._send(401, {'message': 'authentication failure', 'data': None}); return False
         return True
+    def _plain_on_tls(self):
+        if not TLS or isinstance(self.connection, ssl.SSLSocket): return False
+        self.send_response(301); self.send_header('Location', f"https://{self.headers.get('Host') or f'127.0.0.1:{PORT}'}{self.path}")
+        self.send_header('Content-Length', '0'); self.end_headers(); return True
     def do_GET(self):
+        if self._plain_on_tls(): return
         if not self._auth(): return
         p = urllib.parse.urlparse(self.path); path = p.path; q = urllib.parse.parse_qs(p.query)
         if path == '/api2/json/version': return self._send(200, {'data': {'version': '8.3.0', 'release': '8.3', 'repoid': 'mock'}})
@@ -148,4 +156,14 @@ class H(http.server.BaseHTTPRequestHandler):
             return self._send(200, {'data': upid})
         self._send(501, {'message': 'not mocked', 'data': None})
 
-http.server.ThreadingHTTPServer(('127.0.0.1', PORT), H).serve_forever()
+class Server(http.server.ThreadingHTTPServer):
+    def get_request(self):
+        sock, addr = super().get_request()
+        # one port for both, like pveproxy: a TLS handshake starts with 0x16, anything else is plain HTTP
+        if TLS and sock.recv(1, socket.MSG_PEEK) == b'\x16': sock = CTX.wrap_socket(sock, server_side=True)
+        return sock, addr
+if TLS:
+    d = tempfile.mkdtemp()
+    subprocess.run(['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', f'{d}/k.pem', '-out', f'{d}/c.pem', '-days', '1', '-subj', '/CN=pve.mock'], check=True, capture_output=True)
+    CTX = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER); CTX.load_cert_chain(f'{d}/c.pem', f'{d}/k.pem')
+Server(('127.0.0.1', PORT), H).serve_forever()

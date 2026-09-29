@@ -132,8 +132,12 @@ The API can also run as a system service:
 | curl, git, openssl | health checks, updates, TLS and tokens |
 | socat (or ncat) | the API listener |
 
-`./setup.sh` checks for Docker and Compose. `./start.sh` checks the remaining tools and offers to
-install missing ones through `apt`, `dnf`, `yum`, `pacman`, `zypper` or `xbps`.
+`./setup.sh` checks these tools, Docker and Compose before it changes anything, and offers the
+fixes a fresh server needs: installing missing tools (through `apt`, `dnf`, `yum`, `pacman`,
+`zypper`, `apk` or `xbps`), starting Docker and enabling it at boot, adding you to the `docker`
+group (setup carries on under it, no log out). On Fedora and friends it also notices Docker's
+SELinux confinement and, for a hub or member, the API port in firewalld; the first run offers the
+boot service. `./start.sh` checks the tools again on every start.
 
 ---
 

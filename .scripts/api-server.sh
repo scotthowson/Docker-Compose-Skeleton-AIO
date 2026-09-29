@@ -6852,6 +6852,8 @@ handle_config_update() {
         fi
         local value problem
         value=$(echo "$body" | jq -r --arg k "$key" 'if .[$k] == null then "" else .[$k] end' 2>/dev/null)
+        # the Proxmox address as the rest of DCS uses it (http://…:8006 or a pasted browser address works too)
+        [[ "$key" == "PROXMOX_URL" && -n "$value" ]] && value=$(_pve_norm_url "$value")
         # Reject anything that would not survive as plain data in .env
         if ! problem=$(_api_validate_env_kv "$key" "$value"); then
             _api_error 400 "Rejected value: $problem"
@@ -18624,7 +18626,20 @@ PROXMOX_STATE_FILE="${PROXMOX_STATE_FILE:-$BASE_DIR/.data/proxmox-state.json}"
 _PVE_HTTP=0
 PVE_ERR=""
 
-_pve_url() { local u="${PROXMOX_URL:-}"; printf '%s' "${u%/}"; }
+# PROXMOX_URL as it was typed or pasted: https:// when no scheme is given; the web UI's #fragment, a query
+# and an /api2/json path dropped; http on 8006 turned into https (there Proxmox answers plain HTTP with a
+# redirect and nothing else)
+_pve_norm_url() {
+    local u="${1//[[:space:]]/}" scheme rest
+    [[ -n "$u" ]] || return 0
+    [[ "$u" == *://* ]] || u="https://$u"
+    u="${u%%#*}"; u="${u%%\?*}"; u="${u%%/api2/json*}"
+    while [[ "$u" == */ ]]; do u="${u%/}"; done
+    scheme="${u%%://*}"; scheme="${scheme,,}"; rest="${u#*://}"
+    [[ "$scheme" == "http" && "${rest%%/*}" =~ :8006$ ]] && scheme="https"
+    printf '%s://%s' "$scheme" "$rest"
+}
+_pve_url() { _pve_norm_url "${PROXMOX_URL:-}"; }
 _pve_secret() {
     [[ -n "${PVE_TEST_SECRET:-}" ]] && { printf '%s' "$PVE_TEST_SECRET"; return; }
     local s=""

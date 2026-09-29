@@ -843,6 +843,12 @@ check "proxmox: templates dropped"      3 "$(auth_request GET /proxmox/vms | bod
 check "proxmox: running count"          2 "$(auth_request GET /proxmox/vms | body_of | jq -r '.running' 2>/dev/null)"
 check "proxmox: tags split"             media "$(auth_request GET /proxmox/vms | body_of | jq -r '.vms[0].tags[1]' 2>/dev/null)"
 check "proxmox: nodes"                  pve "$(auth_request GET /proxmox/nodes | body_of | jq -r '.nodes[0].node' 2>/dev/null)"
+check "proxmox: http on 8006 made https" https://192.168.2.12:8006 "$(_lib _pve_norm_url 'http://192.168.2.12:8006/')"
+check "proxmox: http elsewhere kept"    http://pve.lan "$(_lib _pve_norm_url 'http://pve.lan/')"
+check "proxmox: browser address cleaned" https://pve.lan:8006 "$(_lib _pve_norm_url 'pve.lan:8006/#v1:0:18:4:::')"
+auth_request POST /config "{\"PROXMOX_URL\":\"http://127.0.0.1:$_PVE_PORT/#v1:0:18\"}" >/dev/null
+check "proxmox: saved address cleaned"  "http://127.0.0.1:$_PVE_PORT" "$(grep -m1 '^PROXMOX_URL=' "$WORK/.env" | cut -d= -f2- | tr -d "\"'")"
+check "proxmox: reachable after the save" true "$(auth_request GET /proxmox/status | body_of | jq -r '.reachable' 2>/dev/null)"
 check "proxmox: vm detail"              media-vm "$(auth_request GET /proxmox/vms/pve/qemu/100 | body_of | jq -r '.name' 2>/dev/null)"
 check "proxmox: bad type refused"       400 "$(auth_request GET /proxmox/vms/pve/disk/100 | status_of)"
 check "proxmox: bad action refused"     400 "$(auth_request POST /proxmox/vms/pve/lxc/200/explode '{}' | status_of)"
@@ -1357,7 +1363,7 @@ case "$*" in
     port="${DCS_MEMBER_URL##*:}"; host=$(sed -E 's#^https?://([^:/]+).*#\1#' <<< "$DCS_MEMBER_URL")
     [[ -f "$SHIM_DIR/.data/api-server.pid" ]] && (cd "$SHIM_DIR" && "$SHIM_DIR/.scripts/api-server.sh" --stop >/dev/null 2>&1)
     rm -rf "$SHIM_DIR"; git clone -q "$SHIM_ROOT" "$SHIM_DIR" || { echo "clone failed"; exit 1; }
-    for f in .scripts/api-server.sh setup.sh .env.example VERSION .scripts/fleet-bootstrap.sh; do cat "$SHIM_ROOT/$f" > "$SHIM_DIR/$f"; done
+    for f in .scripts/api-server.sh setup.sh .lib/setup-checks.sh .env.example VERSION .scripts/fleet-bootstrap.sh; do cat "$SHIM_ROOT/$f" > "$SHIM_DIR/$f"; done
     rm -rf "$SHIM_DIR/Stacks"   # the real bundle carries no stacks: a member starts with only its own
     cd "$SHIM_DIR" || exit 1
     echo "→ (stand-in) unattended member setup on 127.0.0.1:$port for stack $DCS_STACKS as $target"
@@ -1689,6 +1695,67 @@ _cf env DDNS_ENABLED=true DDNS_SUBDOMAINS='@,home' DDNS_ONCE=true DDNS_INTERVAL=
 check "ddns: address change followed"        203.0.113.9 "$(jq -r '[.records["zone-smoke.test"][]? | select(.type == "A" and .name == "home.smoke.test")][0].content' "$_CFS" 2>/dev/null)"
 check "ddns: one A record per name"          1 "$(jq -r '[.records["zone-smoke.test"][]? | select(.type == "A" and .name == "smoke.test")] | length' "$_CFS" 2>/dev/null)"
 kill "$_CFPID" 2>/dev/null; wait "$_CFPID" 2>/dev/null || true
+
+echo "Setup checks (what setup.sh looks at before it changes anything)"
+_sc() { ( set +eu; source "$ROOT/.lib/setup-checks.sh"; "$@" ); }
+check "setup: http:// becomes https://"      https://192.168.2.12:8006 "$(_sc _pve_clean_url 'http://192.168.2.12:8006/')"
+check "setup: a bare address gets https"     https://192.168.2.12 "$(_sc _pve_clean_url '192.168.2.12')"
+check "setup: the browser's #fragment goes"  https://pve.lan:8006 "$(_sc _pve_clean_url ' https://pve.lan:8006/#v1:0:18:4:::::::: ')"
+check "setup: a pasted API path goes"        https://pve.lan:8006 "$(_sc _pve_clean_url 'HTTPS://pve.lan:8006/api2/json/version')"
+check "setup: an IPv6 address stays whole"   'https://[fd00::5]:8006' "$(_sc _pve_clean_url 'https://[fd00::5]:8006/')"
+check "setup: token ID user@realm!name"      0 "$(_sc _pve_tid_ok 'dcs@pve!dcs'; echo $?)"
+check "setup: token ID of an e-mail user"    0 "$(_sc _pve_tid_ok 'jo@example.com@pve!dcs'; echo $?)"
+check "setup: token ID without its name"     1 "$(_sc _pve_tid_ok 'dcs@pve'; echo $?)"
+check "setup: token ID holding the secret"   1 "$(_sc _pve_tid_ok 'dcs@pve!dcs=0f8fad5b'; echo $?)"
+check "setup: a token secret is a UUID"      0 "$(_sc _pve_secret_ok 0f8fad5b-d9cb-469f-a165-70867728950e; echo $?)"
+check "setup: other text is not a secret"    1 "$(_sc _pve_secret_ok hunter2; echo $?)"
+check "setup: missing tools are named"       "jq curl python3 openssl git socat" "$(PATH=/nonexistent _sc _missing_tools)"
+_SCB="$WORK/setup-fakebin"; mkdir -p "$_SCB"
+printf '#!/bin/bash\necho "permission denied while trying to connect to the Docker daemon socket at unix:///var/run/docker.sock" >&2; exit 1\n' > "$_SCB/docker"; chmod +x "$_SCB/docker"
+check "setup: Docker refusing the user"      denied "$(PATH="$_SCB:$PATH" _sc _docker_state)"
+printf '#!/bin/bash\necho "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?" >&2; exit 1\n' > "$_SCB/docker"
+check "setup: Docker not running"            stopped "$(PATH="$_SCB:$PATH" _sc _docker_state)"
+printf '#!/bin/bash\nexit 0\n' > "$_SCB/docker"
+check "setup: Docker answering"              running "$(PATH="$_SCB:$PATH" _sc _docker_state)"
+# the secret prompt: a * per character, Backspace edits, a bracketed paste and an arrow key leave no marks, nothing echoed in clear
+_SCSEC=$(python3 - "$ROOT/.lib/setup-checks.sh" <<'PY'
+import os, pty, sys, time
+pid, fd = pty.fork()
+if pid == 0:
+    os.execvp('bash', ['bash', '-c', 'source "$0"; _read_secret "S: " v; printf "[%s]" "$v"', sys.argv[1]])
+time.sleep(0.4)
+for chunk in (b'ab\x7fc', b'\x1b[200~d-e\x1b[201~', b'\x1b[D', b'\r'):
+    os.write(fd, chunk); time.sleep(0.15)
+out = b''
+while True:
+    try: d = os.read(fd, 4096)
+    except OSError: break
+    if not d: break
+    out += d
+os.waitpid(pid, 0)
+sys.stdout.write(out.decode(errors='replace').replace('\r', ''))
+PY
+)
+check "setup: secret read through edits"     '[acd-e]' "$(grep -o '\[[^]]*\]$' <<< "$_SCSEC")"
+check "setup: secret shown as stars"         yes "$(grep -q 'S: \*\*' <<< "$_SCSEC" && echo yes || echo no)"
+check "setup: secret never in clear"         0 "$(sed 's/\[[^]]*\]$//' <<< "$_SCSEC" | grep -c 'd-e')"
+# the Proxmox link against a stand-in that answers like pveproxy on 8006: HTTPS with a self-signed
+# certificate, plain HTTP on the same port answered with a 301 to https
+_SCP=$(( 20000 + RANDOM % 20000 )); _SCS=0f8fad5b-d9cb-469f-a165-70867728950e
+MOCK_PVE_TLS=1 python3 "$ROOT/tests/mock-proxmox.py" "$_SCP" 'dcs@pve!dcs' "$_SCS" >/dev/null 2>&1 & _SCPID=$!
+MOCK_PVE_TLS=1 MOCK_PVE_PRIVS=none python3 "$ROOT/tests/mock-proxmox.py" "$((_SCP + 1))" 'dcs@pve!dcs' "$_SCS" >/dev/null 2>&1 & _SCPID2=$!
+for _i in $(seq 1 50); do curl -sk -o /dev/null "https://127.0.0.1:$_SCP/" 2>/dev/null && curl -sk -o /dev/null "https://127.0.0.1:$((_SCP + 1))/" 2>/dev/null && break; sleep 0.2; done
+_scfind() { ( set +eu; source "$ROOT/.lib/setup-checks.sh"; _pve_find "$@"; echo "$? $PVE_CODE ${PVE_BASE:-none}" ); }
+check "setup: plain http gets its redirect"  "301" "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$_SCP/api2/json/version")"
+check "setup: http:// links over https"      "0 200 https://127.0.0.1:$_SCP" "$(_scfind "http://127.0.0.1:$_SCP/" 'dcs@pve!dcs' "$_SCS")"
+check "setup: an address without a scheme"   "0 200 https://127.0.0.1:$_SCP" "$(_scfind "127.0.0.1:$_SCP" 'dcs@pve!dcs' "$_SCS")"
+check "setup: a wrong secret is refused"     "0 401 https://127.0.0.1:$_SCP" "$(_scfind "https://127.0.0.1:$_SCP" 'dcs@pve!dcs' 11111111-2222-3333-4444-555555555555)"
+check "setup: nothing listening"             "1 000 none" "$(_scfind "https://127.0.0.1:$((_SCP + 2))" 'dcs@pve!dcs' "$_SCS")"
+check "setup: says why nothing answered"     yes "$( ( set +eu; source "$ROOT/.lib/setup-checks.sh"; _pve_find "127.0.0.1:$((_SCP + 2))" x y; [[ "$PVE_ERR" == *"$((_SCP + 2))"* ]] ) && echo yes || echo no)"
+check "setup: self-signed certificate seen"  1 "$(_sc _pve_tls_verifies "https://127.0.0.1:$_SCP" && echo 0 || echo 1)"
+check "setup: a full token lacks nothing"    "" "$(_sc _pve_missing_privs "https://127.0.0.1:$_SCP" 'dcs@pve!dcs' "$_SCS")"
+check "setup: a bare token lacks the three"  "VM.Audit VM.PowerMgmt Sys.Audit" "$(_sc _pve_missing_privs "https://127.0.0.1:$((_SCP + 1))" 'dcs@pve!dcs' "$_SCS")"
+kill "$_SCPID" "$_SCPID2" 2>/dev/null; wait "$_SCPID" "$_SCPID2" 2>/dev/null || true
 
 echo
 printf '%d passed, %d failed\n' "$PASS" "$FAIL"

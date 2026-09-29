@@ -80,6 +80,13 @@ _env_set() {   # _env_set KEY VALUE — set or add one plain KEY=VALUE line in .
         printf '%s=%s\n' "$key" "$value" >> "$file"
     fi
 }
+# the checks below (tools, Docker, the Proxmox link) live in a library the tests source too;
+# the package manager is the one start.sh uses
+# shellcheck source=.lib/setup-checks.sh
+source "$BASE_DIR/.lib/setup-checks.sh"
+# shellcheck source=.lib/environment.sh
+source "$BASE_DIR/.lib/environment.sh"
+_sudo() { if [[ $EUID -eq 0 ]]; then "$@"; else sudo "$@"; fi; }   # root (an LXC) may have no sudo at all
 
 # =============================================================================
 # HELP / USAGE
@@ -116,14 +123,17 @@ UNATTENDED (no prompts, no wizard — what the hub runs inside a new VM):
   DCS_NO_UI=true                                (API only: the hub's dashboard drives it)
 
 WHAT IT DOES:
+  0. Checks for jq, socat and curl, that Docker runs and that you may use it
+     (offers to install the tools, start Docker and add you to the docker group)
   1. Copies .env.example -> .env (if .env does not exist)
   2. Creates App-Data/ and logs/ directories
   3. Creates stack directories from DOCKER_STACKS in .env
      (each gets a base docker-compose.yml and .env template)
   4. Sets executable permissions on all .sh scripts
   5. Sets ownership to the current user (${CURRENT_USER})
-  6. Verifies Docker and Docker Compose are installed
-  7. Starts API server + DCS-UI container, prints browser URL
+  6. Verifies Docker and Docker Compose (on Fedora and friends: Docker's SELinux
+     confinement, and for a hub or member the API port in firewalld)
+  7. Starts API server + DCS-UI container, prints browser URL, offers the boot service
 
 EOF
     exit 0
@@ -143,6 +153,8 @@ JOIN_ONLY_HUB=""; JOIN_ONLY_CODE=""; JOIN_ONLY_NAME=""
 UNATTENDED="${DCS_UNATTENDED:-false}"; [[ -n "${DCS_ADMIN_PASSWORD:-}" ]] && UNATTENDED=true
 NO_UI="${DCS_NO_UI:-false}"
 UNATTENDED_TOKEN=""
+# kept for the run that continues under the docker group when setup adds the user to it
+SETUP_ARGS=("$@")
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -234,6 +246,110 @@ if [[ "$ENV_PVE_HOST" == "true" ]]; then
     _warn "This is the Proxmox host itself. DCS runs best in a small LXC or VM on it (docs/PROXMOX.md); continuing anyway."
 fi
 
+# Running setup through sudo would leave .env, logs/ and every App-Data
+# directory owned by root and start the API server as root.
+if [[ $EUID -eq 0 && -n "${SUDO_USER:-}" ]]; then
+    echo ""
+    _fail "Run ./setup.sh as your normal user, not with sudo."
+    _info "Docker access comes from membership in the docker group:"
+    _info "  sudo usermod -aG docker ${SUDO_USER}   (then log out and back in)"
+    echo ""
+    exit 1
+fi
+
+# =============================================================================
+# PRE-CHECK: Docker must be installed before proceeding
+# =============================================================================
+
+if ! command -v docker >/dev/null 2>&1; then
+    echo ""
+    _warn "Docker is NOT installed on this system."
+    _info "DCS requires Docker Engine to manage containers."
+    _info "Install Docker first: https://docs.docker.com/engine/install/"
+    echo ""
+    _fail "Cannot continue without Docker. Install it and run ./setup.sh again."
+    exit 1
+fi
+
+# _ask_yes QUESTION — a Y/n question on a terminal. Unattended runs and dry runs
+# answer no: nothing on the system changes without someone saying so.
+_ask_yes() {
+    local a=""
+    [[ "$UNATTENDED" != "true" && "$DRY_RUN" != "true" && -t 0 ]] || return 1
+    read -r -p "  $1 [Y/n] " a || return 1
+    [[ -z "$a" || "${a,,}" == "y" || "${a,,}" == "yes" ]]
+}
+
+# =============================================================================
+# PRE-CHECK: the tools the API server runs on (a fresh server often lacks jq and socat)
+# =============================================================================
+
+_tools=$(_missing_tools)
+if [[ -n "$_tools" ]]; then
+    _pkg=$(_detect_package_manager) || _pkg=""
+    [[ $EUID -eq 0 ]] && _pkg="${_pkg#sudo }"
+    _tools_before="$_tools"
+    echo ""
+    _warn "The API server needs tools this system does not have yet: $_tools"
+    if [[ -n "$_pkg" ]] && _ask_yes "Install them now ($_pkg $_tools)?"; then
+        if [[ "$_pkg" == *apt-get* ]]; then _sudo apt-get update -qq || true; fi
+        # shellcheck disable=SC2086  # the install command and the package list are separate words
+        $_pkg $_tools || true
+        _tools=$(_missing_tools)
+        [[ -z "$_tools" ]] && _ok "Installed: $_tools_before"
+    fi
+    if [[ -n "$_tools" && "$DRY_RUN" != "true" ]]; then
+        _fail "Still missing: $_tools — install ${_pkg:+them ($_pkg $_tools) }and run ./setup.sh again"
+        echo ""
+        exit 1
+    fi
+fi
+
+# =============================================================================
+# PRE-CHECK: Docker must be running, and this user must be allowed to use it. A
+# fresh install often has the service stopped (Fedora does not start it) or the
+# user outside the docker group: each is offered its fix, and setup carries on
+# in the same run (under the new group when it had to add one).
+# =============================================================================
+
+_docker_st=$(_docker_state)
+if [[ "$_docker_st" == "stopped" ]]; then
+    echo ""
+    _warn "Docker is installed, but its service is not running"
+    if command -v systemctl >/dev/null 2>&1 && _ask_yes "Start Docker now and at every boot (sudo systemctl enable --now docker)?"; then
+        _sudo systemctl enable --now docker || true
+        for _i in $(seq 1 20); do
+            _docker_st=$(_docker_state); [[ "$_docker_st" != "stopped" ]] && break; sleep 1
+        done
+        [[ "$_docker_st" != "stopped" ]] && _ok "Docker is running and starts at boot"
+    fi
+fi
+if [[ "$_docker_st" == "denied" ]]; then
+    echo ""
+    if ! _in_docker_group "$CURRENT_USER"; then
+        _warn "Docker is running, but ${CURRENT_USER} is not in the docker group, so it may not use Docker"
+        if _ask_yes "Add ${CURRENT_USER} to the docker group (sudo usermod -aG docker ${CURRENT_USER})?"; then
+            _sudo usermod -aG docker "$CURRENT_USER" || true
+        fi
+    fi
+    # in the group, but this login started before that: carry on under the group (new logins have it by themselves)
+    if _in_docker_group "$CURRENT_USER" && [[ -z "${DCS_SETUP_SG:-}" && "$DRY_RUN" != "true" ]] && command -v sg >/dev/null 2>&1; then
+        _ok "${CURRENT_USER} is in the docker group — continuing under it (every new login has it by itself)"
+        export DCS_SETUP_SG=1
+        exec sg docker -c "$(printf '%q ' "$BASE_DIR/setup.sh" "${SETUP_ARGS[@]}")"
+    fi
+fi
+if [[ "$_docker_st" != "running" && "$DRY_RUN" != "true" ]]; then
+    echo ""
+    if [[ "$_docker_st" == "stopped" ]]; then
+        _fail "Docker is not running. Start it (sudo systemctl enable --now docker), then run ./setup.sh again."
+    else
+        _fail "${CURRENT_USER} may not use Docker yet: sudo usermod -aG docker ${CURRENT_USER}, log out and back in (or run: newgrp docker), then run ./setup.sh again."
+    fi
+    echo ""
+    exit 1
+fi
+
 # -----------------------------------------------------------------------------
 # Fleet role. A hub is the DCS linked to Proxmox: it shows and drives the DCS
 # in the other VMs (members) from one dashboard. Asked once, on the first run;
@@ -270,31 +386,6 @@ case "$FLEET_ROLE" in
     hub)    _ok "Role: hub — Proxmox is linked here and the other VMs join this DCS" ;;
     member) _ok "Role: member of ${FLEET_HUB_URL} — the join runs when the API is up" ;;
 esac
-
-# Running setup through sudo would leave .env, logs/ and every App-Data
-# directory owned by root and start the API server as root.
-if [[ $EUID -eq 0 && -n "${SUDO_USER:-}" ]]; then
-    echo ""
-    _fail "Run ./setup.sh as your normal user, not with sudo."
-    _info "Docker access comes from membership in the docker group:"
-    _info "  sudo usermod -aG docker ${SUDO_USER}   (then log out and back in)"
-    echo ""
-    exit 1
-fi
-
-# =============================================================================
-# PRE-CHECK: Docker must be installed before proceeding
-# =============================================================================
-
-if ! command -v docker >/dev/null 2>&1; then
-    echo ""
-    _warn "Docker is NOT installed on this system."
-    _info "DCS requires Docker Engine to manage containers."
-    _info "Install Docker first: https://docs.docker.com/engine/install/"
-    echo ""
-    _fail "Cannot continue without Docker. Install it and run ./setup.sh again."
-    exit 1
-fi
 
 # =============================================================================
 # STEP 1: Environment File
@@ -355,13 +446,83 @@ fi
 # On a Proxmox guest, offer to link DCS to the Proxmox API right away (an API
 # token with VM.Audit, VM.PowerMgmt and Sys.Audit — see docs/PROXMOX.md). The
 # same link can be made later in the wizard or in Server Config → Proxmox.
+# The address may come any way (http://, no port, pasted from the browser):
+# setup finds where Proxmox answers. A refused token or a wrong address is
+# asked again.
 # -----------------------------------------------------------------------------
 PVE_LINKED=false
-_pve_url=""; _pve_tid=""; _pve_sec=""; _pve_ask=false
+_pve_url=""; _pve_tid=""; _pve_sec=""
+PVE_CODE=""; PVE_REDIRECT=""; PVE_ERR=""; PVE_BASE=""
+
+# _pve_explain TYPED — why the link did not happen, from the last _pve_find
+_pve_explain() {
+    case "$PVE_CODE" in
+        401) _warn "Proxmox at $PVE_BASE refused the token — check the token ID and the secret (a lost secret needs a new token)" ;;
+        403) _warn "Proxmox at $PVE_BASE answered 403 — the token may not use the API: give it VM.Audit, VM.PowerMgmt and Sys.Audit on /" ;;
+        000) _warn "Nothing answered at $(_pve_clean_url "$1")${PVE_ERR:+ ($PVE_ERR)} — use the address of the Proxmox web UI, https://<its IP>:8006" ;;
+        *)   _warn "$(_pve_clean_url "$1") answered HTTP $PVE_CODE, which is not Proxmox — use the address of the Proxmox web UI, https://<its IP>:8006" ;;
+    esac
+}
+
+# _pve_save BASE — the link into .env, with what Proxmox lets the token do
+_pve_save() {
+    local base="$1" verify=true missing
+    _pve_tls_verifies "$base" || verify=false
+    _env_set PROXMOX_URL "$base"; _env_set PROXMOX_TOKEN_ID "$_pve_tid"; _env_set PROXMOX_TOKEN_SECRET "$_pve_sec"; _env_set PROXMOX_VERIFY_TLS "$verify"
+    PVE_LINKED=true
+    _ok "Proxmox linked: $base"
+    if [[ "$verify" == "false" && "$base" == https://* ]]; then _info "Proxmox uses a self-signed certificate — verification is switched off for it"; fi
+    missing=$(_pve_missing_privs "$base" "$_pve_tid" "$_pve_sec")
+    if [[ -n "$missing" ]]; then
+        _warn "The token works but lacks $missing on / — DCS will not see or power the VMs until it has them"
+        _info "  With Privilege Separation ticked, the token itself needs the role: Datacenter → Permissions → Add → API Token Permission (docs/PROXMOX.md)"
+    fi
+}
+
+_pve_ask_url() {   # sets _pve_url (empty: skip)
+    local a=""
+    if [[ -n "$ENV_PVE_HINT" ]]; then
+        read -r -p "  Proxmox address [$ENV_PVE_HINT]: " a || true; a="${a:-$ENV_PVE_HINT}"
+    else
+        read -r -p "  Proxmox address (its web UI, e.g. https://192.168.1.10:8006): " a || true
+    fi
+    _pve_url="${a//[[:space:]]/}"
+}
+_pve_ask_token() {   # sets _pve_tid and _pve_sec; 1 when one is left empty (skip)
+    local t="" tries=0
+    _pve_sec=""
+    while :; do
+        read -r -p "  API token ID (user@realm!name, e.g. dcs@pve!dcs): " t
+        t="${t//[[:space:]]/}"; t="${t#PVEAPIToken=}"
+        [[ -n "$t" ]] || return 1
+        # user@realm!name=secret pasted in one go
+        if [[ "$t" == *=* ]]; then _pve_sec="${t#*=}"; t="${t%%=*}"; fi
+        _pve_tid_ok "$t" && break
+        _warn "A token ID is the user, the realm and the token's name, like dcs@pve!dcs (Datacenter → Permissions → API Tokens lists it)"
+        _pve_sec=""; tries=$((tries + 1)); (( tries < 3 )) || return 1
+    done
+    _pve_tid="$t"
+    if [[ -n "$_pve_sec" ]] && _pve_secret_ok "$_pve_sec"; then _ok "Secret taken from the pasted token"; return 0; fi
+    _pve_sec=""; tries=0
+    while :; do
+        _read_secret "  Token secret (shows as *** — paste it, then press Enter): " t
+        t="${t//[[:space:]]/}"
+        [[ -n "$t" ]] || return 1
+        if _pve_secret_ok "$t"; then _pve_sec="$t"; _ok "Secret received (${#t} characters)"; return 0; fi
+        _warn "That is not a token secret: Proxmox shows it once, as 8-4-4-4-12 hex (xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx)"
+        tries=$((tries + 1)); (( tries < 3 )) || return 1
+    done
+}
+
 if [[ -f "$BASE_DIR/.env" ]] && ! grep -qE '^PROXMOX_URL=.+' "$BASE_DIR/.env" 2>/dev/null; then
     if [[ -n "${DCS_PROXMOX_URL:-}" && -n "${DCS_PROXMOX_TOKEN_ID:-}" && -n "${DCS_PROXMOX_TOKEN_SECRET:-}" ]]; then
-        _pve_url="${DCS_PROXMOX_URL%/}"; _pve_tid="$DCS_PROXMOX_TOKEN_ID"; _pve_sec="$DCS_PROXMOX_TOKEN_SECRET"; _pve_ask=true
+        _pve_tid="$DCS_PROXMOX_TOKEN_ID"; _pve_sec="$DCS_PROXMOX_TOKEN_SECRET"
         _info "Linking Proxmox from DCS_PROXMOX_URL…"
+        if _pve_find "$DCS_PROXMOX_URL" "$_pve_tid" "$_pve_sec" && [[ "$PVE_CODE" == "200" ]]; then
+            _pve_save "$PVE_BASE"
+        else
+            _pve_explain "$DCS_PROXMOX_URL"; _info "Link it later in Server Config → Proxmox"
+        fi
     elif [[ -t 0 && "$UNATTENDED" != "true" && ( "$FLEET_ROLE" == "hub" || ( "$FLEET_ROLE" == "standalone" && "$ENV_PVE_GUEST" == "true" && -z "${DCS_FLEET_ROLE:-}" ) ) ]]; then
         echo ""
         _info "DCS can show and power the VMs and containers of this Proxmox host."
@@ -370,34 +531,31 @@ if [[ -f "$BASE_DIR/.env" ]] && ! grep -qE '^PROXMOX_URL=.+' "$BASE_DIR/.env" 2>
         read -r -p "  Link DCS to this Proxmox now? [$_pve_default_yn] " _pve_yn
         [[ -z "$_pve_yn" && "$FLEET_ROLE" == "hub" ]] && _pve_yn="y"
         if [[ "${_pve_yn,,}" == "y" || "${_pve_yn,,}" == "yes" ]]; then
-            read -r -p "  Proxmox URL [${ENV_PVE_HINT:-https://pve.example.com:8006}]: " _pve_url
-            _pve_url="${_pve_url:-${ENV_PVE_HINT:-}}"; _pve_url="${_pve_url%/}"
-            read -r -p "  API token ID (user@realm!name): " _pve_tid
-            read -r -s -p "  Token secret: " _pve_sec; echo ""
-            _pve_ask=true
-        fi
-    fi
-    if [[ "$_pve_ask" == "true" ]]; then
-        if [[ -n "$_pve_url" && -n "$_pve_tid" && -n "$_pve_sec" ]]; then
-            _pve_verify=true
-            _pve_code=$(curl -s -o /dev/null --max-time 8 -w '%{http_code}' -H "Authorization: PVEAPIToken=${_pve_tid}=${_pve_sec}" "$_pve_url/api2/json/version" 2>/dev/null) || true
-            if [[ "$_pve_code" == "000" ]]; then
-                _pve_code=$(curl -sk -o /dev/null --max-time 8 -w '%{http_code}' -H "Authorization: PVEAPIToken=${_pve_tid}=${_pve_sec}" "$_pve_url/api2/json/version" 2>/dev/null) || true
-                [[ "$_pve_code" == "200" ]] && { _pve_verify=false; _info "Proxmox uses a self-signed certificate — verification is switched off for it"; }
+            _pve_round=0
+            _pve_ask_url
+            if [[ -n "$_pve_url" ]] && _pve_ask_token; then
+                while :; do
+                    _pve_round=$((_pve_round + 1))
+                    if _pve_find "$_pve_url" "$_pve_tid" "$_pve_sec" && [[ "$PVE_CODE" == "200" ]]; then
+                        [[ "${_pve_url%/}" == "$PVE_BASE" ]] || _info "Proxmox answers at $PVE_BASE — using that"
+                        _pve_save "$PVE_BASE"
+                        break
+                    fi
+                    _pve_explain "$_pve_url"
+                    (( _pve_round < 3 )) || break
+                    if [[ -n "$PVE_BASE" ]]; then
+                        _info "Enter the token again (an empty line skips the link)"
+                        _pve_ask_token || break
+                    else
+                        _info "Enter the address again (an empty line skips the link)"
+                        _pve_ask_url; [[ -n "$_pve_url" ]] || break
+                    fi
+                done
             fi
-            case "$_pve_code" in
-                200)
-                    _env_set PROXMOX_URL "$_pve_url"; _env_set PROXMOX_TOKEN_ID "$_pve_tid"; _env_set PROXMOX_TOKEN_SECRET "$_pve_sec"; _env_set PROXMOX_VERIFY_TLS "$_pve_verify"
-                    PVE_LINKED=true; _ok "Proxmox linked: $_pve_url" ;;
-                401) _warn "Proxmox rejected the token (check user@realm!name and the secret) — link it later in Server Config → Proxmox" ;;
-                403) _warn "The token lacks VM.Audit, VM.PowerMgmt or Sys.Audit on / — fix the role, then link it in Server Config → Proxmox" ;;
-                *)   _warn "Proxmox did not answer at $_pve_url (HTTP ${_pve_code:-none}) — link it later in Server Config → Proxmox" ;;
-            esac
-            unset _pve_sec
-        else
-            _skip "Proxmox link skipped (missing values) — Server Config → Proxmox does the same later"
+            [[ "$PVE_LINKED" == "true" ]] || _skip "Proxmox not linked — Server Config → Proxmox (or the wizard) links it any time"
         fi
     fi
+    _pve_sec=""
 fi
 
 # =============================================================================
@@ -616,18 +774,73 @@ fi
 compose_found=false
 if docker compose version &>/dev/null; then
     compose_version="$(docker compose version --short 2>/dev/null || echo 'unknown')"
-    _ok "Docker Compose plugin (v2): $compose_version"
+    _ok "Docker Compose plugin: $compose_version"
     compose_found=true
 fi
 if command -v docker-compose &>/dev/null; then
     compose_version="$(docker-compose --version 2>/dev/null | head -1 || echo 'unknown')"
-    _ok "docker-compose binary (v1): $compose_version"
+    _ok "docker-compose command: $compose_version"
     compose_found=true
 fi
 if [[ "$compose_found" == "false" ]]; then
     _fail "No Docker Compose installation found"
     _info "Install: https://docs.docker.com/compose/install/"
     docker_ok=false
+fi
+
+# Docker that confines containers with SELinux (Fedora's own Docker package does, Docker CE
+# does not) refuses a container the App-Data folder it is given and Traefik the Docker socket,
+# unless every volume carries :z. Offer to run containers the way Docker CE does; SELinux stays
+# on for the rest of the system.
+_docker_selinux_off() {   # --selinux-enabled off where the daemon takes it (sysconfig on Fedora, daemon.json), then a restart
+    local changed=false tmp
+    if [[ -f /etc/sysconfig/docker ]] && grep -q -- '--selinux-enabled' /etc/sysconfig/docker; then
+        _sudo sed -i -E 's/[[:space:]]*--selinux-enabled(=true)?//' /etc/sysconfig/docker && changed=true
+    fi
+    if [[ -f /etc/docker/daemon.json ]] && jq -e '."selinux-enabled" == true' /etc/docker/daemon.json >/dev/null 2>&1; then
+        tmp=$(mktemp) && jq '."selinux-enabled" = false' /etc/docker/daemon.json > "$tmp" && _sudo cp "$tmp" /etc/docker/daemon.json && changed=true
+        rm -f "$tmp"
+    fi
+    [[ "$changed" == "true" ]] || return 1
+    _sudo systemctl restart docker
+}
+if [[ "$docker_ok" == "true" ]] && docker info --format '{{.SecurityOptions}}' 2>/dev/null | grep -q selinux; then
+    _warn "Docker confines containers with SELinux here (Fedora's own Docker package does; Docker CE does not)"
+    _info "  Under it a container may not write the App-Data folder it is given, nor Traefik read the Docker socket"
+    if _ask_yes "Run containers the way Docker CE does (SELinux stays on for the rest of the system)?"; then
+        if _docker_selinux_off && ! docker info --format '{{.SecurityOptions}}' 2>/dev/null | grep -q selinux; then
+            _ok "Docker runs containers without SELinux confinement now"
+        else
+            _warn "Docker still confines containers: remove --selinux-enabled from its options (systemctl cat docker shows where they come from)"
+        fi
+    else
+        _info "  Then every volume needs :z (./App-Data/app:/config:z) and a container on the Docker socket label=disable"
+    fi
+fi
+
+# A host firewall (firewalld on Fedora, AlmaLinux and friends) blocks the API port, and a hub and
+# its VMs reach each other on it (ports Docker publishes open by themselves). The VMs a hub
+# builds open it in their bootstrap; this is for a machine set up by hand.
+_fw_role="$FLEET_ROLE"
+if [[ "$_fw_role" == "standalone" ]]; then
+    # a re-run: the role question is only asked the first time, the fleet state says it
+    if jq -e '.hub != null' "$BASE_DIR/.data/fleet.json" >/dev/null 2>&1; then _fw_role="member"
+    elif jq -e '(.members // []) | length > 0' "$BASE_DIR/.data/fleet.json" >/dev/null 2>&1 || grep -qE '^PROXMOX_URL=.+' "$BASE_DIR/.env" 2>/dev/null; then _fw_role="hub"; fi
+fi
+if [[ "$UNATTENDED" != "true" && ( "$_fw_role" == "hub" || "$_fw_role" == "member" ) ]] \
+   && command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld 2>/dev/null; then
+    _fw_port="${API_PORT:-9876}"
+    if [[ "$(firewall-cmd --query-port="$_fw_port/tcp" 2>/dev/null)" == "yes" ]]; then
+        _ok "firewalld: port $_fw_port/tcp is open for the fleet"
+    elif _ask_yes "firewalld blocks port $_fw_port/tcp, which the hub and its VMs talk on. Open it (sudo firewall-cmd --permanent --add-port=$_fw_port/tcp)?"; then
+        if _sudo firewall-cmd --permanent --add-port="$_fw_port/tcp" >/dev/null && _sudo firewall-cmd --reload >/dev/null; then
+            _ok "firewalld: port $_fw_port/tcp open"
+        else
+            _warn "firewalld: port $_fw_port/tcp could not be opened — sudo firewall-cmd --permanent --add-port=$_fw_port/tcp && sudo firewall-cmd --reload"
+        fi
+    else
+        _warn "firewalld blocks port $_fw_port/tcp, which the fleet needs: sudo firewall-cmd --permanent --add-port=$_fw_port/tcp && sudo firewall-cmd --reload"
+    fi
 fi
 
 # =============================================================================
@@ -647,7 +860,7 @@ if [[ "$DRY_RUN" == "true" ]]; then
     exit 0
 elif [[ "$docker_ok" != "true" ]]; then
     _fail "Setup completed with warnings (Docker issues above)"
-    _info "Resolve the Docker issues above, then run ./start.sh"
+    _info "Resolve the Docker issues above, then run ./setup.sh again"
     echo ""
     exit 1
 fi
@@ -915,6 +1128,21 @@ _unattended_complete() {
 }
 if [[ "$UNATTENDED" == "true" ]]; then
     _unattended_finish || exit 1
+fi
+
+# Start at boot: the API started above runs outside systemd and is gone after a reboot. Asked
+# once, on a terminal; the installer hands the running API over to its service.
+if [[ "$UNATTENDED" != "true" && -t 0 && -d /run/systemd/system && ! -f /etc/systemd/system/dcs-api.service ]]; then
+    echo ""
+    if _ask_yes "Start DCS by itself after a reboot (installs the dcs-api service: sudo .scripts/install-service.sh)?"; then
+        if _sudo env DCS_UNATTENDED=true "$BASE_DIR/.scripts/install-service.sh" 2>&1 | sed 's/^/      /'; then
+            _ok "DCS starts at boot (dcs-api.service)"
+        else
+            _warn "The boot service did not install — run: sudo .scripts/install-service.sh"
+        fi
+    else
+        _info "Later: sudo .scripts/install-service.sh starts DCS at boot"
+    fi
 fi
 
 if [[ "$NO_UI" == "true" ]]; then
