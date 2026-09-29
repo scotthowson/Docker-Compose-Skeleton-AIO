@@ -52,8 +52,15 @@ bouncers and when Traefik last pulled, log lines read and understood, and the si
 when you ask for more) and shows detections over time, a dotted world map of where attackers are, the countries with how many
 of their addresses are banned right now, the kinds of attack in plain words (*SSH brute force*, *Web probing*, *Exploit attempt*),
 the busiest addresses (with a **Ban** button when not yet banned) or networks, and the latest detections. Below: **Protection**
-(is Traefik enforcing the bans; your own address and whether it is allowed), **Community** (blocklist, sharing, console) and **Engine**
-(version, uptime, log lines per source, hub, *Reload* and *Restart*).
+(is Traefik enforcing the bans, one line for each thing Traefik's own files say about the bouncer, how many of your routes go through it, and your own
+address), **Community** (blocklist, sharing, console) and **Engine** (version, uptime, log lines per source, hub, *Reload* and *Restart*).
+
+**How the bouncer is wired** is read from Traefik's files, not guessed: the plugin is declared in Traefik's static configuration (name and version) and
+Traefik has been restarted since; the middleware file `crowdsec-bouncer.yml` exists; `crowdsec-bouncer` is part of `traefik-chain`; the key in the file belongs to
+the bouncer CrowdSec knows (a bouncer registered again after the file was written leaves a key that no longer works); when Traefik last asked CrowdSec (the plugin
+reports in at least every ten minutes while it runs, so half an hour of silence counts as a problem); and the plugin's mode. Anything wrong is also a banner with the
+fix behind a button (*Register again*, *Restart Traefik*). The routes line says how many routes use the chain and names the ones that **bypass** it: a route that does
+not go through `traefik-chain` is never checked, so a banned address can still reach it (the same routes carry an *unprotected* badge on the DNS & Routes page).
 
 ## 3. Bans
 
@@ -152,6 +159,24 @@ Saving is safe: DCS builds the new file, has **CrowdSec itself validate it** in 
 healthy and the local API answers, **reads the file back**, and if anything fails puts the previous file back and restarts again, telling you which step failed. One apply runs at a time.
 If someone edited `profiles.yaml` by hand (*custom*), the page shows the file, and replaces it only after you confirm (a backup is kept). Backups are listed.
 
+**The Traefik bouncer plugin** (the same tab; needs the bouncer registered). The plugin is the part inside Traefik that refuses banned visitors; these are its own
+settings, written into its middleware file `crowdsec-bouncer.yml` with the same care as the ban profile (checked first, written atomically, the old file kept, a marker line
+so registering the bouncer again or a re-deploy keeps them) - Traefik reloads the file by itself within seconds:
+
+| Setting | Default | What it does |
+| --- | --- | --- |
+| **Mode** | live | *live*: Traefik asks CrowdSec about a visitor the first time it sees one and remembers the answer. *stream*: Traefik downloads the whole ban list every few seconds and decides on its own (a new ban reaches the door that many seconds later, and it keeps working for a while if CrowdSec is down) |
+| **Update interval** | 60 s (10 s to 1 h) | stream only: how often the ban list is downloaded |
+| **Remember an answer for** | 60 s (10 s to 1 h) | live only: how long an answer about a visitor is kept; shorter means a lifted ban is noticed sooner |
+| **Timeout** | 10 s (1 to 60 s) | how long Traefik waits for CrowdSec before it gives up on one question |
+| **Status a banned visitor gets** | 403 (400 to 599) | 403 forbidden is the usual one; 429 tells well-behaved clients to slow down |
+| **Log level** | INFO | how much the plugin writes in Traefik's log |
+| **Visitors that are never checked** | your LAN, your home address | `clientTrustedIPs`: the LAN of your Traefik (`TRAEFIK_TRUSTED_LAN`) is always in; *never check my home address* (on by default when you save) keeps the address DCS follows (dynamic DNS) in the list and moves it when it changes |
+| **Proxies whose forwarded address is believed** | Cloudflare's ranges + your LAN | `forwardedHeadersTrustedIPs`: a CDN or proxy in front of Traefik. Only these may say who the real visitor is |
+
+Only a safe subset is offered: the modes *none*, *alone* and *appsec* and the plugin's Redis and AppSec options stay in the file, untouched, for people who need
+them. Networks wider than a /8 (IPv4) or /16 (IPv6) are refused in both lists: a list that says "trust everyone" would switch the bouncer off.
+
 **Simulation mode**: scenarios that only alert and never ban, per scenario or for the whole engine (*watch only*, with a warning that nothing is blocked while it is on).
 
 ## 8. Hub
@@ -190,6 +215,13 @@ only, so the page never offers one and says so.
 
 On a hub, the *Server* chips at the top of the page choose the hub or one VM; every call goes through the fleet proxy to that VM's own CrowdSec and its own DCS decides with its own role checks.
 
+**The routes of your VMs are protected by the hub's bouncer.** A VM's service is published through the hub's Traefik (the hub writes the VM's routers into
+`fleet-members.yml`), and every one of those routers gets the hub's `traefik-chain` (and `compress-gzip`), the chain that holds `crowdsec-bouncer` once the hub's bouncer
+is registered. So the hub's CrowdSec decides for the traffic to a VM's services too: ban an address on the hub and it is refused at the hub's door, whichever VM it
+was after. A VM that runs its own Traefik gets the same from its own chain. The routes list of DNS & Routes marks a route that does *not* use the chain (a hand-written
+route file without `traefik-chain`) as **unprotected**, and the Protection panel counts them; on a hub without any chain (no Traefik template) a VM's routes have none
+and read as unprotected too.
+
 ## API
 
 Viewers may `GET`; changes need an admin. The generated reference is [docs/API.md](API.md); the CrowdSec routes:
@@ -203,6 +235,8 @@ Viewers may `GET`; changes need an admin. The generated reference is [docs/API.m
 | `GET /crowdsec/allowlist` · `POST` · `DELETE /crowdsec/allowlist/{value}` | never-ban list |
 | `GET /crowdsec/bouncers` · `POST` · `DELETE …/{name}` · `POST …/register-traefik` · `GET /crowdsec/machines` | enforcement |
 | `GET /crowdsec/settings` · `PUT` | ban profile |
+| `GET /crowdsec/plugin` · `PUT` · `POST /crowdsec/traefik/restart` | the Traefik bouncer plugin's settings, and a Traefik restart (it loads a declared plugin only as it starts) |
+| `GET /routes` | every route now says `crowdsec`: `protected`, `bypass` or `off` (CrowdSec is not set up on the proxy) |
 | `GET /crowdsec/simulation` · `POST` | alert-only scenarios |
 | `GET /crowdsec/notifications` · `PUT` · `POST …/preview` · `POST …/test` · `POST …/reset` | the Discord editor |
 | `GET /crowdsec/hub` · `POST …/update` · `…/upgrade` · `…/install` · `…/remove` | the hub |
@@ -213,6 +247,8 @@ Viewers may `GET`; changes need an admin. The generated reference is [docs/API.m
 | Symptom | Look at |
 | --- | --- |
 | *Bans are not enforced at your proxy* | the banner's button registers the bouncer; Traefik needs the plugin in its static config (DCS adds it and restarts Traefik once if it is missing) |
+| Every route behind Traefik answers 404 after a change | Overview → Protection → *How the bouncer is wired*: the plugin must be declared in Traefik's static configuration and Traefik restarted since (*Register again* declares it, *Restart Traefik* loads it); a key that is older than the bouncer makes the bouncer useless, not the routes 404 |
+| A route is *unprotected* | it does not use `traefik-chain`: add the chain to the router's middlewares (the routes DCS writes do this by themselves), then reload |
 | Bans exist but nothing is blocked | Overview → Protection: is the bouncer pulling? A bouncer that has never pulled means no request has gone through the middleware yet, or the middleware is not in the chain your services use |
 | *Log lines: 0 read* | CrowdSec reads Traefik's access log from the shared logs folder; check Traefik writes it (`accessLog` in `traefik.yml`) and that the volume is mounted |
 | You banned yourself | Dashboard → *Protection* card → **Unban me**, or lift the ban from the list; the guard normally prevents it |

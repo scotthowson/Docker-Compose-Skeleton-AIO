@@ -43,7 +43,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   are settings too. Every change to CrowdSec's files is validated by CrowdSec itself, backed up, applied with a restart, read back, and rolled back on failure; user
   text never reaches a generated file as code; a re-deploy keeps what the page manages. `GET /crowdsec/status`, `/decisions`, `/alerts`, `/metrics`, `/allowlist`,
   `/bouncers`, `/machines`, `/settings`, `/simulation`, `/notifications`, `/hub`, `/logs`, `/community` and their mutations are new (viewers read, admins change,
-  every change is in the audit log); `tests/mock-crowdsec.py` is a stateful stand-in for `docker` and `cscli` that the smoke tests and browser labs run against.
+  every change is in the audit log). **The Traefik bouncer plugin is covered end to end**: the page reads Traefik's own files (plugin declared with its version, middleware file,
+`traefik-chain`, the key, when Traefik last asked, the mode) and raises what is wrong with a fix button (also on the dashboard card); its mode, timings, log level, the status
+a banned visitor sees and the trusted networks are settings (written to the middleware file with a marker, atomically, kept across a re-registration and following the home
+address); `GET /routes` says for every route, VMs' routes included, whether the bouncer checks it, and a route that bypasses the chain reads as unprotected. `tests/mock-crowdsec.py` is a stateful stand-in for `docker` and `cscli` that the smoke tests and browser labs run against.
 
 ### Changed
 
