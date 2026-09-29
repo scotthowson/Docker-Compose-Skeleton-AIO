@@ -18245,7 +18245,7 @@ _dashboard_public_url() {
 # Notifications can change both) and the palette the dashboard uses, so a
 # Discord channel reads like the UI: emerald good, amber warning, rose bad,
 # cyan information, violet backups, slate housekeeping.
-_DISCORD_AVATAR="https://raw.githubusercontent.com/scotthowson/Docker-Compose-Skeleton-UI/v2.0.0/brand/discord/webhook-avatar.png"
+_DISCORD_AVATAR="https://raw.githubusercontent.com/scotthowson/dcs-orchestrator-ui/v2.0.0/brand/discord/webhook-avatar.png"
 DISCORD_COLOR_OK=3462041; DISCORD_COLOR_WARN=16098851; DISCORD_COLOR_BAD=15942494
 DISCORD_COLOR_INFO=2282478; DISCORD_COLOR_VIOLET=10979578; DISCORD_COLOR_SLATE=9737912
 

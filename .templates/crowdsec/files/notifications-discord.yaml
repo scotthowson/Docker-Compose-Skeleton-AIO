@@ -16,7 +16,7 @@ format: |
          amber for injection and scanning, cyan for community signals */ -}}
   {
     "username": "CrowdSec",
-    "avatar_url": "https://raw.githubusercontent.com/scotthowson/Docker-Compose-Skeleton-UI/v2.0.0/brand/discord/crowdsec-avatar.png",
+    "avatar_url": "https://raw.githubusercontent.com/scotthowson/dcs-orchestrator-ui/v2.0.0/brand/discord/crowdsec-avatar.png",
     "allowed_mentions": {"parse": []},
     "embeds": [
       {{- range $i, $alert := . }}

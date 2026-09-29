@@ -403,7 +403,7 @@ _cs_backups_json() {
 _CS_NOTIFY_DEFAULTS='{
  "v": 1, "enabled": true,
  "webhook": {"mode": "global"},
- "identity": {"name": "CrowdSec", "avatar_url": "https://raw.githubusercontent.com/scotthowson/Docker-Compose-Skeleton-UI/v2.0.0/brand/discord/crowdsec-avatar.png"},
+ "identity": {"name": "CrowdSec", "avatar_url": "https://raw.githubusercontent.com/scotthowson/dcs-orchestrator-ui/v2.0.0/brand/discord/crowdsec-avatar.png"},
  "embed": {"color_mode": "auto", "color": "#e11d48"},
  "mention": {"mode": "none", "id": "", "text": ""},
  "events": {"bans": true, "simulated": true, "detect_only": false},
