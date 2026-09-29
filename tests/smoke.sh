@@ -2320,6 +2320,7 @@ fi   # (end of the sections SMOKE_ONLY=crowdsec skips)
 # =============================================================================
 CST_ROOT="$WORK-cs"; CST="$CST_ROOT"             # (each lane of the section has an install of its own below $CST_ROOT: see cst_main)
 CST_MOCK="${SMOKE_CS_MOCK:-$ROOT/tests/mock-crowdsec.py}"
+CST_MOCK_RUN="$CST_MOCK"             # what is run: the script itself, or its bytecode when cst_main could compile it (thousands of calls start it)
 CST_API=""
 CST_SERVER_IP="203.0.113.250"       # what `hostname -I` says inside these requests (the "this server" address of the ban guard)
 CST_HOOK_ID=111111111111111111; CST_HOOK_TOKEN=NOTAREALTOKEN_0123456789-abcdefghij     # placeholders: this webhook is never a real one
@@ -2349,7 +2350,7 @@ cst_setup() {
 printf '%s\n' "\$(printf '%q ' "\$@")" >> "$CST/argv.log"      # one write per call: parallel calls do not mix their lines
 [[ "\$1" == cp ]] && printf '%s %s\n' "\$(stat -c %a "\$2" 2>/dev/null)" "\$3" >> "$CST/cp-modes.log"
 export FAKE_CS_DIR="$CST/fake"
-exec python3 "$CST_MOCK" "\$@"
+exec python3 "$CST_MOCK_RUN" "\$@"
 SH
     # the only curl: Discord's webhook host is rewritten to the fake Discord on loopback, anything else is refused without a connection
     cat > "$CST/bin/curl" <<SH
@@ -2525,7 +2526,7 @@ cst_try() { local n="$1" s="$2"; shift 2; cst_call "$@"; cst_is "$n" "$s"; }
 # ---- the world of the requests ----------------------------------------------------------------------------------------------------
 
 # the stand-in's control verbs (--mock-init PRESET [--traefik], --mock-set K=V, --mock-tick S); the API's cached answers go with them
-cst_mock() { FAKE_CS_DIR="$CST/fake" python3 "$CST_MOCK" "$@" >/dev/null 2>&1 || echo "  (the stand-in refused: $*)"; rm -rf "$CST/.data/cache/crowdsec"; }
+cst_mock() { FAKE_CS_DIR="$CST/fake" python3 "$CST_MOCK_RUN" "$@" >/dev/null 2>&1 || echo "  (the stand-in refused: $*)"; rm -rf "$CST/.data/cache/crowdsec"; }
 
 # cst_env KEY [VALUE] — a key of the install's .env (the API reads it on every request; an empty VALUE is "not set")
 cst_env() { sed -i "/^${1}=/d" "$CST/.env"; printf '%s=%s\n' "$1" "${2:-}" >> "$CST/.env"; rm -rf "$CST/.data/cache/crowdsec"; }
@@ -3290,13 +3291,16 @@ cst_part_bans() {
 
 # a server with thousands of bans: nothing that reads the whole list may hand it to a command line (an argument is limited to 128 KB)
 cst_bans_large() {
-    local i n body
+    local i n
     cst_world data traefik --traefik
+    # 2 x 1300 addresses, put into the stand-in in one call each, like `cscli decisions import` would (the import of the API itself costs ~35 ms per address: it has its
+    # own test, with 401 addresses, above). The one question here is what the pages do with a list far above 128 KB.
     for n in 0 1; do
-        body=$(for (( i = 0; i < 1300; i++ )); do printf '91.%d.%d.%d\n' $(( 200 + n )) $(( i / 250 )) $(( i % 250 + 1 )); done | jq -Rs '{format: "values", duration: "6h", reason: "large test", content: .}')
-        cst_call admin POST /crowdsec/decisions/import "$body"
-        cst_j "large/import $(( n + 1 )): 1300 addresses" '.imported' 1300 '.skipped' 0 '.success' true
+        for (( i = 0; i < 1300; i++ )); do printf '91.%d.%d.%d\n' $(( 200 + n )) $(( i / 250 )) $(( i % 250 + 1 )); done \
+            | "$CST/bin/docker" exec -i CrowdSec cscli decisions import -i - --format values --duration 6h --reason "large test" >/dev/null 2>&1 \
+            || check "large: the stand-in takes 1300 bans in one go" yes no
     done
+    rm -rf "$CST/.data/cache/crowdsec"
     cst_q status admin GET /crowdsec/status
     cst_q list admin GET '/crowdsec/decisions?limit=2000'
     cst_q csv admin GET /crowdsec/decisions/export
@@ -5410,6 +5414,8 @@ cst_main() {
     local -a names=()
     echo "CrowdSec page"
     mkdir -p "$CST_ROOT"
+    # the stand-in is a script of 7000 lines and every docker call of every request starts it: from its bytecode that costs a third
+    python3 -c 'import py_compile, sys; py_compile.compile(sys.argv[1], cfile=sys.argv[2], doraise=True)' "$CST_MOCK" "$CST_ROOT/mock.pyc" 2>/dev/null && CST_MOCK_RUN="$CST_ROOT/mock.pyc"
     local -a lanes=("a:status allowlist alerts units" "b:bans" "c:settings" "d:notify" "e:services hub" "f:security" "g:large")
     [[ "${SMOKE_CS_LANES:-}" != 1 ]] || lanes=("all:status bans alerts allowlist services hub settings notify security units large")
     for lane in "${lanes[@]}"; do
