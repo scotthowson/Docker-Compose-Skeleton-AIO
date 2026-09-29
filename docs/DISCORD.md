@@ -170,7 +170,7 @@ Type `/` in the channel. Names autocomplete while you type. Every reply has butt
 | Act (admins) | What happens |
 | --- | --- |
 | `/start` · `/stop` · `/restart <target>` | A stack or a container; stops ask for confirmation |
-| `/update <stack|container|all>` | Pull newer images and recreate what changed |
+| `/update <stack\|container\|all>` | Pull newer images and recreate what changed |
 | `/container <name> [action]` · `/stack <name> [action]` | Info cards with action buttons |
 | `/deploy <template> [stack]` | Dry-run first (ports, variables, conflicts), then a confirm button |
 | `/backup [stack]` · `/backup list:true` | Run a backup and watch it finish · list recent ones |
