@@ -854,20 +854,24 @@ _cs_deleted_count() {
 
 # _cs_unban_value VALUE — remove the active decisions for exactly this address or network. CS_DELETED holds the count. Return 2: not a valid target.
 # cscli's `delete --ip X` also removes a wider network that contains X, which would silently lift bans nobody asked about: the decisions are found by
-# value and removed by id.
+# value and removed by id. `decisions list` shows only the longest of several decisions on one address, so the look-and-delete goes round until none is left.
 CS_DELETED=0
 _cs_unban_value() {
-    local tgt scope val out raw ids id rc=0 n=0
+    local tgt scope val out raw ids id rc=0 n=0 round filter
     tgt=$(_cs_norm_target "$1") || return 2
     scope="${tgt%%$'\t'*}"; val="${tgt#*$'\t'}"
     CS_DELETED=0
-    _cs_run raw decisions list --limit 0 -o json || return 1
-    ids=$(printf '%s\n' "$raw" | jq -r --arg v "${val,,}" --arg s "${scope,,}" '(. // [])[] | .decisions[]? | select((.value | ascii_downcase) == $v and (.scope | ascii_downcase) == $s and ((.duration // "") | startswith("-") | not)) | .id' 2>/dev/null)
-    while IFS= read -r id; do
-        [[ "$id" =~ ^[0-9]+$ ]] || continue
-        _cs_run out decisions delete --id "$id" || { rc=$?; continue; }
-        n=$(( n + $(_cs_deleted_count "$CS_ERR$out") ))
-    done <<< "$ids"
+    if [[ "$scope" == Range ]]; then filter=(--range "$val"); else filter=(--ip "$val"); fi
+    for round in 1 2 3 4 5 6; do
+        _cs_run raw decisions list "${filter[@]}" --limit 0 -o json || { (( round == 1 )) && return 1; break; }
+        ids=$(printf '%s\n' "$raw" | jq -r --arg v "${val,,}" --arg s "${scope,,}" '(. // [])[] | .decisions[]? | select((.value | ascii_downcase) == $v and (.scope | ascii_downcase) == $s and ((.duration // "") | startswith("-") | not)) | .id' 2>/dev/null)
+        [[ -n "$ids" ]] || break
+        while IFS= read -r id; do
+            [[ "$id" =~ ^[0-9]+$ ]] || continue
+            _cs_run out decisions delete --id "$id" || { rc=$?; continue; }
+            n=$(( n + $(_cs_deleted_count "$CS_ERR$out") ))
+        done <<< "$ids"
+    done
     CS_DELETED=$n
     return $rc
 }
