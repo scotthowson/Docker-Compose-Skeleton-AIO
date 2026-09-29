@@ -1,3 +1,5 @@
+<sub>[← Proxmox and the fleet](PROXMOX.md) · [Docs index](README.md) · Next: [API reference →](API.md)</sub>
+
 # Discord × DCS — the complete setup guide
 
 Everything DCS can do with Discord, and every click it takes. Four pieces, each optional:
@@ -168,7 +170,7 @@ Type `/` in the channel. Names autocomplete while you type. Every reply has butt
 | Act (admins) | What happens |
 | --- | --- |
 | `/start` · `/stop` · `/restart <target>` | A stack or a container; stops ask for confirmation |
-| `/update <stack|container|all>` | Pull newer images and recreate what changed |
+| `/update <stack\|container\|all>` | Pull newer images and recreate what changed |
 | `/container <name> [action]` · `/stack <name> [action]` | Info cards with action buttons |
 | `/deploy <template> [stack]` | Dry-run first (ports, variables, conflicts), then a confirm button |
 | `/backup [stack]` · `/backup list:true` | Run a backup and watch it finish · list recent ones |
@@ -193,8 +195,8 @@ The bot's own status line mirrors the server: *Watching 17 containers · all hea
 
 1. [discord.com/developers/applications](https://discord.com/developers/applications) → **New Application** → name it `DCS Manager` (a separate application from the bot keeps the profile text clean, but the bot's application works too).
 2. **General Information**: upload `app-icon.png` as the App Icon, fill **Terms of Service URL** and **Privacy Policy URL** — DCS Manager's live at
-   `https://github.com/scotthowson/Docker-Compose-Skeleton-UI/blob/main/TERMS.md` and
-   `https://github.com/scotthowson/Docker-Compose-Skeleton-UI/blob/main/PRIVACY.md`.
+   `https://github.com/scotthowson/dcs-orchestrator-ui/blob/HEAD/TERMS.md` and
+   `https://github.com/scotthowson/dcs-orchestrator-ui/blob/HEAD/PRIVACY.md`.
 3. **Rich Presence → Art Assets**: upload `presence-dcs.png` as `dcs`, `presence-healthy.png` as `healthy`, `presence-warning.png` as `warning` (the names matter).
 4. Copy the **Application ID**.
 5. DCS Manager (desktop) → Settings → **Discord Rich Presence** → paste the ID → switch it on. Discord must be running on the same computer. In Discord → User Settings → Activity Privacy, "Share your activity status" must be on.

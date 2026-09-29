@@ -1,0 +1,77 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="330" viewBox="0 0 1000 330" role="img" aria-labelledby="ip-title ip-desc">
+  <title id="ip-title">Four ways to install DCS</title>
+  <desc id="ip-desc">A: the hub VM image, new in 4.0: import it with qm create, Docker and DCS are inside, open port 3000. B: an LXC container, tested on Proxmox 9.2: pct create with nesting and keyctl, Docker from get.docker.com, setup.sh as the hub. C: any Docker host, the classic install: git clone, then setup.sh. D: a VM from an installer ISO: create the VM, install Debian or Ubuntu, then path C. All four end at the setup wizard on port 3000.</desc>
+  <style>
+    .sans { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+    .card { fill: #111a2e; stroke: #1f2b45; stroke-width: 1.2; }
+    .letter { font-size: 15px; font-weight: 800; fill: #0b1220; }
+    .h { fill: #e6edf7; font-size: 17px; font-weight: 800; }
+    .badge { font-size: 11px; font-weight: 700; }
+    .line { fill: #8ea0bd; font-size: 12.5px; }
+    .code { fill: #e6edf7; font-size: 12px; }
+    .step { fill: #0b1220; stroke: #1f2b45; }
+  </style>
+
+  <rect x="0.5" y="0.5" width="999" height="329" rx="22" fill="#0b1220" stroke="#1f2b45"/>
+  <text class="sans" x="32" y="44" font-size="20" font-weight="800" fill="#e6edf7">Four ways to install</text>
+  <text class="sans line" x="32" y="67" font-size="13.5">Three on Proxmox, one anywhere Docker runs. All four end at the same place: the setup wizard on port 3000.</text>
+
+  <!-- A -->
+  <g class="sans" transform="translate(32 90)">
+    <rect class="card" width="224" height="200" rx="14"/>
+    <rect x="16" width="192" height="3" rx="1.5" fill="#34d399"/>
+    <circle cx="30" cy="34" r="14" fill="#34d399"/><text class="letter" x="30" y="39.5" text-anchor="middle">A</text>
+    <text class="h" x="54" y="40">Hub VM image</text>
+    <rect x="16" y="58" width="92" height="22" rx="11" fill="#34d399" fill-opacity="0.14" stroke="#34d399" stroke-opacity="0.45"/>
+    <text class="badge" x="62" y="73" text-anchor="middle" fill="#34d399">new in 4.0</text>
+    <rect class="step" x="16" y="94" width="192" height="28" rx="8"/><text class="mono code" x="28" y="112.5">qm create … import-from</text>
+    <text class="line" x="16" y="146">Docker and DCS are inside;</text>
+    <text class="line" x="16" y="164">it starts as a hub on its</text>
+    <text class="line" x="16" y="182">first boot.</text>
+  </g>
+
+  <!-- B -->
+  <g class="sans" transform="translate(272 90)">
+    <rect class="card" width="224" height="200" rx="14"/>
+    <rect x="16" width="192" height="3" rx="1.5" fill="#22d3ee"/>
+    <circle cx="30" cy="34" r="14" fill="#22d3ee"/><text class="letter" x="30" y="39.5" text-anchor="middle">B</text>
+    <text class="h" x="54" y="40">LXC container</text>
+    <rect x="16" y="58" width="150" height="22" rx="11" fill="#22d3ee" fill-opacity="0.12" stroke="#22d3ee" stroke-opacity="0.45"/>
+    <text class="badge" x="91" y="73" text-anchor="middle" fill="#22d3ee">tested on Proxmox 9.2</text>
+    <rect class="step" x="16" y="94" width="192" height="28" rx="8"/><text class="mono code" x="28" y="112.5">pct create … nesting=1</text>
+    <text class="line" x="16" y="146">Docker from get.docker.com,</text>
+    <text class="line" x="16" y="164">then setup.sh as the hub.</text>
+    <text class="line" x="16" y="182">The lightest hub.</text>
+  </g>
+
+  <!-- C -->
+  <g class="sans" transform="translate(512 90)">
+    <rect class="card" width="224" height="200" rx="14"/>
+    <rect x="16" width="192" height="3" rx="1.5" fill="#fbbf24"/>
+    <circle cx="30" cy="34" r="14" fill="#fbbf24"/><text class="letter" x="30" y="39.5" text-anchor="middle">C</text>
+    <text class="h" x="54" y="40">Any Docker host</text>
+    <rect x="16" y="58" width="116" height="22" rx="11" fill="#fbbf24" fill-opacity="0.12" stroke="#fbbf24" stroke-opacity="0.45"/>
+    <text class="badge" x="74" y="73" text-anchor="middle" fill="#fbbf24">the classic way</text>
+    <rect class="step" x="16" y="94" width="192" height="28" rx="8"/><text class="mono code" x="28" y="112.5">git clone; ./setup.sh</text>
+    <text class="line" x="16" y="146">A spare PC, a NAS, a cloud</text>
+    <text class="line" x="16" y="164">VM: any Linux with Docker.</text>
+    <text class="line" x="16" y="182">No Proxmox needed.</text>
+  </g>
+
+  <!-- D -->
+  <g class="sans" transform="translate(752 90)">
+    <rect class="card" width="216" height="200" rx="14"/>
+    <rect x="16" width="184" height="3" rx="1.5" fill="#fb7185"/>
+    <circle cx="30" cy="34" r="14" fill="#fb7185"/><text class="letter" x="30" y="39.5" text-anchor="middle">D</text>
+    <text class="h" x="54" y="40">VM from an ISO</text>
+    <rect x="16" y="58" width="120" height="22" rx="11" fill="#fb7185" fill-opacity="0.12" stroke="#fb7185" stroke-opacity="0.45"/>
+    <text class="badge" x="76" y="73" text-anchor="middle" fill="#fb7185">your own system</text>
+    <rect class="step" x="16" y="94" width="184" height="28" rx="8"/><text class="mono code" x="28" y="112.5">Create VM → install</text>
+    <text class="line" x="16" y="146">Debian or Ubuntu from the</text>
+    <text class="line" x="16" y="164">installer, then path C</text>
+    <text class="line" x="16" y="182">inside the VM.</text>
+  </g>
+
+  <text class="sans line" x="32" y="316" font-size="12">Then: <tspan class="mono" fill="#e6edf7">http://&lt;server&gt;:3000</tspan> → Connect → Admin → Server → Stacks → Review</text>
+</svg>

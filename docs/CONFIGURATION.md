@@ -1,0 +1,263 @@
+<sub>[← Templates](TEMPLATES.md) · [Docs index](README.md) · Next: [Operations →](OPERATIONS.md)</sub>
+
+# Configuration
+
+DCS keeps its settings in plain `KEY=value` files. This page lists the ones that matter, grouped by
+what they do. Every setting has a default, so an empty `.env` works.
+
+- [Where settings live](#where-settings-live)
+- [Server identity](#server-identity)
+- [API and dashboard](#api-and-dashboard)
+- [Accounts and sessions](#accounts-and-sessions)
+- [Stacks and startup](#stacks-and-startup)
+- [Proxy, DNS and domain](#proxy-dns-and-domain)
+- [Notifications](#notifications)
+- [Updates](#updates)
+- [Backups and recovery](#backups-and-recovery)
+- [Power (UPS)](#power-ups)
+- [Proxmox and the fleet](#proxmox-and-the-fleet)
+- [Metrics and logs](#metrics-and-logs)
+- [Secrets DCS looks for](#secrets-dcs-looks-for)
+- [Setup variables](#setup-variables)
+
+## Where settings live
+
+| File | What it holds |
+|---|---|
+| `.env` | Your settings. `setup.sh` copies it from `.env.example` with mode `600`. |
+| `.config/settings.cfg` | The default of every setting. Do not edit it: updates replace it. |
+| `Stacks/<stack>/.env` | Variables for one stack's compose file; templates add theirs here. |
+| `.secrets/` | The encrypted secret store (Secrets page). |
+
+When a setting is set in more than one place, the later one wins: the defaults, then `.env`, then the
+`ENVIRONMENT` profile, then the stack's `.env`, then the environment you start a script with
+(`LOG_LEVEL=DEBUG ./start.sh`).
+
+**How to change them.** *Server Config* in the dashboard covers the common settings, the *Environment*
+page edits `.env` itself, and you can edit the file by hand. Every write through the dashboard or the
+API is checked: only `KEY=value` lines, no command substitution, no loader variables such as
+`LD_PRELOAD`. The API reads `.env` as data and never runs it.
+
+**When they apply.** The API reads `.env` on every request, so most changes count from the next one. The
+API's own address, port, TLS and login policy, and the intervals of its background loops, change when
+the API restarts: `sudo systemctl restart dcs-api`, or `POST /system/restart`.
+
+**Secrets in settings.** Any value can point into the secret store as `${SECRETS_<name>}`, for example
+`DISCORD_WEBHOOK_URL=${SECRETS_DISCORD_WEBHOOK}`. DCS resolves these references itself; a bare
+`docker compose` does not see them, so work with a stack by hand through `./compose.sh <stack> …`.
+
+## Server identity
+
+| Key | Default | Meaning |
+|---|---|---|
+| `SERVER_NAME` | `Docker Server` | The name in the dashboard, in notifications and on the hub's lists |
+| `SERVER_SUBTITLE` | `Docker Compose Skeleton` | The line under the name |
+| `TZ` | `UTC` | Time zone for DCS and every container that takes `${TZ}` |
+| `PUID`, `PGID` | `1000` | The user and group containers run as; setup uses your own IDs |
+| `APP_DATA_DIR` | `./App-Data` | Where app data goes, relative to each stack's folder |
+| `PROXY_DOMAIN` | `example.com` | Your domain: routes are `<app>.<domain>` |
+
+## API and dashboard
+
+| Key | Default | Meaning |
+|---|---|---|
+| `API_ENABLED` | `true` | Start the API with `start.sh`; the dashboard needs it |
+| `API_BIND` | `0.0.0.0` | The address the API listens on; the dashboard container reaches it through the host |
+| `API_PORT` | `9876` | The API's port |
+| `DCS_UI_PORT` | `3000` | The dashboard's host port. Traefik still reaches the container at `http://DCS-UI:3000`. |
+| `API_AUTH_ENABLED` | `true` | Accounts on or off. Off only works on a loopback address… |
+| `API_INSECURE_NO_AUTH` | `false` | …unless you also set this. Do not. |
+| `API_TRUSTED_PROXIES` | `172.16.0.0/12` | Peers allowed to set `X-Forwarded-For`, so rate limits and the audit log see real clients. The default covers Docker's bridges; add Cloudflare's ranges when it fronts you. |
+| `API_IP_WHITELIST` | *(empty: all)* | Comma-separated CIDRs allowed to call the API |
+| `API_CORS_ORIGINS` | *(empty: localhost)* | Other origins a browser may call the API from |
+| `API_TLS_ENABLED` | `false` | Serve HTTPS directly, with `API_TLS_CERT` and `API_TLS_KEY` |
+| `API_BEHIND_TLS_PROXY` | `false` | The API sits behind Traefik or another TLS proxy (adds HSTS) |
+| `API_RATE_LIMIT`, `API_RATE_WINDOW` | `600`, `60` | Requests per client per window, in seconds (`0` turns it off) |
+| `API_MAX_BODY_SIZE` | `1048576` | Largest request body, in bytes |
+| `API_RESPONSE_CACHE` | `true` | Share one answer of the polled read endpoints between all clients |
+| `API_CACHE_MAX_STALE` | `120` | Oldest cached answer, in seconds, that may be served while it refreshes |
+
+## Accounts and sessions
+
+| Key | Default | Meaning |
+|---|---|---|
+| `API_TOKEN_EXPIRY` | `86400` | Session length in seconds (24 h) |
+| `API_SINGLE_SESSION` | `true` | A new login ends the account's older sessions. Service and bot accounts may keep several. |
+| `API_INVITE_EXPIRY` | `604800` | Invite codes expire after this many seconds (7 days) |
+| `API_MAX_LOGIN_ATTEMPTS`, `API_LOCKOUT_DURATION` | `5`, `900` | Failed logins before a lockout, and its length in seconds |
+| `TERMINAL_SESSION_EXPIRY` | `14400` | How long an unlocked web terminal stays open (4 h) |
+
+## Stacks and startup
+
+| Key | Default | Meaning |
+|---|---|---|
+| `DOCKER_STACKS` | all ten | The stacks `start.sh` and `stop.sh` manage, in start order (stop is the reverse) |
+| `CONTINUE_ON_FAILURE` | `true` | Keep starting the other stacks when one fails |
+| `SKIP_HEALTHCHECK_WAIT` | `false` | Start without waiting for health checks |
+| `SERVICE_START_DELAY`, `SERVICE_STOP_DELAY` | `5`, `10` | Seconds between stacks when starting and stopping |
+| `STACK_START_TIMEOUT` | `120` | Longest wait for one stack to start, in seconds |
+| `DOCKER_TIMEOUT` | `300` | Timeout for Docker operations, in seconds |
+| `DOCKER_COMPOSE_VERSION` | `auto` | `auto`, `v2` (the plugin) or `v1` (the old `docker-compose`) |
+| `REMOVE_ORPHANED_CONTAINERS` | `true` | Remove containers a stack no longer defines when it starts |
+| `FORCE_RECREATE` | `false` | Recreate every container on every start |
+| `REMOVE_VOLUMES_ON_STOP` | `false` | Delete named volumes on stop. Destroys data. |
+| `ENABLE_POST_STARTUP_HEALTH_CHECK`, `HEALTH_CHECK_DELAY` | `true`, `10` | Check health after `start.sh`, after this many seconds |
+| `PROXY_RECONCILE` | `false` | Probe Traefik's routes after every `start.sh` (the boot service always does) |
+| `SHOW_BANNERS`, `SHOW_SYSTEM_INFO` | `true`, `false` | Console output of the scripts |
+
+The default order is `core-infrastructure → networking-security → monitoring-management →
+development-tools → media-services → web-applications → storage-backup → communication-collaboration →
+entertainment-personal → miscellaneous-services`. Each stack in a fresh clone holds a small placeholder
+service (an nginx page, `traefik/whoami`, or an idle Alpine) so you can see it start; remove it when you
+deploy real services. On a hub, a stack that runs in a VM is never started on the hub, whatever
+`DOCKER_STACKS` says.
+
+## Proxy, DNS and domain
+
+| Key | Default | Meaning |
+|---|---|---|
+| `TRAEFIK_DOMAIN` | *(empty)* | The domain Traefik's certificates and routes use; falls back to `PROXY_DOMAIN` |
+| `TRAEFIK_ACME_EMAIL` | *(empty)* | The e-mail for Let's Encrypt |
+| `TRAEFIK_TRUSTED_LAN` | `192.168.1.0/24` | Your LAN, for IP allow-lists |
+| `CF_DNS_API_TOKEN` | *(empty)* | Cloudflare token (*Zone → DNS → Edit*) for wildcard certificates and DNS records. Keep it in the secret store: the wizard does. |
+| `DDNS_ENABLED` | `false` | Keep Cloudflare A records on your public address |
+| `DDNS_INTERVAL` | `300` | Seconds between checks |
+| `DDNS_SUBDOMAINS` | `@` | Records to update (`@` is the domain itself, `*` the wildcard) |
+| `DASHBOARD_PUBLIC_URL` | *(empty)* | Where notification links point; defaults to `https://ui.<PROXY_DOMAIN>` |
+| `CROWDSEC_TRUSTED_IPS` | *(empty)* | Addresses CrowdSec must never ban, beside your public address |
+
+**A Traefik on another machine** pulls this server's routes as a feed:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `TRAEFIK_FEED_ENABLED` | `false` | Publish the routes at `/traefik/dynamic?token=…` |
+| `TRAEFIK_FEED_TOKEN` | *(minted when enabled)* | The feed's token; rotate it in Server Config |
+| `TRAEFIK_FEED_TARGET_HOST` | *(the LAN address)* | The address the remote Traefik uses to reach this server |
+| `TRAEFIK_FEED_ENTRYPOINT` | `websecure` | The entrypoint name on the remote side |
+| `TRAEFIK_FEED_MIDDLEWARES` | *(empty)* | Middlewares that exist on the remote side |
+| `TRAEFIK_FEED_TLS`, `TRAEFIK_FEED_CERT_RESOLVER` | `true`, *(empty)* | TLS on the remote routes, and its certificate resolver |
+
+[Proxmox guide → the route feed](PROXMOX.md#4-a-traefik-in-another-vm-or-machine-the-route-feed) explains the setup.
+
+## Notifications
+
+| Key | Default | Meaning |
+|---|---|---|
+| `NTFY_URL`, `NTFY_TOPIC`, `NTFY_TOKEN` | *(empty)*, `dcs`, *(empty)* | Push notifications through an ntfy server; the token when it needs one |
+| `NTFY_PRIORITY` | `default` | ntfy priority |
+| `DISCORD_WEBHOOK_URL` | *(empty)* | A Discord channel webhook, or a `${SECRETS_…}` reference |
+| `DISCORD_WEBHOOK_NAME`, `DISCORD_WEBHOOK_AVATAR` | `DCS Manager`, *(the DCS icon)* | The name and picture the posts carry |
+| `NOTIFY_COOLDOWN_MINUTES` | `60` | How often a container rule repeats the same event while the problem lasts (disk rules wait 6 h, image rules a day) |
+| `CRITICAL_CONTAINERS`, `IMPORTANT_CONTAINERS` | *(empty)* | Containers named in the ntfy start and stop reports |
+
+The rules themselves (which events, which targets) live on the Notifications page.
+[Discord guide](DISCORD.md) covers the webhook, the rules and every event.
+
+## Updates
+
+| Key | Default | Meaning |
+|---|---|---|
+| `UPDATE_CHANNEL` | `stable` | `stable` follows the tagged releases, `main` every commit |
+| `UPDATE_ON_BOOT` | `false` | Pull image updates when the boot service starts the stacks |
+| `UPDATE_AUTO_ROLLBACK` | `true` | Roll an unattended update back when the health score drops |
+| `UPDATE_HEALTH_GRACE` | `120` | Seconds to wait after an unattended update before judging it |
+| `UPDATE_ROLLBACK_DROP` | `15` | Points the health score may drop before the rollback |
+| `AGGRESSIVE_IMAGE_PRUNE` | `false` | After updates, remove every unused image, not only dangling and old ones |
+| `UPDATE_NOTIFICATION` | `true` | Send a summary after an image update run |
+
+## Backups and recovery
+
+| Key | Default | Meaning |
+|---|---|---|
+| `BACKUP_SOURCE_DIR`, `BACKUP_DEST_DIR` | *(empty)* | What the Backup page backs up, and where to |
+| `BACKUP_RETENTION_COUNT` | `6` | Backups kept |
+| `RECOVERY_DEST_DIR` | *(empty)* | Where recovery bundles go: `BACKUP_DEST_DIR/recovery`, then `.data/recovery` |
+| `RECOVERY_REMOTE` | *(empty)* | An off-box copy: an rsync target (`user@nas:/backups/dcs`) or a mounted path |
+| `RECOVERY_RETENTION_COUNT` | `10` | Bundles kept |
+| `RESET_TRASH_KEEP_DAYS` | `7` | Days *Nuke & reinstall* keeps an app's old data in `App-Data/.trash` |
+| `ROLLBACK_ENABLED`, `ROLLBACK_MAX_SNAPSHOTS` | `true`, `10` | Snapshot a stack's files before changes, and how many to keep |
+
+## Power (UPS)
+
+| Key | Default | Meaning |
+|---|---|---|
+| `UPS_ENABLED` | `false` | Watch a UPS |
+| `UPS_SOURCE` | `auto` | NUT or apcupsd |
+| `UPS_NUT_HOST`, `UPS_NUT_PORT`, `UPS_NAME` | `127.0.0.1`, `3493`, `ups` | The NUT server and the UPS name on it (the `nut-upsd` template serves a USB UPS) |
+| `UPS_POLL_INTERVAL` | `15` | Seconds between reads |
+| `UPS_SHUTDOWN_CHARGE`, `UPS_SHUTDOWN_RUNTIME` | `20`, `300` | On battery, below this charge (%) or runtime (s) the stacks stop |
+| `UPS_ON_BATTERY_ACTION` | `stop-stacks` | What happens at the threshold |
+| `UPS_HOST_SHUTDOWN_CMD` | *(empty)* | A command to run after the stacks stopped, such as a sudo rule for `shutdown -h` |
+| `UPS_START_ON_POWER` | `false` | Start the stacks again when mains returns |
+
+## Proxmox and the fleet
+
+| Key | Default | Meaning |
+|---|---|---|
+| `PROXMOX_URL` | *(empty)* | The Proxmox API, `https://<host>:8006` |
+| `PROXMOX_TOKEN_ID` | *(empty)* | `user@realm!name`, for example `dcs@pve!dcs` |
+| `PROXMOX_TOKEN_SECRET` | *(empty)* | The token's secret. The secret store wins over this line. |
+| `PROXMOX_VERIFY_TLS` | `true` | `false` accepts Proxmox's self-signed certificate |
+| `PROXMOX_NODE` | *(empty: all)* | Show only this node |
+| `FLEET_ROLE` | *(set by setup)* | `hub`, `member` or `standalone`, as chosen in `setup.sh` |
+| `FLEET_SELF_URL` | *(detected)* | How other machines reach this API, `http://<address>:9876` |
+| `FLEET_SCAN_PORTS` | `9876` | Ports the hub probes when it scans guests for DCS |
+| `FLEET_IMAGE_URL` | Debian 13 cloud image | The image the hub imports for new VMs |
+| `FLEET_VM_USER` | `dcs` | The user cloud-init makes in the VMs the hub builds |
+
+`.config/fleet-images.json` on the hub (an array of `{id, label, url, file, family}`) replaces the list of
+operating systems the VM settings offer. [Proxmox guide](PROXMOX.md) explains every piece.
+
+## Metrics and logs
+
+| Key | Default | Meaning |
+|---|---|---|
+| `METRICS_ENABLED` | `true` | Record resource samples for the trends |
+| `METRICS_COLLECT_INTERVAL` | `30` | Seconds between samples |
+| `METRICS_RAW_DAYS`, `METRICS_5M_DAYS`, `METRICS_HOURLY_DAYS` | `7`, `90`, `730` | Days kept as raw samples, 5-minute averages and hourly averages |
+| `LOG_LEVEL` | `INFO` | `ERROR`, `WARNING`, `INFO`, `DEBUG` or `VERBOSE` |
+| `COLOR_MODE` | `auto` | Console colours: `auto`, `always`, `never` |
+| `LOG_MAX_SIZE`, `LOG_BACKUP_COUNT`, `LOG_RETENTION_DAYS` | `10M`, `12`, `90` | Log rotation |
+| `ENABLE_STRUCTURED_LOGGING` | `true` | A JSON-lines log beside the plain one |
+| `ENVIRONMENT` | `production` | Profile: `development` and `testing` turn on debug output |
+| `PLUGINS_ENABLED`, `PLUGINS_HOOKS_ENABLED` | `true`, `true` | Plugins and their lifecycle hooks |
+
+## Secrets DCS looks for
+
+Store these on the **Secrets** page (or `POST /secrets/{name}`); they are encrypted at rest and never
+shown again.
+
+| Secret | Used for |
+|---|---|
+| `CF_DNS_API_TOKEN` | Cloudflare DNS: certificates, records, dynamic DNS |
+| `PROXMOX_TOKEN_SECRET` | The Proxmox link |
+| `RECOVERY_PASSPHRASE` | Encrypting recovery bundles |
+| `HOMARR_API_KEY` | Tiles on Homarr's home board (set it with *Server Config → Integrations*) |
+| `FLEET_MEMBER_…` | Written by a hub: the passwords of its accounts on the members |
+
+Back up `.secrets/.master-key` apart from the store itself: without it, the secrets cannot be read.
+
+## Setup variables
+
+`setup.sh` reads these when you run it. They are for scripts, images and the VMs a hub builds;
+`./setup.sh --help` prints them.
+
+| Variable | Meaning |
+|---|---|
+| `DCS_UNATTENDED=true` | No questions. Nothing is installed or changed on the system without being asked. |
+| `DCS_ADMIN_USER`, `DCS_ADMIN_PASSWORD` | Create the first admin and finish the setup without the wizard |
+| `DCS_STACKS` | The stacks to manage, in order |
+| `DCS_MEMBER_NAME` | The server's name (`SERVER_NAME`) |
+| `DCS_TZ`, `DCS_PUID`, `DCS_PGID`, `DCS_PROXY_DOMAIN` | The same settings as in `.env` |
+| `DCS_CF_DNS_API_TOKEN` | Stored in the secret store as `CF_DNS_API_TOKEN` |
+| `DCS_API_PORT`, `DCS_API_BIND` | Where the API listens |
+| `DCS_NO_UI=true` | An API-only install, driven from a hub's dashboard |
+| `DCS_FLEET_ROLE` | `hub`, `member` or `standalone` |
+| `DCS_HUB_URL`, `DCS_JOIN_TOKEN` | Join a hub as a member (a join code from the hub's Proxmox page) |
+| `DCS_PROXMOX_URL`, `DCS_PROXMOX_TOKEN_ID`, `DCS_PROXMOX_TOKEN_SECRET` | Link Proxmox during setup |
+
+`./setup.sh --join <hub-url> <code> [name]` joins an installed DCS to a hub, and `./setup.sh --dry-run`
+shows what setup would do without changing anything.
+
+On hosts with Debian's own `docker.io` 26 and AppArmor 4, setup writes `DCS_UI_APPARMOR=unconfined` into
+`Stacks/core-infrastructure/.env` so the dashboard container can start; Docker CE needs nothing.
