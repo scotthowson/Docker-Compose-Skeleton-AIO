@@ -1152,16 +1152,20 @@ handle_crowdsec_alerts() {
         def facet(f): group_by(f) | map({value: (.[0] | f), count: length}) | sort_by(-.count);
         (. // []) as $all
         | ($q | ascii_downcase) as $ql
-        | [ $all[] | . as $raw | alert_row | . + {kind: ($raw.kind // ""), label: ($raw | alert_label), family: ($raw | alert_family), banned: ((.source.value as $v | $banned | index($v)) != null)}
-            | select(
-                ($scenario == "" or .scenario == $scenario)
-                and ($country == "" or (if $country == "UNKNOWN" then .source.country == "" else .source.country == $country end))
-                and ($ip == "" or .source.value == $ip)
+        # each facet is counted with every filter except its own, so choosing a scenario does not empty the list of scenarios
+        | def ok_scenario: ($scenario == "" or .scenario == $scenario);
+        def ok_country: ($country == "" or (if $country == "UNKNOWN" then .source.country == "" else .source.country == $country end));
+        def ok_rest: ($ip == "" or .source.value == $ip)
                 and ($sim == "any" or (if $sim == "yes" then .simulated else (.simulated | not) end))
-                and ($ql == "" or ((.source.value + " " + .scenario + " " + .label + " " + .source.country + " " + .source.as_name + " " + .message) | ascii_downcase | contains($ql))) ) ] as $f
+                and ($ql == "" or ((.source.value + " " + .scenario + " " + .label + " " + .source.country + " " + .source.as_name + " " + .message) | ascii_downcase | contains($ql)));
+        [ $all[] | . as $raw | alert_row | . + {kind: ($raw.kind // ""), label: ($raw | alert_label), family: ($raw | alert_family), banned: ((.source.value as $v | $banned | index($v)) != null)} ] as $rows
+        | ($rows | map(select(ok_rest and ok_scenario and ok_country))) as $f
         | ($f | sort_by(.id) | reverse) as $ordered
+        | ($rows | map(select(ok_rest and ok_scenario))) as $for_countries
         | { alerts: ($ordered[$offset:($offset + $limit)] | map(del(.meta))), count: ($f | length), total: ($all | length), window: $w, offset: $offset, limit: $limit, as_of: $asof, retention_days: $ret,
-            facets: { scenarios: ($f | facet(.scenario)), countries: ($f | map(select(.source.country != "")) | facet(.source.country)), unknown_country: ($f | map(select(.source.country == "")) | length) } }' <<< "$raw")"
+            facets: { scenarios: ($rows | map(select(ok_rest and ok_country)) | facet(.scenario)),
+                      countries: ($for_countries | map(select(.source.country != "")) | facet(.source.country)),
+                      unknown_country: ($for_countries | map(select(.source.country == "")) | length) } }' <<< "$raw")"
 }
 
 # GET /crowdsec/alerts/{id} — One alert with the requests that raised it (path, status, user agent, target …)
@@ -1541,7 +1545,9 @@ handle_crowdsec_logs() {
           | ($l | capture("^time=\"(?<time>[^\"]+)\" level=(?<level>[a-z]+) msg=\"(?<msg>(?:\\\\.|[^\"\\\\])*)\"(?<rest>.*)$")? // null) as $p
           | if $p == null then {time: "", level: "info", module: "", message: $l}
             else {time: $p.time, level: (if $p.level == "warning" then "warn" elif $p.level == "fatal" or $p.level == "panic" then "error" else $p.level end),
-                  module: (($p.rest | capture("module=(?<m>[A-Za-z0-9_.-]+)")? // {m: ""}) | .m), message: ($p.msg | unq)} end
+                  module: (($p.rest | capture("module=(?<m>[A-Za-z0-9_.-]+)")? // {m: ""}) | .m),
+                  # the fields after msg= (ip=…, duration=…, error="…") stay on the line, without the module the chip already shows
+                  message: (($p.msg | unq) + ($p.rest | gsub("^\\s+|\\s+$"; "") | sub("(^| )module=[A-Za-z0-9_.-]+"; "") | gsub("^\\s+|\\s+$"; "") | if length > 0 then " " + . else "" end))} end
           | select($lapi == 1 or .module != "lapi")
           | select($level == "all" or (if $level == "warn" then (.level == "warn" or .level == "error") else .level == "error" end))
           | select($q == "" or (.message | ascii_downcase | contains($q | ascii_downcase))) ] as $all
@@ -1642,7 +1648,7 @@ _cs_hub_change() {
     _cs_cache_clear
     ev="CROWDSEC_HUB"
     _api_audit_log "${CLIENT_IP:-unknown}" "$ev" "${AUTH_USERNAME:-}" "$verb $kind $name"
-    _api_success "$(jq -nc --arg v "$verb" --arg k "$kind" --arg n "$name" '{success: true, action: $v, type: $k, name: $n, message: ($n + (if $v == "install" then " installed" else " removed") + " and CrowdSec reloaded")}')"
+    _api_success "$(jq -nc --arg v "$verb" --arg k "$kind" --arg n "$name" '{success: true, action: $v, type: $k, name: $n, message: ($n + (if $v == "install" then " installed" else " removed" end) + " and CrowdSec reloaded")}')"
 }
 # POST /crowdsec/hub/install — Install a collection, scenario or parser from the hub: {type: collections|scenarios|parsers, name}; CrowdSec reloads afterwards
 handle_crowdsec_hub_install() { _cs_hub_change install "$1"; }
