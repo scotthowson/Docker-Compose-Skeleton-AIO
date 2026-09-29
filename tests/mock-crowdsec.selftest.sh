@@ -183,6 +183,69 @@ like "remove disables the members" "$(cs collections remove crowdsecurity/nginx)
 eq "removed: gone from the list" "$(cs collections list -o json | jq -r '[.collections[].name] | index("crowdsecurity/nginx")')" "null"
 like "hub update" "$(cs hub update)" "Downloading /etc/crowdsec/hub/.index.json"
 
+echo "== hub tree, inspect, human tables"
+init empty
+tree="$(cs hub list 2>/dev/null)"
+like "hub list: the Details column" "$tree" 'Type +Name +📦 Status +Version +Details'
+like "hub list: a sub-collection hangs off its parent" "$tree" $'crowdsecurity/linux +✔️  up-to-date  0.4 +3 parser\\(s\\) / 2 collection\\(s\\) *\n collections  ├─ crowdsecurity/sshd'
+like "hub list: the last child gets the corner" "$tree" '└─ crowdsecurity/whitelist-good-actors'
+like "hub list: nested levels are indented" "$tree" $'└─ crowdsecurity/base-http-scenarios[^\n]*\n collections     └─ crowdsecurity/http-cve'
+like "hub list: items no collection accounts for come after a rule" "$tree" $'-\n parsers +crowdsecurity/cri-logs'
+eq "hub list -a: every item of the index in one table" "$([[ $(cs hub list -a 2>/dev/null | wc -l) -gt 1300 ]] && echo yes)" "yes"
+like "hub list -a: not-installed items" "$(cs hub list -a 2>/dev/null | sed -n 5p)" '🚫  not-installed'
+insp="$(cs collections inspect crowdsecurity/linux)"
+like "inspect: YAML with the dependencies" "$insp" $'version: "0.4"\ndependencies:\n  parsers:\n    - crowdsecurity/syslog-logs'
+like "inspect: a description with a colon is quoted" "$insp" "description: 'core linux support : syslog\\+geoip\\+ssh'"
+like "inspect: installed items end with the metrics label" "$insp" $'local: false\n\nCurrent metrics: $'
+nolike "inspect -o raw: no metrics label" "$(cs collections inspect crowdsecurity/linux -o raw)" 'Current metrics'
+like "inspect: an item nobody lists has no belongs_to" "$(cs parsers inspect crowdsecurity/whitelists)" $'tainted: false\ninstalled: true'
+eq "inspect -o json: one document per name" "$(cs parsers inspect crowdsecurity/whitelists crowdsecurity/syslog-logs -o json | jq -s 'length')" "2"
+like "inspect: an unknown name fails after the known ones were printed" "$(cs parsers inspect crowdsecurity/whitelists crowdsecurity/nope 2>&1)" $'installed: true\nlocal: false\n\nCurrent metrics: \nError: cscli parsers inspect: can\'t find \'crowdsecurity/nope\' in parsers'
+inst="$(cs collections install crowdsecurity/exchange 2>&1 | grep -E '^(downloading|enabling)')"
+eq "install: contents first, in the order the collection lists them" "$(printf '%s\n' "$inst" | sed -n '1p;4p;11p')" $'downloading parsers:crowdsecurity/exchange-smtp-logs\ndownloading scenarios:crowdsecurity/exchange-bf\ndownloading collections:crowdsecurity/exchange'
+init empty
+cs collections install crowdsecurity/freebsd >/dev/null 2>&1
+cs collections remove crowdsecurity/linux >/dev/null 2>&1
+like "remove: items another installed collection lists directly stay" "$(cs parsers list -o raw)" 'crowdsecurity/syslog-logs,enabled'
+cs collections remove crowdsecurity/freebsd >/dev/null 2>&1
+nolike "remove: the last collection to list them takes them along" "$(cs parsers list -o raw)" 'crowdsecurity/syslog-logs'
+init empty
+like "machines inspect: the boxed table" "$(cs machines inspect localhost)" $'\\| Machine: localhost +\\|\n\\+-+\\+-+\\+\n\\| IP Address +\\| 127.0.0.1'
+like "machines inspect: unknown machine" "$(cs machines inspect nobody 2>&1)" "unable to read machine data 'nobody': user 'nobody': user doesn't exist"
+eq "machines list -o json: no last_push before the machine pushed an alert" "$(cs machines list -o json | jq '.[0] | has("last_push")')" "false"
+cs decisions add -i 192.0.2.7 >/dev/null 2>&1
+eq "a push sets last_push" "$(cs machines list -o json | jq '.[0] | has("last_push")')" "true"
+cs allowlists create dcs -d "DCS test allowlist" >/dev/null 2>&1; cs allowlists add dcs 203.0.113.9 -d office -e 30d >/dev/null 2>&1
+eq "allowlists inspect -o raw: one CSV row per item" "$(cs allowlists inspect dcs -o raw | cut -d, -f1-5 | sed 's/,20[0-9-]*T.*//')" $'name,description,value,comment,expiration\ndcs,DCS test allowlist,203.0.113.9,office'
+like "bouncers inspect: raw is refused" "$(cs bouncers add b1 -o raw >/dev/null; cs bouncers inspect b1 -o raw 2>&1)" "output format 'raw' not supported for this command"
+eq "bouncers inspect: no newline after the frame" "$(cs bouncers inspect b1 | tail -c 1 | od -An -c | tr -d ' ')" "-"
+like "config show" "$(cs config show)" $'Local API Server:\n  - Listen URL +: 0.0.0.0:8080'
+
+init data
+mock --mock-set hub_cascade=1
+eq "hub_cascade=1: a collection is flagged when a member is behind" "$(cs collections list -o json | jq -r '[.collections[] | select(.status | contains("update"))] | map(.name) | join(",")')" "crowdsecurity/linux,crowdsecurity/sshd"
+init empty
+like "remove --purge: the purge block and the purging lines" "$(cs collections remove crowdsecurity/traefik --purge 2>&1)" $'🗑 purge \\(delete source\\)\n collections: crowdsecurity/base-http-scenarios, crowdsecurity/http-cve, crowdsecurity/traefik'
+eq "remove --purge: gone from the hub directory too" "$(cs collections list -a -o json | jq -r '.collections[] | select(.name == "crowdsecurity/traefik") | .local_version')" ""
+eq "remove without a name" "$(cs collections remove 2>&1)" "Error: cscli collections remove: specify at least one collection to remove or '--all'"
+like "a collection another collection lists needs --force" "$(cs collections remove crowdsecurity/sshd 2>&1)" 'crowdsecurity/sshd belongs to collections: \[crowdsecurity/linux\]'
+
+echo "== metrics tables"
+init data
+tables="$(cs metrics)"
+like "metrics: a titled table per section" "$tables" $'\\| Acquisition Metrics +\\|\n\\+-+\\+-+\\+'
+like "metrics: big numbers get a unit, zeros a dash" "$tables" '\| file:/var/log/traefik/access.log +\| 12.84k +\| 12.51k +\| 334 +\| 9.12k +\| - +\|'
+like "metrics --no-unit prints the plain numbers" "$(cs metrics --no-unit)" '\| 12841 +\| 12507 +\| 334 +\| 9120 '
+like "metrics: the Local API tables come from the same counters" "$tables" '\| /v1/decisions/stream +\| GET +\| 1380 +\|'
+eq "metrics show engine: five sections" "$(cs metrics show engine | grep -c -E '^\| (Acquisition|Parser|Scenario|Whitelist) Metrics|^\| Parser Stash Metric')" "5"
+like "metrics show stash: an explicit request shows the empty table (title wrapped)" "$(cs metrics show stash)" $'\\| Parser Stash Metric \\|\n\\| s +\\|'
+eq "metrics show bouncers: nothing to show" "$(cs metrics show bouncers)" "No bouncer metrics found."
+eq "metrics show: unknown type" "$(cs metrics show nope 2>&1)" "Error: cscli metrics show: unknown metrics type: nope"
+eq "metrics -o raw is refused" "$(cs metrics -o raw 2>&1)" "Error: cscli metrics: output format 'raw' not supported for this command"
+eq "metrics list -o json: the 16 types" "$(cs metrics list -o json | jq length)" "16"
+like "metrics list: wrapped descriptions" "$(cs metrics list)" $'\\| acquisition +\\| Acquisition Metrics +\\| Measures the lines read, parsed, and unparsed per +\\|\n\\| +\\| +\\| datasource. Zero read lines indicate a misconfigured or +\\|'
+init empty
+
 echo "== files: docker cp / exec, crowdsec -t"
 printf 'hello\n' > "$T/hello.txt"
 docker cp "$T/hello.txt" CrowdSec:/tmp/hello.txt
