@@ -1167,3 +1167,240 @@ handle_crowdsec_notifications_apply() {
     _audit_log "CROWDSEC_NOTIFICATIONS" "Discord alerts configured on $CS_NAME for $domain${tested:+ (test message sent)}"
     _api_success "$(jq -nc --arg c "$CS_NAME" --arg d "$domain" --argjson t "${tested:-false}" --arg o "$test_out" '{success: true, container: $c, domain: $d, restarted: true, tested: $t, test_output: $o}')"
 }
+
+# =============================================================================
+# The Traefik bouncer plugin's own settings (the middleware file)
+#
+# DCS wrote crowdsec-bouncer.yml when it registered the bouncer. The page edits a safe subset of the plugin's options in place:
+# the mode, how often it asks, how long it remembers, the timeout, the status a banned visitor sees, the log level and the two lists of
+# addresses (visitors that are never checked; proxies whose forwarded address is believed). The file keeps the key and everything else it
+# had; a marker line names what the page saved, so registering the bouncer again writes the same settings into the fresh file. The write
+# is atomic, the old file is kept, and Traefik's file provider picks the change up by itself (.reload is touched as the route writers do).
+# =============================================================================
+
+CS_PLUGIN_STATE="$CROWDSEC_STATE_DIR/plugin.json"
+CS_PLUGIN_LOCK="$CROWDSEC_STATE_DIR/plugin.lock"
+_CS_PLUGIN_DEFAULTS='{"mode":"live","update_interval":60,"default_decision_seconds":60,"http_timeout":10,"remediation_status_code":403,"log_level":"INFO","trust_home":true,"client_trusted_ips":[],"forwarded_headers_trusted_ips":[]}'
+# the proxies in front of Traefik that the shipped middleware believes (Cloudflare's published ranges)
+_CS_PLUGIN_CDN='["173.245.48.0/20","103.21.244.0/22","103.22.200.0/22","103.31.4.0/22","141.101.64.0/18","108.162.192.0/18","190.93.240.0/20","188.114.96.0/20","197.234.240.0/22","198.41.128.0/17","162.158.0.0/15","104.16.0.0/13","104.24.0.0/14","172.64.0.0/13","131.0.72.0/22","2400:cb00::/32","2606:4700::/32","2803:f800::/32","2405:b500::/32","2405:8100::/32","2a06:98c0::/29","2c0f:f248::/32"]'
+_CS_PLUGIN_LIMITS='{"update_interval":[10,3600],"default_decision_seconds":[10,3600],"http_timeout":[1,60],"remediation_status_code":[400,599],"list_max":64,"forwarded_max":128}'
+
+# the LAN Traefik trusts (TRAEFIK_TRUSTED_LAN of the proxy's stack), or the default the template uses
+_cs_plugin_lan() {
+    local lan="" ef
+    for ef in "$COMPOSE_DIR"/*/.env "$BASE_DIR/.env"; do
+        [[ -f "$ef" ]] || continue
+        lan=$(grep -m1 '^TRAEFIK_TRUSTED_LAN=' "$ef" 2>/dev/null | cut -d= -f2- | tr -d '"' | tr -d "'"); [[ -n "$lan" ]] && break
+    done
+    [[ -n "$lan" ]] || lan="192.168.1.0/24"
+    printf '%s' "$lan"
+}
+_cs_plugin_home() {
+    local ip=""
+    [[ -f "$CROWDSEC_SYNC_STATE" ]] && ip=$(jq -r '.public_ip // ""' "$CROWDSEC_SYNC_STATE" 2>/dev/null)
+    _crowdsec_valid_ip "$ip" && printf '%s' "$ip"
+    return 0
+}
+
+# _cs_plugin_list_ok JSON_ARRAY MAX — every entry an address or a network, none so wide that nothing would be checked (or believed). The normalised array is CS_LIST_OUT; return 1 with CS_CFG_ERR set.
+CS_LIST_OUT="[]"
+_cs_plugin_list_ok() {
+    local in="$1" max="$2" v t bits out=() n=0
+    [[ "$(jq -r 'type' <<< "$in" 2>/dev/null)" == array ]] || { CS_CFG_ERR="must be a list of addresses or networks"; return 1; }
+    while IFS= read -r v; do
+        [[ -n "$v" ]] || continue
+        n=$(( n + 1 )); (( n <= max )) || { CS_CFG_ERR="at most $max entries"; return 1; }
+        t=$(_cs_norm_target "$v") || { CS_CFG_ERR="not an IP address or network: ${v:0:60}"; return 1; }
+        v="${t#*$'\t'}"
+        if [[ "$v" == */* ]]; then
+            bits="${v#*/}"
+            if { _cs_is_v4 "${v%%/*}" && (( bits < 8 )); } || { ! _cs_is_v4 "${v%%/*}" && (( bits < 16 )); }; then CS_CFG_ERR="$v is far too wide a network"; return 1; fi
+        fi
+        out+=("$v")
+    done < <(jq -r '.[] | tostring' <<< "$in")
+    if (( ${#out[@]} )); then CS_LIST_OUT=$(printf '%s\n' "${out[@]}" | awk 'NF && !seen[$0]++' | jq -Rsc 'split("\n") | map(select(length > 0))'); else CS_LIST_OUT="[]"; fi
+}
+
+# _cs_plugin_validate SETTINGS_JSON — the merged, normalised settings in CS_PLUGIN_OUT; returns 1 with CS_CFG_ERR set
+CS_PLUGIN_OUT="{}"
+_cs_plugin_validate() {
+    local s="$1" k v lo hi
+    jq -e 'type == "object"' >/dev/null 2>&1 <<< "$s" || { CS_CFG_ERR="settings must be an object"; return 1; }
+    for k in $(jq -r 'keys[]' <<< "$s"); do
+        case "$k" in mode|update_interval|default_decision_seconds|http_timeout|remediation_status_code|log_level|trust_home|client_trusted_ips|forwarded_headers_trusted_ips) ;;
+            *) CS_CFG_ERR="unknown setting: ${k:0:40}"; return 1 ;; esac
+    done
+    v=$(jq -r '.mode | tostring' <<< "$s"); [[ "$v" == live || "$v" == stream ]] || { CS_CFG_ERR="mode must be live or stream"; return 1; }
+    v=$(jq -r '.log_level | tostring' <<< "$s"); [[ "$v" =~ ^(DEBUG|INFO|WARN|ERROR)$ ]] || { CS_CFG_ERR="log_level must be DEBUG, INFO, WARN or ERROR"; return 1; }
+    jq -e '.trust_home | type == "boolean"' >/dev/null 2>&1 <<< "$s" || { CS_CFG_ERR="trust_home must be true or false"; return 1; }
+    for k in update_interval default_decision_seconds http_timeout remediation_status_code; do
+        v=$(jq -r --arg k "$k" '.[$k] | if type == "number" and . == floor then tostring else "x" end' <<< "$s")
+        [[ "$v" =~ ^[0-9]{1,5}$ ]] || { CS_CFG_ERR="$k must be a whole number"; return 1; }
+        lo=$(jq -r --arg k "$k" '.[$k][0]' <<< "$_CS_PLUGIN_LIMITS"); hi=$(jq -r --arg k "$k" '.[$k][1]' <<< "$_CS_PLUGIN_LIMITS")
+        (( v >= lo && v <= hi )) || { CS_CFG_ERR="$k must be between $lo and $hi"; return 1; }
+    done
+    _cs_plugin_list_ok "$(jq -c '.client_trusted_ips' <<< "$s")" 64 || { CS_CFG_ERR="client_trusted_ips: $CS_CFG_ERR"; return 1; }
+    s=$(jq -c --argjson l "$CS_LIST_OUT" '.client_trusted_ips = $l' <<< "$s")
+    _cs_plugin_list_ok "$(jq -c '.forwarded_headers_trusted_ips' <<< "$s")" 128 || { CS_CFG_ERR="forwarded_headers_trusted_ips: $CS_CFG_ERR"; return 1; }
+    CS_PLUGIN_OUT=$(jq -c --argjson l "$CS_LIST_OUT" '.forwarded_headers_trusted_ips = $l' <<< "$s")
+}
+
+# _cs_plugin_render FILE SETTINGS_JSON HOME — the middleware file's new text (stdout): the managed keys are written afresh right under the plugin's name, everything else stays.
+# SETTINGS holds the lists as the person keeps them; the LAN and, when trust_home is on, the home address are added to the file's client list here.
+_cs_plugin_render() {
+    local f="$1" s="$2" home="$3" lan cl keys marker
+    lan=$(_cs_plugin_lan)
+    cl=$(jq -c --arg home "$home" --arg lan "$lan" '(.client_trusted_ips + [$lan] + (if .trust_home and $home != "" then [$home] else [] end)) | map(select(. != "")) | unique' <<< "$s")
+    s=$(jq -c --arg lan "$lan" '.forwarded_headers_trusted_ips = ((.forwarded_headers_trusted_ips + [$lan]) | map(select(. != "")) | unique)' <<< "$s")
+    keys=$(jq -r --argjson cl "$cl" '
+        "          crowdsecMode: \(.mode)",
+        "          updateIntervalSeconds: \(.update_interval)",
+        "          defaultDecisionSeconds: \(.default_decision_seconds)",
+        "          httpTimeoutSeconds: \(.http_timeout)",
+        "          remediationStatusCode: \(.remediation_status_code)",
+        "          logLevel: \(.log_level)",
+        "          forwardedHeadersTrustedIPs:",
+        (.forwarded_headers_trusted_ips[] | "            - " + .),
+        "          clientTrustedIPs:",
+        ($cl[] | "            - " + .)' <<< "$s")
+    marker="# dcs-plugin: $(jq -c '{v: 1, settings: .}' <<< "$s")"
+    NEWKEYS="$keys" MARKER="$marker" awk '
+        BEGIN { skip = 0; placed = 0; inplug = 0; hdr = 0 }
+        /^#[ \t]*dcs-plugin:[ \t]/ { next }
+        !hdr { print ENVIRON["MARKER"]; hdr = 1 }
+        /^[ \t]+plugin:[ \t]*$/ { inplug = 1; print; next }
+        inplug && !placed && /^[ \t]{8}[A-Za-z0-9_.-]+:[ \t]*$/ { print; print ENVIRON["NEWKEYS"]; placed = 1; next }
+        placed && /^[ \t]{10}(crowdsecMode|updateIntervalSeconds|defaultDecisionSeconds|httpTimeoutSeconds|remediationStatusCode|logLevel):/ { skip = 0; next }
+        placed && /^[ \t]{10}(forwardedHeadersTrustedIPs|clientTrustedIPs):[ \t]*$/ { skip = 1; next }
+        skip && /^[ \t]{12}-/ { next }
+        { skip = 0; print }' "$f"
+}
+
+# the settings the page shows: what the file says, with the person's own lists (the LAN and the home address are shown apart, not in them)
+_cs_plugin_current() {
+    local f="$1" file saved lan home cur
+    file=$(_cs_plugin_read_file "$f"); saved=$(_cs_json_file "$CS_PLUGIN_STATE" '{}'); lan=$(_cs_plugin_lan); home=$(_cs_plugin_home)
+    jq -nc --argjson file "$file" --argjson saved "$saved" --argjson d "$_CS_PLUGIN_DEFAULTS" --argjson cdn "$_CS_PLUGIN_CDN" --arg lan "$lan" --arg home "$home" '
+        ($file.client_trusted_ips // []) as $fc
+        | { mode: ($file.mode // $d.mode), update_interval: ($file.update_interval // $d.update_interval), default_decision_seconds: ($file.default_decision_seconds // $d.default_decision_seconds),
+            http_timeout: ($file.http_timeout // $d.http_timeout), remediation_status_code: ($file.remediation_status_code // $d.remediation_status_code), log_level: ($file.log_level // $d.log_level),
+            trust_home: (if ($saved.settings.trust_home // null) != null then $saved.settings.trust_home else ($home != "" and ($fc | index($home)) != null) end),
+            client_trusted_ips: ($fc | map(select(. != $lan and . != $home))),
+            forwarded_headers_trusted_ips: (($file.forwarded_headers_trusted_ips // $cdn) | map(select(. != $lan))) }'
+}
+
+# the plugin's settings, the defaults and the limits as one JSON object
+_cs_plugin_view() {
+    local enf f cur lan home
+    enf=$(_cs_enforcement_json); f=$(jq -r '.middleware_file' <<< "$enf")
+    lan=$(_cs_plugin_lan); home=$(_cs_plugin_home)
+    if [[ -z "$f" ]]; then
+        jq -nc --argjson enf "$enf" '{available: false, reason: (if $enf.routes_dir == "" then "Traefik was not found on this server, so there is no bouncer plugin to set up." else "The Traefik bouncer is not registered yet: register it first." end), plugin: $enf.plugin}'
+        return
+    fi
+    cur=$(_cs_plugin_current "$f")
+    jq -nc --argjson enf "$enf" --argjson cur "$cur" --argjson d "$_CS_PLUGIN_DEFAULTS" --argjson cdn "$_CS_PLUGIN_CDN" --argjson lim "$_CS_PLUGIN_LIMITS" --arg lan "$lan" --arg home "$home" --argjson backups "$(_cs_plugin_backups_json)" '
+        { available: true, file: $enf.middleware_file, managed: $enf.plugin.managed, plugin: $enf.plugin, settings: $cur,
+          defaults: ($d | .forwarded_headers_trusted_ips = $cdn), limits: $lim, lan: $lan, home: $home, backups: $backups,
+          help: {
+            mode: "live: Traefik asks CrowdSec about a visitor the first time it sees one and remembers the answer for a short while. stream: Traefik downloads the whole ban list every few seconds and decides on its own. Live is simplest; stream saves a round trip per new visitor and keeps working for a while if CrowdSec is down.",
+            update_interval: "Stream mode only: how often Traefik downloads the ban list. A new ban reaches the door this many seconds later.",
+            default_decision_seconds: "Live mode only: how long Traefik remembers an answer about a visitor. A shorter time means a lifted ban is noticed sooner, at the price of more questions.",
+            http_timeout: "How long Traefik waits for CrowdSec before it gives up on one question.",
+            remediation_status_code: "The HTTP status a banned visitor gets. 403 (forbidden) is the usual one; 429 tells well-behaved clients to slow down.",
+            log_level: "How much the plugin writes in Traefik'"'"'s log.",
+            client_trusted_ips: "Visitors that are never checked at all: your LAN and VPN. The LAN of your Traefik and, when switched on, your home address are always in.",
+            forwarded_headers_trusted_ips: "Proxies in front of Traefik (a CDN such as Cloudflare) whose \"forwarded for\" address is believed. Behind none, leave the CDN ranges: a visitor cannot fake them."
+          } }'
+}
+
+# GET /crowdsec/plugin — The Traefik bouncer plugin's settings (mode, how often it asks, how long it remembers, timeout, the status a banned visitor sees, trusted networks), the defaults and the limits
+handle_crowdsec_plugin() { _api_success "$(_cs_plugin_view)"; }
+
+# the kept copies of the middleware file (they hold the bouncer key: private)
+_cs_plugin_backups_json() {
+    local f n
+    [[ -d "$CS_BACKUP_DIR" ]] || { printf '[]'; return; }
+    for f in "$CS_BACKUP_DIR"/plugin-*.yml; do
+        [[ -f "$f" ]] || continue
+        n="${f##*/}"
+        jq -nc --arg n "$n" --arg t "${n#plugin-}" --argjson s "$(stat -c %s "$f" 2>/dev/null || echo 0)" '{name: $n, created_at: ($t | sub("\\.yml$"; "") | sub("^(?<d>[0-9]{4})(?<m>[0-9]{2})(?<dd>[0-9]{2})T(?<h>[0-9]{2})(?<mi>[0-9]{2})(?<s>[0-9]{2})Z$"; "\(.d)-\(.m)-\(.dd)T\(.h):\(.mi):\(.s)Z")), size: $s}'
+    done | jq -sc 'sort_by(.created_at) | reverse | .[0:10]'
+}
+
+# _cs_plugin_write FILE SETTINGS_JSON — render, write atomically (Traefik'"'"'s file provider watches the directory: the temporary name is not a config), keep the old file, verify by reading back; touches .reload
+# Return 0 changed, 4 unchanged, 1 failed (CS_CFG_ERR)
+_cs_plugin_write() {
+    local f="$1" s="$2" home new tmp bak ts dir
+    home=$(_cs_plugin_home)
+    new=$(_cs_plugin_render "$f" "$s" "$home") || { CS_CFG_ERR="could not build the new middleware file"; return 1; }
+    [[ "$new" == *"crowdsecLapiKey:"* && "$new" == *"plugin:"* ]] || { CS_CFG_ERR="the middleware file does not look like the bouncer's; nothing was changed"; return 1; }
+    if [[ "$new"$'\n' == "$(cat "$f")"$'\n' ]]; then return 4; fi
+    ts=$(date -u +%Y%m%dT%H%M%SZ); dir="${f%/*}"
+    mkdir -p "$CS_BACKUP_DIR" 2>/dev/null; chmod 700 "$CS_BACKUP_DIR" 2>/dev/null
+    bak="$CS_BACKUP_DIR/plugin-$ts.yml"
+    ( umask 077; cp -p "$f" "$bak" ) 2>/dev/null || { CS_CFG_ERR="could not keep a copy of the current file"; return 1; }
+    tmp="$f.dcs-new"
+    ( umask 077; printf '%s\n' "$new" > "$tmp" ) || { CS_CFG_ERR="could not write the new file"; return 1; }
+    chmod 600 "$tmp" 2>/dev/null
+    mv -f "$tmp" "$f" || { rm -f "$tmp"; CS_CFG_ERR="could not replace the middleware file"; return 1; }
+    # read back: what the file says now is what was asked
+    if [[ "$(_cs_plugin_read_file "$f" | jq -c '{mode, update_interval, default_decision_seconds, http_timeout, remediation_status_code, log_level}')" != "$(jq -c '{mode, update_interval, default_decision_seconds, http_timeout, remediation_status_code, log_level}' <<< "$s")" ]]; then
+        cp -p "$bak" "$f" 2>/dev/null; CS_CFG_ERR="the file did not read back as written; the previous file was put back"; return 1
+    fi
+    touch "$dir/.reload" 2>/dev/null; touch "${dir%/*}/.reload" 2>/dev/null || true
+    ls -1t "$CS_BACKUP_DIR"/plugin-*.yml 2>/dev/null | tail -n +11 | while IFS= read -r old; do rm -f "$old"; done
+    CS_PLUGIN_BACKUP="plugin-$ts.yml"
+    return 0
+}
+
+# PUT /crowdsec/plugin — Change the plugin's settings: {settings: {mode, update_interval, default_decision_seconds, http_timeout, remediation_status_code, log_level, trust_home, client_trusted_ips, forwarded_headers_trusted_ips}} (any part); written to Traefik's middleware file atomically, the old one is kept, Traefik reloads by itself
+handle_crowdsec_plugin_set() {
+    _api_check_admin || { _api_error 403 "Admin access required"; return; }
+    local body="$1" enf f cur merged rc msg
+    [[ "$body" == \{* ]] && jq -e 'type == "object"' >/dev/null 2>&1 <<< "$body" || { _api_error 400 "Send a JSON body: {\"settings\": {\"mode\": \"stream\"}}"; return; }
+    enf=$(_cs_enforcement_json); f=$(jq -r '.middleware_file' <<< "$enf")
+    [[ -n "$f" ]] || { _api_error 409 "The Traefik bouncer is not registered yet: register it first, then its settings can be changed."; return; }
+    cur=$(_cs_plugin_current "$f")
+    merged=$(jq -c --argjson c "$cur" '$c + (.settings // {})' <<< "$body")
+    _cs_plugin_validate "$merged" || { _api_response 400 "$(jq -nc --arg m "$CS_CFG_ERR" '{error: true, code: 400, reason: "invalid", message: $m}')"; return; }
+    merged="$CS_PLUGIN_OUT"
+    mkdir -p "$CROWDSEC_STATE_DIR" 2>/dev/null
+    exec 8> "$CS_PLUGIN_LOCK" 2>/dev/null
+    flock -w 8 8 || { _api_error 409 "Another change to the bouncer settings is running. Try again in a moment."; return; }
+    _cs_plugin_write "$f" "$merged"; rc=$?
+    flock -u 8 2>/dev/null; exec 8>&- 2>/dev/null
+    if (( rc == 1 )); then _api_response 500 "$(jq -nc --arg m "$CS_CFG_ERR" '{error: true, code: 500, reason: "write_failed", message: $m}')"; return; fi
+    if (( rc == 0 )); then
+        printf '%s' "$(jq -nc --argjson s "$merged" '{v: 1, settings: $s}')" | _cs_json_save "$CS_PLUGIN_STATE"
+        _api_audit_log "${CLIENT_IP:-unknown}" "CROWDSEC_PLUGIN" "${AUTH_USERNAME:-}" "$(jq -c '{mode, update_interval, default_decision_seconds, http_timeout, remediation_status_code, log_level, trust_home}' <<< "$merged")"
+        msg="Saved. Traefik reloads the middleware by itself within a few seconds."
+    else
+        msg="Nothing changed."
+    fi
+    _cs_cache_clear
+    _api_success "$(_cs_plugin_view | jq -c --argjson ch "$([[ $rc == 0 ]] && echo true || echo false)" --arg m "$msg" --arg b "${CS_PLUGIN_BACKUP:-}" '. + {success: true, applied: {changed: $ch, message: $m, backup: (if $b == "" then null else $b end)}}')"
+}
+
+# _cs_plugin_apply_saved FILE — registering the bouncer wrote a fresh middleware file from the template: put the settings the page saved back into it (the key stays the new one)
+_cs_plugin_apply_saved() {
+    local f="$1" saved s new home
+    [[ -s "$CS_PLUGIN_STATE" && -f "$f" ]] || return 0
+    saved=$(_cs_json_file "$CS_PLUGIN_STATE" '{}'); s=$(jq -c '.settings // empty' <<< "$saved"); [[ -n "$s" ]] || return 0
+    _cs_plugin_validate "$(jq -c --argjson d "$_CS_PLUGIN_DEFAULTS" '$d + .' <<< "$s")" || return 0
+    s="$CS_PLUGIN_OUT"
+    home=$(_cs_plugin_home)
+    new=$(_cs_plugin_render "$f" "$s" "$home") || return 0
+    [[ "$new" == *"crowdsecLapiKey:"* ]] || return 0
+    ( umask 077; printf '%s\n' "$new" > "$f.dcs-new" ) && chmod 600 "$f.dcs-new" && mv -f "$f.dcs-new" "$f"
+}
+
+# _cs_plugin_sync_home — the home address changed: the client list of the plugin follows it (when the page manages the settings and trust_home is on)
+_cs_plugin_sync_home() {
+    local enf f cur
+    [[ -s "$CS_PLUGIN_STATE" ]] || return 0
+    [[ "$(jq -r '.settings.trust_home // false' "$CS_PLUGIN_STATE" 2>/dev/null)" == true ]] || return 0
+    enf=$(_cs_enforcement_json); f=$(jq -r '.middleware_file' <<< "$enf"); [[ -n "$f" ]] || return 0
+    cur=$(_cs_json_file "$CS_PLUGIN_STATE" '{}'); cur=$(jq -c --argjson d "$_CS_PLUGIN_DEFAULTS" '$d + .settings' <<< "$cur")
+    _cs_plugin_write "$f" "$cur" >/dev/null 2>&1 || true
+}

@@ -467,9 +467,62 @@ def alert_row:
 # Traefik side of the bouncer: the middleware file and the chain
 # =============================================================================
 
-# JSON: {routes_dir, middleware_file, in_chain} — what DCS wrote when it registered the bouncer
+# The bouncer plugin as Traefik's static config declares it: "name<TAB>version" (nothing when it is not declared there)
+_CS_PLUGIN_MODULE="github.com/maxlerebourg/crowdsec-bouncer-traefik-plugin"
+_cs_plugin_declared() {
+    local line ad cfg
+    line=$(_traefik_stack_appdata 2>/dev/null) || return 0
+    ad="${line#*$'\t'}"; cfg="$ad/Traefik/traefik.yml"; [[ -f "$cfg" ]] || return 0
+    awk -v mod="$_CS_PLUGIN_MODULE" '
+        function indent(l) { match(l, /^[ \t]*/); return RLENGTH }
+        function flush() { if (cur != "" && tolower(m) == tolower(mod)) { print cur "\t" v; found = 1 } cur = ""; m = ""; v = "" }
+        /^[ \t]*(#.*)?$/ { next }
+        indent($0) == 0 { flush(); inx = ($0 ~ /^experimental:[ \t]*$/); inp = 0; next }
+        inx && /^[ \t]+plugins:[ \t]*$/ { inp = 1; pind = indent($0); nind = 0; next }
+        inp && indent($0) <= pind { flush(); inp = 0 }
+        inp && nind == 0 { nind = indent($0) }
+        inp && indent($0) == nind && /:[ \t]*$/ { flush(); n = $0; sub(/^[ \t]+/, "", n); sub(/:[ \t]*$/, "", n); gsub(/["\x27]/, "", n); cur = n; next }
+        inp && tolower($0) ~ /^[ \t]+modulename:/ { x = $0; sub(/^[^:]*:[ \t]*/, "", x); gsub(/["\x27 \t]/, "", x); m = x; next }
+        inp && tolower($0) ~ /^[ \t]+version:/ { x = $0; sub(/^[^:]*:[ \t]*/, "", x); gsub(/["\x27 \t]/, "", x); v = x; next }
+        END { flush() }' "$cfg" 2>/dev/null | head -n 1
+}
+
+# The plugin's settings as the middleware file has them, as JSON (keys the way the page names them). Lists are arrays; a value the file does not carry is left out.
+# $1 = the middleware file
+_cs_plugin_read_file() {
+    local f="$1"
+    [[ -f "$f" ]] || { printf '{}'; return 0; }
+    awk '
+        function val(l,   x) { x = l; sub(/^[^:]*:[ \t]*/, "", x); sub(/[ \t]+#.*$/, "", x); gsub(/^["\x27]|["\x27]$/, "", x); return x }
+        /^[ \t]{10}[A-Za-z]+:/ && !/^[ \t]{12}/ {
+            key = $0; sub(/^[ \t]+/, "", key); sub(/:.*$/, "", key); list = ""
+            if (key == "forwardedHeadersTrustedIPs" || key == "clientTrustedIPs") { list = key; next }
+            v = val($0)
+            if (key == "crowdsecMode") print "S\tmode\t" v
+            else if (key == "updateIntervalSeconds") print "S\tupdate_interval\t" v
+            else if (key == "defaultDecisionSeconds") print "S\tdefault_decision_seconds\t" v
+            else if (key == "httpTimeoutSeconds") print "S\thttp_timeout\t" v
+            else if (key == "remediationStatusCode") print "S\tremediation_status_code\t" v
+            else if (key == "logLevel") print "S\tlog_level\t" v
+            else if (key == "enabled") print "S\tenabled\t" v
+            else if (key == "crowdsecLapiKey") print "S\thas_key\t" (v != "" && v !~ /^__/ ? "true" : "false")
+            next
+        }
+        list != "" && /^[ \t]{12}-[ \t]*/ { x = $0; sub(/^[ \t]*-[ \t]*/, "", x); sub(/[ \t]+#.*$/, "", x); gsub(/^["\x27]|["\x27]$/, "", x); if (x != "") print "L\t" (list == "clientTrustedIPs" ? "client_trusted_ips" : "forwarded_headers_trusted_ips") "\t" x; next }
+        /^[ \t]{10}[A-Za-z]/ { list = "" }
+        /^#[ \t]*dcs-plugin:[ \t]/ { x = $0; sub(/^#[ \t]*dcs-plugin:[ \t]*/, "", x); print "M\tmarker\t" x }' "$f" 2>/dev/null \
+    | jq -Rsc '
+        split("\n") | map(select(length > 0) | split("\t")) as $rows
+        | reduce $rows[] as $r ({}; if $r[0] == "S" then .[$r[1]] = ($r[2] | if test("^[0-9]+$") then tonumber elif . == "true" then true elif . == "false" then false else . end)
+                                    elif $r[0] == "L" then .[$r[1]] = ((.[$r[1]] // []) + [$r[2]])
+                                    elif $r[0] == "M" then .marker = ($r[2] | try fromjson catch null)
+                                    else . end)
+        | . + {managed: (.marker != null)} | del(.marker)' 2>/dev/null || printf '{}'
+}
+
+# JSON: {routes_dir, middleware_file, in_chain, plugin: {...}} — what DCS wrote when it registered the bouncer, and what Traefik's own files say about the plugin
 _cs_enforcement_json() {
-    local dir mw="" chain_file="" in_chain=false
+    local dir mw="" chain_file="" in_chain=false decl="" pname="" pver="" mtime=0 settings='{}' loaded=null tr_running=false
     dir=$(_find_traefik_routes_dir 2>/dev/null) || dir=""
     if [[ -n "$dir" && -d "$dir" ]]; then
         mw=$(find "$dir" -maxdepth 2 -name 'crowdsec-bouncer.yml' 2>/dev/null | head -n 1)
@@ -480,7 +533,17 @@ _cs_enforcement_json() {
                 inchain && /crowdsec-bouncer/ { found=1 }
                 END { exit found ? 0 : 1 }' "$chain_file" 2>/dev/null; then in_chain=true; fi
     fi
-    jq -nc --arg d "$dir" --arg m "$mw" --argjson c "$in_chain" '{routes_dir: $d, middleware_file: $m, middleware_present: ($m != ""), in_chain: $c}'
+    if [[ -n "$mw" ]]; then mtime=$(stat -c %Y "$mw" 2>/dev/null || echo 0); settings=$(_cs_plugin_read_file "$mw"); fi
+    decl=$(_cs_plugin_declared); pname="${decl%%$'\t'*}"; pver="${decl#*$'\t'}"; [[ -n "$decl" ]] || { pname=""; pver=""; }
+    local trj="${CS_TRAEFIK:-}"; [[ "$trj" == \{* ]] || trj='{}'
+    if [[ "$(jq -r '.running // false' <<< "$trj" 2>/dev/null)" == true ]]; then
+        tr_running=true
+        if [[ -n "$decl" ]]; then if _traefik_static_newer 2>/dev/null; then loaded=false; else loaded=true; fi; fi
+    fi
+    jq -nc --arg d "$dir" --arg m "$mw" --argjson c "$in_chain" --arg cf "$chain_file" --argjson mt "$mtime" --arg pn "$pname" --arg pv "$pver" --argjson set "$settings" --argjson loaded "$loaded" --argjson run "$tr_running" \
+        '{routes_dir: $d, middleware_file: $m, middleware_present: ($m != ""), middleware_mtime: $mt, in_chain: $c, chain_file: $cf,
+          plugin: {declared: ($pn != ""), name: $pn, version: $pv, module: "github.com/maxlerebourg/crowdsec-bouncer-traefik-plugin", traefik_running: $run, loaded: $loaded,
+                   settings: $set, mode: ($set.mode // null), managed: ($set.managed // false), key_present: ($set.has_key // false)}}'
 }
 
 # =============================================================================
@@ -593,7 +656,7 @@ _cs_gather() {
                       countries_24h: ([$al[0][] | .source.cn | select(. != null and . != "")] | unique | length),
                       sources_24h: ([$al[0][] | .source.value] | unique | length) },
             bouncers: ($bouncers | map({name, type: (.type // ""), version: (.version // ""), ip_address: (.ip_address // ""), last_pull: (.last_pull // null), created_at: (.created_at // ""), revoked: (.revoked // false)})),
-            bouncer: (if $dcsb == null then {registered: false, name: $bname} else {registered: true, name: $bname, last_pull: ($dcsb.last_pull // null), type: ($dcsb.type // ""), version: ($dcsb.version // ""), ip_address: ($dcsb.ip_address // "")} end),
+            bouncer: (if $dcsb == null then {registered: false, name: $bname} else {registered: true, name: $bname, last_pull: ($dcsb.last_pull // null), type: ($dcsb.type // ""), version: ($dcsb.version // ""), ip_address: ($dcsb.ip_address // ""), created_at: ($dcsb.created_at // "")} end),
             machines: ($ma[0] | map({id: (.machineId // ""), ip_address: (.ipAddress // ""), version: (.version // ""), validated: (.isValidated // false), last_push: (.last_push // null), last_heartbeat: (.last_heartbeat // null), os: (.os // ""), datasources: (.datasources // {})})),
             acquisition: {sources: $sources, reads: $reads, parsed: $parsed, unparsed: ($sources | map(.unparsed) | add // 0), parse_rate: (if $reads > 0 then (($parsed / $reads * 1000 | round) / 1000) else null end)},
             active_all: $active_all }' 2>/dev/null
@@ -666,7 +729,7 @@ _cs_status_core() {
         [[ "$details" == \{* ]] || details='null'
         title="CrowdSec is protecting this server"; detail=""
         local enf; enf=$(_cs_enforcement_json)
-        extra=$(jq -nc --argjson d "$details" --argjson tr "$CS_TRAEFIK" --argjson enf "$enf" --arg wd "$CS_WORKDIR" '
+        extra=$(jq -nc --argjson d "$details" --argjson tr "$CS_TRAEFIK" --argjson enf "$enf" --arg wd "$CS_WORKDIR" "$_CS_JQ_DEFS"'
             ($d.bouncers | map(select((.type | test("traefik"; "i")) or (.name | test("traefik"; "i")))) | length) as $tb
             | ( []
               + (if $tr.present and ($d.bouncers | length) == 0 then [{code: "bouncer_missing", severity: "warning", title: "Bans are not enforced at your proxy",
@@ -675,6 +738,18 @@ _cs_status_core() {
               + (if $tr.present and $d.bouncer.registered and $enf.routes_dir != "" and (($enf.middleware_present | not) or ($enf.in_chain | not)) then [{code: "bouncer_unchained", severity: "warning", title: "Traefik is not using the bouncer",
                     detail: "The bouncer is registered in CrowdSec, but its middleware is not in Traefik'"'"'s chain (" + (if $enf.middleware_present then "the chain does not list it" else "the middleware file is missing" end) + "). Registering again rewrites both.",
                     fix: {id: "register_bouncer", label: "Register again", kind: "api", method: "POST", path: "/crowdsec/bouncers/register-traefik", body: null, primary: true}}] else [] end)
+              + (if $tr.present and $d.bouncer.registered and $enf.middleware_present and ($enf.plugin.declared | not) then [{code: "plugin_undeclared", severity: "warning", title: "Traefik does not know the bouncer plugin",
+                    detail: "The middleware file is there, but Traefik'"'"'s static configuration does not declare the CrowdSec bouncer plugin, so Traefik refuses the middleware and every route that uses the chain answers 404. Registering again declares it and restarts Traefik once.",
+                    fix: {id: "register_bouncer", label: "Register again", kind: "api", method: "POST", path: "/crowdsec/bouncers/register-traefik", body: null, primary: true}}] else [] end)
+              + (if $tr.present and $enf.plugin.declared and ($enf.plugin.loaded == false) and $d.bouncer.registered then [{code: "plugin_not_loaded", severity: "warning", title: "Traefik has not loaded the bouncer plugin yet",
+                    detail: "The plugin was declared after Traefik started, and Traefik only loads plugins at start. Until it is restarted the middleware is refused and the routes that use the chain answer 404.",
+                    fix: {id: "restart_traefik", label: "Restart Traefik", kind: "api", method: "POST", path: "/crowdsec/traefik/restart", body: null, primary: true}}] else [] end)
+              + (if $tr.present and $d.bouncer.registered and $enf.middleware_present and (($d.bouncer.created_at // "") != "") and (($d.bouncer.created_at | iso_secs) > ($enf.middleware_mtime + 120)) then [{code: "bouncer_key_stale", severity: "warning", title: "Traefik'"'"'s key for the bouncer is out of date",
+                    detail: "The bouncer was registered again after the middleware file was written, so the key in that file no longer opens CrowdSec'"'"'s API and nothing is enforced. Registering again writes a fresh key.",
+                    fix: {id: "register_bouncer", label: "Register again", kind: "api", method: "POST", path: "/crowdsec/bouncers/register-traefik", body: null, primary: true}}] else [] end)
+              + (if $tr.present and ($tr.running // false) and $enf.in_chain and $d.bouncer.registered and $d.bouncer.last_pull != null and ((now - ($d.bouncer.last_pull | iso_secs)) > 1800) then [{code: "bouncer_stale", severity: "warning", title: "Traefik has not asked the bouncer for a long time",
+                    detail: "The plugin reports in to CrowdSec at least every ten minutes while Traefik runs it. Nothing for over half an hour means Traefik is not running the plugin (or cannot reach CrowdSec). Look at Traefik'"'"'s log; registering again rewrites the key and the middleware.",
+                    fix: {id: "register_bouncer", label: "Register again", kind: "api", method: "POST", path: "/crowdsec/bouncers/register-traefik", body: null, primary: false}}] else [] end)
               + (if $d.bouncer.registered and $d.bouncer.last_pull == null and $tr.present then [{code: "bouncer_idle", severity: "info", title: "Traefik has not asked the bouncer yet",
                     detail: "The bouncer is registered but has never pulled a decision. It starts pulling with the first request that goes through the crowdsec-bouncer middleware.", fix: null}] else [] end)
               + (if ($d.machines | map((.datasources // {}) | to_entries | map(.value) | add // 0) | add // 0) == 0 then [{code: "no_datasource", severity: "warning", title: "CrowdSec is not reading any log",
@@ -1506,6 +1581,8 @@ _cs_bouncer_register() {
     bk=$(_traefik_plugin_name "github.com/maxlerebourg/crowdsec-bouncer-traefik-plugin" 2>/dev/null); [[ -n "$bk" ]] || bk=crowdsec-bouncer-traefik-plugin
     K="$key" L="$lan" B="$bk" awk '{ gsub(/__LAPI_KEY__/, ENVIRON["K"]); gsub(/__TRUSTED_LAN__/, ENVIRON["L"]); if ($0 ~ /^        crowdsec-bouncer-traefik-plugin:[ \t]*$/) $0 = "        " ENVIRON["B"] ":"; print }' "$tdir/files/bouncer-middleware.yml" > "$dir/$target_stack/crowdsec-bouncer.yml"
     chmod 600 "$dir/$target_stack/crowdsec-bouncer.yml" 2>/dev/null || true
+    # what was set on the CrowdSec page (mode, timings, trusted networks) goes into the fresh file; the key stays the new one
+    if [[ -s "$CROWDSEC_STATE_DIR/plugin.json" ]]; then _crowdsec_cfg_lib; _cs_plugin_apply_saved "$dir/$target_stack/crowdsec-bouncer.yml"; fi
     _traefik_chain_set crowdsec-bouncer add
     echo "[dcs] Traefik bouncer registered; crowdsec-bouncer added to traefik-chain" >> "$log"
     # An install whose traefik.yml predates the plugin list would drop every route in the chain: declare the plugin and restart Traefik once
@@ -1538,6 +1615,20 @@ handle_crowdsec_bouncer_register() {
 # =============================================================================
 # The container itself
 # =============================================================================
+
+# POST /crowdsec/traefik/restart — Restart Traefik (it loads a plugin declared in its static configuration only when it starts) and wait until it runs again
+handle_crowdsec_traefik_restart() {
+    _api_check_admin || { _api_error 403 "Admin access required"; return; }
+    local i
+    _cs_probe
+    (( CS_DOCKER == 1 )) || { _api_error 503 "Docker does not answer: $CS_DOCKER_ERR"; return; }
+    [[ "$(jq -r '.present' <<< "$CS_TRAEFIK")" == true ]] || { _api_error 409 "Traefik was not found on this server"; return; }
+    timeout 90 docker restart Traefik >/dev/null 2>&1 || { _api_error 502 "docker could not restart Traefik"; return; }
+    for i in $(seq 1 20); do [[ "$(docker inspect -f '{{.State.Running}}' Traefik 2>/dev/null)" == true ]] && break; sleep 1; done
+    _cs_cache_clear
+    _api_audit_log "${CLIENT_IP:-unknown}" "CROWDSEC_TRAEFIK_RESTART" "${AUTH_USERNAME:-}" "Traefik restarted"
+    _api_success "$(jq -nc '{success: true, message: "Traefik was restarted. It loads the bouncer plugin as it starts."}')"
+}
 
 # POST /crowdsec/service — Start, restart or reload CrowdSec: {action: start|restart|reload}
 handle_crowdsec_service() {

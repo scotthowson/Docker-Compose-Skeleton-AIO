@@ -4,7 +4,7 @@ Generated from the router in `.scripts/api-server.sh` by `.scripts/api-docs.sh` 
 Run `.scripts/api-docs.sh` after adding or changing a route; CI fails when this file is stale.
 
 The API listens on `API_BIND:API_PORT` (default `0.0.0.0:9876`) and answers JSON.
-Every endpoint below is `365` in total.
+Every endpoint below is `368` in total.
 
 ## Access levels
 
@@ -226,7 +226,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | GET | `/ddns/status` | admin | Check DDNS status and current IP |
 | GET | `/routes/health` | user | Probe every custom route through Traefik (no changes made) |
 | GET | `/traefik/status` | user | Traefik status |
-| GET | `/routes` | user | Traefik routes: subdomain, service, stack and target |
+| GET | `/routes` | user | Routes |
 | GET | `/routes/certificates` | user | Reverse-proxy health: domain, ACME challenge and account, certificates held, a live probe of every route through Traefik, the last Traefik errors, and hints |
 | GET | `/routes/check` | user | Check if a subdomain is available |
 | GET | `/dns/status` | user | Cloudflare integration: where the token comes from, whether it is valid, the zone |
@@ -267,6 +267,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | GET | `/crowdsec/community` | user | Is the community blocklist (CAPI) pulled, are signals shared, is the machine enrolled in the CrowdSec console |
 | GET | `/crowdsec/settings` | user | The default ban length CrowdSec uses, repeat-offender escalation and per-scenario lengths; says whether DCS can edit the file safely |
 | GET | `/crowdsec/notifications` | user | The Discord alert settings in force (webhook masked), what is wired, the placeholders for the message, and the last test/delivery outcome |
+| GET | `/crowdsec/plugin` | user | The Traefik bouncer plugin's settings (mode, how often it asks, how long it remembers, timeout, the status a banned visitor sees, trusted networks), the defaults and the limits |
 | POST | `/crowdsec/trust` | admin | Add an address to the whitelist (body {ip}; defaults to the home public address and the caller) |
 | POST | `/crowdsec/unban-me` | user | Unban the caller: its client address and the home public address |
 | POST | `/crowdsec/notifications` | admin | Send CrowdSec's alerts to Discord: {webhook?, test?}. Turns the alerts on with the message settings in force (the shipped message on a fresh install), stores a webhook you pass, restarts CrowdSec and optionally posts a test message. |
@@ -280,6 +281,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | POST | `/crowdsec/bouncers` | admin | Register a bouncer and show its API key ONCE: {name} |
 | POST | `/crowdsec/bouncers/register-traefik` | admin | Register the Traefik bouncer again: a fresh key, the middleware file and the chain entry (the fix for "bans are not enforced") |
 | POST | `/crowdsec/service` | admin | Start, restart or reload CrowdSec: {action: start\|restart\|reload} |
+| POST | `/crowdsec/traefik/restart` | admin | Restart Traefik (it loads a plugin declared in its static configuration only when it starts) and wait until it runs again |
 | POST | `/crowdsec/hub/update` | admin | Fetch the newest hub index (needs internet on the server) |
 | POST | `/crowdsec/hub/upgrade` | admin | Upgrade every installed collection, scenario and parser, then reload |
 | POST | `/crowdsec/hub/install` | admin | Install a collection, scenario or parser from the hub: {type: collections\|scenarios\|parsers, name}; CrowdSec reloads afterwards |
@@ -287,6 +289,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | POST | `/crowdsec/simulation` | admin | {scenario, enabled}: make one scenario alert-only (enabled true) or ban again; {global: true, enabled} switches the whole engine |
 | PUT | `/crowdsec/settings` | admin | Change the ban profile: {profile: {duration, range_duration, escalate: {enabled, max}, overrides: [{pattern, duration}]}, manual_duration, take_over}; validates with CrowdSec, restarts it and rolls back on failure |
 | PUT | `/crowdsec/notifications` | admin | Save and apply the Discord alert settings: {settings: {…any part…}, webhook_url?: "https://discord.com/api/webhooks/…", clear_custom_webhook?: true}; the URL is stored as a secret and never sent back |
+| PUT | `/crowdsec/plugin` | admin | Change the plugin's settings: {settings: {mode, update_interval, default_decision_seconds, http_timeout, remediation_status_code, log_level, trust_home, client_trusted_ips, forwarded_headers_trusted_ips}} (any part); written to Traefik's middleware file atomically, the old one is kept, Traefik reloads by itself |
 | DELETE | `/crowdsec/decisions/{value}` | admin | Lift the ban on one address or network (the value may be an IP or a CIDR range such as 192.0.2.0/24) |
 | DELETE | `/crowdsec/allowlist/{value}` | admin | Take an entry off the allowlist (the home address DCS keeps in sync cannot be removed here) |
 | DELETE | `/crowdsec/bouncers/{name}` | admin | Unregister a bouncer (its API key stops working at once) |
