@@ -115,5 +115,12 @@ for f in vm-images/images.json .config/schema.json .config/template-gallery.json
     jq -e . "$f" >/dev/null 2>&1 || { echo "  invalid JSON: $f"; rc=1; }
 done
 
+echo "Template shapes"
+# docs/TEMPLATES.md: optional_services is [{service, label, description, default_enabled}]; the deploy sheet reads .label, so a bare string renders as nothing
+for f in .templates/*/template.json; do
+    [[ -f "$f" ]] || continue
+    jq -e '(.optional_services // []) | all(type == "object" and (.service | type == "string") and (.label | type == "string"))' "$f" >/dev/null 2>&1 || { echo "  optional_services must be [{service, label, ...}]: $f"; rc=1; }
+done
+
 [[ $rc -eq 0 ]] && echo "lint: clean" || echo "lint: problems found"
 exit $rc

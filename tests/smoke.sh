@@ -5263,6 +5263,28 @@ cst_settings_custom() {
     check "settings/custom: …DCS wrote the file" "# Managed by DCS:" "$(sed -n 1p "$live" | cut -c1-17)"
 }
 
+cst_settings_partial() {
+    local live one range none
+    live=$(CST_LIVE profiles.yaml)
+    cst_world data traefik --traefik
+    one=$'name: default_ip_remediation\nfilters:\n  - Alert.Remediation == true && Alert.GetScope() == "Ip"\ndecisions:\n  - type: ban\n    duration: 4h\non_success: break\n---\nname: my_own\nfilters:\n  - Alert.Remediation == true\ndecisions:\n  - type: captcha\n    duration: 1h\non_success: break'
+    range=$'name: default_range_remediation\nfilters:\n  - Alert.Remediation == true && Alert.GetScope() == "Range"\ndecisions:\n  - type: ban\n    duration: 4h\non_success: break\n---\nname: my_own\nfilters:\n  - Alert.Remediation == true\ndecisions:\n  - type: captcha\n    duration: 1h\non_success: break'
+    none=$'name: my_own\nfilters:\n  - Alert.Remediation == true\ndecisions:\n  - type: captcha\n    duration: 1h\non_success: break'
+    # a file that has only one of the two stock profiles (or neither) is a hand-written file: the page must say so, not fail
+    printf '%s\n' "$one" > "$live"
+    cst_call admin GET /crowdsec/settings
+    cst_is "settings/partial: only the IP profile plus one of your own" 200
+    cst_j "settings/partial(ip)" '.mode' custom '.profile.duration' 4h
+    printf '%s\n' "$range" > "$live"
+    cst_call admin GET /crowdsec/settings
+    cst_is "settings/partial: only the range profile plus one of your own" 200
+    cst_j "settings/partial(range)" '.mode' custom
+    printf '%s\n' "$none" > "$live"
+    cst_call admin GET /crowdsec/settings
+    cst_is "settings/partial: neither stock profile" 200
+    cst_j "settings/partial(none)" '.mode' custom
+}
+
 cst_settings_rollback() {
     local live orig n0
     live=$(CST_LIVE profiles.yaml)
@@ -5302,6 +5324,7 @@ cst_part_settings() {
     cst_settings_write
     cst_settings_invalid
     cst_settings_custom
+    cst_settings_partial
     cst_settings_rollback
 }
 

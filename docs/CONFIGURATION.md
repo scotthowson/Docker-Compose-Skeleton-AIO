@@ -95,11 +95,7 @@ the API restarts: `sudo systemctl restart dcs-api`, or `POST /system/restart`.
 | `CONTINUE_ON_FAILURE` | `true` | Keep starting the other stacks when one fails |
 | `SKIP_HEALTHCHECK_WAIT` | `false` | Start without waiting for health checks |
 | `SERVICE_START_DELAY`, `SERVICE_STOP_DELAY` | `5`, `10` | Seconds between stacks when starting and stopping |
-| `STACK_START_TIMEOUT` | `120` | Longest wait for one stack to start, in seconds |
-| `DOCKER_TIMEOUT` | `300` | Timeout for Docker operations, in seconds |
 | `DOCKER_COMPOSE_VERSION` | `auto` | `auto`, `v2` (the plugin) or `v1` (the old `docker-compose`) |
-| `REMOVE_ORPHANED_CONTAINERS` | `true` | Remove containers a stack no longer defines when it starts |
-| `FORCE_RECREATE` | `false` | Recreate every container on every start |
 | `REMOVE_VOLUMES_ON_STOP` | `false` | Delete named volumes on stop. Destroys data. |
 | `ENABLE_POST_STARTUP_HEALTH_CHECK`, `HEALTH_CHECK_DELAY` | `true`, `10` | Check health after `start.sh`, after this many seconds |
 | `PROXY_RECONCILE` | `false` | Probe Traefik's routes after every `start.sh` (the boot service always does) |
@@ -217,7 +213,7 @@ operating systems the VM settings offer. [Proxmox guide](PROXMOX.md) explains ev
 | `METRICS_RAW_DAYS`, `METRICS_5M_DAYS`, `METRICS_HOURLY_DAYS` | `7`, `90`, `730` | Days kept as raw samples, 5-minute averages and hourly averages |
 | `LOG_LEVEL` | `INFO` | `ERROR`, `WARNING`, `INFO`, `DEBUG` or `VERBOSE` |
 | `COLOR_MODE` | `auto` | Console colours: `auto`, `always`, `never` |
-| `LOG_MAX_SIZE`, `LOG_BACKUP_COUNT`, `LOG_RETENTION_DAYS` | `10M`, `12`, `90` | Log rotation |
+| `LOG_BACKUP_COUNT` | `12` | How many rotated logs are kept |
 | `ENABLE_STRUCTURED_LOGGING` | `true` | A JSON-lines log beside the plain one |
 | `ENVIRONMENT` | `production` | Profile: `development` and `testing` turn on debug output |
 | `PLUGINS_ENABLED`, `PLUGINS_HOOKS_ENABLED` | `true`, `true` | Plugins and their lifecycle hooks |

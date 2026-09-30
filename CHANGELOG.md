@@ -5,6 +5,21 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [4.0.3] - 2026-09-30
+
+### Fixed
+
+- **The Flarum template's optional database showed up as a blank choice in the deploy sheet.** Its `optional_services` entry was a bare service name (`"flarum-db"`), while every other template
+  (and `docs/TEMPLATES.md`) uses `{service, label, description, default_enabled}` and the sheet reads the label. It has its label and description now (Include the built-in MariaDB database),
+  and `tests/lint.sh` fails a template whose optional services are not in that shape.
+- **`docs/CONFIGURATION.md` listed settings that no longer do anything** (`STACK_START_TIMEOUT`, `DOCKER_TIMEOUT`, `REMOVE_ORPHANED_CONTAINERS`, `FORCE_RECREATE`, `LOG_MAX_SIZE`,
+  `LOG_RETENTION_DAYS`): they were removed in 4.0, the API accepts and ignores them from an older dashboard, and nothing reads them. The tables list what is read.
+
+### Tests
+
+- The CrowdSec settings endpoint is checked against a hand-written `profiles.yaml` that has only one of the two stock profiles, or neither (`settings/partial`): the page must call it
+  a hand-written file (200, `mode: custom`), never fail with a 500.
+
 ## [4.0.2] - 2026-09-30
 
 ### Fixed

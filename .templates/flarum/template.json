@@ -97,5 +97,7 @@
       "show_if": { "FLARUM_DB_TYPE": "builtin" }
     }
   ],
-  "optional_services": ["flarum-db"]
+  "optional_services": [
+    {"service": "flarum-db", "label": "Include the built-in MariaDB database", "description": "Uncheck to connect Flarum to a MySQL or MariaDB server you already run", "default_enabled": true}
+  ]
 }
