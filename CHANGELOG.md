@@ -5,6 +5,20 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [4.0.1] - 2026-09-30
+
+### Fixed
+
+- **The CrowdSec page said the bouncer was not in `traefik-chain` and that every route bypassed it, on an install whose chain file sits beside the routes directory.**
+  The original Traefik layout keeps `TraefikRoutes.yml` next to `custom_routes/` and mounts it into the container's routes directory, so on the host the chain is one level above
+  the place DCS looked, and DCS looked there for a `traefik-chain:` at exactly four spaces of indent. It finds the chain in the routes directory or in the Traefik folder above
+  it now, and reads it by its indentation (any indent, quotes or none, a comment after an entry, Windows line endings, an `@file` suffix). A route that lists
+  `traefik-chain@file` counts as protected too, and so does a route on a chain of your own that lists the bouncer (a `media-chain`, or a chain of chains): the page
+  no longer calls such a route unprotected.
+- **Registering the bouncer could not add it to such a chain, and would have put it at the top of a hand-written one.** *Register again* leaves a chain that lists the
+  middleware already untouched, puts a new entry after `cloudflarewarp` or `real-ip` (a bouncer that runs before them judges Cloudflare's addresses), and rewrites the file in
+  place: a stack that bind-mounts the chain file as a single file kept looking at the old copy after a rename over it.
+
 ## [4.0.0] - 2026-09-30
 
 The first release under the name DCS Orchestrator. The headline changes are the purpose-built VM images for Proxmox, the CrowdSec

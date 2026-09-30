@@ -12679,22 +12679,131 @@ handle_container_sablier() {
         '{container: $c, enabled: $e, middleware: $mw, route_file: $rf, traefik_restarted: $tr, session: $s, theme: $t, display_name: $d, show_details: $sh, message: $m}')"
 }
 
-# Keep one middleware in (or out of) Traefik's traefik-chain in the loaded
-# middleware file. Usage: _traefik_chain_set NAME add|remove
+# The file that defines Traefik's traefik-chain middleware, as a path on this host (nothing is printed when no file does). Traefik loads its
+# dynamic files from one directory inside its container, and a stack may mount one of them from BESIDE the routes directory (the original
+# layout mounts App-Data/Traefik/TraefikRoutes.yml into /etc/traefik/custom_routes/), so the definition is under the routes directory or
+# one level above it. Usage: _traefik_chain_file [ROUTES_DIR]
+_traefik_chain_file() {
+    local dir="${1:-}" f="" re='^[[:space:]]*["'"'"']?traefik-chain["'"'"']?:[[:space:]]*(#.*)?$'
+    [[ -n "$dir" ]] || dir=$(_find_traefik_routes_dir 2>/dev/null) || dir=""
+    [[ -n "$dir" && -d "$dir" ]] || return 0
+    f=$(grep -rlE "$re" "$dir" --include='*.yml' --include='*.yaml' 2>/dev/null | head -n 1)
+    [[ -n "$f" ]] || f=$(find "$(dirname "$dir")" -maxdepth 1 -type f \( -name '*.yml' -o -name '*.yaml' \) -exec grep -lE "$re" {} + 2>/dev/null | head -n 1)
+    [[ -z "$f" ]] || printf '%s' "$f"
+    return 0
+}
+
+# Is NAME one of the middlewares that traefik-chain lists in FILE? The block is read by its indentation, so a hand-written file works too
+# (any indent, quotes or none, a comment after the entry, CRLF, an @file suffix). Usage: _traefik_chain_has FILE NAME
+_traefik_chain_has() {
+    awk -v mw="$2" '
+        { sub(/\r$/, "") }
+        !on && /^[ \t]*["\x27]?traefik-chain["\x27]?:[ \t]*(#.*)?$/ { match($0, /^[ \t]*/); ind = RLENGTH; on = 1; next }
+        on && $0 !~ /^[ \t]*(#.*)?$/ { match($0, /^[ \t]*/); if (RLENGTH <= ind) exit }
+        on && /^[ \t]*-[ \t]/ { l = $0; sub(/^[ \t]*-[ \t]*/, "", l); sub(/[ \t]*#.*$/, "", l); gsub(/["\x27]/, "", l); sub(/@[A-Za-z0-9_-]+$/, "", l); sub(/[ \t]+$/, "", l); if (l == mw) f = 1 }
+        END { exit f ? 0 : 1 }' "$1" 2>/dev/null
+}
+
+# Every middleware that carries NAME on this proxy, one per line: NAME itself and each chain that lists it, directly or through another chain
+# (traefik-chain, a media-chain, ...). The chains are read by indentation from the YAML files of the routes directory and of the folder above it.
+# Usage: _traefik_chains_with NAME [ROUTES_DIR]
+_traefik_chains_with() {
+    local nm="$1" dir="${2:-}" f
+    local -a files=()
+    printf '%s\n' "$nm"
+    [[ -n "$dir" ]] || dir=$(_find_traefik_routes_dir 2>/dev/null) || dir=""
+    [[ -n "$dir" && -d "$dir" ]] || return 0
+    while IFS= read -r f; do [[ -n "$f" ]] && files+=("$f"); done < <({ find "$dir" -type f \( -name '*.yml' -o -name '*.yaml' \) 2>/dev/null; find "$(dirname "$dir")" -maxdepth 1 -type f \( -name '*.yml' -o -name '*.yaml' \) 2>/dev/null; } | sort -u)
+    (( ${#files[@]} )) || return 0
+    awk -v nm="$nm" '
+        FNR == 1 { sp = 0 }
+        { line = $0; sub(/\r$/, "", line) }
+        line ~ /^[ \t]*(#.*)?$/ { next }
+        {
+            match(line, /^[ \t]*/); ind = RLENGTH; rest = substr(line, ind + 1)
+            if (rest ~ /^-([ \t]|$)/) {
+                while (sp > 0 && sind[sp] > ind) sp--
+                if (sp >= 3 && skey[sp] == "middlewares" && skey[sp - 1] == "chain") {
+                    it = rest; sub(/^-[ \t]*/, "", it); sub(/[ \t]*#.*$/, "", it); gsub(/["\x27]/, "", it); sub(/@[A-Za-z0-9_-]+$/, "", it); sub(/[ \t]+$/, "", it)
+                    k = skey[sp - 2]; names[k] = 1; if (it != "") mem[k] = mem[k] " " it " "
+                }
+                next
+            }
+            if (rest ~ /^[^ \t#][^:]*:[ \t]*(#.*)?$/) {
+                key = rest; sub(/:.*$/, "", key); gsub(/["\x27]/, "", key)
+                while (sp > 0 && sind[sp] >= ind) sp--
+                sp++; sind[sp] = ind; skey[sp] = key
+                next
+            }
+            while (sp > 0 && sind[sp] >= ind) sp--
+        }
+        END {
+            have[nm] = 1; changed = 1
+            while (changed) {
+                changed = 0
+                for (k in names) if (!(k in have)) {
+                    n = split(mem[k], parts, " ")
+                    for (i = 1; i <= n; i++) if (parts[i] in have) { have[k] = 1; changed = 1; break }
+                }
+            }
+            for (k in have) if (k != nm) print k
+        }' "${files[@]}" 2>/dev/null | LC_ALL=C sort -u
+}
+
+# Keep one middleware in (or out of) Traefik's traefik-chain. Usage: _traefik_chain_set NAME add|remove
+# The chain is found where it is (_traefik_chain_file) and read by its indentation. Adding a middleware the chain lists already changes
+# nothing. A new one goes first, or right after the entries that restore the visitor's address (cloudflarewarp, real-ip): a bouncer that
+# ran before them would judge Cloudflare's addresses. The file is rewritten IN PLACE (same inode, owner and mode): a stack may bind-mount
+# it as a single file, and a copy renamed over it would leave the container looking at the old one.
 _traefik_chain_set() {
     local mw="$1" op="${2:-add}" dir f
     dir=$(_find_traefik_routes_dir) || return 0
-    # The file defining traefik-chain sits under the proxy stack's own directory
-    # (the deploy moves the template's routes there), not necessarily core-infrastructure
-    f=$(grep -rlE '^    traefik-chain:$' "$dir" --include='*.yml' --include='*.yaml' 2>/dev/null | head -1)
+    f=$(_traefik_chain_file "$dir")
     [[ -n "$f" ]] || f="$dir/core-infrastructure/traefik.yml"
     [[ -f "$f" ]] || return 0
+    if [[ "$op" == add ]] && _traefik_chain_has "$f" "$mw"; then return 0; fi
     awk -v mw="$mw" -v op="$op" '
-        /^    traefik-chain:$/ { inchain=1; print; next }
-        inchain && /^        middlewares:$/ { print; if (op == "add") print "          - \"" mw "\""; inlist=1; next }
-        inchain && inlist && $0 ~ ("^          - \"?" mw "\"?$") { next }
-        inchain && /^    [a-zA-Z0-9-]+:$/ { inchain=0; inlist=0 }
-        { print }' "$f" > "$f.tmp" && mv -f "$f.tmp" "$f"
+        function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t\r]+$/, "", s); return s }
+        function norm(l) { sub(/\r$/, "", l); sub(/^[ \t]*-[ \t]*/, "", l); sub(/[ \t]*#.*$/, "", l); gsub(/["\x27]/, "", l); sub(/@[A-Za-z0-9_-]+$/, "", l); return trim(l) }
+        function isitem(l) { return l ~ /^[ \t]*-[ \t]/ }
+        function restores(nm) { return nm == "cloudflarewarp" || nm == "real-ip" || nm == "realip" || nm == "traefik-real-ip" || nm == "cloudflare-real-ip" || nm == "cf-real-ip" }
+        function flush(   i, mi, first, last, ins, q, ind, ln, have, cr) {
+            mi = 0
+            for (i = 1; i < n; i++) if (buf[i] ~ /^[ \t]*middlewares:[ \t\r]*(#.*)?$/) { mi = i; break }
+            if (!mi) { for (i = 0; i < n; i++) print buf[i]; return }
+            first = 0; last = 0; ins = 0; have = 0
+            for (i = mi + 1; i < n; i++) if (isitem(buf[i])) {
+                if (!first) first = i
+                last = i
+                if (norm(buf[i]) == mw) have = 1
+                if (!ins && !restores(norm(buf[i]))) ins = i
+            }
+            if (op == "add" && have) { for (i = 0; i < n; i++) print buf[i]; return }
+            q = ""
+            if (first) { if (buf[first] ~ /"/) q = "\""; else if (buf[first] ~ /\x27/) q = "\x27"; match(buf[first], /^[ \t]*/); ind = substr(buf[first], 1, RLENGTH) }
+            else { match(buf[mi], /^[ \t]*/); ind = substr(buf[mi], 1, RLENGTH) "  " }
+            cr = (buf[mi] ~ /\r$/) ? "\r" : ""
+            if (!ins) ins = last ? last + 1 : mi + 1
+            ln = ind "- " q mw q cr
+            for (i = 0; i < n; i++) {
+                if (op == "remove") { if (i > mi && isitem(buf[i]) && norm(buf[i]) == mw) continue }
+                else if (i == ins) print ln
+                print buf[i]
+            }
+            if (op != "remove" && ins >= n) print ln
+        }
+        { raw = $0; line = raw; sub(/\r$/, "", line) }
+        st == 0 {
+            if (line ~ /^[ \t]*["\x27]?traefik-chain["\x27]?:[ \t]*(#.*)?$/) { match(line, /^[ \t]*/); cind = RLENGTH; st = 1; n = 0; buf[n++] = raw; next }
+            print raw; next
+        }
+        st == 1 {
+            if (line !~ /^[ \t]*(#.*)?$/) { match(line, /^[ \t]*/); if (RLENGTH <= cind) { flush(); st = 2; print raw; next } }
+            buf[n++] = raw; next
+        }
+        { print raw }
+        END { if (st == 1) flush() }' "$f" > "$f.tmp" && cat "$f.tmp" > "$f"
+    rm -f "$f.tmp"
 }
 
 # After a crowdsec deploy started the container: acquisition of Traefik's
@@ -12925,22 +13034,23 @@ _find_cf_token() {
 # GET /routes — List all Traefik routes with subdomains
 # Strategy: scan route YAML files first, then fall back to Traefik's runtime API
 # GET /routes — Traefik routes: subdomain, service, stack and target
-# Does Traefik's CrowdSec bouncer check a route? "off": CrowdSec is not set up on this proxy; "protected": the route uses the chain that
-# holds the bouncer (or the bouncer itself); "bypass": CrowdSec is set up and this route does not go through it.
-_routes_crowdsec_mode() {   # prints "" (not set up), "chain" (the bouncer is in traefik-chain) or "direct" (only routes that name it are checked)
-    local dir="$1" mw chain_file
+# Does Traefik's CrowdSec bouncer check a route? "off": CrowdSec is not set up on this proxy; "protected": the route uses the bouncer or a chain
+# that holds it (traefik-chain, a media-chain of your own, a chain of chains); "bypass": CrowdSec is set up and this route does not go through it.
+_routes_crowdsec_mode() {   # prints "" (not set up) or the middlewares that carry the bouncer, separated by spaces: crowdsec-bouncer and each chain that lists it
+    local dir="$1" mw
     [[ -n "$dir" && -d "$dir" ]] || return 0
     mw=$(find "$dir" -maxdepth 2 -name 'crowdsec-bouncer.yml' 2>/dev/null | head -n 1); [[ -n "$mw" ]] || return 0
-    chain_file=$(grep -rlE '^    traefik-chain:$' "$dir" --include='*.yml' --include='*.yaml' 2>/dev/null | head -n 1)
-    if [[ -n "$chain_file" ]] && awk '/^    traefik-chain:$/ { inchain=1; next } inchain && /^    [a-zA-Z0-9-]+:$/ { inchain=0 } inchain && /crowdsec-bouncer/ { found=1 } END { exit found ? 0 : 1 }' "$chain_file" 2>/dev/null; then printf 'chain'; else printf 'direct'; fi
+    _traefik_chains_with crowdsec-bouncer "$dir" | tr '\n' ' ' | sed 's/ $//'
 }
-_fleet_router_crowdsec_state() {   # MODE FILE ROUTER_KEY — the router's own middlewares in the file DCS wrote for the VMs' routes
+_fleet_router_crowdsec_state() {   # CARRIERS FILE ROUTER_KEY — the router's own middlewares in the file DCS wrote for the VMs' routes
     [[ -n "$1" ]] || { printf 'off'; return; }
-    if jq -e --arg k "$3" --arg m "$1" '(.http.routers[$k].middlewares // []) as $mw | ($mw | index("crowdsec-bouncer")) != null or ($m == "chain" and ($mw | index("traefik-chain")) != null)' "$2" >/dev/null 2>&1; then printf 'protected'; else printf 'bypass'; fi
+    if jq -e --arg k "$3" --arg c "$1" '(.http.routers[$k].middlewares // []) as $mw | ($c | split(" ")) as $carriers | any($mw[]; . as $m | ($carriers | index($m)) != null)' "$2" >/dev/null 2>&1; then printf 'protected'; else printf 'bypass'; fi
 }
-_route_crowdsec_state() {   # MODE FILE
+_route_crowdsec_state() {   # CARRIERS FILE
     [[ -n "$1" ]] || { printf 'off'; return; }
-    if _route_mw_has "$2" crowdsec-bouncer || { [[ "$1" == chain ]] && _route_mw_has "$2" traefik-chain; }; then printf 'protected'; else printf 'bypass'; fi
+    local m
+    for m in $1; do _route_mw_has "$2" "$m" && { printf 'protected'; return; }; done
+    printf 'bypass'
 }
 handle_routes() {
     local traefik_routes_dir _cs_mode
@@ -14164,7 +14274,7 @@ _traefik_restart_wait() {
 }
 
 # does a route file list MW among its routers' middlewares (an exact name, quoted or not)
-_route_mw_has() { awk -v mw="$2" '{ l=$0; sub(/^[ \t]*/, "", l); sub(/[ \t]+$/, "", l) } l == "- \"" mw "\"" || l == "- " mw || l == "- \x27" mw "\x27" { f=1; exit } END { exit !f }' "$1" 2>/dev/null; }
+_route_mw_has() { awk -v mw="$2" '{ l=$0; sub(/\r$/, "", l); sub(/^[ \t]*/, "", l) } l ~ /^-[ \t]/ { sub(/^-[ \t]*/, "", l); sub(/[ \t]*#.*$/, "", l); gsub(/["\x27]/, "", l); sub(/@[A-Za-z0-9_-]+$/, "", l); sub(/[ \t]+$/, "", l); if (l == mw) { f=1; exit } } END { exit !f }' "$1" 2>/dev/null; }
 
 # DCS's theme files use a plugin name this Traefik has loaded (3.9.5 wrote "themepark" into
 # configs that declare it as "theme-park": Traefik refused the middleware and the route answered

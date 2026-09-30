@@ -61,6 +61,10 @@ the bouncer CrowdSec knows (a bouncer registered again after the file was writte
 reports in at least every ten minutes while it runs, so half an hour of silence counts as a problem); and the plugin's mode. Anything wrong is also a banner with the
 fix behind a button (*Register again*, *Restart Traefik*). The routes line says how many routes use the chain and names the ones that **bypass** it: a route that does
 not go through `traefik-chain` is never checked, so a banned address can still reach it (the same routes carry an *unprotected* badge on the DNS & Routes page).
+DCS finds `traefik-chain` in the routes directory (`custom_routes/`) or, for the original layout that keeps `TraefikRoutes.yml` beside it and mounts it into the container's routes
+directory, in the Traefik folder above it. The chain is read by its indentation, so a hand-written file works: any indent, entries with or without quotes, a comment after an
+entry, Windows line endings, and an `@file` suffix (`traefik-chain@file` in a route counts as the chain).
+A route also counts as protected when it uses a chain of your own that lists `crowdsec-bouncer`, directly or through another chain (a `media-chain`, say).
 
 ## 3. Bans
 
@@ -188,7 +192,9 @@ bundle for a Traefik + SSH server (each with a sentence on what it does), search
 ## 9. Bouncers, machines, community
 
 * **Traefik enforcement**: is Traefik running, is the DCS bouncer registered, is its middleware file there, is it in Traefik's chain, when did it last pull. **Register the Traefik bouncer**
-  makes a fresh key, writes the middleware file and adds it to the chain (safe to repeat).
+  makes a fresh key, writes the middleware file and adds it to the chain (safe to repeat: a chain that lists the middleware already is not touched; a new entry goes after
+  `cloudflarewarp` or `real-ip` when the chain starts with one, because a bouncer that runs before them would judge Cloudflare's addresses instead of the visitor's; the file is
+  rewritten in place, so a stack that bind-mounts it as a single file keeps seeing it).
 * **Bouncers**: every program that enforces bans (Traefik's plugin, a firewall bouncer …): type, version, address, last pull. Add one (the API key is shown **once**, with a copy button)
   or delete one (its key stops working at once; deleting the Traefik one stops enforcement until it is registered again).
 * **Machines**: the engines that report to this CrowdSec (this container's agent, others you enrolled).

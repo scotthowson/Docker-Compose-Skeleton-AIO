@@ -558,12 +558,8 @@ _cs_enforcement_json() {
     dir=$(_find_traefik_routes_dir 2>/dev/null) || dir=""
     if [[ -n "$dir" && -d "$dir" ]]; then
         mw=$(find "$dir" -maxdepth 2 -name 'crowdsec-bouncer.yml' 2>/dev/null | head -n 1)
-        chain_file=$(grep -rlE '^    traefik-chain:$' "$dir" --include='*.yml' --include='*.yaml' 2>/dev/null | head -n 1)
-        if [[ -n "$chain_file" ]] && awk '
-                /^    traefik-chain:$/ { inchain=1; next }
-                inchain && /^    [a-zA-Z0-9-]+:$/ { inchain=0 }
-                inchain && /crowdsec-bouncer/ { found=1 }
-                END { exit found ? 0 : 1 }' "$chain_file" 2>/dev/null; then in_chain=true; fi
+        chain_file=$(_traefik_chain_file "$dir")
+        if [[ -n "$chain_file" ]] && _traefik_chain_has "$chain_file" crowdsec-bouncer; then in_chain=true; fi
     fi
     if [[ -n "$mw" ]]; then mtime=$(stat -c %Y "$mw" 2>/dev/null || echo 0); settings=$(_cs_plugin_read_file "$mw"); fi
     decl=$(_cs_plugin_declared); pname="${decl%%$'\t'*}"; pver="${decl#*$'\t'}"; [[ -n "$decl" ]] || { pname=""; pver=""; }

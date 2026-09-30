@@ -4875,7 +4875,7 @@ cst_route_states() {
 cst_sorted() { printf '%s\n' "$@" | LC_ALL=C sort | tr '\n' ' ' | sed 's/ $//'; }
 
 cst_plugin_routes() {
-    local chain tmpl
+    local chain tmpl ino sum trf
     cst_world data traefik --traefik
     chain="$(cst_tr)/custom_routes/core-infrastructure/traefik.yml"; tmpl="$ROOT/.templates/traefik/config/custom_routes/core-infrastructure/traefik.yml"
     cst_route_file media-services plain plain.lab.example.test compress-gzip
@@ -4911,6 +4911,39 @@ cst_plugin_routes() {
         "$(cst_sorted both=protected chain-plain=bypass chain-quoted=bypass chain-single=bypass commented=bypass dcs-ui=bypass direct=protected direct-quoted=protected lookalike=bypass nomw=bypass plain=bypass traefik=bypass)" "$(cst_sorted $CST_RS)"
     cst_call admin GET /crowdsec/status
     cst_j "routes: …and the status says the bouncer is not in the chain" '.enforcement.in_chain' false '.issues[0].code' bouncer_unchained
+    # -- the chain is defined BESIDE the routes directory: the original layout mounts App-Data/Traefik/TraefikRoutes.yml into custom_routes/ inside
+    #    the container, so on the host the file is one level above it (a 4.0.0 install with that layout saw no chain and blamed every route)
+    trf="$(cst_tr)/TraefikRoutes.yml"
+    sed -i 's/^    traefik-chain:/    traefik-chain-renamed:/' "$chain"
+    printf 'http:\n  middlewares:\n    # Order: real-IP first, then the bouncer\n\n    traefik-chain:\n      chain:\n        middlewares:\n          - cloudflarewarp\n          - crowdsec-bouncer\n          - my-geoblock\n          - https-redirect\n' > "$trf"
+    cst_route_file media-services chain-file chain-file.lab.example.test 'traefik-chain@file'
+    # chains of your own: one that holds the bouncer (a media-chain), a chain of that chain, and one that does not
+    printf 'http:\n  middlewares:\n    media-chain:\n      chain:\n        middlewares:\n          - cloudflarewarp\n          - "crowdsec-bouncer"\n          - rate-limit-media\n    nested-chain:\n      chain:\n        middlewares:\n          - media-chain@file\n          - compress-gzip\n    plain-chain:\n      chain:\n        middlewares:\n          - cloudflarewarp\n          - compress-gzip\n' > "$(cst_tr)/custom_routes/media-services/chains.yml"
+    cst_route_file media-services media-route media-route.lab.example.test media-chain compress-gzip
+    cst_route_file media-services nested-route nested-route.lab.example.test nested-chain
+    cst_route_file media-services plain-route plain-route.lab.example.test plain-chain
+    cst_route_states
+    check "routes: the chain beside the routes directory holds the bouncer: routes that use it are protected (an @file name too), and so are routes on a chain of your own that holds it" \
+        "$(cst_sorted both=protected chain-file=protected chain-plain=protected chain-quoted=protected chain-single=protected commented=bypass dcs-ui=protected direct=protected direct-quoted=protected lookalike=bypass media-route=protected nested-route=protected nomw=bypass plain=bypass plain-route=bypass traefik=protected)" "$(cst_sorted $CST_RS)"
+    cst_call admin GET /crowdsec/status
+    cst_j "routes: …and the status finds the chain there" '.enforcement.in_chain' true '.enforcement.chain_file | endswith("/Traefik/TraefikRoutes.yml")' true '.issues | map(.code) | index("bouncer_unchained")' null
+    sed -i 's/$/\r/' "$trf"; cst_uncache; cst_call admin GET /crowdsec/status
+    cst_j "routes: …a file with Windows line endings is read the same" '.enforcement.in_chain' true
+    sed -i 's/\r$//' "$trf"
+    sum=$(cksum < "$trf")
+    cst_call admin POST /crowdsec/bouncers/register-traefik
+    cst_is "routes: registering the bouncer again, the chain beside the routes" 200
+    check "routes: …the hand-written chain is not touched (the bouncer is in it)" "$sum" "$(cksum < "$trf")"
+    sed -i '/- crowdsec-bouncer/d' "$trf"; ino=$(stat -c %i "$trf"); cst_uncache; cst_call admin GET /crowdsec/status
+    cst_j "routes: …take the bouncer out of that chain: the status notices" '.enforcement.in_chain' false '.issues[0].code' bouncer_unchained
+    cst_call admin POST /crowdsec/bouncers/register-traefik
+    cst_is "routes: …registering puts it back" 200
+    check "routes: …after cloudflarewarp (a bouncer before it would judge Cloudflare's addresses), the rest in order" "cloudflarewarp crowdsec-bouncer my-geoblock https-redirect" "$(awk '/^          - /{ printf "%s%s", (n++ ? " " : ""), $2 }' "$trf")"
+    check "routes: …written in place: the same file, so a single-file bind mount keeps seeing it" "$ino" "$(stat -c %i "$trf")"
+    check "routes: …and the comment lines around it are kept" 2 "$(grep -c -E '^ *(#|$)' "$trf")"
+    cst_route_states
+    check "routes: …and the routes are protected again" "$(cst_sorted both=protected chain-file=protected chain-plain=protected chain-quoted=protected chain-single=protected commented=bypass dcs-ui=protected direct=protected direct-quoted=protected lookalike=bypass media-route=protected nested-route=protected nomw=bypass plain=bypass plain-route=bypass traefik=protected)" "$(cst_sorted $CST_RS)"
+    rm -f "$trf" "$(cst_tr)/custom_routes/media-services/chain-file.yml" "$(cst_tr)/custom_routes/media-services/chains.yml" "$(cst_tr)/custom_routes/media-services/media-route.yml" "$(cst_tr)/custom_routes/media-services/nested-route.yml" "$(cst_tr)/custom_routes/media-services/plain-route.yml"; cp -p "$tmpl" "$chain"
     # -- the middleware file is gone: CrowdSec is off again for every route
     rm -f "$(cst_mwf)"
     cst_route_states
