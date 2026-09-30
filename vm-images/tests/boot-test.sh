@@ -161,6 +161,19 @@ if [[ $NET == 1 ]]; then
     if [[ $ROLE == hub ]]; then
         for _ in $(seq 1 180); do "${SSH[@]}" 'test -e /var/lib/dcs-init/hub-done' 2>/dev/null && break; sleep 2; done
     fi
+    # The test containers come from a mirror, and a mirror answers "Data limit exceeded" once the runners' shared address has used up its
+    # free quota (the image builds on GitHub failed on that, a different leg each time). Each image is pulled from the first registry
+    # that gives it (the mirror, Google's copy of Docker Hub, Docker Hub) and tagged with the name the checks use, so these checks and
+    # the member checks find it on the disk.
+    for img in hello-world alpine:3 nginx:alpine; do
+        "${SSH[@]}" "want='${DCS_TEST_REGISTRY:-}$img'; docker image inspect \"\$want\" >/dev/null 2>&1 && exit 0
+            for r in '${DCS_TEST_REGISTRY:-}' mirror.gcr.io/library/ docker.io/library/; do
+                for t in 1 2 3; do
+                    timeout 150 docker pull \"\${r}$img\" >/dev/null 2>&1 && { [ \"\${r}$img\" = \"\$want\" ] || docker tag \"\${r}$img\" \"\$want\"; exit 0; }
+                    sleep 4
+                done
+            done; exit 1" 2>/dev/null || echo "        (the image $img could not be pulled from any registry)"
+    done
     HWOUT=$("${SSH[@]}" "timeout 120 docker run --rm ${DCS_TEST_REGISTRY:-}hello-world 2>&1" 2>/dev/null); HW=$(grep -c 'Hello from Docker' <<< "$HWOUT")
     chk "a container runs (hello-world pulled and started)" [ "${HW:-0}" -ge 1 ]
     [[ "${HW:-0}" -ge 1 ]] || echo "        docker said: $(tail -n 3 <<< "$HWOUT" | tr '\n' ' ' | cut -c1-300)"
