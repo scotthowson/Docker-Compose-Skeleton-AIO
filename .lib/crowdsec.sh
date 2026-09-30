@@ -287,6 +287,7 @@ _cs_pipe() {
 }
 
 # The message worth showing from cscli's stderr: the last "Error:" or fatal line, without the wrapping
+# shellcheck disable=SC2120  # the argument is optional (the text to read; CS_ERR by default)
 _cs_errline() {
     local e="${1:-$CS_ERR}" line probe
     # what failed inside a $( … ) (the cached readers run in one) left nothing in CS_ERR here: ask CrowdSec what is wrong with its API
