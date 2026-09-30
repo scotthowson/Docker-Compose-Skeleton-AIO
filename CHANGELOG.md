@@ -5,6 +5,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [4.0.0-rc.1] - 2026-09-29
+
+First release candidate of 4.0. It is a pre-release: the stable update channel does not offer it (a hub set to
+`UPDATE_CHANNEL=main` follows it), `latest` keeps meaning the last release, and the dashboard of a hub made from it is pinned to
+the same version (`ghcr.io/scotthowson/docker-compose-skeleton-ui:4.0.0-rc.1`).
+
+
 ### Added
 
 - **Purpose-built VM images** (`vm-images/`, [docs/VM-IMAGES.md](docs/VM-IMAGES.md)). A hub image that boots straight into the

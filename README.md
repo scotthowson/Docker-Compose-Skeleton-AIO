@@ -40,6 +40,12 @@
   <a href="docs/TROUBLESHOOTING.md">Troubleshooting</a>
 </p>
 
+> [!IMPORTANT]
+> **4.0 is in release-candidate testing (`4.0.0-rc.1`).** A release candidate is a GitHub pre-release: the stable update channel still offers
+> 3.9.9 and `latest` is still the last release. To try it, set the update channel to `main` (*Config → Update channel*) or import a release
+> image ([docs/VM-IMAGES.md](docs/VM-IMAGES.md#get-an-image)). Please tell us what breaks in
+> [Issues](https://github.com/scotthowson/dcs-orchestrator/issues).
+
 ---
 
 DCS Orchestrator deploys, runs and watches your containers. Every stack stays a plain
