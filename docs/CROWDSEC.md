@@ -65,6 +65,10 @@ DCS finds `traefik-chain` in the routes directory (`custom_routes/`) or, for the
 directory, in the Traefik folder above it. The chain is read by its indentation, so a hand-written file works: any indent, entries with or without quotes, a comment after an
 entry, Windows line endings, and an `@file` suffix (`traefik-chain@file` in a route counts as the chain).
 A route also counts as protected when it uses a chain of your own that lists `crowdsec-bouncer`, directly or through another chain (a `media-chain`, say).
+If you define the `crowdsec-bouncer` middleware yourself (in `TraefikRoutes.yml`, say), Traefik uses your definition and skips the copy DCS writes when it registers a bouncer: it keeps
+the first definition of a name it reads. The page then counts the newest pull of any Traefik bouncer as *Traefik asked CrowdSec* (with your key, not DCS's), shows a note that the
+middleware is defined twice, and *Register again* does not write a second copy or a second bouncer: it puts your middleware in the chain and stops. Delete DCS's copy
+(`crowdsec-bouncer.yml` in the stack's routes folder) and its bouncer (`dcs-traefik-bouncer`, on the Bouncers tab) to tidy up, or keep them as a spare.
 
 ## 3. Bans
 
@@ -198,7 +202,10 @@ bundle for a Traefik + SSH server (each with a sentence on what it does), search
 * **Bouncers**: every program that enforces bans (Traefik's plugin, a firewall bouncer …): type, version, address, last pull. Add one (the API key is shown **once**, with a copy button)
   or delete one (its key stops working at once; deleting the Traefik one stops enforcement until it is registered again).
 * **Machines**: the engines that report to this CrowdSec (this container's agent, others you enrolled).
-* **Community**: whether the community blocklist is pulled, whether your detections are shared, whether the machine is enrolled in the CrowdSec Console.
+* **Community**: whether the community blocklist is pulled, whether your detections are shared, whether the machine is enrolled in the CrowdSec Console. A `403 Forbidden` from CrowdSec's
+  Central API means CrowdSec refuses this server, its login or its address (not a broken install): the page says so and gives the two steps (`docker exec CrowdSec cscli capi register`, then
+  restart CrowdSec). If registering is refused with 403 as well, it is the address that is refused; that usually clears by itself, and CrowdSec can lift it. Local detections, bans and
+  alerts keep working; only the shared blocklist is missing.
 
 ## 10. Logs
 

@@ -54,7 +54,10 @@ CONTROL VERBS (first argument starts with --mock-)
         traefik=1|0         add / remove the Traefik container
         cscli_slow_ms=N     every cscli call sleeps N ms first (before the lock is taken)
         empty_json=null|[]|auto   what `-o json` prints for an empty decisions/alerts list (auto: [] for >= 1.7)
-        capi=ok|error|unregistered|disabled   `cscli capi status` / `console status`
+        capi=ok|error|forbidden|unregistered|disabled   `cscli capi status` / `console status` (forbidden: the Central API answers 403 to the login,
+                            as it does when it refuses the server's address)
+        traefik_bouncer=NAME   add (or replace) a Traefik-plugin bouncer NAME that pulled 20 s ago (a proxy that has its own middleware and key):
+                            --mock-set traefik_bouncer=traefik-bouncer@172.19.0.6 ; traefik_bouncer=-NAME removes it again
         hub_cascade=1|0     the real cscli also flags an enabled collection "update available" when one of its members is behind (one level);
                             off by default so that the `data` preset has exactly one item with an update (sshd) although linux contains it
     --mock-tick SECONDS   pretend that many seconds passed: decisions expire and every printed timestamp (last_pull,
@@ -5460,6 +5463,11 @@ class StatusCmds(object):
         out('Trying to authenticate with username %s on https://api.crowdsec.net/' % (creds.get('login') if isinstance(creds, dict) else 'unknown'))
         if mode == 'error':
             self.fatal('failed to authenticate to Central API (CAPI): Post "https://api.crowdsec.net/v3/watchers/login": dial tcp: lookup api.crowdsec.net: no such host')
+        if mode == 'forbidden':
+            err('level=info msg="attempt 1 out of 2"')
+            err('level=info msg="attempt 2 out of 2"')
+            err('level=info msg="max attempts reached for status code 403"')
+            self.fatal('failed to authenticate to Central API (CAPI): API error: Forbidden')
         out('You can successfully interact with Central API (CAPI)')
         out('Sharing signals is enabled')
         out('Pulling community blocklist is enabled')
@@ -5467,7 +5475,7 @@ class StatusCmds(object):
 
     def c_console_status(self):
         mode = self.st['knobs'].get('capi', 'ok')
-        reg = mode in ('ok', 'error')
+        reg = mode in ('ok', 'error', 'forbidden')
         text = self.run.fs().read('/etc/crowdsec/console.yaml') or ''
         cfg = yaml_load(text) if text else {}
         cfg = cfg if isinstance(cfg, dict) else {}
@@ -6439,7 +6447,7 @@ def log_call(fdir, argv):
 
 
 KNOBS = ('docker_down', 'lapi_down', 'health', 'status', 'version', 'discord', 'traefik', 'health_delay', 'restart_fails', 'cscli_slow_ms',
-         'empty_json', 'capi', 'hub_cascade')
+         'empty_json', 'capi', 'hub_cascade', 'traefik_bouncer')
 
 
 def control(fdir, argv):
@@ -6510,9 +6518,21 @@ def set_knob(st, k, v):
     elif k == 'lapi_down':
         kn[k] = int(v) if v.isdigit() else {'real': 2, 'true': 1, 'false': 0}.get(v, 1)
     elif k == 'capi':
-        if v not in ('ok', 'error', 'unregistered', 'disabled'):
-            fail('%s: capi must be ok|error|unregistered|disabled' % PROG, 2)
+        if v not in ('ok', 'error', 'forbidden', 'unregistered', 'disabled'):
+            fail('%s: capi must be ok|error|forbidden|unregistered|disabled' % PROG, 2)
         kn[k] = v
+    elif k == 'traefik_bouncer':
+        cs = st.get('cs')
+        if cs is None:
+            fail('%s: no CrowdSec state' % PROG, 2)
+        remove = v.startswith('-')
+        name = v[1:] if remove else v
+        if not name:
+            fail('%s: traefik_bouncer needs a bouncer name' % PROG, 2)
+        cs['bouncers'] = [b for b in cs['bouncers'] if b['name'] != name]
+        if not remove:
+            cs['bouncers'].append({'name': name, 'created': t - 86400, 'updated': t - 20, 'ip': '172.19.0.6', 'type': 'Crowdsec-Bouncer-Traefik-Plugin',
+                                   'version': '1.X.X', 'last_pull': t - 20, 'key': 'k' * 43})
     elif k == 'empty_json':
         kn[k] = None if v in ('', 'auto') else v
     elif k == 'version':

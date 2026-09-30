@@ -554,12 +554,17 @@ _cs_plugin_read_file() {
 
 # JSON: {routes_dir, middleware_file, in_chain, plugin: {...}} — what DCS wrote when it registered the bouncer, and what Traefik's own files say about the plugin
 _cs_enforcement_json() {
-    local dir mw="" chain_file="" in_chain=false decl="" pname="" pver="" mtime=0 settings='{}' loaded=null tr_running=false
+    local dir mw="" chain_file="" in_chain=false decl="" pname="" pver="" mtime=0 settings='{}' loaded=null tr_running=false own='[]'
     dir=$(_find_traefik_routes_dir 2>/dev/null) || dir=""
     if [[ -n "$dir" && -d "$dir" ]]; then
         mw=$(find "$dir" -maxdepth 2 -name 'crowdsec-bouncer.yml' 2>/dev/null | head -n 1)
         chain_file=$(_traefik_chain_file "$dir")
         if [[ -n "$chain_file" ]] && _traefik_chain_has "$chain_file" crowdsec-bouncer; then in_chain=true; fi
+        # the person's own definition of the middleware (in TraefikRoutes.yml, say): every file that defines it except the one DCS wrote
+        local f base own_files=()
+        base="$(dirname "$dir")/"
+        while IFS= read -r f; do [[ -n "$f" && "$f" != "$mw" ]] && own_files+=("${f#"$base"}"); done < <(_traefik_mw_files crowdsec-bouncer "$dir")
+        (( ${#own_files[@]} )) && own=$(printf '%s\n' "${own_files[@]}" | jq -R . | jq -sc .)
     fi
     if [[ -n "$mw" ]]; then mtime=$(stat -c %Y "$mw" 2>/dev/null || echo 0); settings=$(_cs_plugin_read_file "$mw"); fi
     decl=$(_cs_plugin_declared); pname="${decl%%$'\t'*}"; pver="${decl#*$'\t'}"; [[ -n "$decl" ]] || { pname=""; pver=""; }
@@ -568,8 +573,8 @@ _cs_enforcement_json() {
         tr_running=true
         if [[ -n "$decl" ]]; then if _traefik_static_newer 2>/dev/null; then loaded=false; else loaded=true; fi; fi
     fi
-    jq -nc --arg d "$dir" --arg m "$mw" --argjson c "$in_chain" --arg cf "$chain_file" --argjson mt "$mtime" --arg pn "$pname" --arg pv "$pver" --argjson set "$settings" --argjson loaded "$loaded" --argjson run "$tr_running" \
-        '{routes_dir: $d, middleware_file: $m, middleware_present: ($m != ""), middleware_mtime: $mt, in_chain: $c, chain_file: $cf,
+    jq -nc --arg d "$dir" --arg m "$mw" --argjson c "$in_chain" --arg cf "$chain_file" --argjson mt "$mtime" --arg pn "$pname" --arg pv "$pver" --argjson set "$settings" --argjson loaded "$loaded" --argjson run "$tr_running" --argjson own "$own" \
+        '{routes_dir: $d, middleware_file: $m, middleware_present: ($m != ""), middleware_mtime: $mt, in_chain: $c, chain_file: $cf, defined_elsewhere: $own, own_middleware: ($own | length > 0),
           plugin: {declared: ($pn != ""), name: $pn, version: $pv, module: "github.com/maxlerebourg/crowdsec-bouncer-traefik-plugin", traefik_running: $run, loaded: $loaded,
                    settings: $set, mode: ($set.mode // null), managed: ($set.managed // false), key_present: ($set.has_key // false)}}'
 }
@@ -759,33 +764,42 @@ _cs_status_core() {
         local enf; enf=$(_cs_enforcement_json)
         extra=$(jq -nc --argjson d "$details" --argjson tr "$CS_TRAEFIK" --argjson enf "$enf" --arg wd "$CS_WORKDIR" "$_CS_JQ_DEFS"'
             ($d.bouncers | map(select((.type | test("traefik"; "i")) or (.name | test("traefik"; "i")))) | length) as $tb
+            # When the person defines the crowdsec-bouncer middleware themselves, Traefik uses their key and not the bouncer DCS registered: the newest pull of any Traefik bouncer is the one that counts
+            | ($d.bouncers | map(select(((.type // "") | test("traefik"; "i")) or ((.name // "") | test("traefik"; "i"))) | select(.last_pull != null)) | sort_by(.last_pull | iso_secs) | last // null) as $live
+            | (if ($enf.own_middleware // false) and $live != null and (($d.bouncer.registered | not) or ($d.bouncer.last_pull == null) or (($live.last_pull | iso_secs) > ($d.bouncer.last_pull | iso_secs)))
+                 then ($d.bouncer + {registered: true, last_pull: $live.last_pull, pulled_by: $live.name} + (if $d.bouncer.registered then {} else {name: $live.name} end))
+                 else $d.bouncer end) as $b
+            | (($enf.middleware_present or ($enf.own_middleware // false))) as $mwok
             | ( []
               + (if $tr.present and ($d.bouncers | length) == 0 then [{code: "bouncer_missing", severity: "warning", title: "Bans are not enforced at your proxy",
                     detail: "No bouncer is registered, so Traefik never hears about a ban: CrowdSec decides, nothing blocks. Registering the Traefik bouncer fixes it.",
                     fix: {id: "register_bouncer", label: "Register the Traefik bouncer", kind: "api", method: "POST", path: "/crowdsec/bouncers/register-traefik", body: null, primary: true}}] else [] end)
-              + (if $tr.present and $d.bouncer.registered and $enf.routes_dir != "" and (($enf.middleware_present | not) or ($enf.in_chain | not)) then [{code: "bouncer_unchained", severity: "warning", title: "Traefik is not using the bouncer",
-                    detail: "The bouncer is registered in CrowdSec, but its middleware is not in Traefik'"'"'s chain (" + (if $enf.middleware_present then "the chain does not list it" else "the middleware file is missing" end) + "). Registering again rewrites both.",
+              + (if $tr.present and $b.registered and $enf.routes_dir != "" and (($mwok | not) or ($enf.in_chain | not)) then [{code: "bouncer_unchained", severity: "warning", title: "Traefik is not using the bouncer",
+                    detail: "The bouncer is registered in CrowdSec, but its middleware is not in Traefik'"'"'s chain (" + (if $mwok then "the chain does not list it" else "the middleware file is missing" end) + "). Registering again " + (if $enf.own_middleware then "adds it to the chain." else "rewrites both." end),
                     fix: {id: "register_bouncer", label: "Register again", kind: "api", method: "POST", path: "/crowdsec/bouncers/register-traefik", body: null, primary: true}}] else [] end)
-              + (if $tr.present and $d.bouncer.registered and $enf.middleware_present and ($enf.plugin.declared | not) then [{code: "plugin_undeclared", severity: "warning", title: "Traefik does not know the bouncer plugin",
+              + (if $tr.present and $b.registered and $mwok and ($enf.plugin.declared | not) then [{code: "plugin_undeclared", severity: "warning", title: "Traefik does not know the bouncer plugin",
                     detail: "The middleware file is there, but Traefik'"'"'s static configuration does not declare the CrowdSec bouncer plugin, so Traefik refuses the middleware and every route that uses the chain answers 404. Registering again declares it and restarts Traefik once.",
                     fix: {id: "register_bouncer", label: "Register again", kind: "api", method: "POST", path: "/crowdsec/bouncers/register-traefik", body: null, primary: true}}] else [] end)
-              + (if $tr.present and $enf.plugin.declared and ($enf.plugin.loaded == false) and $d.bouncer.registered then [{code: "plugin_not_loaded", severity: "warning", title: "Traefik has not loaded the bouncer plugin yet",
+              + (if $tr.present and $enf.plugin.declared and ($enf.plugin.loaded == false) and $b.registered then [{code: "plugin_not_loaded", severity: "warning", title: "Traefik has not loaded the bouncer plugin yet",
                     detail: "The plugin was declared after Traefik started, and Traefik only loads plugins at start. Until it is restarted the middleware is refused and the routes that use the chain answer 404.",
                     fix: {id: "restart_traefik", label: "Restart Traefik", kind: "api", method: "POST", path: "/crowdsec/traefik/restart", body: null, primary: true}}] else [] end)
-              + (if $tr.present and $d.bouncer.registered and $enf.middleware_present and (($d.bouncer.created_at // "") != "") and (($d.bouncer.created_at | iso_secs) > ($enf.middleware_mtime + 120)) then [{code: "bouncer_key_stale", severity: "warning", title: "Traefik'"'"'s key for the bouncer is out of date",
+              + (if $tr.present and $d.bouncer.registered and $enf.middleware_present and (($enf.own_middleware // false) | not) and (($d.bouncer.created_at // "") != "") and (($d.bouncer.created_at | iso_secs) > ($enf.middleware_mtime + 120)) then [{code: "bouncer_key_stale", severity: "warning", title: "Traefik'"'"'s key for the bouncer is out of date",
                     detail: "The bouncer was registered again after the middleware file was written, so the key in that file no longer opens CrowdSec'"'"'s API and nothing is enforced. Registering again writes a fresh key.",
                     fix: {id: "register_bouncer", label: "Register again", kind: "api", method: "POST", path: "/crowdsec/bouncers/register-traefik", body: null, primary: true}}] else [] end)
-              + (if $tr.present and ($tr.running // false) and $enf.in_chain and $d.bouncer.registered and $d.bouncer.last_pull != null and ((now - ($d.bouncer.last_pull | iso_secs)) > 1800) then [{code: "bouncer_stale", severity: "warning", title: "Traefik has not asked the bouncer for a long time",
+              + (if $tr.present and ($tr.running // false) and $enf.in_chain and $b.registered and $b.last_pull != null and ((now - ($b.last_pull | iso_secs)) > 1800) then [{code: "bouncer_stale", severity: "warning", title: "Traefik has not asked the bouncer for a long time",
                     detail: "The plugin reports in to CrowdSec at least every ten minutes while Traefik runs it. Nothing for over half an hour means Traefik is not running the plugin (or cannot reach CrowdSec). Look at Traefik'"'"'s log; registering again rewrites the key and the middleware.",
                     fix: {id: "register_bouncer", label: "Register again", kind: "api", method: "POST", path: "/crowdsec/bouncers/register-traefik", body: null, primary: false}}] else [] end)
-              + (if $d.bouncer.registered and $d.bouncer.last_pull == null and $tr.present then [{code: "bouncer_idle", severity: "info", title: "Traefik has not asked the bouncer yet",
+              + (if $b.registered and $b.last_pull == null and $tr.present then [{code: "bouncer_idle", severity: "info", title: "Traefik has not asked the bouncer yet",
                     detail: "The bouncer is registered but has never pulled a decision. It starts pulling with the first request that goes through the crowdsec-bouncer middleware.", fix: null}] else [] end)
+              + (if $tr.present and $enf.middleware_present and ($enf.own_middleware // false) then [{code: "bouncer_duplicate", severity: "info", title: "The bouncer middleware is defined twice",
+                    detail: ("Traefik reads crowdsec-bouncer from " + ($enf.defined_elsewhere | join(", ")) + " and skips the copy DCS wrote (" + ($enf.middleware_file | split("/") | .[-2:] | join("/")) + "), so the bouncer DCS registered (" + $d.bouncer.name + ") is not the one in use"
+                      + (if $b.pulled_by then ": Traefik asks CrowdSec as " + $b.pulled_by else "" end) + ". Protection is not affected. Delete DCS'"'"'s copy and its bouncer to tidy up, or keep them as a spare."), fix: null}] else [] end)
               + (if ($d.machines | map((.datasources // {}) | to_entries | map(.value) | add // 0) | add // 0) == 0 then [{code: "no_datasource", severity: "warning", title: "CrowdSec is not reading any log",
                     detail: "No acquisition source is configured, so nothing is analysed and no attack can be detected. The Traefik access log should be listed in /etc/crowdsec/acquis.d.", fix: null}] else [] end)
               + (if $d.counts.updates > 0 then [{code: "hub_updates", severity: "info", title: ($d.counts.updates | tostring) + " hub item(s) can be updated",
                     detail: "Newer versions of installed collections, scenarios or parsers exist. Updating keeps the detections current.",
                     fix: {id: "open_hub", label: "Open the hub", kind: "ui", method: "", path: "", body: null, primary: false}}] else [] end) ) as $issues
-            | {issues: $issues, enforcement: $enf}')
+            | {issues: $issues, enforcement: $enf, bouncer: $b}')
         issues=$(jq -c '.issues' <<< "$extra")
         if [[ "$(jq 'map(select(.severity == "warning")) | length' <<< "$issues")" -gt 0 ]]; then title="CrowdSec is running, but needs attention"; fi
     fi
@@ -1624,6 +1638,18 @@ _cs_bouncer_register() {
     dir=$(_find_traefik_routes_dir) || dir=""
     if [[ -z "$dir" ]]; then echo "[dcs] no Traefik routes directory found, the bouncer was not registered" >> "$log"; return 1; fi
     [[ -f "$tdir/files/bouncer-middleware.yml" ]] || { echo "[dcs] the crowdsec template's bouncer-middleware.yml is missing" >> "$log"; return 1; }
+    # A crowdsec-bouncer middleware the person defined themselves (in TraefikRoutes.yml, say) is the one Traefik uses: it keeps the first definition it reads
+    # and skips the rest, so a second copy would only add an unused key and a second bouncer. Use theirs: put it in the chain and stop.
+    local own mine="$dir/$target_stack/crowdsec-bouncer.yml"
+    own=$(_traefik_mw_files crowdsec-bouncer "$dir" | grep -vxF "$mine" | head -n 1)
+    if [[ -n "$own" && ! -f "$mine" ]]; then
+        _traefik_chain_set crowdsec-bouncer add
+        echo "[dcs] crowdsec-bouncer is defined in ${own#"$(dirname "$dir")/"} already: DCS did not add a second copy or a second bouncer, and it is in traefik-chain" >> "$log"
+        if ! _traefik_ensure_plugin crowdsec-bouncer-traefik-plugin "github.com/maxlerebourg/crowdsec-bouncer-traefik-plugin" "v1.4.4"; then
+            docker restart Traefik >/dev/null 2>>"$log" && echo "[dcs] Traefik restarted to load the bouncer plugin" >> "$log"
+        fi
+        return 0
+    fi
     docker exec "$container" cscli bouncers delete "$CROWDSEC_BOUNCER_NAME" >/dev/null 2>&1 || true
     key=$(docker exec "$container" cscli bouncers add "$CROWDSEC_BOUNCER_NAME" -o raw 2>>"$log" | tail -1 | tr -d '\r\n ')
     if [[ ! "$key" =~ ^[A-Za-z0-9+/=_-]{20,}$ ]]; then echo "[dcs] could not register the Traefik bouncer (cscli gave no key)" >> "$log"; return 1; fi
@@ -1668,7 +1694,9 @@ handle_crowdsec_bouncer_register() {
     local said; said=$(sed 's/^\[dcs\] //' "$log" | tr '\n' ' '); rm -f "$log"
     _cs_cache_clear
     _api_audit_log "${CLIENT_IP:-unknown}" "CROWDSEC_BOUNCER_ADD" "${AUTH_USERNAME:-}" "$CROWDSEC_BOUNCER_NAME (re-registered)"
-    _api_success "$(jq -nc --arg m "$said" '{success: true, name: "'"$CROWDSEC_BOUNCER_NAME"'", message: ("The Traefik bouncer is registered again. " + $m)}')"
+    local lead="The Traefik bouncer is registered again. "
+    [[ "$said" == *"did not add a second copy"* ]] && lead="Nothing new to register. "
+    _api_success "$(jq -nc --arg m "$said" --arg lead "$lead" '{success: true, name: "'"$CROWDSEC_BOUNCER_NAME"'", message: ($lead + $m)}')"
 }
 
 # =============================================================================
@@ -1943,6 +1971,9 @@ handle_crowdsec_community() {
                     console_blocklists: ($t | test("Pulling blocklists from the console is enabled")),
                     error: (if $rc == 0 then null else ($t | split("\n") | map(select(test("^Error|level=(fatal|error)"))) | .[-1] // "CAPI did not answer") end) }')
     [[ "$capi" == \{* ]] || capi='{"registered":false,"reachable":false,"sharing":false,"pulling":false,"console_blocklists":false,"error":"could not read CAPI status"}'
+    # HTTP 403 from the Central API is CrowdSec refusing this server, either its login or its address; the message alone reads like a broken install
+    local hint="HTTP 403: CrowdSec's Central API is refusing this server. It either no longer accepts the login or refuses the server's address. Run: docker exec CrowdSec cscli capi register, then restart CrowdSec. If that is refused with 403 as well, it is the address: that usually clears by itself, and CrowdSec can lift it. Detections, bans and alerts here keep working; only the shared blocklist is missing."
+    capi=$(jq -c --arg hint "$hint" 'if ((.error // "") | test("Forbidden|403")) then .error += " " + $hint | .forbidden = true else . end' <<< "$capi")
     _cs_run out console status -o json || true
     console=$(jq -c '{authenticated: (.console.authenticated // false), enrolled: (.console.enrolled // false), registered: (.console.registered // false), decision_management: (.console.decision_management // false), plan: (.console.plan // ""),
                       sharing: (.sharing_options // {})}' <<< "$out" 2>/dev/null); [[ "$console" == \{* ]] || console='{"authenticated":false,"enrolled":false,"registered":false,"decision_management":false,"plan":"","sharing":{}}'

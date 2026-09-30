@@ -12704,6 +12704,19 @@ _traefik_chain_has() {
         END { exit f ? 0 : 1 }' "$1" 2>/dev/null
 }
 
+# The YAML files (paths on this host, one per line) that define the Traefik middleware NAME: in the routes directory and in the folder above it, like
+# _traefik_chain_file. Traefik keeps the first definition of a name it reads and skips the others, so two files that define one name are worth knowing.
+# Usage: _traefik_mw_files NAME [ROUTES_DIR]
+_traefik_mw_files() {
+    local nm="$1" dir="${2:-}" re
+    [[ -n "$dir" ]] || dir=$(_find_traefik_routes_dir 2>/dev/null) || dir=""
+    [[ -n "$dir" && -d "$dir" ]] || return 0
+    re="^[[:space:]]*[\"']?${nm}[\"']?:[[:space:]]*(#.*)?\$"
+    { grep -rlE "$re" "$dir" --include='*.yml' --include='*.yaml' 2>/dev/null
+      find "$(dirname "$dir")" -maxdepth 1 -type f \( -name '*.yml' -o -name '*.yaml' \) -exec grep -lE "$re" {} + 2>/dev/null; } | LC_ALL=C sort -u
+    return 0
+}
+
 # Every middleware that carries NAME on this proxy, one per line: NAME itself and each chain that lists it, directly or through another chain
 # (traefik-chain, a media-chain, ...). The chains are read by indentation from the YAML files of the routes directory and of the folder above it.
 # Usage: _traefik_chains_with NAME [ROUTES_DIR]

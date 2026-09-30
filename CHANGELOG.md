@@ -5,6 +5,18 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [4.0.2] - 2026-09-30
+
+### Fixed
+
+- **The CrowdSec page said "Traefik has not asked CrowdSec yet" when you define the `crowdsec-bouncer` middleware yourself.** Traefik keeps the first definition of a name it reads,
+  so with your own definition in `TraefikRoutes.yml` and the copy DCS wrote at registration, it uses yours (with your key) and skips DCS's, and the bouncer DCS registered is never asked.
+  The page only watched that bouncer. It counts the newest pull of any Traefik bouncer now, names it (`bouncer.pulled_by`), and shows a note (`bouncer_duplicate`) that the middleware is
+  defined twice. A page with only your own middleware and bouncer reads as a working setup, not as a missing file.
+- **Registering the bouncer wrote a second copy and a second bouncer next to your own middleware** (which is how the false alarm above began: the old chain check told such an
+  install that the chain did not list the bouncer, and *Register again* was the button). It puts your middleware in the chain and stops now.
+- **A 403 from CrowdSec's Central API is explained** on the community row: CrowdSec is refusing this server (its login or its address), what to run, and that detections and bans keep working.
+
 ## [4.0.1] - 2026-09-30
 
 ### Fixed

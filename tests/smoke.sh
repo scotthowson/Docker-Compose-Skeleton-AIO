@@ -4066,6 +4066,11 @@ cst_services_community() {
         cst_call admin GET /crowdsec/community
         cst_j "community/$v" '.capi.reachable' false '.capi.error | length > 10' true '.community_decisions' 40
     done
+    cst_j "community/error: a DNS failure is not called a refusal" '.capi.forbidden' null '.capi.error | test("cscli capi register")' false
+    cst_mock --mock-set capi=forbidden
+    cst_uncache; cst_call admin GET /crowdsec/community
+    cst_j "community/forbidden: the 403 is explained, the community list is what is missing" '.capi.reachable' false '.capi.forbidden' true '.capi.error | test("Forbidden")' true \
+        '.capi.error | test("cscli capi register")' true '.capi.error | test("keep working")' true '.community_decisions' 40
     cst_mock --mock-set capi=ok
 }
 
@@ -5016,6 +5021,56 @@ cst_plugin_fleet() {
     cst_is "fleet: no Traefik here" 409
 }
 
+# ---- a crowdsec-bouncer middleware the person defines themselves (4.0.0 wrote a second copy and a second bouncer, then said Traefik had not asked) --------
+
+cst_plugin_duplicate() {
+    local trf mwf chain tmpl
+    trf="$(cst_tr)/TraefikRoutes.yml"; mwf=$(cst_mwf)
+    chain="$(cst_tr)/custom_routes/core-infrastructure/traefik.yml"; tmpl="$ROOT/.templates/traefik/config/custom_routes/core-infrastructure/traefik.yml"
+    cst_plugin_world
+    cst_call admin GET /crowdsec/status
+    cst_j "duplicate: only DCS's own middleware: nothing elsewhere, the idle note as before" '.enforcement.own_middleware' false '.enforcement.defined_elsewhere | length' 0 \
+        '.issues | map(.code) | index("bouncer_idle") != null' true '.issues | map(.code) | index("bouncer_duplicate")' null '.bouncer.pulled_by' null
+    # -- the person defines the middleware too, and Traefik asks CrowdSec as a bouncer of their own
+    printf 'http:\n  middlewares:\n    crowdsec-bouncer:\n      plugin:\n        crowdsec-bouncer-traefik-plugin:\n          enabled: "true"\n          crowdsecLapiKey: theirs\n' > "$trf"
+    cst_mock --mock-set traefik_bouncer=traefik-bouncer@172.19.0.6
+    cst_uncache; cst_call admin GET /crowdsec/status
+    cst_j "duplicate: the second definition is seen" '.enforcement.own_middleware' true '.enforcement.defined_elsewhere | join(",")' TraefikRoutes.yml
+    cst_j "duplicate: …the pull of the Traefik bouncer in use counts, whose key it is" '.bouncer.pulled_by' traefik-bouncer@172.19.0.6 '.bouncer.last_pull != null' true '.bouncer.registered' true
+    cst_j "duplicate: …no 'has not asked yet', a plain note that there are two copies" '.issues | map(.code) | index("bouncer_idle")' null \
+        '.issues | map(select(.code == "bouncer_duplicate"))[0].severity' info '.issues | map(select(.code == "bouncer_duplicate"))[0].detail | test("TraefikRoutes.yml")' true
+    cst_t "duplicate: …and nothing needs attention" '.state == "healthy" and ((.issues | map(select(.severity == "warning")) | length) == 0)'
+    # -- a pull older than half an hour is stale, whoever made it
+    cst_mock --mock-tick 2000
+    cst_uncache; cst_call admin GET /crowdsec/status
+    cst_j "duplicate: a pull older than half an hour is stale" '.issues | map(.code) | index("bouncer_stale") != null' true
+    cst_mock --mock-set traefik_bouncer=traefik-bouncer@172.19.0.6
+    # -- Traefik does not ask at all: the idle note comes back
+    cst_mock --mock-set traefik_bouncer=-traefik-bouncer@172.19.0.6
+    cst_uncache; cst_call admin GET /crowdsec/status
+    cst_j "duplicate: no Traefik bouncer pulled: the idle note is right" '.issues | map(.code) | index("bouncer_idle") != null' true '.bouncer.pulled_by' null
+    # -- only the person's own middleware (DCS never wrote one): their bouncer is the bouncer
+    cst_mock --mock-set traefik_bouncer=traefik-bouncer@172.19.0.6
+    rm -f "$mwf"; cst_cs bouncers delete dcs-traefik-bouncer >/dev/null 2>&1
+    cst_uncache; cst_call admin GET /crowdsec/status
+    cst_j "duplicate: only their own middleware: it is the bouncer, no missing-file complaint" '.bouncer.registered' true '.bouncer.name' traefik-bouncer@172.19.0.6 '.enforcement.middleware_present' false \
+        '.issues | map(.code) | inside(["hub_updates"])' true
+    # -- registering does not write a second copy or a second bouncer, and puts their middleware in the chain
+    sed -i '/- "crowdsec-bouncer"/d' "$chain"
+    cst_call admin POST /crowdsec/bouncers/register-traefik
+    cst_is "duplicate: registering with their own middleware" 200
+    cst_t "duplicate: …says nothing was added" '.message | test("did not add a second copy")'
+    check "duplicate: …no file of DCS's" no "$([[ -e "$mwf" ]] && echo yes || echo no)"
+    check "duplicate: …no bouncer of DCS's" 0 "$(cst_cs bouncers list -o json | jq '[.[] | select(.name == "dcs-traefik-bouncer")] | length')"
+    check "duplicate: …their middleware is in the chain" 1 "$(grep -c 'crowdsec-bouncer' "$chain")"
+    # -- the same button, DCS's own copy is there already: it is rewritten as always
+    rm -f "$trf"; cp -p "$tmpl" "$chain"
+    cst_call admin POST /crowdsec/bouncers/register-traefik
+    cst_is "duplicate: registering with no other definition" 200
+    check "duplicate: …DCS writes its file as before" yes "$([[ -e "$mwf" ]] && echo yes || echo no)"
+    check "duplicate: …and its bouncer" 1 "$(cst_cs bouncers list -o json | jq '[.[] | select(.name == "dcs-traefik-bouncer")] | length')"
+}
+
 cst_part_plugin() {
     echo "CrowdSec page: the Traefik bouncer plugin, its settings, and the routes it checks"
     cst_plugin_status
@@ -5027,6 +5082,7 @@ cst_part_plugin() {
     cst_plugin_restart
     cst_plugin_routes
     cst_plugin_fleet
+    cst_plugin_duplicate
 }
 
 # ---- the ban profile: settings.json, profiles.yaml, backups, the restart and the way back ---------------------------------------------
