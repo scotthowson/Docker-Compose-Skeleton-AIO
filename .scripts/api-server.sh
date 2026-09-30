@@ -8448,9 +8448,23 @@ handle_stack_activity() {
 # SYSTEM UPDATE MANAGEMENT
 # =============================================================================
 
+# The dashboard image the core-infrastructure stack runs, as its compose file names it: a release says :latest, a release
+# candidate pins its own tag (tests/lint.sh keeps the tag and VERSION in step), so the update check and the update follow the file.
+_dcs_ui_image() {
+    local cf img=""
+    for cf in "$COMPOSE_DIR"/*/docker-compose.yml; do
+        grep -q 'container_name: DCS-UI' "$cf" 2>/dev/null || continue
+        img=$(sed -n -E "s/^[[:space:]]+image:[[:space:]]*[\"']?(ghcr\.io\/[^\"'[:space:]]+-ui:[^\"'[:space:]]+)[\"']?[[:space:]]*(#.*)?\$/\1/p" "$cf" | head -1)
+        break
+    done
+    [[ "$img" == *'$'* ]] && img=""
+    printf '%s' "${img:-ghcr.io/scotthowson/docker-compose-skeleton-ui:latest}"
+}
+
 # Check if DCS-UI Docker image has a newer version available on GHCR
 _check_ui_image_update() {
-    local ui_image="ghcr.io/scotthowson/docker-compose-skeleton-ui:latest"
+    local ui_image ui_repo ui_tag
+    ui_image=$(_dcs_ui_image); ui_repo="${ui_image#ghcr.io/}"; ui_repo="${ui_repo%:*}"; ui_tag="${ui_image##*:}"
     local result='{"available": false}'
 
     # Check if DCS-UI container exists
@@ -8471,12 +8485,12 @@ _check_ui_image_update() {
     # Get remote manifest list digest from GHCR registry API (HEAD request for Docker-Content-Digest).
     # This returns the same digest type as RepoDigests, so comparison is valid.
     local remote_digest _ghcr_token
-    _ghcr_token=$(timeout 5 curl -sf "https://ghcr.io/token?scope=repository:scotthowson/docker-compose-skeleton-ui:pull" 2>/dev/null | jq -r '.token // empty' 2>/dev/null)
+    _ghcr_token=$(timeout 5 curl -sf "https://ghcr.io/token?scope=repository:${ui_repo}:pull" 2>/dev/null | jq -r '.token // empty' 2>/dev/null)
     if [[ -n "$_ghcr_token" ]]; then
         remote_digest=$(timeout 5 curl -sfI \
             -H "Authorization: Bearer $_ghcr_token" \
             -H "Accept: application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.docker.distribution.manifest.v2+json" \
-            "https://ghcr.io/v2/scotthowson/docker-compose-skeleton-ui/manifests/latest" 2>/dev/null \
+            "https://ghcr.io/v2/${ui_repo}/manifests/${ui_tag}" 2>/dev/null \
             | grep -i 'docker-content-digest' | awk '{print $2}' | tr -d '\r\n')
     fi
 
@@ -8497,7 +8511,8 @@ _check_ui_image_update() {
 handle_ui_update_apply() {
     if ! _api_check_admin; then _api_error 403 "Admin access required"; return; fi
 
-    local ui_image="ghcr.io/scotthowson/docker-compose-skeleton-ui:latest"
+    local ui_image
+    ui_image=$(_dcs_ui_image)
 
     if ! docker inspect DCS-UI >/dev/null 2>&1; then
         _api_error 404 "DCS-UI container not found"

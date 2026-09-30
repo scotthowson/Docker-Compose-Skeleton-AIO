@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to Docker Compose Skeleton AIO are documented here.
+All notable changes to DCS Orchestrator are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
@@ -79,7 +79,10 @@ address); `GET /routes` says for every route, VMs' routes included, whether the 
   `LOG_RETENTION_DAYS` were in `.env.example`, the schema, `settings.cfg` and the Config page, and switching them did nothing (their
   defaults did not even agree). They are not offered any more; a `.env` that still has them keeps working, and `POST /config` accepts and
   ignores them so an older dashboard can still save.
-
+- **A release candidate runs its own dashboard.** `Stacks/core-infrastructure/docker-compose.yml` names the dashboard image, and while `VERSION`
+  is a release candidate (`4.0.0-rc.1`) it pins that tag; a release says `:latest` again. The dashboard's update check and its update read the
+  image from that file, so a hub (or a hub VM image) made from a release candidate shows the dashboard of the same version, and `tests/lint.sh`
+  keeps the tag and `VERSION` in step.
 - **`sudo` in the web terminal can write `/usr` and `/etc`.** The API service no longer sets `ProtectSystem=full` (it made both read-only
   for everything the service starts, sudo included, so `sudo apt install` failed with "Read-only file system"). `PrivateTmp` and the
   kernel and cgroup protections stay, and the OS and Docker Engine updates still run through `systemd-run`. Units installed before are

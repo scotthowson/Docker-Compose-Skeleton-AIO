@@ -179,6 +179,14 @@ check "heartbeat: the normal path still logs it"           1 "$(grep -c 'GET /pi
 
 echo "Automations, schedules and the cron matcher"
 _lib() { local -a _c=("$@"); ( set --; source "$API" >/dev/null 2>&1; "${_c[@]}" ) 2>/dev/null; }
+# the dashboard image is the one the core stack's compose file names: :latest for a release, a pinned tag for a release candidate
+UIC="$WORK/uic"; mkdir -p "$UIC/core" "$UIC/other"
+printf 'services:\n  dcs-ui:\n    container_name: DCS-UI\n    image: ghcr.io/scotthowson/docker-compose-skeleton-ui:4.0.0-rc.1\n' > "$UIC/core/docker-compose.yml"
+printf 'services:\n  x:\n    container_name: Other\n    image: nginx:1\n' > "$UIC/other/docker-compose.yml"
+check "dashboard image: a pinned tag is followed"     "ghcr.io/scotthowson/docker-compose-skeleton-ui:4.0.0-rc.1" "$(COMPOSE_DIR=$UIC _lib _dcs_ui_image)"
+check "dashboard image: none named, then latest"       "ghcr.io/scotthowson/docker-compose-skeleton-ui:latest" "$(COMPOSE_DIR=$UIC/other _lib _dcs_ui_image)"
+sed -i 's#docker-compose-skeleton-ui:4.0.0-rc.1#docker-compose-skeleton-ui:${TAG:-latest}#' "$UIC/core/docker-compose.yml"
+check "dashboard image: a variable is not followed"   "ghcr.io/scotthowson/docker-compose-skeleton-ui:latest" "$(COMPOSE_DIR=$UIC _lib _dcs_ui_image)"
 VTOKEN=$(request POST /auth/login '{"username":"viewer","password":"viewer-pass-123"}' "${AUTH[@]}" | body_of | jq -r '.token // empty')
 check "viewer signed in again"          200 "$(viewer_request GET /stacks | status_of)"
 # Schedules run in the installation's TZ (from .env); compute test instants the same way
