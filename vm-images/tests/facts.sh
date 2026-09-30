@@ -31,9 +31,10 @@ echo "lsm=$(cat /sys/kernel/security/lsm 2>/dev/null)"
 echo "swap=$(swapon --noheadings 2>/dev/null | wc -l)"
 echo "agent=$(sudo systemctl is-active qemu-guest-agent 2>/dev/null)"
 echo "getty_vga=$(sudo systemctl is-active getty@tty1 2>/dev/null)"
-# Some hosts make a guest kernel log these at error level, and they mean nothing: no microcode to load in a VM, no TDX, and the AMX
-# tile-state size an emulated CPU reports (the CI runners' CPUs differ from run to run, so without this the check flaked).
-KERR=$(sudo dmesg --level=emerg,alert,crit,err 2>/dev/null | grep -v -e "microcode" -e "TDX not supported" -e "XFEATURE_XTILE_DATA")
+# Some hosts make a guest kernel log these at error level, and they say nothing about the image: no microcode to load in a VM, no TDX, and the
+# notices about the host CPU's vulnerabilities and features (RETBleed, Spectre, MDS, the AMX tile size ...). A CI runner's CPU differs from run to
+# run, so without this the same image passed on one runner and failed on the next. Real errors (file system, I/O, oops, a unit that failed) still count.
+KERR=$(sudo dmesg --level=emerg,alert,crit,err 2>/dev/null | grep -v -i -E "microcode|TDX not supported|XFEATURE_XTILE_DATA|RETBleed|Spectre|Meltdown|Speculative|MDS:|TAA:|MMIO|SRBDS|L1TF|Downfall|Gather Data Sampling|SRSO|vulnerab")
 echo "kernel_errors=$(grep -c . <<<"$KERR")"
 echo "kernel_error_text=$(head -n 4 <<<"$KERR" | tr '\n' '|' | cut -c1-500)"
 echo "top=$(ps -eo rss,comm --sort=-rss --no-headers | head -6 | awk "{printf \"%s(%dM) \", \$2, \$1/1024}")"
