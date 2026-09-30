@@ -151,6 +151,7 @@ chk "no failed units${FACTS:+ ($(get failed))}" [ -z "$(get failed | tr -d " ")"
 chk "the guest agent runs"                     [ "$(get agent)" = active ]
 chk "the VGA console (noVNC) has a login prompt" [ "$(get getty_vga)" = active ]
 chk "the kernel logged no errors"              [ "$(get kernel_errors)" = 0 ]
+[[ "$(get kernel_errors)" = 0 ]] || echo "        kernel said: $(get kernel_error_text)"
 chk "ssh takes keys only, root cannot log in"  [ "$(get ssh_keys_only)" = yes ]
 chk "ssh has the one ed25519 host key"         [ "$(get ssh_hostkeys | tr -d " ")" = ssh_host_ed25519_key ]
 chk "the root account has no password"         [ "$(get root_locked)" = L ]
