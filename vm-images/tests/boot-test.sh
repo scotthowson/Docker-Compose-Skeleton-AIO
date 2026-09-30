@@ -156,10 +156,17 @@ chk "ssh has the one ed25519 host key"         [ "$(get ssh_hostkeys | tr -d " "
 chk "the root account has no password"         [ "$(get root_locked)" = L ]
 chk "the disk grew into the larger virtual disk (${GROW} GB → $(get root_gb) GB)" [ "$(get root_gb)" -ge $((GROW - 1)) ]
 if [[ $NET == 1 ]]; then
-    HW=$("${SSH[@]}" "timeout 120 docker run --rm ${DCS_TEST_REGISTRY:-}hello-world 2>&1 | grep -c 'Hello from Docker'" 2>/dev/null)
+    # a hub is busy with its first start (the dashboard image is pulled, containers are created): on a slow machine, such as a
+    # CI runner with nested KVM, the container checks ran in the middle of it and failed, so they wait for its end
+    if [[ $ROLE == hub ]]; then
+        for _ in $(seq 1 180); do "${SSH[@]}" 'test -e /var/lib/dcs-init/hub-done' 2>/dev/null && break; sleep 2; done
+    fi
+    HWOUT=$("${SSH[@]}" "timeout 120 docker run --rm ${DCS_TEST_REGISTRY:-}hello-world 2>&1" 2>/dev/null); HW=$(grep -c 'Hello from Docker' <<< "$HWOUT")
     chk "a container runs (hello-world pulled and started)" [ "${HW:-0}" -ge 1 ]
-    OUTB=$("${SSH[@]}" "timeout 90 docker run --rm ${DCS_TEST_REGISTRY:-}alpine:3 wget -q -O- -T 10 https://example.com 2>&1 | grep -c 'Example Domain'" 2>/dev/null)
+    [[ "${HW:-0}" -ge 1 ]] || echo "        docker said: $(tail -n 3 <<< "$HWOUT" | tr '\n' ' ' | cut -c1-300)"
+    OUTBOUT=$("${SSH[@]}" "timeout 90 docker run --rm ${DCS_TEST_REGISTRY:-}alpine:3 wget -q -O- -T 10 https://example.com 2>&1" 2>/dev/null); OUTB=$(grep -c 'Example Domain' <<< "$OUTBOUT")
     chk "a container reaches the internet (outbound NAT)" [ "${OUTB:-0}" -ge 1 ]
+    [[ "${OUTB:-0}" -ge 1 ]] || echo "        docker said: $(tail -n 3 <<< "$OUTBOUT" | tr '\n' ' ' | cut -c1-300)"
     PUB=$("${SSH[@]}" "DCS_TEST_REGISTRY='${DCS_TEST_REGISTRY:-}' bash -s" 2>/dev/null <<'PUBTEST'
 mkdir -p /tmp/pubtest && cd /tmp/pubtest
 printf 'services:\n  web:\n    image: ${DCS_TEST_REGISTRY:-}nginx:alpine\n    ports: ["18080:80"]\n' > compose.yml
