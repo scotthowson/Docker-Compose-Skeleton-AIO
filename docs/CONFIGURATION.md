@@ -121,6 +121,7 @@ deploy real services. On a hub, a stack that runs in a VM is never started on th
 | `DDNS_SUBDOMAINS` | `@` | Records to update (`@` is the domain itself, `*` the wildcard) |
 | `DASHBOARD_PUBLIC_URL` | *(empty)* | Where notification links point; defaults to `https://ui.<PROXY_DOMAIN>` |
 | `CROWDSEC_TRUSTED_IPS` | *(empty)* | Addresses CrowdSec must never ban, beside your public address |
+| `CROWDSEC_MEDIA_APPS` | `jellyfin` | Media apps whose web client CrowdSec must not take for a crawler: comma separated Traefik service hosts (the container name in the route's URL). Empty turns it off. [Details](CROWDSEC.md#media-apps-a-web-client-is-not-a-crawler) |
 
 **A Traefik on another machine** pulls this server's routes as a feed:
 

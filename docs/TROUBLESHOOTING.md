@@ -62,6 +62,7 @@ VM builds, the [Proxmox guide's table](PROXMOX.md#7-troubleshooting) goes step b
 | The browser warns about the certificate, or Cloudflare answers `526` | Traefik has no certificate yet. With a Cloudflare token it uses the DNS challenge; without one, port 80 must reach Traefik for the HTTP challenge. The **Certificates** panel on *DNS & Routes* (`GET /routes/certificates`) shows the challenge, every certificate and the last ACME errors. |
 | Traefik answers `404` for an app | The route names a middleware or service that does not exist, or another domain. The same Certificates panel probes every route and names the usual cause. |
 | CrowdSec banned your own address (the site works on the phone, not on the PC) | The **Protection** card on the dashboard has *Unban me* and *Trust my address*. Your public address is whitelisted every ten minutes; `CROWDSEC_TRUSTED_IPS` pins more. |
+| CrowdSec banned somebody just for using Jellyfin (or another media app) | The alert says `http-crawl-non_statics` or `http-probing`: one page of the web client makes dozens of requests. `CROWDSEC_MEDIA_APPS` (default `jellyfin`) names the apps whose answered requests are not counted: [media apps](CROWDSEC.md#media-apps-a-web-client-is-not-a-crawler). |
 | DNS records are missing or wrong | The *DNS & Routes* page manages the Cloudflare zone and links each record to the route that uses it; *Create N missing* makes the records routes lack. Keep the token as the secret `CF_DNS_API_TOKEN`. |
 
 ## Updates

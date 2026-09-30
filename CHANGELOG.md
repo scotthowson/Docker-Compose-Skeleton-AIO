@@ -5,6 +5,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **`CROWDSEC_MEDIA_APPS`: a media app's web client is not a crawler.** One page of Jellyfin's web client makes dozens of API and artwork requests in a second, some of them answered 404
+  (an item without a logo), and CrowdSec's generic HTTP scenarios (`http-crawl-non_statics`, `http-probing`) banned a friend who was just watching. The setting names the Traefik backends
+  that are media apps (comma separated service hosts, default `jellyfin`, empty turns it off). For them DCS keeps `parsers/s02-enrich/dcs-media-apps.yaml` in CrowdSec's configuration,
+  next to the whitelist's file: it is written when it differs, removed when the setting is empty, and CrowdSec reloads only then. The file ignores what the app **answered** (a `GET` or `HEAD`
+  with 2xx/3xx, unless the path tries to leave the web root) and a 404 on an item's picture; 404/403/400/401 answers, other methods, path traversal and every other backend are judged
+  as before, so scanners and brute forcers are still banned. Names are checked (`^[a-z0-9][a-z0-9_.-]*$`, any case) before they go into the file. See
+  [docs/CROWDSEC.md](docs/CROWDSEC.md#media-apps-a-web-client-is-not-a-crawler).
+
 ### Changed
 
 - **Docs: the cloud-init key step of the hub VM no longer fails on a fresh Proxmox host.** [Getting Started](docs/GETTING-STARTED.md), step 4, used `--sshkeys /root/my-key.pub` without saying where
@@ -12,6 +22,19 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   only). The step now makes the key (`ssh-keygen`), copies it (`scp`), shows it (`cat`), guards the `qm set` line (an `if [ -s ... ]`, so the VM is never started without a key) and says how to recover
   (`qm set` again, `qm reboot`, the serial console with `--cipassword`). The by-hand example in [VM-IMAGES.md](docs/VM-IMAGES.md) used `~/.ssh/id_ed25519.pub`, which a Proxmox host does not
   have either; it points to the same step now, and the troubleshooting table has the message.
+
+### Fixed
+
+- **Every whitelist sync rewrote `dcs-whitelist.yaml` and reloaded CrowdSec, although nothing had changed.** The file was compared with the text it ends in a newline, and `$(cat …)` drops
+  that newline, so the two never matched: CrowdSec got a reload every ten minutes (and every DDNS check). It is compared as it is written now, and the reload, like the
+  `reloaded` field of `.data/crowdsec-whitelist.json`, means the file really changed.
+
+### Tests
+
+- `tests/smoke.sh` (`SMOKE_CS_PARTS=mediaapps`): the file for the default, two names, an empty setting, names that are not host names and letters of other alphabets; a sync that changes nothing
+  rewrites nothing and reloads nothing; one reload for a change; CrowdSec absent or stopped; a loop that started with another value follows `.env`.
+- `tests/crowdsec-media-apps.sh` (opt-in: Docker, the CrowdSec image, the network): the file DCS writes, replayed through the real CrowdSec twice, without it and with it, over fifteen kinds
+  of traffic: page loads are not alerts any more, scanners, brute forcers, traversal and other backends alert exactly as before.
 
 ## [4.0.4] - 2026-09-30
 

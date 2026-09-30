@@ -2483,7 +2483,7 @@ fi   # (end of the sections SMOKE_ONLY=crowdsec skips)
 #
 #   SMOKE_ONLY=crowdsec tests/smoke.sh                       just this section (about a minute on 8 or more cores; the lanes below run side by side)
 #   SMOKE_ONLY=crowdsec SMOKE_CS_PARTS="status bans" tests/smoke.sh   only some of its parts: status allowlist alerts units bans settings notify services hub
-#                                                            security large plugin importbig (see cst_main for the lane each one runs in)
+#                                                            security large plugin importbig mediaapps (see cst_main for the lane each one runs in)
 #   SMOKE_CS_LANES=1     one lane, the parts in order, the output live (default: nine lanes at once, each one's output printed when all are done)
 #   SMOKE_CS_JOBS=N      how many requests of a batch are sent at once (default 4)
 #   SMOKE_JQ16=/path     a jq 1.6 to run the section's jq programs with (units part); without one that check is skipped
@@ -2630,7 +2630,7 @@ PY
     cat > "$CST/run1.sh" <<'SH'
 #!/bin/bash
 n="$1"; mapfile -t e < "$CST_RUN_Q/$n.env"
-timeout 180 env -u SOCAT_PEERADDR -u NCAT_REMOTE_ADDR -u DISCORD_WEBHOOK_URL -u CROWDSEC_TRUSTED_IPS PATH="$CST_RUN_BIN:$PATH" DOCKER_COMPOSE_CMD="docker compose" API_RATE_LIMIT=0 DCS_API_EFFECTIVE_AUTH=true DCS_API_EFFECTIVE_BIND=127.0.0.1 \
+timeout 180 env -u SOCAT_PEERADDR -u NCAT_REMOTE_ADDR -u DISCORD_WEBHOOK_URL -u CROWDSEC_TRUSTED_IPS -u CROWDSEC_MEDIA_APPS PATH="$CST_RUN_BIN:$PATH" DOCKER_COMPOSE_CMD="docker compose" API_RATE_LIMIT=0 DCS_API_EFFECTIVE_AUTH=true DCS_API_EFFECTIVE_BIND=127.0.0.1 \
     ${CST_RUN_LOC:+"LC_ALL=$CST_RUN_LOC"} "${e[@]}" "$CST_RUN_API" --handle-request < "$CST_RUN_Q/$n.req" > "$CST_RUN_Q/$n.out" 2>>"$CST_RUN_Q/../api-stderr.log"
 SH
     CST_RUN_BIN="$CST/bin"; CST_RUN_API="$CST_API"; CST_RUN_Q="$CST/q"; CST_RUN_LOC="$CST_LOC"
@@ -2660,7 +2660,7 @@ cst_call() {
     shift 4 2>/dev/null || shift $#
     case "$role" in admin) hdr=$'Authorization: Bearer '"$CST_ADM"$'\r\n' ;; viewer) hdr=$'Authorization: Bearer '"$CST_VWR"$'\r\n' ;; esac
     CST_RAW=$(printf '%s %s HTTP/1.1\r\nHost: test\r\n%sContent-Length: %d\r\n\r\n%s' "$m" "$p" "$hdr" "$(printf '%s' "$b" | wc -c)" "$b" \
-        | timeout "${CST_TIMEOUT:-180}" env -u SOCAT_PEERADDR -u NCAT_REMOTE_ADDR -u DISCORD_WEBHOOK_URL -u CROWDSEC_TRUSTED_IPS PATH="$CST/bin:$PATH" "${CST_ENV[@]}" "$@" "$CST_API" --handle-request 2>>"$CST/api-stderr.log")
+        | timeout "${CST_TIMEOUT:-180}" env -u SOCAT_PEERADDR -u NCAT_REMOTE_ADDR -u DISCORD_WEBHOOK_URL -u CROWDSEC_TRUSTED_IPS -u CROWDSEC_MEDIA_APPS PATH="$CST/bin:$PATH" "${CST_ENV[@]}" "$@" "$CST_API" --handle-request 2>>"$CST/api-stderr.log")
     CST_ST="${CST_RAW:9:3}"; CST_BODY="${CST_RAW#*$'\r\n\r\n'}"
 }
 
@@ -3836,6 +3836,156 @@ cst_part_allowlist() {
     echo "CrowdSec page: the allowlist"
     cst_allowlist_native
     cst_allowlist_parser
+}
+
+# ---- media apps: CROWDSEC_MEDIA_APPS is a parser file beside the whitelist's (what CrowdSec makes of it is tests/crowdsec-media-apps.sh) ----------------
+
+cst_ma_names() { sed -n 's/^.*service_addr) in \[\(.*\)\]$/\1/p' "$1" 2>/dev/null | sort -u | tr '\n' ' ' | sed 's/ $//'; }       # the backends a file lists, as written
+cst_hups_since() { cst_argv_since "$1" | sed 's/\\//g' | grep -c 'kill -s HUP CrowdSec'; }                                        # how often CrowdSec was told to reload since a mark
+cst_ma_sync() { cst_call admin POST /crowdsec/trust '{"ip":"198.18.70.1"}'; }                                                     # (a request that runs the sync)
+
+cst_media_apps() {
+    local f w mark ino wino loc bad n
+    f="$CST/fake/rootfs/etc/crowdsec/parsers/s02-enrich/dcs-media-apps.yaml"
+    w="$CST/fake/rootfs/etc/crowdsec/parsers/s02-enrich/dcs-whitelist.yaml"
+    cst_world data
+    printf '198.51.100.9\n' > "$CST/.data/ddns-current-ip"            # the home address DDNS keeps (no lookup on the network is needed)
+
+    # -- not set at all: jellyfin is the default; the first sync writes both parser files and CrowdSec reloads once for the two
+    sed -i '/^CROWDSEC_MEDIA_APPS=/d' "$CST/.env"
+    mark=$(cst_argv_n)
+    cst_ma_sync
+    cst_is "media apps: a sync" 200
+    check "media apps: the file is written (unset means jellyfin)" "'jellyfin'" "$(cst_ma_names "$f")"
+    check "media apps: …both expressions name it" 2 "$(grep -c "service_addr) in \['jellyfin'\]" "$f")"
+    check "media apps: …a parser of CrowdSec's enrich stage with DCS's name" "custom/dcs-media-apps" "$(sed -n 's/^name: //p' "$f")"
+    check "media apps: …one reload covers both files" 1 "$(cst_hups_since "$mark")"
+    # -- a sync that finds nothing to do rewrites nothing and reloads nothing (the whitelist's file too: every sync used to rewrite it and reload CrowdSec)
+    ino=$(stat -c %i "$f"); wino=$(stat -c %i "$w"); mark=$(cst_argv_n)
+    cst_ma_sync
+    cst_is "media apps: the same sync again" 200
+    check "media apps: …nothing is rewritten" "$ino $wino" "$(stat -c %i "$f") $(stat -c %i "$w")"
+    check "media apps: …and CrowdSec is not told to reload" 0 "$(cst_hups_since "$mark")"
+    check "media apps: …no temporary file is left behind" 0 "$(find "${f%/*}" -name '*.tmp' | wc -l | tr -d ' ')"
+
+    # -- the setting: any case, spaces, a name twice; a change reloads once, the same names in another spelling are no change
+    cst_env CROWDSEC_MEDIA_APPS 'jellyfin, Plex ,plex'
+    mark=$(cst_argv_n)
+    cst_ma_sync
+    check "media apps: two names, sorted, each once, lower case" "'jellyfin', 'plex'" "$(cst_ma_names "$f")"
+    check "media apps: …a change reloads CrowdSec once" 1 "$(cst_hups_since "$mark")"
+    ino=$(stat -c %i "$f"); mark=$(cst_argv_n)
+    cst_env CROWDSEC_MEDIA_APPS 'PLEX,jellyfin'
+    cst_ma_sync
+    check "media apps: …the same names in another spelling are no change" "$ino 0" "$(stat -c %i "$f") $(cst_hups_since "$mark")"
+
+    # -- a name that is not a plain host name is dropped, and no text of it reaches the file
+    cst_env CROWDSEC_MEDIA_APPS "jellyfin,evil'] || true,zz yy,../x,-x,plex:32400,ünï,x\$(id),\`id\`,*,a;b"
+    cst_ma_sync
+    check "media apps: invalid names are dropped" "'jellyfin'" "$(cst_ma_names "$f")"
+    check "media apps: …and nothing of them is in the file" 0 "$(grep -cF -e evil -e '||' -e '../x' -e 'plex' -e 'ünï' -e 'x$(id)' -e 'a;b' -e 'zz yy' "$f")"
+    cst_env CROWDSEC_MEDIA_APPS "evil'],zz yy"
+    mark=$(cst_argv_n)
+    cst_ma_sync
+    check "media apps: nothing valid left: the file goes, CrowdSec reloads once" "no 1" "$([[ -e "$f" ]] && echo yes || echo no) $(cst_hups_since "$mark")"
+    mark=$(cst_argv_n)
+    cst_ma_sync
+    check "media apps: …and again: nothing to do" "no 0" "$([[ -e "$f" ]] && echo yes || echo no) $(cst_hups_since "$mark")"
+
+    # -- empty turns it off; a hand edit of the managed file is put back
+    cst_env CROWDSEC_MEDIA_APPS jellyfin
+    cst_ma_sync
+    check "media apps: on again" "'jellyfin'" "$(cst_ma_names "$f")"
+    cst_env CROWDSEC_MEDIA_APPS
+    mark=$(cst_argv_n)
+    cst_ma_sync
+    check "media apps: empty turns it off: the file goes, CrowdSec reloads once" "no 1" "$([[ -e "$f" ]] && echo yes || echo no) $(cst_hups_since "$mark")"
+    check "media apps: …the whitelist's file stays" yes "$([[ -s "$w" ]] && echo yes || echo no)"
+    mark=$(cst_argv_n)
+    cst_ma_sync
+    check "media apps: …switched off again: nothing to do" "no 0" "$([[ -e "$f" ]] && echo yes || echo no) $(cst_hups_since "$mark")"
+    cst_env CROWDSEC_MEDIA_APPS jellyfin
+    cst_ma_sync
+    printf '# a hand edit\n' >> "$f"
+    mark=$(cst_argv_n)
+    cst_ma_sync
+    check "media apps: a hand edit of the file is put back, CrowdSec reloads once" "0 1" "$(grep -c 'a hand edit' "$f") $(cst_hups_since "$mark")"
+
+    # -- the loops that run the sync for ever keep the .env they started with: the sync reads the setting from the file, so it neither misses a change nor undoes it
+    cst_env CROWDSEC_MEDIA_APPS plex
+    n=$( (
+        set +u
+        export PATH="$CST/bin:$PATH" BASE_DIR="$CST"
+        set --
+        source "$CST_API" >/dev/null 2>&1
+        set +e
+        CROWDSEC_MEDIA_APPS='stale-value'
+        _crowdsec_whitelist_sync; echo "rc=$?"
+    ) 2>/dev/null | tail -n 1 )
+    check "media apps: a process that started with another value follows .env" "rc=0 'plex'" "$n $(cst_ma_names "$f")"
+    cst_env CROWDSEC_MEDIA_APPS jellyfin
+
+    # -- no CrowdSec to keep it for (not deployed, or not running): nothing is written and nothing breaks
+    for n in absent stopped; do
+        cst_world "$n"
+        cst_ma_sync
+        cst_is "media apps: CrowdSec is $n: the sync still answers" 200
+        cst_j "media apps: …and says nothing was synced" '.synced' false
+        check "media apps: …no parser file anywhere" 0 "$(find "$CST/fake" -name 'dcs-*.yaml' 2>/dev/null | wc -l | tr -d ' ')"
+    done
+
+    # -- the setting through the API reaches the file
+    cst_world data
+    printf '198.51.100.9\n' > "$CST/.data/ddns-current-ip"
+    cst_call admin POST /config '{"CROWDSEC_MEDIA_APPS":"jellyfin,plex"}'
+    cst_is "media apps: POST /config takes the setting" 200
+    check "media apps: …it is in .env" "CROWDSEC_MEDIA_APPS=jellyfin,plex" "$(grep '^CROWDSEC_MEDIA_APPS=' "$CST/.env")"
+    cst_ma_sync
+    check "media apps: …and in the parser file" "'jellyfin', 'plex'" "$(cst_ma_names "$f")"
+    cst_call viewer POST /config '{"CROWDSEC_MEDIA_APPS":""}'
+    cst_is "media apps: …a viewer may not change it" 403
+    cst_call admin POST /config '{"CROWDSEC_MEDIA_APPZ":"x"}'
+    cst_is "media apps: …and a misspelt key is refused" 400
+
+    # -- a name means ASCII letters and digits only, whatever language the server speaks (in en_US.UTF-8 a range like [a-z] also matches ä)
+    bad=""
+    for loc in C C.UTF-8 en_US.UTF-8 de_DE.UTF-8 tr_TR.UTF-8 ar_EG.UTF-8 sv_SE.UTF-8 fr_FR.UTF-8; do
+        [[ "$loc" == C ]] || locale -a 2>/dev/null | tr 'A-Z' 'a-z' | grep -qx "$(tr 'A-Z' 'a-z' <<< "${loc%%.*}").utf-\?8" || continue
+        n=$( (
+            set +u
+            export LC_ALL="$loc" BASE_DIR="$CST"
+            set --
+            source "$CST_API" >/dev/null 2>&1
+            set +e
+            CROWDSEC_MEDIA_APPS=$'jellyfün,ä.lan,İstanbul,\xd9\xa3\xd9\xa3,x\xd9\xa3,jellyfin,Plex'
+            _crowdsec_media_apps_list | tr '\n' ' '
+        ) 2>/dev/null )
+        [[ "$n" == "jellyfin plex " ]] || bad+="$loc: [$n] "
+    done
+    check "media apps: letters and digits of other alphabets are never part of a name" "" "$bad"
+    # the order of the names in the file is one order for every process: a loop that runs in another language must not rewrite the file the requests wrote
+    n=$( (
+        set +u
+        unset LC_ALL
+        export LANG=en_US.UTF-8 BASE_DIR="$CST"
+        set --
+        source "$CST_API" >/dev/null 2>&1
+        set +e
+        CROWDSEC_MEDIA_APPS='a_b,ab,a.b,a-b'
+        _crowdsec_media_apps_list | tr '\n' ' '
+    ) 2>/dev/null )
+    check "media apps: the names are in the same order whatever language the server speaks" "a-b a.b a_b ab " "$n"
+
+    # -- the setting goes where the others go
+    check "media apps: .env.example has it, on by default" 1 "$(grep -c '^CROWDSEC_MEDIA_APPS=jellyfin$' "$ROOT/.env.example")"
+    check "media apps: docs/CONFIGURATION.md lists it" yes "$(grep -q 'CROWDSEC_MEDIA_APPS' "$ROOT/docs/CONFIGURATION.md" && echo yes || echo no)"
+    check "media apps: docs/CROWDSEC.md explains it" yes "$(grep -q 'CROWDSEC_MEDIA_APPS' "$ROOT/docs/CROWDSEC.md" && echo yes || echo no)"
+    cst_env CROWDSEC_MEDIA_APPS jellyfin
+}
+
+cst_part_mediaapps() {
+    echo "CrowdSec page: the media apps setting"
+    cst_media_apps
 }
 
 # ---- bouncers, machines, the container, its log, the community list ------------------------------------------------------------------
@@ -6588,8 +6738,8 @@ cst_main() {
     mkdir -p "$CST_ROOT"
     # the stand-in is a script of 7000 lines and every docker call of every request starts it: from its bytecode that costs a third
     python3 -c 'import py_compile, sys; py_compile.compile(sys.argv[1], cfile=sys.argv[2], doraise=True)' "$CST_MOCK" "$CST_ROOT/mock.pyc" 2>/dev/null && CST_MOCK_RUN="$CST_ROOT/mock.pyc"
-    local -a lanes=("a:status allowlist alerts units" "b:bans" "c:settings" "d:notify" "e:services hub" "f:security" "g:large" "h:plugin" "i:importbig")
-    [[ "${SMOKE_CS_LANES:-}" != 1 ]] || lanes=("all:status bans alerts allowlist services hub settings notify security units large plugin importbig")
+    local -a lanes=("a:status allowlist alerts units" "b:bans" "c:settings" "d:notify" "e:services hub" "f:security" "g:large mediaapps" "h:plugin" "i:importbig")
+    [[ "${SMOKE_CS_LANES:-}" != 1 ]] || lanes=("all:status bans alerts allowlist services hub settings notify security units large plugin importbig mediaapps")
     for lane in "${lanes[@]}"; do
         name="${lane%%:*}"; want=""
         for part in ${lane#*:}; do

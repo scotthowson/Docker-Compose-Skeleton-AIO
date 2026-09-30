@@ -6961,7 +6961,7 @@ handle_config_update() {
         # Image Updates
         [AGGRESSIVE_IMAGE_PRUNE]=1 [UPDATE_NOTIFICATION]=1
         # Notifications
-        [NTFY_URL]=1 [NTFY_TOPIC]=1 [NTFY_PRIORITY]=1 [NTFY_TOKEN]=1 [DISCORD_WEBHOOK_URL]=1 [DISCORD_WEBHOOK_NAME]=1 [DISCORD_WEBHOOK_AVATAR]=1 [NOTIFY_COOLDOWN_MINUTES]=1 [UPDATE_ON_BOOT]=1 [UPDATE_CHANNEL]=1 [CROWDSEC_TRUSTED_IPS]=1
+        [NTFY_URL]=1 [NTFY_TOPIC]=1 [NTFY_PRIORITY]=1 [NTFY_TOKEN]=1 [DISCORD_WEBHOOK_URL]=1 [DISCORD_WEBHOOK_NAME]=1 [DISCORD_WEBHOOK_AVATAR]=1 [NOTIFY_COOLDOWN_MINUTES]=1 [UPDATE_ON_BOOT]=1 [UPDATE_CHANNEL]=1 [CROWDSEC_TRUSTED_IPS]=1 [CROWDSEC_MEDIA_APPS]=1
         [UPDATE_AUTO_ROLLBACK]=1 [UPDATE_HEALTH_GRACE]=1 [UPDATE_ROLLBACK_DROP]=1
         # Power (UPS)
         [UPS_ENABLED]=1 [UPS_SOURCE]=1 [UPS_NUT_HOST]=1 [UPS_NUT_PORT]=1 [UPS_NAME]=1 [UPS_POLL_INTERVAL]=1
@@ -18854,6 +18854,68 @@ _crowdsec_trusted_list() {
     for e in "${extra[@]}"; do e="${e// /}"; [[ -n "$e" ]] && echo "$e"; done
 }
 
+# The backends whose own web client is normal traffic (CROWDSEC_MEDIA_APPS): Traefik's service hosts, comma separated - the access log's ServiceAddr
+# without the port, which is the container name in the route's URL. Unset means jellyfin, empty means none. One name per line, lower case, once.
+# The names end up inside the parser file, so only plain host names pass (letters, digits, - _ .); anything else is dropped.
+_crowdsec_media_apps_list() {
+    local LC_ALL=C a      # (ranges like [a-z] follow the server's language; here they mean ASCII, as in .lib/crowdsec.sh)
+    local -a apps
+    IFS=',' read -ra apps <<< "${CROWDSEC_MEDIA_APPS-jellyfin}"
+    for a in "${apps[@]}"; do
+        a="${a#"${a%%[![:space:]]*}"}"; a="${a%"${a##*[![:space:]]}"}"; a="${a,,}"
+        if [[ "$a" =~ ^[a-z0-9][a-z0-9_.-]{0,252}$ ]]; then echo "$a"; fi
+    done | LC_ALL=C sort -u      # (the order must not depend on the language of whoever runs the sync: two orders would rewrite the file for ever)
+}
+
+# The parser file for those backends, on stdout (nothing when no backend is named). One page of a media app makes dozens of API and artwork requests in
+# a second, and some of them are answered 404 (an item without a logo): CrowdSec's generic HTTP scenarios read that as a crawl and as probing, and ban
+# the person watching. What the app ANSWERED (2xx/3xx to a GET or HEAD) is the app working, whoever asks, and missing artwork is not probing. What a
+# scanner earns stays counted: a 404/403/400 (except that artwork), a 401, any other method, every other backend, and any path that leaves the web root.
+_crowdsec_media_apps_yaml() {
+    local a list="" yaml
+    while IFS= read -r a; do list+="${list:+, }'$a'"; done < <(_crowdsec_media_apps_list)
+    [[ -n "$list" ]] || return 0
+    IFS= read -r -d '' yaml <<'YAML' || true
+name: custom/dcs-media-apps
+description: "Media apps answering their own web client: what these backends answered to a GET/HEAD (and missing artwork) is not read as a crawl or as probing"
+# Managed by DCS — change the backends with CROWDSEC_MEDIA_APPS in .env, not here.
+whitelist:
+  reason: "normal media-app client traffic (DCS)"
+  expression:
+    # 1. A page of the app makes dozens of API and artwork requests in a second: to the crawler scenario that looks like a crawl. A request the app ANSWERED
+    #    (2xx / 3xx) is the app working; what a scanner earns is a 404 / 403 / 400 (still counted) or a path that tries to leave the web root (never whitelisted).
+    - >-
+      evt.Meta.service == 'http' && evt.Meta.log_type == 'http_access-log'
+      && Lower(evt.Parsed.service_addr) in [@APPS@]
+      && evt.Parsed.verb in ['GET', 'HEAD']
+      && evt.Meta.http_status matches '^[23][0-9][0-9]$'
+      && !(evt.Meta.http_path contains '..') && !(Lower(evt.Meta.http_path) matches '%2e|%00|%5c|%252')
+    # 2. An item without a logo or a backdrop answers 404 to the client that asked for it: missing artwork is not probing. (Traefik logs the path with its
+    #    query, and the web client adds the size it wants to every image address: ?fillHeight=446&quality=96.)
+    - >-
+      evt.Meta.service == 'http' && evt.Meta.log_type == 'http_access-log'
+      && Lower(evt.Parsed.service_addr) in [@APPS@]
+      && evt.Parsed.verb in ['GET', 'HEAD'] && evt.Meta.http_status == '404'
+      && evt.Meta.http_path matches '^/Items/[0-9a-fA-F]{32}/Images/[A-Za-z]+(/[0-9]+)?([?].*)?$'
+YAML
+    printf '%s' "${yaml//@APPS@/$list}"
+}
+
+# Make parsers/s02-enrich/dcs-media-apps.yaml in the CrowdSec configuration directory $1 say what CROWDSEC_MEDIA_APPS says (no file when it names no backend).
+# Returns 0 when that changed the file, which CrowdSec has to reload to see, and 1 when it was right already.
+_crowdsec_media_apps_sync() {
+    local dir="$1" content target="$1/parsers/s02-enrich/dcs-media-apps.yaml"
+    content=$(_crowdsec_media_apps_yaml)
+    if [[ -z "$content" ]]; then
+        [[ -e "$target" ]] || return 1
+        rm -f "$target" && return 0
+        return 1
+    fi
+    [[ -f "$target" && "$(cat "$target" 2>/dev/null)"$'\n' == "$content"$'\n' ]] && return 1
+    mkdir -p "$dir/parsers/s02-enrich" 2>/dev/null
+    printf '%s\n' "$content" > "$target.tmp" && mv -f "$target.tmp" "$target"
+}
+
 # Write parsers/s02-enrich/dcs-whitelist.yaml and reload CrowdSec when the set
 # of addresses changed. Returns 0 when in sync, 1 when CrowdSec is absent.
 _crowdsec_whitelist_sync() {
@@ -18883,10 +18945,16 @@ _crowdsec_whitelist_sync() {
     local target="$dir/parsers/s02-enrich/dcs-whitelist.yaml"
     mkdir -p "$dir/parsers/s02-enrich" 2>/dev/null
     local changed=false
-    if [[ ! -f "$target" ]] || [[ "$(cat "$target" 2>/dev/null)" != "$content" ]]; then
+    # ($(cat) drops the newline the content ends with: without putting it back the two never matched and every sync reloaded CrowdSec)
+    if [[ ! -f "$target" ]] || [[ "$(cat "$target" 2>/dev/null)"$'\n' != "$content" ]]; then
         printf '%s' "$content" > "$target.tmp" && mv -f "$target.tmp" "$target" && changed=true
-        docker kill -s HUP "$container" >/dev/null 2>&1 || true
     fi
+    # the media-app tuning is a parser file beside this one: the same sync keeps it, and one reload covers both. The loops that call this keep the .env they
+    # started with, so the setting is read from the file each time: every caller agrees, and none undoes the change another has seen
+    local apps
+    apps=$(_api_load_env_file "$BASE_DIR/.env"; printf '%s' "${CROWDSEC_MEDIA_APPS-jellyfin}")
+    CROWDSEC_MEDIA_APPS="$apps" _crowdsec_media_apps_sync "$dir" && changed=true
+    [[ "$changed" == true ]] && { docker kill -s HUP "$container" >/dev/null 2>&1 || true; }
     mkdir -p "$(dirname "$CROWDSEC_SYNC_STATE")" 2>/dev/null
     jq -n --arg ts "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" --arg pub "$public_ip" --arg file "$target" --argjson changed "$changed" \
         --argjson ips "$(printf '%s\n' "${ips[@]}" "${cidrs[@]}" | grep -v '^$' | jq -R . | jq -s .)" \

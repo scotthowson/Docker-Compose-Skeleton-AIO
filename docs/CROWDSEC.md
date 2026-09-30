@@ -12,7 +12,7 @@ how long a ban lasts, and shape the Discord messages CrowdSec sends. Everything 
 ```
 
 Contents: [states](#1-the-states) · [overview](#2-overview) · [bans](#3-bans) · [alerts](#4-alerts) · [allowlist](#5-allowlist) ·
-[Discord](#6-discord-alerts) · [settings](#7-settings-ban-length-escalation-simulation) · [hub](#8-hub) · [bouncers](#9-bouncers-machines-community) ·
+[Discord](#6-discord-alerts) · [settings](#7-settings-ban-length-escalation-simulation) · [media apps](#media-apps-a-web-client-is-not-a-crawler) · [hub](#8-hub) · [bouncers](#9-bouncers-machines-community) ·
 [logs](#10-logs) · [countries](#11-countries) · [safety](#12-safety-rails) · [fleet](#13-a-vm-through-the-hub) · [API](#api) · [troubleshooting](#14-troubleshooting)
 
 ---
@@ -187,6 +187,37 @@ them. Networks wider than a /8 (IPv4) or /16 (IPv6) are refused in both lists: a
 
 **Simulation mode**: scenarios that only alert and never ban, per scenario or for the whole engine (*watch only*, with a warning that nothing is blocked while it is on).
 
+### Media apps: a web client is not a crawler
+
+One page of Jellyfin's web client makes dozens of API and artwork requests in a second, and some of them come back 404 (an item without a logo). CrowdSec's generic HTTP scenarios
+(`http-crawl-non_statics`, `http-probing`) read that as a crawl and as probing, and ban the person watching. **`CROWDSEC_MEDIA_APPS`** names the backends that are media apps (default
+`jellyfin`); for them DCS keeps one more parser file, `parsers/s02-enrich/dcs-media-apps.yaml`, beside the whitelist's. The file is DCS's: it is written when it differs, removed
+when the setting is empty, and CrowdSec reloads (a reload, not a restart) only when it changed. DCS looks every ten minutes, with the check that keeps your home address allowed, and
+reads the setting from `.env` each time.
+
+For a listed backend CrowdSec stops counting:
+
+* a `GET` or `HEAD` the app **answered** (2xx or 3xx), unless its address, query included, contains `..`, `%2e`, `%00`, `%5c` or `%252`: a path that tries to leave the web root is never ignored;
+* a `GET` or `HEAD` answered 404 on an item's picture (`/Items/<id>/Images/<type>`, with or without the `?fillHeight=…` the web client adds): missing artwork is not probing.
+
+What it deliberately does **not** do: everything else is judged exactly as before.
+
+* **404, 403, 400 and 401 answers still count** (missing pictures apart). A scanner asks for things that are not there, so it is banned as before; a login brute force (`POST`, 401) and a session
+  that expired and is refused a hundred times in a row are counted too.
+* **Other methods** (`POST`, `PUT`, `DELETE` …) and **every other backend**, routed by Traefik or not, are untouched. The match is on the backend Traefik routed the request to (`ServiceAddr`
+  in its access log), not on anything the visitor sends.
+* **Path traversal** keeps its scenarios (the first bullet above).
+
+One consequence to know: a request the file ignores reaches *no* scenario, not only the two generic ones. A client that only asks for what the app serves is not banned for how much it asks,
+nor for its user agent; the moment it asks for something the app refuses, which is what scanning is, it is counted like everyone else.
+
+**Another media app.** Add the host of its service in Traefik's route (the part of `http://plex:32400` before the colon): `CROWDSEC_MEDIA_APPS=jellyfin,plex`. Names are letters, digits, `-`, `_`
+and `.`, in any case; anything else is ignored. The rule for missing pictures knows Jellyfin's picture addresses only, so for another app the first rule alone applies.
+**Turn it off** with `CROWDSEC_MEDIA_APPS=` (empty): the file goes at the next check.
+
+**Is it working?** `docker exec CrowdSec cscli parsers list` shows `custom/dcs-media-apps`, and `docker exec CrowdSec cscli metrics show whitelists` counts what it ignored (the *Whitelisted*
+column). The tuning is tested against the real CrowdSec by `tests/crowdsec-media-apps.sh` (opt-in: it replays synthetic access logs through the CrowdSec image, with and without the file).
+
 ## 8. Hub
 
 The hub is CrowdSec's library of **collections** (bundles), **scenarios** (attack detectors) and **parsers** (log readers). See what is installed and what has an update, install a suggested
@@ -265,6 +296,7 @@ Viewers may `GET` and may draw the Discord preview (it only renders, it never se
 | Bans exist but nothing is blocked | Overview → Protection: is the bouncer pulling? A bouncer that has never pulled means no request has gone through the middleware yet, or the middleware is not in the chain your services use |
 | *Log lines: 0 read* | CrowdSec reads Traefik's access log from the shared logs folder; check Traefik writes it (`accessLog` in `traefik.yml`) and that the volume is mounted |
 | You banned yourself | Dashboard → *Protection* card → **Unban me**, or lift the ban from the list; the guard normally prevents it |
+| Somebody was banned just for using Jellyfin (or another media app) behind Traefik | The alert says `http-crawl-non_statics` or `http-probing`: [media apps](#media-apps-a-web-client-is-not-a-crawler); `CROWDSEC_MEDIA_APPS` must name the app's service host |
 | Discord stays silent | Discord tab: status card (*wired*, *plugin active*, *working*), **Send test message**, recent delivery errors; the webhook must be a `https://discord.com/api/webhooks/…` URL |
 | A settings change failed | the page says which step; the previous file is put back automatically, so CrowdSec is never left on a bad file |
 | CrowdSec restarts in a loop | Show the log: almost always a configuration error in a file that was edited by hand |

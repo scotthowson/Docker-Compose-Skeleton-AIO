@@ -28,7 +28,7 @@ Everything here is Bash 4+, Docker Compose v2 and `jq`. There is no build step.
 | `.templates/<name>/` | The templates: `docker-compose.yml`, `template.json`, optional `config/` |
 | `.plugins/`, `.plugins-catalog/` | The bundled plugins and the catalogue ([plugin guide](../.plugins/README.md)) |
 | `vm-images/` | The purpose-built VM images *(new in 4.0)* |
-| `tests/` | `lint.sh`, `smoke.sh`, and stand-ins for Proxmox and Cloudflare |
+| `tests/` | `lint.sh`, `smoke.sh`, an opt-in CrowdSec replay test, and stand-ins for Proxmox and Cloudflare |
 | `docs/` | These pages; `docs/API.md` is generated, `docs/tools/` holds the generators |
 
 The API writes its state to `.api-auth/`, `.data/`, `.secrets/` and `logs/`; git ignores them.
@@ -54,6 +54,7 @@ The API writes its state to `.api-auth/`, `.data/`, `.secrets/` and `logs/`; git
 ```bash
 tests/lint.sh                  # bash -n, shellcheck, compose validation, API reference freshness
 tests/smoke.sh                 # the API's request handler in a temporary install
+tests/crowdsec-media-apps.sh   # opt-in: CROWDSEC_MEDIA_APPS replayed through the real CrowdSec (needs Docker, the image, the network)
 .scripts/api-docs.sh --check   # docs/API.md and the GET / catalogue are current
 docs/tools/gen-templates.sh --check   # docs/TEMPLATES.md is current
 ./setup.sh --dry-run           # setup, without changing anything
