@@ -20,7 +20,7 @@ services:
     # setup.sh sets DCS_UI_APPARMOR=unconfined in this stack's .env on such hosts; Docker CE needs nothing
     security_opt:
       - "apparmor=${DCS_UI_APPARMOR:-docker-default}"
-    image: ghcr.io/scotthowson/docker-compose-skeleton-ui:4.0.0-rc.1
+    image: ghcr.io/scotthowson/docker-compose-skeleton-ui:latest
     # To build locally instead of pulling from GHCR, uncomment below:
     # build:
     #   context: ../../Docker-Compose-Skeleton-UI

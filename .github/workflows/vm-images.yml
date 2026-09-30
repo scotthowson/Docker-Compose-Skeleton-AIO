@@ -95,7 +95,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
-          # v4.0.0-rc.1 is a pre-release: never the "latest release" (the importer's default download), never offered to the stable channel
+          # A tag with a dash (vX.Y.Z-rc.N) is a pre-release: never the "latest release" (the importer's default download), never offered to the stable channel
           PRE=""; [[ "$TAG" == *-* ]] && PRE="--prerelease"
           gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --title "$TAG" --generate-notes $PRE
           gh release upload "$TAG" images/* --clobber

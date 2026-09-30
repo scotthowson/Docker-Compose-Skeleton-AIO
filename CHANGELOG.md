@@ -5,12 +5,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-## [4.0.0-rc.1] - 2026-09-29
+## [4.0.0] - 2026-09-30
 
-First release candidate of 4.0. It is a pre-release: the stable update channel does not offer it (a hub set to
-`UPDATE_CHANNEL=main` follows it), `latest` keeps meaning the last release, and the dashboard of a hub made from it is pinned to
-the same version (`ghcr.io/scotthowson/docker-compose-skeleton-ui:4.0.0-rc.1`).
-
+The first release under the name DCS Orchestrator. The headline changes are the purpose-built VM images for Proxmox, the CrowdSec
+page, one set of names for every page, and a round of fixes to the API (below). It is a normal release: an install on the stable
+channel is offered it under *Updates*, and nothing about its branch or channel has to change.
 
 ### Added
 
@@ -87,7 +86,7 @@ address); `GET /routes` says for every route, VMs' routes included, whether the 
   defaults did not even agree). They are not offered any more; a `.env` that still has them keeps working, and `POST /config` accepts and
   ignores them so an older dashboard can still save.
 - **A release candidate runs its own dashboard.** `Stacks/core-infrastructure/docker-compose.yml` names the dashboard image, and while `VERSION`
-  is a release candidate (`4.0.0-rc.1`) it pins that tag; a release says `:latest` again. The dashboard's update check and its update read the
+  is a release candidate (`X.Y.Z-rc.N`) it pins that tag; a release says `:latest`. The dashboard's update check and its update read the
   image from that file, so a hub (or a hub VM image) made from a release candidate shows the dashboard of the same version, and `tests/lint.sh`
   keeps the tag and `VERSION` in step.
 - **`sudo` in the web terminal can write `/usr` and `/etc`.** The API service no longer sets `ProtectSystem=full` (it made both read-only
