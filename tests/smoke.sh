@@ -618,6 +618,11 @@ echo "Restart in place: a request's helpers must not keep the port, and the port
 _fdt() { exec 7>/dev/null 8</dev/null; _api_close_inherited_fds; local r="" n; for n in 0 1 2 7 8; do [[ -e /proc/$BASHPID/fd/$n ]] && r+="$n:open " || r+="$n:closed "; done; printf '%s' "${r% }"; }
 check "handler: inherited descriptors closed" "0:open 1:open 2:open 7:closed 8:closed" "$(_lib _fdt)"
 _free_port() { python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])'; }
+# A port for a stand-in that starts a moment later: a random one in the range the tests use, but one nobody listens on (a busy machine
+# has dozens of labs and dev servers in that range, and a stand-in that could not bind made a check fail one run in a few hundred).
+_rport() { local p i; for i in $(seq 1 100); do p=$(( 20000 + RANDOM % 20000 )); ( exec 3<>"/dev/tcp/127.0.0.1/$p" ) 2>/dev/null || { echo "$p"; return; }; done; echo "$p"; }
+# three neighbouring ports nobody listens on (two stand-ins take the first two; the third stays empty on purpose)
+_rport3() { local p i; for i in $(seq 1 100); do p=$(( 20000 + RANDOM % 19990 )); ( exec 3<>"/dev/tcp/127.0.0.1/$p" ) 2>/dev/null || ( exec 3<>"/dev/tcp/127.0.0.1/$((p + 1))" ) 2>/dev/null || ( exec 3<>"/dev/tcp/127.0.0.1/$((p + 2))" ) 2>/dev/null || { echo "$p"; return; }; done; echo "$p"; }
 _alive() { [[ -d "/proc/$1" && "$(awk '{print $3}' "/proc/$1/stat" 2>/dev/null)" != Z ]]; }   # a zombie is not running
 # a helper that inherited the listening socket (what older versions left behind: the DDNS loop's 300 s sleep)
 RP=$(_free_port)
@@ -1082,7 +1087,7 @@ check "power: charge"                   42 "$(printf '%s' "$PW" | jq -r '.charge
 check "power: runtime seconds"          1380 "$(printf '%s' "$PW" | jq -r '.runtime_seconds')"
 check "power: model"                    'Smoke UPS' "$(printf '%s' "$PW" | jq -r '.model')"
 if command -v socat >/dev/null 2>&1; then
-    NUTP=$((30000 + RANDOM % 20000))
+    NUTP=$(_rport)
     printf 'BEGIN LIST VAR ups\nVAR ups ups.status "OB DISCHRG"\nVAR ups battery.charge "42"\nVAR ups battery.runtime "1380"\nVAR ups ups.load "23"\nVAR ups input.voltage "0.0"\nVAR ups ups.model "Smoke UPS"\nEND LIST VAR ups\n' > "$WORK/nut.txt"
     socat "TCP-LISTEN:${NUTP},reuseaddr,fork" SYSTEM:"cat $WORK/nut.txt" >/dev/null 2>&1 &
     NUTPID=$!
@@ -1260,7 +1265,7 @@ check "proxmox: not configured"         false "$(auth_request GET /proxmox/statu
 check "proxmox: vms need config"        503 "$(auth_request GET /proxmox/vms | status_of)"
 check "proxmox: environment reported"   yes "$(auth_request GET /proxmox/status | body_of | jq -e '.environment | has("guest")' >/dev/null 2>&1 && echo yes || echo no)"
 check "setup defaults: environment"     yes "$(request GET /setup/defaults '' "${NOAUTH[@]}" | body_of | jq -e '.system.proxmox | has("guest")' >/dev/null 2>&1 && echo yes || echo no)"
-_PVE_PORT=$(( 20000 + RANDOM % 20000 ))
+_PVE_PORT=$(_rport)
 MOCK_DENY_ARGS_FILE="$WORK/.data/deny-args" python3 "$ROOT/tests/mock-proxmox.py" "$_PVE_PORT" 'dcs@pve!smoke' 'smoke-secret' "$WORK/.data/pve-mock.json" >/dev/null 2>&1 &
 _PVE_PID=$!
 timeout 10 bash -c "until curl -s -o /dev/null http://127.0.0.1:$_PVE_PORT/api2/json/version; do sleep 0.2; done" 2>/dev/null
@@ -1343,7 +1348,7 @@ check "proxmox: bot may power"          0 "$(_lib _api_bot_allowed POST /proxmox
 echo "Fleet: a hub and a member (two real listeners on loopback)"
 # The hub is this WORK copy, also started as a listener; the member is a second copy. Both
 # run with auth on so the hub really logs in. Stopped with --stop at the end (and on exit).
-HUB_PORT=$(( 20000 + RANDOM % 20000 )); FLEET_PORT=$(( 20000 + RANDOM % 20000 ))
+HUB_PORT=$(_rport); FLEET_PORT=$(_rport); [[ "$FLEET_PORT" == "$HUB_PORT" ]] && FLEET_PORT=$(_rport)
 [[ "$FLEET_PORT" == "$HUB_PORT" ]] && FLEET_PORT=$(( FLEET_PORT + 1 ))
 MWORK="$WORK-member"; PWORK="$WORK-pending"
 rm -rf "$MWORK" "$PWORK"; cp -r "$WORK" "$MWORK"
@@ -1650,7 +1655,7 @@ auth_request DELETE /fleet/members/manual-vm >/dev/null
 echo "Fleet: a hostile member (a stand-in that answers whatever it likes)"
 # A member is another machine, so everything it answers is data. The stand-in claims the hub's stacks and hostnames, sends
 # routers with fields of its own, answers the merged lists in the wrong shapes, and logs every request it receives.
-MOCK_PORT=$(( 20000 + RANDOM % 20000 )); [[ "$MOCK_PORT" == "$HUB_PORT" || "$MOCK_PORT" == "$FLEET_PORT" ]] && MOCK_PORT=$(( MOCK_PORT + 7 ))
+MOCK_PORT=$(_rport); [[ "$MOCK_PORT" == "$HUB_PORT" || "$MOCK_PORT" == "$FLEET_PORT" ]] && MOCK_PORT=$(( MOCK_PORT + 7 ))
 MOCK_LOG="$WORK/mock-member.log"; : > "$MOCK_LOG"
 cat > "$WORK/mock-member.py" <<'MOCK'
 #!/usr/bin/env python3
@@ -1821,7 +1826,7 @@ check "fleet: revoke code"              200 "$(auth_request DELETE "/fleet/join-
 check "fleet: revoked code gone"        no "$(auth_request GET /fleet/join-tokens | body_of | jq -e --arg t "$JT" '.tokens[] | select(.token == $t)' >/dev/null 2>&1 && echo yes || echo no)"
 
 echo "Fleet: the hub builds a VM for a stack (mock Proxmox, an ssh stand-in runs the real unattended setup)"
-PROV_PORT=$(( 20000 + RANDOM % 20000 )); [[ "$PROV_PORT" == "$HUB_PORT" || "$PROV_PORT" == "$FLEET_PORT" ]] && PROV_PORT=$(( PROV_PORT + 3 ))
+PROV_PORT=$(_rport); [[ "$PROV_PORT" == "$HUB_PORT" || "$PROV_PORT" == "$FLEET_PORT" ]] && PROV_PORT=$(( PROV_PORT + 3 ))
 VMWORK="$WORK-vm"
 cat > "$WORK/ssh-shim.sh" <<'SHIM'
 #!/bin/bash
@@ -2319,7 +2324,7 @@ check "homarr: sync needs Homarr"            409 "$(auth_request POST /homarr/sy
 check "homarr: viewer may not set a key"     403 "$(viewer_request POST /homarr/key '{"key":"abcdefghijklmnopqrstuvwxyz0123456789"}' | status_of)"
 check "domain hand-off: no hub here"         409 "$(auth_request POST /fleet/hub/domain '{"domain":"x.example.org"}' | status_of)"
 # Cloudflare + DDNS against the stand-in: a CNAME for a routed service, then the dynamic A records following the public address
-_CFP=$(( 20000 + RANDOM % 20000 )); _CFS="$WORK/.data/cf-mock.json"
+_CFP=$(_rport); _CFS="$WORK/.data/cf-mock.json"
 python3 "$ROOT/tests/mock-cloudflare.py" "$_CFP" smoke-cf-token "$_CFS" >/dev/null 2>&1 &
 _CFPID=$!
 for _i in $(seq 1 30); do curl -s -m 1 -o /dev/null "http://127.0.0.1:$_CFP/ip" && break; sleep 0.2; done
@@ -2387,7 +2392,7 @@ check "setup: secret shown as stars"         yes "$(grep -q 'S: \*\*' <<< "$_SCS
 check "setup: secret never in clear"         0 "$(sed 's/\[[^]]*\]$//' <<< "$_SCSEC" | grep -c 'd-e')"
 # the Proxmox link against a stand-in that answers like pveproxy on 8006: HTTPS with a self-signed
 # certificate, plain HTTP on the same port answered with a 301 to https
-_SCP=$(( 20000 + RANDOM % 20000 )); _SCS=0f8fad5b-d9cb-469f-a165-70867728950e
+_SCP=$(_rport3); _SCS=0f8fad5b-d9cb-469f-a165-70867728950e
 MOCK_PVE_TLS=1 python3 "$ROOT/tests/mock-proxmox.py" "$_SCP" 'dcs@pve!dcs' "$_SCS" >/dev/null 2>&1 & _SCPID=$!
 MOCK_PVE_TLS=1 MOCK_PVE_PRIVS=none python3 "$ROOT/tests/mock-proxmox.py" "$((_SCP + 1))" 'dcs@pve!dcs' "$_SCS" >/dev/null 2>&1 & _SCPID2=$!
 for _i in $(seq 1 50); do curl -sk -o /dev/null "https://127.0.0.1:$_SCP/" 2>/dev/null && curl -sk -o /dev/null "https://127.0.0.1:$((_SCP + 1))/" 2>/dev/null && break; sleep 0.2; done

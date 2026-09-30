@@ -150,6 +150,16 @@ SHA256SUMS                  images.json                  dcs-proxmox.sh
 
 The images are qcow2 files compressed inside (no `.zst` to unpack). Check a download with `sha256sum -c SHA256SUMS --ignore-missing`.
 
+**A release candidate** (a version with a dash, like `4.0.0-rc.1`) is a GitHub pre-release, and GitHub never calls a pre-release the
+"latest release", so `dcs-proxmox.sh` does not find its images by itself. Name the release, and download the script from that release's
+page first:
+
+```bash
+DCS_RELEASE_URL=https://github.com/scotthowson/dcs-orchestrator/releases/download/v4.0.0-rc.1 bash dcs-proxmox.sh hub debian-13
+```
+
+A hub that runs the release candidate builds its VMs from the same release without being told, and shows the dashboard of the same version.
+
 ## Put one on Proxmox
 
 ### The one command
