@@ -5,6 +5,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [4.0.4] - 2026-09-30
+
+### Fixed
+
+- **The dashboard's "Active Routes" card (the Subdomain Status card of the `traefik-subdomain-guard` plugin) stopped its list at 200 px, however tall the card was made in *Edit dashboard*.**
+  The card capped its list with `max-height: 200px`; it fills its frame now and the list takes the height that is left. It also takes its colours from the look in use (`--dcs-text`,
+  `--dcs-text-muted`): its route names were pale grey on white in the light theme. The authoring notes for plugin cards
+  (`.plugins/example-card/README.md`) say the same to whoever writes the next card: give the list `flex: 1; min-height: 0; overflow-y: auto`, never a fixed cap. The dashboard 4.0.3 makes the page a
+  card runs in as tall as its frame, and the built-in cards follow their box too (see its release notes).
+
 ## [4.0.3] - 2026-09-30
 
 ### Fixed

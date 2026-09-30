@@ -78,7 +78,9 @@ Your `index.html` is a complete HTML page rendered inside a sandboxed iframe.
 1. Use `background: transparent` on `body` — the DCS glass card effect shows through
 2. Inline all CSS and JS — external files won't resolve from blob URLs
 3. Use `height: 100vh` on body to fill the card area
-4. Use standard HTML/CSS/JS — no frameworks needed
+4. A list that can be longer than the card takes the height that is left (`flex: 1; min-height: 0; overflow-y: auto` inside a column that is `height: 100vh`), never a fixed
+   `max-height`: a person makes a card taller in *Edit dashboard* to see more of it, and a capped list stays as short as it was
+5. Use standard HTML/CSS/JS — no frameworks needed
 
 **Template:**
 ```html
