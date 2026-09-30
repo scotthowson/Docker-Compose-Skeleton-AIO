@@ -1191,12 +1191,13 @@ _CS_PLUGIN_LIMITS='{"update_interval":[10,3600],"default_decision_seconds":[10,3
 
 # the LAN Traefik trusts (TRAEFIK_TRUSTED_LAN of the proxy's stack), or the default the template uses
 _cs_plugin_lan() {
-    local lan="" ef
+    local lan="" ef t
     for ef in "$COMPOSE_DIR"/*/.env "$BASE_DIR/.env"; do
         [[ -f "$ef" ]] || continue
         lan=$(grep -m1 '^TRAEFIK_TRUSTED_LAN=' "$ef" 2>/dev/null | cut -d= -f2- | tr -d '"' | tr -d "'"); [[ -n "$lan" ]] && break
     done
-    [[ -n "$lan" ]] || lan="192.168.1.0/24"
+    # it is written into the middleware file as a list entry: only an address or a network may go there (a hand-edited .env must not be able to break that file)
+    if [[ -n "$lan" ]] && t=$(_cs_norm_target "$lan"); then lan="${t#*$'\t'}"; else lan="192.168.1.0/24"; fi
     printf '%s' "$lan"
 }
 _cs_plugin_home() {

@@ -240,10 +240,16 @@ check "large ranges are downsampled"    yes "$(auth_request GET '/metrics/trends
 check "bad sample lines are skipped"    yes "$(printf 'not json\n' >> "$WORK/.api-auth/metrics-history.jsonl"; auth_request GET '/metrics/trends?range=1h' | body_of | jq -e '.count > 0' >/dev/null 2>&1 && echo yes || echo no)"
 
 echo "CrowdSec and proxy routes"
-check "crowdsec status without container" false "$(auth_request GET /crowdsec/status | body_of | jq '.installed' 2>/dev/null)"
+# The "nothing is deployed" checks run against a Docker that answers and has no containers, so a machine that has a CrowdSec container
+# (running, stopped or restarting) cannot change their result.
+mkdir -p "$WORK/fakebin-nodocker"
+printf '#!/bin/bash\ncase "$1" in\n    inspect) echo "Error: No such object: $2" >&2; exit 1 ;;\n    *) exit 0 ;;\nesac\n' > "$WORK/fakebin-nodocker/docker"
+chmod +x "$WORK/fakebin-nodocker/docker"
+no_docker_containers() { PATH="$WORK/fakebin-nodocker:$PATH" "$@"; }
+check "crowdsec status without container" false "$(no_docker_containers auth_request GET /crowdsec/status | body_of | jq '.installed' 2>/dev/null)"
 check "crowdsec unban validates ip"     400 "$(auth_request DELETE '/crowdsec/decisions/not-an-ip' | status_of)"
 check "crowdsec trust validates ip"     400 "$(auth_request POST /crowdsec/trust '{"ip":"999.1.1.1"}' | status_of)"
-check "viewer may unban itself"         404 "$(viewer_request POST /crowdsec/unban-me | status_of)"
+check "viewer may unban itself"         404 "$(no_docker_containers viewer_request POST /crowdsec/unban-me | status_of)"
 check "viewer cannot edit trust list"   403 "$(viewer_request POST /crowdsec/trust '{"ip":"203.0.113.9"}' | status_of)"
 check "routes health answers"           200 "$(auth_request GET /routes/health | status_of)"
 check "viewer cannot reconcile proxy"   403 "$(viewer_request POST /routes/reconcile | status_of)"
@@ -1198,7 +1204,7 @@ check "role change: unknown user"       404 "$(auth_request POST /auth/users/nob
 check "role change: viewer denied"      403 "$(viewer_request POST /auth/users/bot-smoke/role '{"role":"bot"}' | status_of)"
 check "nuke: confirm required"          400 "$(auth_request POST /containers/nope-none/reset '{}' | status_of)"
 check "nuke: preview viewer denied"     403 "$(viewer_request GET /containers/nope-none/reset | status_of)"
-check "crowdsec alerts: no CrowdSec"    404 "$(auth_request POST /crowdsec/notifications '{}' | status_of)"
+check "crowdsec alerts: no CrowdSec"    404 "$(no_docker_containers auth_request POST /crowdsec/notifications '{}' | status_of)"
 check "transitions: first poll silent"  0 "$(HEALTH_TRANSITIONS_FILE=$WORK/hb.json _lib _health_transitions "a b" "c" | wc -l | tr -d ' ')"
 check "transitions: a new stop"         "stopped d" "$(HEALTH_TRANSITIONS_FILE=$WORK/hb.json _lib _health_transitions "a b d" "c" | head -1)"
 check "transitions: a recovery"         "recovered a" "$(HEALTH_TRANSITIONS_FILE=$WORK/hb.json _lib _health_transitions "b d" "c" | grep recovered)"
@@ -4426,6 +4432,11 @@ cst_plugin_get() {
     dflt=$(jq -r '.variables[] | select(.name == "TRAEFIK_TRUSTED_LAN") | .default' "$ROOT/.templates/traefik/template.json")
     cst_call admin GET /crowdsec/plugin
     cst_j "plugin/get: no LAN anywhere: the template's own default" '.lan' "$dflt" '.lan | test("^[0-9.]+/[0-9]+$")' true
+    # a LAN value that is no address or network (a hand-edited .env) never reaches the middleware file: the default is used instead of the text
+    cst_env TRAEFIK_TRUSTED_LAN '10.9.0.0/24 # x: {y}'
+    cst_call admin GET /crowdsec/plugin
+    cst_j "plugin/get: a LAN that is no network: the default, not the text" '.lan' "$dflt"
+    cst_env TRAEFIK_TRUSTED_LAN
     # -- the file is not in the form DCS writes: the settings are read as far as they are found, and are not changed
     printf 'http:\n  middlewares:\n    crowdsec-bouncer:\n      plugin:\n        crowdsec-bouncer-traefik-plugin:\n          crowdsecMode: "stream"\n          updateIntervalSeconds: 30 # often\n          logLevel: DEBUG\n          crowdsecLapiKey: %s\n' "$k" > "$mw"
     cst_call admin GET /crowdsec/plugin
