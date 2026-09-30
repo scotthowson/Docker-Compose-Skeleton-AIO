@@ -31,6 +31,9 @@ echo "lsm=$(cat /sys/kernel/security/lsm 2>/dev/null)"
 echo "swap=$(swapon --noheadings 2>/dev/null | wc -l)"
 echo "agent=$(sudo systemctl is-active qemu-guest-agent 2>/dev/null)"
 echo "getty_vga=$(sudo systemctl is-active getty@tty1 2>/dev/null)"
-echo "kernel_errors=$(sudo dmesg --level=emerg,alert,crit,err 2>/dev/null | grep -v -e "microcode" -e "TDX not supported" | wc -l)"
-echo "kernel_error_text=$(sudo dmesg --level=emerg,alert,crit,err 2>/dev/null | grep -v -e "microcode" -e "TDX not supported" | head -n 4 | tr '\n' '|' | cut -c1-500)"
+# Some hosts make a guest kernel log these at error level, and they mean nothing: no microcode to load in a VM, no TDX, and the AMX
+# tile-state size an emulated CPU reports (the CI runners' CPUs differ from run to run, so without this the check flaked).
+KERR=$(sudo dmesg --level=emerg,alert,crit,err 2>/dev/null | grep -v -e "microcode" -e "TDX not supported" -e "XFEATURE_XTILE_DATA")
+echo "kernel_errors=$(grep -c . <<<"$KERR")"
+echo "kernel_error_text=$(head -n 4 <<<"$KERR" | tr '\n' '|' | cut -c1-500)"
 echo "top=$(ps -eo rss,comm --sort=-rss --no-headers | head -6 | awk "{printf \"%s(%dM) \", \$2, \$1/1024}")"
