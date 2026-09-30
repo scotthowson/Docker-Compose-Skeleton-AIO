@@ -223,7 +223,7 @@ Open `http://<server>:3000`. The setup wizard has five steps.
 | **Stacks** | The stacks to create and their start order. On a hub with Proxmox linked, each stack has a **Hub / VM** switch with its size, and a VM settings panel. |
 | **Review** | Check everything, then **Complete Setup**. The wizard deploys the proxy services, makes the DNS records, starts the core stack and, on a hub, hands the VM plan over. |
 
-You land on the dashboard. Everything the wizard set is in *Server Config* and can be changed later.
+You land on the dashboard. Everything the wizard set is in *Config* and can be changed later.
 
 ### 2. Link Proxmox
 
@@ -237,7 +237,7 @@ pveum aclmod / -user dcs@pve -role DCS
 pveum user token add dcs@pve dcs -privsep 0      # prints the secret once
 ```
 
-In the wizard's Proxmox section, or later in *Server Config → Proxmox*, enter the address
+In the wizard's Proxmox section, or later in *Config → Proxmox*, enter the address
 (`https://192.168.1.2:8006`), the token ID `dcs@pve!dcs` and the secret, then press **Test connection**.
 The secret goes into the encrypted secret store.
 

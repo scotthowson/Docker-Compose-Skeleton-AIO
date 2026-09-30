@@ -453,7 +453,7 @@ fi
 # -----------------------------------------------------------------------------
 # On a Proxmox guest, offer to link DCS to the Proxmox API right away (an API
 # token with VM.Audit, VM.PowerMgmt and Sys.Audit — see docs/PROXMOX.md). The
-# same link can be made later in the wizard or in Server Config → Proxmox.
+# same link can be made later in the wizard or in Config → Proxmox.
 # The address may come any way (http://, no port, pasted from the browser):
 # setup finds where Proxmox answers. A refused token or a wrong address is
 # asked again.
@@ -529,7 +529,7 @@ if [[ -f "$BASE_DIR/.env" ]] && ! grep -qE '^PROXMOX_URL=.+' "$BASE_DIR/.env" 2>
         if _pve_find "$DCS_PROXMOX_URL" "$_pve_tid" "$_pve_sec" && [[ "$PVE_CODE" == "200" ]]; then
             _pve_save "$PVE_BASE"
         else
-            _pve_explain "$DCS_PROXMOX_URL"; _info "Link it later in Server Config → Proxmox"
+            _pve_explain "$DCS_PROXMOX_URL"; _info "Link it later in Config → Proxmox"
         fi
     elif [[ -t 0 && "$UNATTENDED" != "true" && ( "$FLEET_ROLE" == "hub" || ( "$FLEET_ROLE" == "standalone" && "$ENV_PVE_GUEST" == "true" && -z "${DCS_FLEET_ROLE:-}" ) ) ]]; then
         echo ""
@@ -560,7 +560,7 @@ if [[ -f "$BASE_DIR/.env" ]] && ! grep -qE '^PROXMOX_URL=.+' "$BASE_DIR/.env" 2>
                     fi
                 done
             fi
-            [[ "$PVE_LINKED" == "true" ]] || _skip "Proxmox not linked — Server Config → Proxmox (or the wizard) links it any time"
+            [[ "$PVE_LINKED" == "true" ]] || _skip "Proxmox not linked — Config → Proxmox (or the wizard) links it any time"
         fi
     fi
     _pve_sec=""
@@ -1225,6 +1225,6 @@ if [[ "$ENV_PVE_GUEST" == "true" || "$ENV_PVE_HOST" == "true" ]]; then
     elif grep -qE '^PROXMOX_URL=.+' "$BASE_DIR/.env" 2>/dev/null; then
         _info "Proxmox: linked in .env — see the Proxmox page"
     else
-        _info "Proxmox: link it any time in Server Config → Proxmox (API token, docs/PROXMOX.md)${ENV_PVE_HINT:+ — the API answered at $ENV_PVE_HINT}"
+        _info "Proxmox: link it any time in Config → Proxmox (API token, docs/PROXMOX.md)${ENV_PVE_HINT:+ — the API answered at $ENV_PVE_HINT}"
     fi
 fi

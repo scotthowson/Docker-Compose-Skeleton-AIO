@@ -8693,7 +8693,7 @@ _dcs_power_loop() {
 # GET /power — UPS status: mains or battery, charge, runtime, load, and whether the watch loop runs
 handle_power() {
     if [[ "${UPS_ENABLED:-false}" != "true" ]]; then
-        _api_success '{"enabled": false, "source": "none", "loop_running": false, "hint": "Turn on the UPS watch under Server Config → Power (NUT server or apcupsd), then restart the API"}'
+        _api_success '{"enabled": false, "source": "none", "loop_running": false, "hint": "Turn on the UPS watch under Config → Power (NUT server or apcupsd), then restart the API"}'
         return
     fi
     local loop=false pid="" state
@@ -12319,7 +12319,7 @@ handle_routes_certificates() {
     if line=$(_traefik_stack_appdata); then stack="${line%%	*}"; ad="${line#*	}"; fi
     if [[ -z "$stack" ]]; then
         local _nh="No stack runs Traefik yet: deploy the traefik template to get certificates."
-        _feed_enabled && _nh="No Traefik on this host: the routes are published to the Traefik feed (Server Config → Traefik on another machine); that Traefik holds the certificates."
+        _feed_enabled && _nh="No Traefik on this host: the routes are published to the Traefik feed (Config → Traefik on another machine); that Traefik holds the certificates."
         _api_success "$(jq -nc --arg h "$_nh" '{traefik_stack: "", active: false, challenge: "none", email: "", token_set: false, acme_file: {exists: false, mode: "", mode_ok: false}, certificates: [], errors: [], hints: [$h]}')"
         return
     fi
@@ -12371,7 +12371,7 @@ handle_routes_certificates() {
     # Plain-language hints for the states people actually hit
     local -a hints=()
     local n_certs; n_certs=$(printf '%s' "$certs" | jq 'length' 2>/dev/null || echo 0)
-    [[ -z "$domain" || "$domain" == "example.com" ]] && hints+=("The proxy domain is '${domain:-empty}'. Set your real domain in Server Config (Proxy Domain) and redeploy the traefik template; DCS creates no routes for example.com.")
+    [[ -z "$domain" || "$domain" == "example.com" ]] && hints+=("The proxy domain is '${domain:-empty}'. Set your real domain in Config (Proxy Domain) and redeploy the traefik template; DCS creates no routes for example.com.")
     local n_dead; n_dead=$(printf '%s' "$probe" | jq '(.dead // []) | length' 2>/dev/null || echo 0)
     if [[ "$n_dead" =~ ^[0-9]+$ && "$n_dead" -gt 0 ]]; then
         if printf '%s' "$probe" | jq -e '(.dead // []) | any(endswith("=404"))' >/dev/null 2>&1; then
@@ -13828,7 +13828,7 @@ _homarr_register_now() {
         fi
         HM_ERR="Homarr's database refused the entry (is it writable by this user?)"; return 1
     fi
-    HM_ERR="Homarr runs here, but no API key is stored and sqlite3 is not installed: store the key in Server Config → Integrations"
+    HM_ERR="Homarr runs here, but no API key is stored and sqlite3 is not installed: store the key in Config → Integrations"
     return 1
 }
 
@@ -18241,7 +18241,7 @@ _dashboard_public_url() {
     fi
 }
 
-# Identity of every message DCS posts: the name and avatar (Server Config →
+# Identity of every message DCS posts: the name and avatar (Config →
 # Notifications can change both) and the palette the dashboard uses, so a
 # Discord channel reads like the UI: emerald good, amber warning, rose bad,
 # cyan information, violet backups, slate housekeeping.
@@ -18932,7 +18932,7 @@ handle_topology() {
 # =============================================================================
 # PROXMOX — nodes, VMs and LXC containers of a Proxmox VE host or cluster
 # =============================================================================
-# Settings (root .env, Server Config → Proxmox): PROXMOX_URL (https://pve:8006),
+# Settings (root .env, Config → Proxmox): PROXMOX_URL (https://pve:8006),
 # PROXMOX_TOKEN_ID (user@realm!name), PROXMOX_TOKEN_SECRET (or a secret of that
 # name in the secret store), PROXMOX_VERIFY_TLS (false for the self-signed
 # certificate Proxmox ships with), PROXMOX_NODE (optional: only that node).
@@ -19010,7 +19010,7 @@ _pve_validate_ref() {
     [[ "$3" =~ ^[0-9]{1,9}$ ]] || { _api_error 400 "Invalid VMID"; return 1; }
     return 0
 }
-_PVE_NOT_CONFIGURED="Proxmox is not configured: set the URL, the API token ID and its secret in Server Config → Proxmox"
+_PVE_NOT_CONFIGURED="Proxmox is not configured: set the URL, the API token ID and its secret in Config → Proxmox"
 
 # Where DCS runs: bare metal, a QEMU/KVM guest (most likely a Proxmox VM), an
 # LXC container, or the Proxmox host itself. On a guest it probes port 8006 on
@@ -19078,7 +19078,7 @@ handle_proxmox_status() {
     verify=$([[ "${PROXMOX_VERIFY_TLS:-true}" == "false" ]] && echo false || echo true)
     if ! _pve_configured; then
         local envj; envj=$(_pve_detect_environment 2>/dev/null); [[ "$envj" == \{* ]] || envj='{}'
-        _api_success "$(jq -nc --arg u "$url" --arg t "$token_id" --argjson v "$verify" --argjson env "$envj" '{configured: false, reachable: false, url: $u, token_id: $t, verify_tls: $v, node_filter: "", version: "", release: "", nodes: 0, nodes_online: 0, vms: {total: 0, running: 0, stopped: 0, qemu: 0, lxc: 0}, error: "", environment: $env, hints: ((if ($env.hint_url // "") != "" then ["This machine looks like a Proxmox guest and a Proxmox API answers at " + $env.hint_url + "."] else [] end) + ["Set the Proxmox URL, an API token ID and its secret in Server Config → Proxmox. On Proxmox: Datacenter → Permissions → API Tokens, then give the token VM.Audit, VM.PowerMgmt and Sys.Audit on /."])}')"
+        _api_success "$(jq -nc --arg u "$url" --arg t "$token_id" --argjson v "$verify" --argjson env "$envj" '{configured: false, reachable: false, url: $u, token_id: $t, verify_tls: $v, node_filter: "", version: "", release: "", nodes: 0, nodes_online: 0, vms: {total: 0, running: 0, stopped: 0, qemu: 0, lxc: 0}, error: "", environment: $env, hints: ((if ($env.hint_url // "") != "" then ["This machine looks like a Proxmox guest and a Proxmox API answers at " + $env.hint_url + "."] else [] end) + ["Set the Proxmox URL, an API token ID and its secret in Config → Proxmox. On Proxmox: Datacenter → Permissions → API Tokens, then give the token VM.Audit, VM.PowerMgmt and Sys.Audit on /."])}')"
         return
     fi
     local ver res nodes err=""
@@ -19297,7 +19297,7 @@ _feed_touch() {
     jq -nc --argjson t "$(date +%s)" --arg c "${CLIENT_IP:-}" '{last_poll: $t, last_client: $c}' > "$TRAEFIK_FEED_STATE.tmp" 2>/dev/null && mv -f "$TRAEFIK_FEED_STATE.tmp" "$TRAEFIK_FEED_STATE" 2>/dev/null
     return 0
 }
-# Write one KEY=VALUE into the root .env (same quoting as Server Config)
+# Write one KEY=VALUE into the root .env (same quoting as Config)
 _api_env_write() {
     local key="$1" value="$2" env_file="$BASE_DIR/.env"
     [[ "$key" =~ ^[A-Z_][A-Z0-9_]*$ ]] || return 1
@@ -20771,7 +20771,7 @@ handle_fleet_discover() {
         out=$(PROXMOX_URL="$u" PROXMOX_TOKEN_ID="$t" PVE_TEST_SECRET="$s" PROXMOX_VERIFY_TLS="$v" _fleet_discover_json)
         _api_success "$out"; return
     fi
-    _pve_configured || { _api_error 400 "Link Proxmox first (Server Config → Proxmox): the scan asks Proxmox for the guests' addresses"; return; }
+    _pve_configured || { _api_error 400 "Link Proxmox first (Config → Proxmox): the scan asks Proxmox for the guests' addresses"; return; }
     out=$(_fleet_discover_json)
     _api_success "$out"
 }
@@ -21905,7 +21905,7 @@ handle_fleet_provision_defaults() {
 handle_fleet_provision() {
     local body="$1" node storage istorage bridge cidr gw dns start n i stack cores mem disk ip id tok exp pw admin now jobs='[]' j
     [[ "$body" == \{* ]] || { _api_error 400 "A JSON body is required"; return; }
-    _pve_configured || { _api_error 400 "Link Proxmox first (Server Config → Proxmox)"; return; }
+    _pve_configured || { _api_error 400 "Link Proxmox first (Config → Proxmox)"; return; }
     command -v ssh-keygen >/dev/null 2>&1 && command -v "$FLEET_SSH_CMD" >/dev/null 2>&1 || { _api_error 500 "ssh and ssh-keygen are needed on the hub (apt install openssh-client)"; return; }
     node=$(jq -r '.node // ""' <<< "$body"); storage=$(jq -r '.storage // ""' <<< "$body"); istorage=$(jq -r '.image_storage // "local"' <<< "$body"); bridge=$(jq -r '.bridge // "vmbr0"' <<< "$body")
     cidr=$(jq -r '.cidr // 24' <<< "$body"); gw=$(jq -r '.gateway // ""' <<< "$body"); dns=$(jq -r '.dns // ""' <<< "$body"); start=$(jq -r '.ip_start // ""' <<< "$body")

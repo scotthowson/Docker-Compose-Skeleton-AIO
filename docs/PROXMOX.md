@@ -98,7 +98,7 @@ continue; the review page lists the result. On a hub (*Hub* chosen in `./setup.s
 soon as you have signed in — the secret stays on the server (leave its field empty to keep it),
 and the *Stacks* step starts with every stack as a VM.
 
-**Server Config → Proxmox** — on an existing install: URL (`https://pve.example.com:8006`),
+**Config → Proxmox** — on an existing install: URL (`https://pve.example.com:8006`),
 token ID, secret, *Verify certificate* (off for the self-signed one), an optional *Only this
 node* filter, and *Test connection*. The URL and token ID go to the root `.env`; the **secret is
 kept in the secret store** under `PROXMOX_TOKEN_SECRET` (Secrets page) — never in plain text —
@@ -183,7 +183,7 @@ The same is true of a friend's proxy box. In both cases DCS does not need its ow
 page) is published as a **feed** that Traefik's HTTP provider pulls; nothing is installed on the
 proxy machine, and a new deployment shows up there within seconds.
 
-1. **Server Config → Traefik & DNS → Traefik on another machine**: switch *Publish routes as a
+1. **Config → Traefik & DNS → Traefik on another machine**: switch *Publish routes as a
    feed* on and save. DCS mints a token.
 2. Set the **target host** if the proxy should reach this machine at another address than its
    LAN IP (a Tailscale IP, for instance), the **entrypoint** name that Traefik uses
@@ -352,7 +352,7 @@ The hub is the one place to look at and to run the whole server. Every page that
 opens on **Everywhere** on a hub — the hub and every VM in one list, each row carrying a capsule
 that says where it lives (*Hub*, or *VM #103 · media-services*) — and the same row of chips
 narrows it to the hub alone or to one VM: Health, Images, Updates, Networks, Volumes, Snapshots,
-Automations, Scheduled Tasks, Secrets and the Activity timeline all share the one choice, and it
+Automations, Schedules, Secrets and Activity all share the one choice, and it
 is remembered. *Everywhere* is a view: to change something, pick the hub or the VM it lives on
 (clicking a row's capsule does that), and the change happens on that DCS through the hub. The API
 is the same: `?fleet=1` on `GET /health`, `/images`, `/networks`, `/volumes`, `/events`,
@@ -377,7 +377,7 @@ Some things go further than a merged list:
   `PROXY_DOMAIN`); a member that has a domain of its own keeps it. When the domain arrives, the
   VM writes the routes for the services it already runs (`POST /traefik/routes/rebuild` does
   the same by hand, on any DCS that got Traefik after its stacks).
-- **Every page, every VM.** Containers, Logs, Uptime, Topology, Backup & Restore, File Browser,
+- **Every page, every VM.** Containers, Logs, Uptime, Topology, Backup, File Browser,
   Environment, System and Maintenance take the same Everywhere / Hub / VM choice as the list
   pages: a container's buttons (start, stop, restart, recreate, remove, env, exec, logs, Sablier,
   Nuke & reinstall) act on the VM it lives in, a stack's backup runs on its VM and restores go to
@@ -401,7 +401,7 @@ Some things go further than a merged list:
   containers: Sablier cannot wake a container inside a VM from the hub.
 - **Themes and Homarr.** Themes (Settings → Appearance) live on the hub and every dashboard
   follows the one set for everyone; Homarr on the hub gets a tile for every routed app, the
-  VMs' included, once its API key is stored (Server Config → Integrations, or
+  VMs' included, once its API key is stored (Config → Integrations, or
   `POST /homarr/key`), and *Sync routes* fills in what is missing.
 - **The engine under the containers.** The Updates page's *Docker Engine* card shows the engine
   on the hub and in every VM — version, package source, the newest version that source offers —
@@ -410,7 +410,7 @@ Some things go further than a merged list:
 
 - **Events reach the hub.** A VM's DCS sends every event it raises (a container that stopped, a
   stack that started, an update, a failed backup…) to its hub with a relay token the hub handed
-  it when it joined (`POST /fleet/relay`). The hub notes it in the Activity timeline as
+  it when it joined (`POST /fleet/relay`). The hub notes it on the Activity page as
   `fleet_event` and fires its own notification rules with the VM named — a Discord embed or an
   NTFY push from the hub reads *VM media-services · Container stopped* and carries the VM as a
   field. The VMs need no Discord or NTFY settings of their own; the hub's rules and channels

@@ -33,7 +33,7 @@ When a setting is set in more than one place, the later one wins: the defaults, 
 `ENVIRONMENT` profile, then the stack's `.env`, then the environment you start a script with
 (`LOG_LEVEL=DEBUG ./start.sh`).
 
-**How to change them.** *Server Config* in the dashboard covers the common settings, the *Environment*
+**How to change them.** *Config* in the dashboard covers the common settings, the *Environment*
 page edits `.env` itself, and you can edit the file by hand. Every write through the dashboard or the
 API is checked: only `KEY=value` lines, no command substitution, no loader variables such as
 `LD_PRELOAD`. The API reads `.env` as data and never runs it.
@@ -131,7 +131,7 @@ deploy real services. On a hub, a stack that runs in a VM is never started on th
 | Key | Default | Meaning |
 |---|---|---|
 | `TRAEFIK_FEED_ENABLED` | `false` | Publish the routes at `/traefik/dynamic?token=…` |
-| `TRAEFIK_FEED_TOKEN` | *(minted when enabled)* | The feed's token; rotate it in Server Config |
+| `TRAEFIK_FEED_TOKEN` | *(minted when enabled)* | The feed's token; rotate it in Config |
 | `TRAEFIK_FEED_TARGET_HOST` | *(the LAN address)* | The address the remote Traefik uses to reach this server |
 | `TRAEFIK_FEED_ENTRYPOINT` | `websecure` | The entrypoint name on the remote side |
 | `TRAEFIK_FEED_MIDDLEWARES` | *(empty)* | Middlewares that exist on the remote side |
@@ -232,7 +232,7 @@ shown again.
 | `CF_DNS_API_TOKEN` | Cloudflare DNS: certificates, records, dynamic DNS |
 | `PROXMOX_TOKEN_SECRET` | The Proxmox link |
 | `RECOVERY_PASSPHRASE` | Encrypting recovery bundles |
-| `HOMARR_API_KEY` | Tiles on Homarr's home board (set it with *Server Config → Integrations*) |
+| `HOMARR_API_KEY` | Tiles on Homarr's home board (set it with *Config → Integrations*) |
 | `FLEET_MEMBER_…` | Written by a hub: the passwords of its accounts on the members |
 
 Back up `.secrets/.master-key` apart from the store itself: without it, the secrets cannot be read.

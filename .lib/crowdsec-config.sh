@@ -1016,7 +1016,7 @@ _cs_notify_set_core() {
     }
     if [[ "$(jq -r '.enabled' <<< "$eff")" == true && -z "$(_cs_webhook_resolve "$(jq -r '.webhook.mode' <<< "$eff")")" ]]; then
         _cs_webhook_undo
-        _cs_fail 400 "There is no Discord webhook to post to: add one here, or set DISCORD_WEBHOOK_URL under Server Config → Notifications"; return 1
+        _cs_fail 400 "There is no Discord webhook to post to: add one here, or set DISCORD_WEBHOOK_URL under Config → Notifications"; return 1
     fi
     _cs_notify_apply "$eff" "$prof" "$CS_INSPECT"; rc=$?
     if (( rc != 0 )); then
@@ -1159,7 +1159,7 @@ handle_crowdsec_notifications_apply() {
         [[ -n "$proj" && -f "$proj/.env" ]] && webhook=$(sed -n 's/^DISCORD_WEBHOOK_URL=//p' "$proj/.env" | head -1 | tr -d '"'"'"'')
         [[ "$webhook" =~ ^\$\{SECRETS[._]([A-Za-z_][A-Za-z0-9_]*)\}$ ]] && webhook=$(secrets_get "${BASH_REMATCH[1]}" 2>/dev/null || true)
         _discord_is_webhook "$webhook" || webhook=""
-        [[ -n "$webhook" || -n "$(_cs_webhook_resolve keep)" ]] || { _api_error 400 "No Discord webhook: pass {\"webhook\": \"https://discord.com/api/webhooks/…\"}, set one under Server Config → Notifications, or deploy the crowdsec template with one"; return; }
+        [[ -n "$webhook" || -n "$(_cs_webhook_resolve keep)" ]] || { _api_error 400 "No Discord webhook: pass {\"webhook\": \"https://discord.com/api/webhooks/…\"}, set one under Config → Notifications, or deploy the crowdsec template with one"; return; }
     fi
     req=$(jq -nc --arg w "$webhook" '{settings: {enabled: true}} + (if $w != "" then {webhook_url: $w} else {} end)')
     if ! _cs_notify_set_core "$req"; then _api_response "$CS_ERR_CODE" "$CS_ERR_BODY"; return; fi

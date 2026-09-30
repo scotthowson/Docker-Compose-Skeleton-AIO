@@ -1,7 +1,7 @@
 {
   "name": "discord-bot",
   "title": "DCS Discord Bot",
-  "description": "Slash commands for this server from Discord, with buttons and confirmations: /status, /usage, /health, /containers, /stacks, /top, /disk, /updates, /logs, /audit, /schedules, /power, /security, /routes, /dcs for everyone the bot answers; /start, /stop, /restart, /update, /deploy, /backup, /prune, /unban and the container and stack actions for the admins you list. Separate from notifications, which use the Discord webhook in Server Config. Setup guide: docs/DISCORD.md",
+  "description": "Slash commands for this server from Discord, with buttons and confirmations: /status, /usage, /health, /containers, /stacks, /top, /disk, /updates, /logs, /audit, /schedules, /power, /security, /routes, /dcs for everyone the bot answers; /start, /stop, /restart, /update, /deploy, /backup, /prune, /unban and the container and stack actions for the admins you list. Separate from notifications, which use the Discord webhook in Config. Setup guide: docs/DISCORD.md",
   "category": "tools",
   "target_stack": "monitoring-management",
   "icon": "🤖",

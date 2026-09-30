@@ -185,7 +185,7 @@ install, the Backup page restores a bundle after taking a snapshot of the curren
 
 ## Notifications
 
-Two channels, both optional, set in *Server Config → Notifications*:
+Two channels, both optional, set in *Config → Notifications*:
 
 - **ntfy**: push notifications to your phone (`NTFY_URL`, `NTFY_TOPIC`, `NTFY_TOKEN`). The setup wizard can
   deploy an ntfy server for you.
@@ -206,7 +206,7 @@ channels of their own. [Discord guide](DISCORD.md) covers every event, the bot a
 
 ## Schedules and automations
 
-**Schedules** run an action on a cron timetable (*Scheduled Tasks* page):
+**Schedules** run an action on a cron timetable (*Schedules* page):
 
 | Action | What it does |
 |---|---|

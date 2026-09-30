@@ -6,7 +6,7 @@ Everything DCS can do with Discord, and every click it takes. Four pieces, each 
 
 | Piece | What it does | What it needs |
 | --- | --- | --- |
-| **Notifications webhook** | The API posts embeds to a channel: container problems, deploys, backups, disk space, image updates, health changes, automations, UPS events, DCS self-updates | A channel webhook URL pasted into Server Config |
+| **Notifications webhook** | The API posts embeds to a channel: container problems, deploys, backups, disk space, image updates, health changes, automations, UPS events, DCS self-updates | A channel webhook URL pasted into Config |
 | **CrowdSec alerts** | Every ban CrowdSec issues lands in a channel with the attacker's address, country, network, scenario and duration | The `crowdsec` template (uses the same webhook, or its own) |
 | **The bot** (`DCS Discord Bot` template) | Slash commands with buttons: `/status`, `/health`, `/containers`, `/restart`, `/deploy`, `/backup`, `/security` … | A Discord application with a bot token, plus a DCS bot account (created for you) |
 | **Rich Presence** (desktop app) | "Managing *your server* · 17/17 containers · all healthy" on your own Discord profile while DCS Manager is open | A Discord application ID pasted into the desktop app's Settings |
@@ -27,13 +27,13 @@ Renaming or moving the channel later changes nothing — a webhook is bound to i
 ### Give it to DCS
 Either of these, they are the same setting (`DISCORD_WEBHOOK_URL` in the root `.env`):
 
-- **Dashboard:** Server Config → *Notifications* → **Discord webhook** → paste → **Save**. The field shows only the last characters afterwards.
+- **Dashboard:** Config → *Notifications* → **Discord webhook** → paste → **Save**. The field shows only the last characters afterwards.
 - **Secret store:** Secrets page → add `DISCORD_WEBHOOK` with the URL → set `DISCORD_WEBHOOK_URL=${SECRETS_DISCORD_WEBHOOK}` (the config field accepts the reference as well).
 
 Then **Notifications → Send test**. A "Test notification" embed appears in the channel within a second. If it does not, the page tells you which channel failed and why (`404` means the webhook was deleted in Discord, `0` means the server cannot reach discord.com).
 
 ### Name, avatar, link
-Under the same Server Config section:
+Under the same Config section:
 
 | Setting | `.env` key | Meaning |
 | --- | --- | --- |
@@ -63,7 +63,7 @@ Notifications page → **New rule** (or a preset). A rule has a trigger, a targe
 | `backup_complete` / `backup_failed` | A backup finished or failed | always |
 | `automation_run` | An automation ran | always |
 
-Cooldown: while a problem persists, the same rule for the same container repeats at most once per cooldown; when the container recovers, the next problem posts right away. Set a rule's own cooldown in the rule form, or change the default for container rules under Server Config → *Repeat cooldown* (`0` = every check, about every 10 seconds while the dashboard is open — noisy).
+Cooldown: while a problem persists, the same rule for the same container repeats at most once per cooldown; when the container recovers, the next problem posts right away. Set a rule's own cooldown in the rule form, or change the default for container rules under Config → *Repeat cooldown* (`0` = every check, about every 10 seconds while the dashboard is open — noisy).
 
 Templates use `{stack}`, `{container}`, `{status}`, `{event}`, `{timestamp}`, `{hostname}`, and per event `{template}`, `{action}`, `{mount}`, `{message}`, `{automation}`. Leave them empty for DCS's own wording.
 
@@ -186,7 +186,7 @@ The bot's own status line mirrors the server: *Watching 17 containers · all hea
 
 ### Troubleshooting
 - **No commands appear** — check `DISCORD_GUILD_ID`, invite the bot again with the `applications.commands` scope, restart Discord. Global registration (empty guild ID) takes up to an hour.
-- **"I can't reach DCS at …"** — the API must listen where the container can reach it: `API_BIND=0.0.0.0` (Server Config) and the default `DCS_API_URL=http://host.docker.internal:9876`.
+- **"I can't reach DCS at …"** — the API must listen where the container can reach it: `API_BIND=0.0.0.0` (Config) and the default `DCS_API_URL=http://host.docker.internal:9876`.
 - **"DCS refused the bot's sign-in"** — `DCS_BOT_USERNAME` / `DCS_BOT_PASSWORD` do not match the account on the Users page.
 - **"the bot's user is not an admin"** — that command needs more than the bot role; make the account admin on the Users page, or run it from the dashboard.
 - **"your Discord account is not on the admin list"** — add your user ID to `DISCORD_ADMIN_IDS` (or your role to `DISCORD_ADMIN_ROLE_IDS`) and restart the bot.
