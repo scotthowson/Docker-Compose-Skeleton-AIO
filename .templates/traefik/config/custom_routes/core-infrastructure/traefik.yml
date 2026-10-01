@@ -31,7 +31,9 @@ http:
     traefik:
       loadBalancer:
         servers:
-          - url: "http://Traefik:${TRAEFIK_PORT_DASHBOARD:-8080}"
+          # The dashboard listens on 8080 INSIDE the container; TRAEFIK_PORT_DASHBOARD is only the port published on the host (8180 by default),
+          # which does not exist on the Docker network: the route answered 502 for traefik.<domain> on every default deploy.
+          - url: "http://Traefik:8080"
 
 # -----------------------------------------------------------------------------
 # Middleware Chains

@@ -25,6 +25,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`traefik.<domain>` answered 502 on every default deploy.** The dashboard route (`.templates/traefik/config/custom_routes/*/traefik.yml`) pointed at `http://Traefik:${TRAEFIK_PORT_DASHBOARD}`, but that variable is the port published on the HOST (8180 by default, since the template moved off 8080); inside the Docker network the dashboard listens on 8080 only, so Traefik had nothing to talk to. The route now names the container port. An existing route file keeps the old port until you change it: `sed -i 's#http://Traefik:8180#http://Traefik:8080#' Stacks/<stack>/App-Data/Traefik/custom_routes/<stack>/traefik.yml` (the file provider picks it up in seconds).
 - **Every whitelist sync rewrote `dcs-whitelist.yaml` and reloaded CrowdSec, although nothing had changed.** The file was compared with the text it ends in a newline, and `$(cat …)` drops
   that newline, so the two never matched: CrowdSec got a reload every ten minutes (and every DDNS check). It is compared as it is written now, and the reload, like the
   `reloaded` field of `.data/crowdsec-whitelist.json`, means the file really changed.
