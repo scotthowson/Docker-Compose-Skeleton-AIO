@@ -1,21 +1,40 @@
 #!/bin/bash
 # =============================================================================
-# DCS member bootstrap — the hub pipes this into a fresh VM over ssh (bash -s),
-# with the DCS_* values exported in front of it. Runs as the cloud-init user.
+# DCS node bootstrap — the hub pipes this into a fresh VM over ssh (bash -s)
+# with the DCS_* values exported in front of it, and serves the same, values
+# first, at GET /fleet/bootstrap?token=<join code> for any Debian, Ubuntu,
+# Fedora or Arch machine set up by hand (curl -fsSL '…' | bash, as a user
+# with sudo). Runs as the cloud-init user, or as whoever runs that one line.
 # Installs Docker and the tools, fetches the hub's own DCS code and runs an
-# unattended member setup that joins the hub. Every line it prints lands in
-# the hub's job log, so it says what matters and checks results rather than
-# trusting package managers' exit codes (a half-configured grub must not stop
-# a working Docker).
+# unattended setup that makes the machine a node (the API alone: no
+# dashboard, no accounts of its own, no wizard) and joins the hub. Every
+# line it prints lands in the hub's job log, so it says what matters and
+# checks results rather than trusting package managers' exit codes (a
+# half-configured grub must not stop a working Docker).
 # =============================================================================
 set -u
 say() { echo "→ $*"; }
 die() { echo "✗ $*"; exit 1; }
 export DEBIAN_FRONTEND=noninteractive
 # a bake (DCS_BAKE=true) installs and seals only: it needs no hub, code or stack
-if [[ "${DCS_BAKE:-false}" != "true" ]]; then : "${DCS_HUB_URL:?}" "${DCS_JOIN_TOKEN:?}" "${DCS_STACKS:?}" "${DCS_BUNDLE_URL:?}"; fi
+if [[ "${DCS_BAKE:-false}" != "true" ]]; then
+    : "${DCS_HUB_URL:?}" "${DCS_JOIN_TOKEN:?}" "${DCS_BUNDLE_URL:?}"
+    # a VM the hub builds carries the stack it is named after; a machine set up by hand carries one named after itself
+    # unless the hub said which (a stack name is lowercase letters, digits and dashes)
+    [[ -n "${DCS_STACKS:-}" ]] || DCS_STACKS=$(uname -n | cut -d. -f1 | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9\n-' '-' | sed -E 's/^-+//; s/-+$//; s/-+/-/g' | cut -c1-40)
+    [[ -n "${DCS_MEMBER_NAME:-}" ]] || DCS_MEMBER_NAME=$(uname -n | cut -d. -f1)
+    export DCS_STACKS DCS_MEMBER_NAME
+fi
 DIR="$HOME/.Docker-Compose-Skeleton-AIO"
 have() { command -v "$1" >/dev/null 2>&1; }
+# the installs and the boot services need root: the hub's VMs have passwordless sudo from cloud-init, a machine set up
+# by hand may ask for a password, which no pipe can answer — so it is said at once. Root itself needs no sudo (a minimal
+# install may not even have it).
+if [[ $EUID -eq 0 ]]; then
+    have sudo || sudo() { [[ "${1:-}" == -n ]] && shift; "$@"; }
+elif ! sudo -n true 2>/dev/null; then
+    die "this needs sudo without a password prompt: run 'sudo -v' first (or run it as root), then the same command again"
+fi
 # dg "command": runs it with the docker group. A session that started before the account joined the group needs sg (or,
 # where a distribution has none, as Arch does not, newgrp reading the command from stdin); every DCS image has the group at login.
 dg() {
@@ -32,6 +51,19 @@ pkg_install() {   # best effort, bounded in time, quiet; the caller checks what 
         sudo -n timeout 1200 apt-get -qq -y "${APT_OPTS[@]}" install "$@" >/dev/null 2>&1 || true
     elif have dnf; then
         sudo -n timeout 1200 dnf -q -y install "$@" >/dev/null 2>&1 || true
+    elif have pacman; then
+        # Arch: its own names for some packages, and one unknown name fails the whole transaction, so each goes alone
+        local p
+        [[ "${PACMAN_SYNCED:-}" == 1 ]] || { sudo -n timeout 600 pacman -Sy --noconfirm >/dev/null 2>&1 || true; PACMAN_SYNCED=1; }
+        for p in "$@"; do
+            case "$p" in
+                docker.io|docker-ce) p=docker ;;
+                docker-compose-plugin) p=docker-compose ;;
+                python3) p=python ;;
+                gnupg|ca-certificates|policycoreutils-python-utils) continue ;;   # in the base system, or Fedora's
+            esac
+            sudo -n timeout 1200 pacman -S --noconfirm --needed "$p" >/dev/null 2>&1 || true
+        done
     fi
 }
 
@@ -108,9 +140,10 @@ cd "$DIR" || die "no $DIR"
 mkdir -p .data && { sudo -n cat /sys/class/dmi/id/product_uuid 2>/dev/null | tr -d ' \n' > .data/product_uuid; } || true
 [[ -s .data/product_uuid ]] || rm -f .data/product_uuid
 chmod +x setup.sh start.sh stop.sh compose.sh .scripts/*.sh 2>/dev/null
-say "DCS $(cat VERSION 2>/dev/null) unpacked; running the unattended member setup for stack $DCS_STACKS…"
-# the docker group is new to this session: run setup under it
-dg "DCS_UNATTENDED=true DCS_NO_UI=true DCS_FLEET_ROLE=member ./setup.sh" 2>&1 | sed -u 's/\x1b\[[0-9;]*m//g' | grep -v '^\s*$'
+say "DCS $(cat VERSION 2>/dev/null) unpacked; running the unattended node setup for stack $DCS_STACKS…"
+# the docker group is new to this session: run setup under it. Every machine this bootstrap installs is a node
+# (DCS_ROLE=node: the API alone, no admin of its own — the join makes the hub's account) unless the hub said otherwise.
+dg "DCS_UNATTENDED=true DCS_NO_UI=true DCS_FLEET_ROLE=member DCS_ROLE=${DCS_ROLE:-node} ./setup.sh" 2>&1 | sed -u 's/\x1b\[[0-9;]*m//g' | grep -v '^\s*$'
 rc=${PIPESTATUS[0]}
 [[ $rc -eq 0 ]] || die "setup.sh exited with $rc"
 if [[ -x .scripts/install-service.sh ]]; then
@@ -118,5 +151,5 @@ if [[ -x .scripts/install-service.sh ]]; then
     # shellcheck disable=SC2024
     sudo -n env DCS_UNATTENDED=true .scripts/install-service.sh </dev/null >/tmp/dcs-install-service.log 2>&1 && say "DCS starts at boot (dcs-api, dcs-stacks services)" || say "boot services not installed (run: sudo .scripts/install-service.sh)"
 fi
-say "Member ready: $DCS_STACKS on $(uname -n) ($(ip -4 -o addr show scope global 2>/dev/null | awk '{sub(/\/.*/, "", $4); print $4; exit}'))"
+say "Node ready: $DCS_STACKS on $(uname -n) ($(ip -4 -o addr show scope global 2>/dev/null | awk '{sub(/\/.*/, "", $4); print $4; exit}')) — the hub's dashboard manages it from here"
 exit 0

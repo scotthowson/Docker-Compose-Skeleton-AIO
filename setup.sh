@@ -116,6 +116,11 @@ answer with environment variables:
   DCS_HUB_URL=http://<hub>:9876 DCS_JOIN_TOKEN=<code> [DCS_MEMBER_NAME=<name>]
   DCS_PROXMOX_URL=https://pve:8006 DCS_PROXMOX_TOKEN_ID=user@realm!name
   DCS_PROXMOX_TOKEN_SECRET=<secret>            (links the hub to Proxmox)
+  DCS_ROLE=node   a node: the API alone, managed from the hub's dashboard — no
+                  dashboard, no accounts of its own, no wizard; the join creates
+                  only the hub's account. The default, hub, is the full DCS (a
+                  standalone server is a hub without members). A DCS node image
+                  (/etc/dcs-role) is a node unless told otherwise.
 
 UNATTENDED (no prompts, no wizard — what the hub runs inside a new VM):
   DCS_UNATTENDED=true DCS_ADMIN_USER=<name> DCS_ADMIN_PASSWORD=<password>
@@ -153,6 +158,16 @@ JOIN_ONLY_HUB=""; JOIN_ONLY_CODE=""; JOIN_ONLY_NAME=""
 # API-only install, driven from the hub's dashboard.
 UNATTENDED="${DCS_UNATTENDED:-false}"; [[ -n "${DCS_ADMIN_PASSWORD:-}" ]] && UNATTENDED=true
 NO_UI="${DCS_NO_UI:-false}"
+# The role of this installation (DCS_ROLE, kept in .env): "hub", the full DCS — the API, the dashboard, accounts and
+# the wizard; a standalone server is a hub without members — or "node", the API alone, managed from a hub's
+# dashboard: no dashboard, no accounts of its own, no wizard, and the join creates only the hub's account. A DCS
+# node image says so in /etc/dcs-role; anything else is a hub unless DCS_ROLE=node is given (an .env that already
+# says node was sourced above, so a re-run keeps it).
+DCS_ROLE="${DCS_ROLE:-}"
+if [[ -z "$DCS_ROLE" && "$(tr -d '[:space:]' < /etc/dcs-role 2>/dev/null)" == "node" ]]; then DCS_ROLE=node; fi
+case "$DCS_ROLE" in hub|node|"") ;; *) _warn "DCS_ROLE=$DCS_ROLE is not hub or node — this install is a hub"; DCS_ROLE="" ;; esac
+[[ -n "$DCS_ROLE" ]] || DCS_ROLE=hub
+[[ "$DCS_ROLE" == "node" ]] && NO_UI=true
 UNATTENDED_TOKEN=""
 # kept for the run that continues under the docker group when setup adds the user to it
 SETUP_ARGS=("$@")
@@ -360,6 +375,23 @@ FLEET_ROLE="${DCS_FLEET_ROLE:-}"
 FLEET_HUB_URL="${DCS_HUB_URL:-}"; FLEET_JOIN_CODE="${DCS_JOIN_TOKEN:-}"; FLEET_MEMBER_NAME="${DCS_MEMBER_NAME:-}"
 [[ -n "$FLEET_HUB_URL" && -n "$FLEET_JOIN_CODE" ]] && FLEET_ROLE="member"
 case "$FLEET_ROLE" in hub|member|standalone|"") ;; *) _warn "DCS_FLEET_ROLE=$FLEET_ROLE is not hub, member or standalone — ignored"; FLEET_ROLE="" ;; esac
+# A node is a member of a hub by definition: no role question, only the hub's address and a join code (asked on a
+# terminal when they were not given and the node has not joined yet; without them it joins later with --join)
+if [[ "$DCS_ROLE" == "node" ]]; then
+    FLEET_ROLE="member"
+    NODE_JOINED=false; jq -e '.hub != null' "$BASE_DIR/.data/fleet.json" >/dev/null 2>&1 && NODE_JOINED=true
+    if [[ "$NODE_JOINED" != "true" && ( -z "$FLEET_HUB_URL" || -z "$FLEET_JOIN_CODE" ) && -t 0 && "$UNATTENDED" != "true" ]]; then
+        echo ""
+        _info "This machine becomes a DCS node: the API alone, managed from a hub's dashboard."
+        read -r -p "  Hub address [http://<hub-ip>:9876]: " FLEET_HUB_URL
+        read -r -p "  Join code (Proxmox page → Join code on the hub): " FLEET_JOIN_CODE
+        read -r -p "  Name for this node on the hub [$(uname -n)]: " FLEET_MEMBER_NAME
+        FLEET_HUB_URL="${FLEET_HUB_URL%/}"
+    fi
+    if [[ "$NODE_JOINED" != "true" && ( -z "$FLEET_HUB_URL" || -z "$FLEET_JOIN_CODE" ) ]]; then
+        _warn "No hub address or join code — the node joins later with: ./setup.sh --join <hub-url> <code>"
+    fi
+fi
 if [[ -z "$FLEET_ROLE" && -t 0 && "$UNATTENDED" != "true" && ! -f "$BASE_DIR/.api-auth/.setup-complete" ]]; then
     echo ""
     _info "How will this DCS be used?"
@@ -386,7 +418,9 @@ FLEET_ROLE_CHOSEN=false; [[ -n "$FLEET_ROLE" ]] && FLEET_ROLE_CHOSEN=true
 [[ -n "$FLEET_ROLE" ]] || FLEET_ROLE="standalone"
 case "$FLEET_ROLE" in
     hub)    _ok "Role: hub — Proxmox is linked here and the other VMs join this DCS" ;;
-    member) _ok "Role: member of ${FLEET_HUB_URL} — the join runs when the API is up" ;;
+    member)
+        if [[ "$DCS_ROLE" == "node" ]]; then _ok "Role: node of ${FLEET_HUB_URL:-a hub} — the API alone, managed from the hub's dashboard; the join runs when the API is up"
+        else _ok "Role: member of ${FLEET_HUB_URL} — the join runs when the API is up"; fi ;;
 esac
 
 # =============================================================================
@@ -396,11 +430,13 @@ esac
 _header "Step 1/7: Environment Configuration"
 _divider
 
+ENV_CREATED=false   # a first run: the example's defaults are this run's to change (a node takes no stack list from it)
 if [[ -f "$BASE_DIR/.env" ]]; then
     _skip ".env already exists -- not overwriting"
 elif [[ -f "$BASE_DIR/.env.example" ]]; then
     _run cp "$BASE_DIR/.env.example" "$BASE_DIR/.env"
     _run chmod 600 "$BASE_DIR/.env"
+    ENV_CREATED=true
     _ok "Copied .env.example -> .env"
     _info "Edit .env to customize for your server"
 else
@@ -412,6 +448,17 @@ fi
 # (a re-run, where nothing was asked, leaves it as it is)
 if [[ "$FLEET_ROLE_CHOSEN" == "true" && -f "$BASE_DIR/.env" ]]; then
     _env_set FLEET_ROLE "$FLEET_ROLE"
+fi
+# A node says so in .env (the API reads DCS_ROLE from there), carries only the stacks it was given (none is fine: the
+# hub deploys into it, and the example's ten are a hub's), listens for its hub on every interface unless told
+# otherwise, and always asks for a token. The stack list is written on the first run and whenever DCS_STACKS says it,
+# never over what the hub deployed since.
+if [[ "$DCS_ROLE" == "node" && -f "$BASE_DIR/.env" ]]; then
+    _env_set DCS_ROLE node
+    if [[ -n "${DCS_STACKS:-}" || "$ENV_CREATED" == "true" ]]; then _env_set DOCKER_STACKS "\"${DCS_STACKS:-}\""; fi
+    [[ -n "${DCS_API_BIND:-}" ]] || _env_set API_BIND 0.0.0.0
+    _env_set API_AUTH_ENABLED true
+    set -a; source "$BASE_DIR/.env"; set +a
 fi
 
 # Unattended: the values the caller passed go into .env now, so the stack
@@ -594,10 +641,13 @@ done
 _header "Step 3/7: Stack Directories"
 _divider
 
-# Read stack list from .env (DOCKER_STACKS), or use defaults
+# Read stack list from .env (DOCKER_STACKS), or use defaults (a node has none by default: its hub deploys into it)
 if [[ -n "${DOCKER_STACKS:-}" ]]; then
     read -ra _SETUP_STACKS <<< "$DOCKER_STACKS"
     _info "Using DOCKER_STACKS from .env (${#_SETUP_STACKS[@]} stacks)"
+elif [[ "$DCS_ROLE" == "node" ]]; then
+    _SETUP_STACKS=()
+    _info "A node carries only the stacks its hub gives it — no stack folders made here"
 else
     _SETUP_STACKS=(
         "core-infrastructure"
@@ -617,7 +667,7 @@ fi
 stacks_created=0
 stacks_existed=0
 
-for stack_name in "${_SETUP_STACKS[@]}"; do
+for stack_name in ${_SETUP_STACKS[@]+"${_SETUP_STACKS[@]}"}; do
     stack_dir="$COMPOSE_DIR/$stack_name"
     if [[ -d "$stack_dir" ]]; then
         stacks_existed=$((stacks_existed + 1))
@@ -1119,7 +1169,9 @@ _ensure_api_running || {
     exit 1
 }
 
-if [[ "$NO_UI" == "true" ]]; then
+if [[ "$DCS_ROLE" == "node" ]]; then
+    _info "A node: no dashboard here — the hub's dashboard manages this server"
+elif [[ "$NO_UI" == "true" ]]; then
     _info "API-only install: DCS-UI is not started here (a hub's dashboard drives this server)"
 else
     _ensure_core_infra_running || {
@@ -1136,6 +1188,8 @@ _api_local_url() {
 }
 _unattended_finish() {
     local api user="${DCS_ADMIN_USER:-admin}" pass="${DCS_ADMIN_PASSWORD:-}" res tok stacks_json env_json i
+    # a node has no accounts and no wizard: its settings are in .env already, and the join makes the hub's account
+    if [[ "$DCS_ROLE" == "node" ]]; then _info "A node has no admin account of its own — nothing to create here"; return 0; fi
     api=$(_api_local_url)
     [[ -n "$pass" ]] || { _warn "DCS_ADMIN_PASSWORD is not set — the first account is created in the wizard"; return 0; }
     for i in $(seq 1 30); do curl -s -m 2 "$api/setup/status" >/dev/null 2>&1 && break; sleep 1; done
@@ -1185,21 +1239,24 @@ fi
 
 if [[ "$NO_UI" == "true" ]]; then
     echo ""
-    _info "API: http://${HOST_IP}:${API_PORT:-9876} (no dashboard on this server)"
+    if [[ "$DCS_ROLE" == "node" ]]; then _info "API: http://${HOST_IP}:${API_PORT:-9876} (a node: no dashboard here, the hub's manages it)"
+    else _info "API: http://${HOST_IP}:${API_PORT:-9876} (no dashboard on this server)"; fi
 else
     _print_url_banner
 fi
 
-# Fleet: a member joins now (or as soon as the wizard has made the first admin);
-# a hub prints the join code the other VMs use.
+# Fleet: a member joins now (a node at once; a full DCS as soon as the wizard has made the first admin);
+# a hub prints the join code and the one line that makes any VM a node of it.
 _fleet_closing() {
     local api="$BASE_DIR/.scripts/api-server.sh" line tok url
     case "$FLEET_ROLE" in
         member)
+            [[ -n "$FLEET_HUB_URL" && -n "$FLEET_JOIN_CODE" ]] || return 0
             echo ""
             _info "Joining the hub at $FLEET_HUB_URL…"
             if "$api" --join-hub "$FLEET_HUB_URL" "$FLEET_JOIN_CODE" ${FLEET_MEMBER_NAME:+"$FLEET_MEMBER_NAME"} 2>&1 | sed 's/^/        /'; then
-                _info "The hub's Proxmox page lists this server's stacks under its VM once the join is complete."
+                if [[ "$DCS_ROLE" == "node" ]]; then _info "The hub's dashboard manages this node from now on: its stacks show under its VM there."
+                else _info "The hub's Proxmox page lists this server's stacks under its VM once the join is complete."; fi
             else
                 _warn "The join did not go through — fix the cause, then run: ./setup.sh --join $FLEET_HUB_URL <code>"
             fi ;;
@@ -1208,9 +1265,8 @@ _fleet_closing() {
             tok="${line%%$'\t'*}"; url="${line#*$'\t'}"; url="${url%%$'\t'*}"
             [[ -n "$tok" && -n "$url" ]] || return 0
             echo ""
-            _info "This DCS is the hub. On each Docker VM (join code valid 24 h, more on the Proxmox page):"
-            echo -e "      ${C_BOLD}git clone https://github.com/scotthowson/dcs-orchestrator.git ~/.Docker-Compose-Skeleton-AIO${C_RESET}"
-            echo -e "      ${C_BOLD}cd ~/.Docker-Compose-Skeleton-AIO && DCS_HUB_URL=$url DCS_JOIN_TOKEN=$tok ./setup.sh${C_RESET}"
+            _info "This DCS is the hub. One line makes any Debian, Ubuntu, Fedora or Arch VM a node of it (run as a user with sudo; the code is valid 24 h, more on the Proxmox page):"
+            echo -e "      ${C_BOLD}curl -fsSL '$url/fleet/bootstrap?token=$tok' | bash${C_RESET}"
             _info "A VM that already runs DCS:  ./setup.sh --join $url $tok"
             _info "The wizard's Proxmox step scans the VMs for DCS installs and links them too." ;;
     esac

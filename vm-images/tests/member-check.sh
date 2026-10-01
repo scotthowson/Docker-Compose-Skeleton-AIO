@@ -2,8 +2,9 @@
 # =============================================================================
 # member-check.sh — sourced by boot-test.sh for a node image (never run by itself).
 #
-# A hub started from this checkout builds a member out of the running VM the way its build step does: the member bootstrap
-# (.scripts/fleet-bootstrap.sh) is copied over ssh and run, the VM joins, and the member is used through the hub: its API,
+# A hub started from this checkout builds a node out of the running VM the way its build step does: the node bootstrap
+# (.scripts/fleet-bootstrap.sh) is copied over ssh and run, the VM joins (the API alone, no admin of its own: the hub's
+# account is the only one on it), and the node is used through the hub: its API,
 # the host name, the Docker Engine card, a stack with a healthy and an unhealthy container, a Docker restart, and an engine
 # update. Everything here failed at some point on some distribution and boot-test.sh saw nothing of it.
 #
@@ -51,8 +52,8 @@ ENV
     s="$T/member-bootstrap.sh"
     {
         printf 'export DCS_HUB_URL=%q DCS_JOIN_TOKEN=%q DCS_STACKS=%q DCS_MEMBER_NAME=%q DCS_MEMBER_URL=%q DCS_API_PORT=%q\n' "http://10.0.2.2:$hport" "$jt" member-test member-test "http://127.0.0.1:$P_API" 9876
-        printf 'export DCS_ADMIN_USER=%q DCS_ADMIN_PASSWORD=%q DCS_TZ=%q DCS_PUID=%q DCS_PGID=%q DCS_PROXY_DOMAIN=%q DCS_CF_DNS_API_TOKEN=%q\n' member-test "$pw" UTC 1000 1000 '' ''
-        printf 'export DCS_BUNDLE_URL=%q DCS_UNATTENDED=true DCS_NO_UI=true DCS_FLEET_ROLE=member DCS_BAKE=false DCS_PROXY_DOMAIN=%q\n' "http://10.0.2.2:$hport/fleet/bundle?token=$jt" ''
+        printf 'export DCS_TZ=%q DCS_PUID=%q DCS_PGID=%q DCS_PROXY_DOMAIN=%q DCS_CF_DNS_API_TOKEN=%q\n' UTC 1000 1000 '' ''
+        printf 'export DCS_BUNDLE_URL=%q DCS_ROLE=node DCS_UNATTENDED=true DCS_NO_UI=true DCS_FLEET_ROLE=member DCS_BAKE=false DCS_PROXY_DOMAIN=%q\n' "http://10.0.2.2:$hport/fleet/bundle?token=$jt" ''
         cat "$repo/.scripts/fleet-bootstrap.sh"
     } > "$s"
     rc=0; "${SSH[@]}" 'f=$(mktemp /tmp/dcs-bootstrap.XXXXXX) && cat > "$f" && bash "$f" </dev/null; rc=$?; rm -f "$f"; exit $rc' < "$s" > "$T/member-bootstrap.log" 2>&1 || rc=$?
@@ -64,6 +65,11 @@ ENV
     id=$(hubq /fleet/members | jq -r '.members[0].id // empty')
     chk "the member is registered, answers, and runs the hub's version" [ "$(hubq /fleet/members | jq -r '.members[0] | "\(.reachable) \(.version)"')" = "true $(tr -d '[:space:]' < "$repo/VERSION")" ]
     chk "the member reports its host name" [ "$(hubq "/fleet/members/$id/api/status" | jq -r '.hostname // ""')" = bootcheck ]
+    # a node: the API alone, the hub's account the only one, the first-admin door closed
+    chk "the VM is a node (DCS_ROLE=node in its .env)"            "${SSH[@]}" 'grep -qx DCS_ROLE=node ~/.Docker-Compose-Skeleton-AIO/.env'
+    chk "a node has no admin of its own: only the hub's account" [ "$("${SSH[@]}" 'jq -r "map(.username) | join(\" \")" ~/.Docker-Compose-Skeleton-AIO/.api-auth/users.json' 2>/dev/null)" = dcs-hub ]
+    chk "a node refuses a first admin (403, the hub named)"      [ "$(curl -s -o /dev/null -w '%{http_code}' -m 5 -X POST -H 'Content-Type: application/json' -d '{"username":"x","password":"yyyyyyyy"}' "http://127.0.0.1:$P_API/auth/setup")" = 403 ]
+    chk "the hub knows it is a node"                              [ "$(hubq /fleet/members | jq -r '.members[0].identity.role // ""')" = node ]
     chk "the Docker Engine card knows where Docker comes from ($expect_src)" [ "$(hubq "/fleet/members/$id/api/system/docker-engine" | jq -r '.source // ""')" = "$expect_src" ]
     chk "the Cron Jobs page is an empty list (no cron here), not an error" [ "$(hubq "/fleet/members/$id/api/system/crontab" | jq -r '(.entries | length | tostring) + (.raw // "")')" = 0 ]
 

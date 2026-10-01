@@ -44,6 +44,9 @@ if [[ -n "${DOCKER_STACKS:-}" ]]; then
         DOCKER_SERVICES_STOP+=("${_start_order[i]}")
     done
     unset _start_order
+elif [[ "${DCS_ROLE:-hub}" == "node" ]]; then
+    # a node (DCS_ROLE=node) has only the stacks its hub gave it: nothing to stop by default
+    declare -a DOCKER_SERVICES_STOP=()
 else
     declare -a DOCKER_SERVICES_STOP=(
         "miscellaneous-services"
@@ -347,11 +350,15 @@ stop_docker_services() {
         services_to_stop=("$@")
         log_info "Selective shutdown requested for: ${services_to_stop[*]}"
     else
-        services_to_stop=("${DOCKER_SERVICES_STOP[@]}")
+        services_to_stop=(${DOCKER_SERVICES_STOP[@]+"${DOCKER_SERVICES_STOP[@]}"})
         log_info "Full system shutdown requested for all ${#DOCKER_SERVICES_STOP[@]} service stacks"
     fi
 
     if [[ ${#services_to_stop[@]} -eq 0 ]]; then
+        if [[ "${DCS_ROLE:-hub}" == "node" ]]; then
+            log_info "A node with nothing deployed into it yet: nothing to stop"
+            return 0
+        fi
         log_warning "No services specified for shutdown"
         return 1
     fi
