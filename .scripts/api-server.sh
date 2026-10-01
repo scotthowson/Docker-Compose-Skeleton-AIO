@@ -20753,6 +20753,8 @@ _fleet_watch() {
         elif [[ "$was" == "false" && "$ok" == "true" ]]; then
             _audit_log "fleet_member_up" "member $name ($url) answers the hub again"
             _fire_notifications "fleet_member_up" "member=$name" "url=$url" "message=DCS on $name ($url) answers the hub again" 2>/dev/null
+            # its stacks' App-Data is mounted again in this round: what was tried while it was away does not space that out
+            local _bs; for _bs in $(_fleet_member_stack_names "$id" 2>/dev/null); do rm -f "${FLEET_APPDATA_STATE_DIR:?}/${_bs:?}.retry" 2>/dev/null || true; done
         fi
     done < <(jq -r '.members[] | [.id, .url, ((.insecure // false) | tostring), ((.reachable != false) | tostring), .name] | @tsv' <<< "$j")
     _fleet_update --argjson u "$updates" '.members = [(.members // [])[] | . as $m | ($u[$m.id] // null) as $x
@@ -23005,15 +23007,18 @@ _fleet_appdata_ensure_locked() {
         _fleet_appdata_down "$name"   # its far side went away under it: taken down, made again below
     fi
     stamp="$FLEET_APPDATA_STATE_DIR/$name.retry"
-    if [[ -z "$mode" && -f "$stamp" ]] && (( $(date +%s) - $(stat -c %Y "$stamp" 2>/dev/null || echo 0) < 300 )); then
+    if [[ -z "$mode" && -f "$stamp" && "$(jq -r '.reachable != false' <<< "$m" 2>/dev/null)" != "false" ]] && (( $(date +%s) - $(stat -c %Y "$stamp" 2>/dev/null || echo 0) < 300 )); then
         _fleet_appdata_recorded "$name"
         if [[ "$_FAD_STATE" == mounted ]]; then _fleet_appdata_fail "$name" waiting "the mount went away: the hub makes it again within five minutes, Mount does it now" "$id"; fi
         return 1
     fi
-    mkdir -p "$FLEET_APPDATA_STATE_DIR" 2>/dev/null || true; touch "$stamp" 2>/dev/null || true
+    # a VM that does not answer is known from its record and costs nothing to notice: no spacing for it, so its
+    # App-Data is back with the watcher's first round after the VM is
     if [[ "$mode" != mount && "$(jq -r '.reachable != false' <<< "$m" 2>/dev/null)" == "false" ]]; then
+        rm -f "${stamp:?}" 2>/dev/null || true
         _fleet_appdata_fail "$name" waiting "$mname is not answering the hub right now: its App-Data is shown again when it does" "$id"; return 1
     fi
+    mkdir -p "$FLEET_APPDATA_STATE_DIR" 2>/dev/null || true; touch "$stamp" 2>/dev/null || true
     [[ "$mode" == mount ]] && tool_mode=force
     _fleet_appdata_tool "$tool_mode" || { _fleet_appdata_fail "$name" unavailable "$_FAD_REASON" "$id"; return 1; }
     _fleet_appdata_runner || { _fleet_appdata_fail "$name" unavailable "$_FAD_REASON" "$id"; return 1; }

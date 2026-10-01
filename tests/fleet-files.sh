@@ -262,6 +262,13 @@ check "appdata: a deploy into the VM brings the mount by itself" "1 mounted" "$(
 hub POST /templates/tiny/undeploy '{"target_stack":"demo","services":["tiny"],"remove_containers":false}' >/dev/null
 for _ in $(seq 1 20); do [[ -e "$HUB/.data/fleet-appdata/demo.soon" ]] || break; sleep 0.5; done
 check "appdata: …and nobody keeps looking once it is there" no "$([[ -e "$HUB/.data/fleet-appdata/demo.soon" ]] && echo yes || echo no)"
+# a VM that stops answering: nothing is tried and nothing is spaced out, so its App-Data is back with the first round after the VM is
+"$FAKE/fusermount3" -uz "$VMDATA/demo"
+_reach() { ( cd "$HUB" && set -a && . "$HUB/.env" && set +a && source "$HUB/.scripts/api-server.sh" >/dev/null 2>&1; _fleet_update --arg id "$MID" --argjson r "$1" '.members = [.members[] | if .id == $id then .reachable = $r else . end]' ); }
+_reach false; N0=$(wc -l < "$FAKE/sshfs.log"); _hublib _fleet_appdata_round
+check "appdata: a VM that does not answer is said, and not tried" "waiting yes $N0 no" "$(hub GET /stacks/demo/appdata | jq -r '.state' 2>/dev/null) $(hub GET /stacks/demo/appdata | jq -r '.reason' 2>/dev/null | grep -q 'is not answering the hub' && echo yes || echo no) $(wc -l < "$FAKE/sshfs.log") $([[ -e "$HUB/.data/fleet-appdata/demo.retry" ]] && echo yes || echo no)"
+_reach true; _hublib _fleet_appdata_round
+check "appdata: …it answers again: the next round mounts" "mounted 1" "$(hub GET /stacks/demo/appdata | jq -r '.state' 2>/dev/null) $(_mounts)"
 # a mount that fails says the mount helper's own words, and is not hammered: the next automatic try waits
 "$FAKE/fusermount3" -uz "$VMDATA/demo"; : > "$FAKE/sshfs-fail"
 R=$(hub POST /stacks/demo/appdata/mount)
