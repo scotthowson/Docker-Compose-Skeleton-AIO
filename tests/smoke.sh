@@ -21,6 +21,7 @@ mkdir -p "$WORK/.scripts" "$WORK/.lib" "$WORK/.config" "$WORK/Stacks/demo" "$WOR
 cp "$ROOT/.scripts/api-server.sh" "$ROOT/.scripts/api-dispatch.sh" "$WORK/.scripts/"   # the API and the front of its worker pool
 cp "$ROOT/compose.sh" "$WORK/"
 cp "$ROOT/VERSION" "$WORK/"   # the hub's bundle carries it; /ping and /fleet/versions report it
+cp "$ROOT/.scripts/fleet-bootstrap.sh" "$WORK/.scripts/"   # the node installer GET /fleet/bootstrap serves with a join code
 mkdir -p "$WORK/vm-images"; cp "$ROOT/vm-images/images.json" "$WORK/vm-images/"   # the list of purpose-built VM images (the catalogue reads it)
 cp -r "$ROOT/.lib/." "$WORK/.lib/"
 cp -r "$ROOT/.config/." "$WORK/.config/"
@@ -1351,10 +1352,10 @@ echo "Fleet: a hub and a member (two real listeners on loopback)"
 # run with auth on so the hub really logs in. Stopped with --stop at the end (and on exit).
 HUB_PORT=$(_rport); FLEET_PORT=$(_rport); [[ "$FLEET_PORT" == "$HUB_PORT" ]] && FLEET_PORT=$(_rport)
 [[ "$FLEET_PORT" == "$HUB_PORT" ]] && FLEET_PORT=$(( FLEET_PORT + 1 ))
-MWORK="$WORK-member"; PWORK="$WORK-pending"
-rm -rf "$MWORK" "$PWORK"; cp -r "$WORK" "$MWORK"
-_fleet_stop_listeners() { for d in "$WORK" "$MWORK"; do [[ -f "$d/.data/api-server.pid" ]] && (cd "$d" && "$d/.scripts/api-server.sh" --stop >/dev/null 2>&1); done; return 0; }
-trap '_fleet_stop_listeners; rm -rf "$WORK" "$MWORK" "$PWORK"' EXIT
+MWORK="$WORK-member"; PWORK="$WORK-pending"; NWORK="$WORK-node"
+rm -rf "$MWORK" "$PWORK" "$NWORK"; cp -r "$WORK" "$MWORK"
+_fleet_stop_listeners() { for d in "$WORK" "$MWORK" "$NWORK"; do [[ -f "$d/.data/api-server.pid" ]] && (cd "$d" && "$d/.scripts/api-server.sh" --stop >/dev/null 2>&1); done; return 0; }
+trap '_fleet_stop_listeners; rm -rf "$WORK" "$MWORK" "$PWORK" "$NWORK"' EXIT
 _menvset() { sed -i "/^${1}=/d" "$MWORK/.env"; printf '%s=%s\n' "$1" "$2" >> "$MWORK/.env"; }
 _mlib() { local -a _c=("$@"); ( set --; cd "$MWORK" && source "$MWORK/.scripts/api-server.sh" >/dev/null 2>&1; "${_c[@]}" ) 2>/dev/null; }
 _envset API_AUTH_ENABLED true; _envset FLEET_SCAN_PORTS "$FLEET_PORT"; _envset API_PORT "$HUB_PORT"
@@ -1831,12 +1832,90 @@ check "hostile: an 8 MB answer is refused"  "0|answer larger than 8 MB" "$(_lib 
 auth_request DELETE "/fleet/members/$HMID" >/dev/null
 kill $_MOCK_PID 2>/dev/null; wait $_MOCK_PID 2>/dev/null
 rm -rf "$WORK/Stacks/orphan" "$WORK/mock-member.py" "$WORK/.data/fleet-loop.lock"
-# join saved for later when the member has no admin yet (setup.sh before the wizard)
+# a full DCS (a hub-to-be, not a node) without an admin yet saves the join for its wizard: the hub's account made now
+# would close the first-admin window (setup.sh before the wizard)
 mkdir -p "$PWORK/.scripts" "$PWORK/.lib" "$PWORK/.config" "$PWORK/.data" "$PWORK/.api-auth" "$PWORK/logs"
 cp "$API" "$PWORK/.scripts/"; cp -r "$WORK/.lib/." "$PWORK/.lib/"; cp -r "$WORK/.config/." "$PWORK/.config/"; cp "$WORK/.env" "$PWORK/.env"; printf '[]' > "$PWORK/.api-auth/users.json"
 PJ_OUT=$(cd "$PWORK" && "$PWORK/.scripts/api-server.sh" --join-hub "http://127.0.0.1:$HUB_PORT" "$JT" 2>&1)
-check "fleet: join deferred w/o admin"  yes "$(grep -q 'Join saved' <<< "$PJ_OUT" && echo yes || echo no)"
+check "fleet: a full DCS defers the join w/o admin" yes "$(grep -q 'Join saved' <<< "$PJ_OUT" && echo yes || echo no)"
 check "fleet: pending join recorded"    "http://127.0.0.1:$HUB_PORT" "$(jq -r '.hub_url' "$PWORK/.data/fleet-join-pending.json" 2>/dev/null)"
+
+echo "Fleet: a node (DCS_ROLE=node) — no admin, no wizard, the hub's account alone"
+# A node is the API alone: no first-admin gate, no dashboard, no accounts of its own. It joins a hub with a code at
+# once (there is no admin to wait for), the hub's account is the only one on it, a person who signs in is sent to the
+# hub, and the hub serves the one line that makes any machine a node of it (GET /fleet/bootstrap).
+NODE_PORT=$(_rport); [[ "$NODE_PORT" == "$HUB_PORT" || "$NODE_PORT" == "$FLEET_PORT" ]] && NODE_PORT=$(( NODE_PORT + 5 ))
+mkdir -p "$NWORK/.scripts" "$NWORK/.lib" "$NWORK/.config" "$NWORK/.data" "$NWORK/.api-auth" "$NWORK/logs" "$NWORK/Stacks"
+cp "$API" "$ROOT/.scripts/api-dispatch.sh" "$NWORK/.scripts/"; cp "$WORK/compose.sh" "$WORK/VERSION" "$NWORK/"; cp -r "$WORK/.lib/." "$NWORK/.lib/"; cp -r "$WORK/.config/." "$NWORK/.config/"
+grep -vE '^(PROXMOX_|FLEET_SCAN_PORTS=|API_PORT=|SERVER_NAME=|FLEET_SELF_URL=)' "$WORK/.env" > "$NWORK/.env"
+printf 'DCS_ROLE=node\nAPI_AUTH_ENABLED=true\nAPI_PORT=%s\nSERVER_NAME="Node VM"\n' "$NODE_PORT" >> "$NWORK/.env"
+printf '[]' > "$NWORK/.api-auth/users.json"
+node_request() { local m="$1" p="$2" b="${3:-}" t="${4:-}"; curl -s -m 20 -X "$m" "http://127.0.0.1:$NODE_PORT$p" -H 'Content-Type: application/json' ${t:+-H "Authorization: Bearer $t"} ${b:+-d "$b"}; }
+node_status() { local m="$1" p="$2" b="${3:-}" t="${4:-}"; curl -s -o /dev/null -w '%{http_code}' -m 20 -X "$m" "http://127.0.0.1:$NODE_PORT$p" -H 'Content-Type: application/json' ${t:+-H "Authorization: Bearer $t"} ${b:+-d "$b"}; }
+(cd "$NWORK" && setsid nohup "$NWORK/.scripts/api-server.sh" --bind 127.0.0.1 --port "$NODE_PORT" > "$NWORK/logs/node-listener.log" 2>&1 < /dev/null &)
+timeout 30 bash -c "until curl -s -m 1 http://127.0.0.1:$NODE_PORT/ping | grep -q '\"ok\"'; do sleep 0.3; done" 2>/dev/null
+check "node: listener up"                          yes "$(curl -s -m 2 http://127.0.0.1:$NODE_PORT/ping | jq -r '.ok' 2>/dev/null | sed 's/true/yes/')"
+check "node: GET / says what it is"                node "$(node_request GET / | jq -r '.role' 2>/dev/null)"
+check "node: nothing to set up, no hub yet"        "true node null" "$(node_request GET /setup/status | jq -r '"\(.initialized) \(.role) \(.hub)"' 2>/dev/null)"
+check "node: no first-run window, a token is asked" "401 no" "$(node_status GET /stacks) $(node_request GET /stacks | jq -r '.message' 2>/dev/null | grep -q 'auth/setup' && echo yes || echo no)"
+check "node: a first admin is refused"             403 "$(node_status POST /auth/setup '{"username":"admin","password":"correct horse battery"}')"
+check "node: …and told to join a hub"              yes "$(node_request POST /auth/setup '{"username":"admin","password":"correct horse battery"}' | jq -r '.message' 2>/dev/null | grep -q 'join it to one' && echo yes || echo no)"
+check "node: still no account"                     0 "$(jq 'length' "$NWORK/.api-auth/users.json" 2>/dev/null)"
+# the hub's side: a join code comes with the one line that installs a node with it, and GET /fleet/bootstrap serves that installer
+_NJ=$(auth_request POST /fleet/join-tokens '{"ttl_hours":1}' | body_of)
+NJT=$(jq -r '.token // empty' <<< "$_NJ" 2>/dev/null)
+check "join code: minted with the node command"    yes "$(jq -r '.node_command' <<< "$_NJ" 2>/dev/null | grep -q "^curl -fsSL 'http://.*/fleet/bootstrap?token=$NJT' | bash$" && echo yes || echo no)"
+check "join code: the list carries it too"         yes "$(auth_request GET /fleet/join-tokens | body_of | jq -r --arg t "$NJT" '.tokens[] | select(.token == $t) | .node_command' 2>/dev/null | grep -q "^curl -fsSL 'http://.*/fleet/bootstrap?token=$NJT' | bash$" && echo yes || echo no)"
+check "bootstrap: a bad code is refused"           403 "$(request GET '/fleet/bootstrap?token=NOPE-NOPE-NOPE' '' "${AUTH[@]}" | status_of)"
+check "bootstrap: no code, no script"              403 "$(request GET /fleet/bootstrap '' "${AUTH[@]}" | status_of)"
+check "bootstrap: a bad stack name is refused"     400 "$(request GET "/fleet/bootstrap?token=$NJT&stack=Bad_Name" '' "${AUTH[@]}" | status_of)"
+_BS=$(request GET "/fleet/bootstrap?token=$NJT&stack=photos" '' "${AUTH[@]}")
+check "bootstrap: a join code opens it"            200 "$(status_of <<< "$_BS")"
+check "bootstrap: it is a shell script"            yes "$(grep -q '^Content-Type: text/x-shellscript' <<< "$_BS" && echo yes || echo no)"
+check "bootstrap: the join's values lead"          yes "$(body_of <<< "$_BS" | grep -q "^export DCS_HUB_URL=.* DCS_JOIN_TOKEN=$NJT " && echo yes || echo no)"
+check "bootstrap: a node, unattended, no dashboard" yes "$(body_of <<< "$_BS" | grep -q '^export DCS_ROLE=node DCS_UNATTENDED=true DCS_NO_UI=true DCS_FLEET_ROLE=member' && echo yes || echo no)"
+check "bootstrap: the stack asked for"             yes "$(body_of <<< "$_BS" | grep -q '^export DCS_STACKS=photos DCS_MEMBER_NAME=photos$' && echo yes || echo no)"
+check "bootstrap: no secret rides along"           no "$(body_of <<< "$_BS" | grep -q 'CF_DNS_API_TOKEN=' && echo yes || echo no)"
+check "bootstrap: the installer follows"           yes "$(body_of <<< "$_BS" | grep -q 'DCS_ROLE=${DCS_ROLE:-node} ./setup.sh' && echo yes || echo no)"
+check "bootstrap: the body is whole"               "$(grep -i '^Content-Length:' <<< "$_BS" | tr -d '\r' | awk '{print $2}')" "$(printf '%s\n' "$(body_of <<< "$_BS")" | wc -c | tr -d ' ')"
+check "bootstrap: without a stack, none is named"  no "$(request GET "/fleet/bootstrap?token=$NJT" '' "${AUTH[@]}" | body_of | grep -q '^export DCS_STACKS=' && echo yes || echo no)"
+check "bootstrap: fetching it is audited"          yes "$(grep -q '"action":"fleet_bootstrap"' "$WORK/.data/audit.jsonl" 2>/dev/null && echo yes || echo no)"
+# the join: at once, no admin to wait for; the hub's account is the only one the node will ever have
+NJ_OUT=$(cd "$NWORK" && DCS_MEMBER_URL="http://127.0.0.1:$NODE_PORT" "$NWORK/.scripts/api-server.sh" --join-hub "http://127.0.0.1:$HUB_PORT" "$NJT" node-vm 2>&1)
+check "node: joins at once, no admin needed"       yes "$(grep -q '^✓ Joined' <<< "$NJ_OUT" && echo yes || { echo no; echo "$NJ_OUT" | tail -3 >&2; })"
+check "node: the account made is on this node"     yes "$(grep -q "on this node" <<< "$NJ_OUT" && echo yes || echo no)"
+check "node: nothing was deferred"                 no "$([[ -f "$NWORK/.data/fleet-join-pending.json" ]] && echo yes || echo no)"
+NID=$(auth_request GET /fleet/members | body_of | jq -r '.members[] | select(.name == "node-vm") | .id' 2>/dev/null)
+check "node: the hub lists it"                     node-vm "$NID"
+check "node: the hub knows it is a node"           node "$(auth_request GET /fleet/members | body_of | jq -r --arg id "$NID" '.members[] | select(.id == $id) | .identity.role' 2>/dev/null)"
+check "node: the hub's account is the only one"    dcs-hub "$(jq -r 'map(.username) | join(" ")' "$NWORK/.api-auth/users.json" 2>/dev/null)"
+check "node: …a service account"                   true "$(jq -r '.[0].service' "$NWORK/.api-auth/users.json" 2>/dev/null)"
+check "node: the hub proxies to it"                true "$(auth_request GET "/fleet/members/$NID/api/stacks" | body_of | jq -r '.stacks | type == "array"' 2>/dev/null)"
+check "node: the hub reads its version through it" "$(tr -d '[:space:]' < "$WORK/VERSION")" "$(auth_request GET "/fleet/members/$NID/api/version" | body_of | jq -r '.framework_version' 2>/dev/null)"
+check "node: setup status names the hub"           "true node http://127.0.0.1:$HUB_PORT" "$(node_request GET /setup/status | jq -r '"\(.initialized) \(.role) \(.hub.url)"' 2>/dev/null)"
+check "node: a first admin is still refused"       403 "$(node_status POST /auth/setup '{"username":"admin","password":"correct horse battery"}')"
+check "node: …and the hub is named"                yes "$(node_request POST /auth/setup '{"username":"admin","password":"correct horse battery"}' | jq -r '.message' 2>/dev/null | grep -q "This is a node of .*http://127.0.0.1:$HUB_PORT.*open the hub's dashboard" && echo yes || echo no)"
+check "node: a person cannot sign in"              403 "$(node_status POST /auth/login '{"username":"admin","password":"correct horse battery"}')"
+check "node: …whatever the name"                   403 "$(node_status POST /auth/login '{"username":"someone","password":"correct horse battery"}')"
+check "node: …and is sent to the hub"              yes "$(node_request POST /auth/login '{"username":"admin","password":"correct horse battery"}' | jq -r '.message' 2>/dev/null | grep -q "This is a node of .*open the hub's dashboard" && echo yes || echo no)"
+_NPW=$(_lib secrets_get FLEET_MEMBER_NODE_VM_PASSWORD 2>/dev/null)
+NTOK=$(node_request POST /auth/login "$(jq -nc --arg p "$_NPW" '{username: "dcs-hub", password: $p}')" | jq -r '.token // empty' 2>/dev/null)
+check "node: the hub's account signs in"           yes "$([[ ${#NTOK} -ge 32 ]] && echo yes || echo no)"
+check "node: a wrong password is still a 401"      401 "$(node_status POST /auth/login '{"username":"dcs-hub","password":"nope-nope-nope"}')"
+check "node: the hub's session works"              200 "$(node_status GET /stacks '' "$NTOK")"
+check "node: its status knows the hub"             "member node http://127.0.0.1:$HUB_PORT" "$(node_request GET /fleet/status '' "$NTOK" | jq -r '"\(.role) \(.dcs_role) \(.hub.url)"' 2>/dev/null)"
+check "node: invites are refused"                  403 "$(node_status POST /auth/invite '{"role":"user"}' "$NTOK")"
+check "node: accounts are refused"                 403 "$(node_status POST /auth/users '{"username":"someone","password":"long-enough-1"}' "$NTOK")"
+check "node: registering is refused"               403 "$(node_status POST /auth/register '{"username":"someone","password":"long-enough-1","invite_code":"x"}')"
+check "node: the wizard is refused"                "403 403 403" "$(node_status POST /setup/configure '{"env_vars":{}}' "$NTOK") $(node_status POST /setup/complete '{}' "$NTOK") $(node_status POST /setup/restore '{"passphrase":"x","content_b64":"eA=="}')"
+check "node: the refusal says where to go"         yes "$(node_request POST /setup/complete '{}' "$NTOK" | jq -r '.message' 2>/dev/null | grep -q "open the hub's dashboard" && echo yes || echo no)"
+check "node: the hub's session is untouched by the test's" true "$(auth_request GET "/fleet/members/$NID/api/stacks" | body_of | jq -r '.stacks | type == "array"' 2>/dev/null)"
+# removed on the hub, the node is left with no account at all: only a new join can manage it again
+check "node: the hub removes it"                   true "$(auth_request DELETE "/fleet/members/$NID" | body_of | jq -r '.success' 2>/dev/null)"
+check "node: …and its account is gone"             0 "$(jq 'length' "$NWORK/.api-auth/users.json" 2>/dev/null)"
+check "node: …so nothing signs in now"             403 "$(node_status POST /auth/login '{"username":"dcs-hub","password":"x"}')"
+(cd "$NWORK" && "$NWORK/.scripts/api-server.sh" --stop >/dev/null 2>&1)
+timeout 10 bash -c "while curl -s -m 1 http://127.0.0.1:$NODE_PORT/ping >/dev/null 2>&1; do sleep 0.3; done" 2>/dev/null
 check "fleet: CLI join code"            yes "$(cd "$WORK" && "$API" --join-token 2 2>/dev/null | grep -q '^Join code: [A-Z2-9]\{4\}-' && echo yes || echo no)"
 check "fleet: CLI status is JSON"       true "$(cd "$WORK" && "$API" --fleet-status 2>/dev/null | jq -e 'has("members")' 2>/dev/null)"
 check "fleet: revoke code"              200 "$(auth_request DELETE "/fleet/join-tokens/$JT" | status_of)"
@@ -1847,8 +1926,8 @@ PROV_PORT=$(_rport); [[ "$PROV_PORT" == "$HUB_PORT" || "$PROV_PORT" == "$FLEET_P
 VMWORK="$WORK-vm"
 cat > "$WORK/ssh-shim.sh" <<'SHIM'
 #!/bin/bash
-# ssh stand-in: "… dcs@IP true" answers at once; the bootstrap command (script on stdin) runs the member bootstrap here —
-# a fresh copy of the repository and the real setup.sh, unattended and API-only, on the port the hub chose.
+# ssh stand-in: "… dcs@IP true" answers at once; the bootstrap command (script on stdin) runs the node bootstrap here —
+# a fresh copy of the repository and the real setup.sh, unattended and as a node (the API alone), on the port the hub chose.
 set -u
 while [[ $# -gt 0 ]]; do case "$1" in -i|-o) shift 2 ;; -*) shift ;; *) break ;; esac; done
 target="${1:-}"; shift || true
@@ -1865,7 +1944,7 @@ case "$*" in
     rm -rf "$SHIM_DIR/Stacks"   # the real bundle carries no stacks: a member starts with only its own
     cd "$SHIM_DIR" || exit 1
     echo "→ (stand-in) unattended member setup on 127.0.0.1:$port for stack $DCS_STACKS as $target"
-    DCS_UNATTENDED=true DCS_NO_UI=true DCS_FLEET_ROLE=member DCS_API_PORT="$port" DCS_API_BIND="$host" ./setup.sh 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep -E 'FAIL|WARN|Unattended|Joined|Join|Setup complete|API:' | tail -12
+    DCS_UNATTENDED=true DCS_NO_UI=true DCS_FLEET_ROLE=member DCS_ROLE="${DCS_ROLE:-node}" DCS_API_PORT="$port" DCS_API_BIND="$host" ./setup.sh 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep -E 'FAIL|WARN|Unattended|Joined|Join|Setup complete|API:|node' | tail -12
     exit "${PIPESTATUS[0]}"
     ;;
   *"tar -xzf -"*)
@@ -1877,8 +1956,8 @@ SHIM
 chmod +x "$WORK/ssh-shim.sh"
 _envset FLEET_SSH_CMD "$WORK/ssh-shim.sh"; _envset FLEET_SELF_URL "http://127.0.0.1:$HUB_PORT"; _envset FLEET_MEMBER_PORT "$PROV_PORT"; _envset FLEET_SSH_DIR "$WORK/.data/fleet-ssh"
 export SHIM_ROOT="$ROOT" SHIM_DIR="$VMWORK"
-_fleet_stop_listeners() { for d in "$WORK" "$MWORK" "$VMWORK"; do [[ -f "$d/.data/api-server.pid" ]] && (cd "$d" && "$d/.scripts/api-server.sh" --stop >/dev/null 2>&1); done; return 0; }
-trap '_fleet_stop_listeners; rm -rf "$WORK" "$MWORK" "$PWORK" "$VMWORK"' EXIT
+_fleet_stop_listeners() { for d in "$WORK" "$MWORK" "$NWORK" "$VMWORK"; do [[ -f "$d/.data/api-server.pid" ]] && (cd "$d" && "$d/.scripts/api-server.sh" --stop >/dev/null 2>&1); done; return 0; }
+trap '_fleet_stop_listeners; rm -rf "$WORK" "$MWORK" "$PWORK" "$NWORK" "$VMWORK"' EXIT
 check "provision: defaults answer"      true "$(auth_request GET /fleet/provision/defaults | body_of | jq -r '.proxmox_linked' 2>/dev/null)"
 check "provision: default disk storage" local-lvm "$(auth_request GET /fleet/provision/defaults | body_of | jq -r '.storage' 2>/dev/null)"
 check "images: catalogue offered"       yes "$(auth_request GET /fleet/provision/defaults | body_of | jq -e '.images.catalogue | length >= 6' >/dev/null 2>&1 && echo yes || echo no)"
@@ -1994,12 +2073,15 @@ _owned() { ( COMPOSE_DIR="$WORK/Stacks"; eval "$(sed -n '/^_fleet_owned_stack()/
 check "start.sh: a VM's stack is not the hub's to start" 0 "$(_owned smoke-photos)"
 check "start.sh: the hub's own stack is"    1 "$(_owned demo)"
 check "provision: member marked built"  true "$(auth_request GET /fleet/members | body_of | jq -r '.members[] | select(.name == "smoke-photos") | .provisioned' 2>/dev/null)"
-check "provision: admin password kept"  yes "$(_lib secrets_exists FLEET_MEMBER_SMOKE_PHOTOS_ADMIN_PASSWORD && echo yes || echo no)"
+check "provision: no admin password minted (the VM is a node)" no "$(_lib secrets_exists FLEET_MEMBER_SMOKE_PHOTOS_ADMIN_PASSWORD && echo yes || echo no)"
 check "provision: audited"              yes "$(grep -q 'fleet_vm_ready' "$WORK/.data/audit.jsonl" 2>/dev/null && echo yes || echo no)"
 check "provision: the VM knows its role" member "$(grep -m1 '^FLEET_ROLE=' "$VMWORK/.env" 2>/dev/null | cut -d= -f2)"
+check "provision: …and that it is a node" node "$(grep -m1 '^DCS_ROLE=' "$VMWORK/.env" 2>/dev/null | cut -d= -f2)"
+check "provision: the VM carries its one stack" '"smoke-photos"' "$(grep -m1 '^DOCKER_STACKS=' "$VMWORK/.env" 2>/dev/null | cut -d= -f2-)"
 _MADM=$(auth_request GET /fleet/members | body_of | jq -r '.members[] | select(.name == "smoke-photos") | .url' 2>/dev/null)
-check "member: unattended setup complete" true "$(curl -s -m 5 "$_MADM/setup/status" | jq -r '.initialized' 2>/dev/null)"
-check "member: API only, one stack"     smoke-photos "$(curl -s -m 5 -X POST "$_MADM/auth/login" -H 'Content-Type: application/json' -d "{\"username\":\"admin\",\"password\":\"$(_lib secrets_get FLEET_MEMBER_SMOKE_PHOTOS_ADMIN_PASSWORD)\"}" | jq -r '.token' 2>/dev/null | xargs -I{} curl -s -m 5 "$_MADM/stacks" -H 'Authorization: Bearer {}' | jq -r '.stacks | map(.name) | join(",")' 2>/dev/null)"
+check "node: nothing to set up, the hub named" "true node http://127.0.0.1:$HUB_PORT" "$(curl -s -m 5 "$_MADM/setup/status" | jq -r '"\(.initialized) \(.role) \(.hub.url)"' 2>/dev/null)"
+check "node: only the hub's account on the VM" dcs-hub "$(jq -r 'map(.username) | join(" ")' "$VMWORK/.api-auth/users.json" 2>/dev/null)"
+check "node: API only, one stack (through the hub)" smoke-photos "$(auth_request GET /fleet/members/smoke-photos/api/stacks | body_of | jq -r '.stacks | map(.name) | join(",")' 2>/dev/null)"
 echo "The hub's API is the fleet API"
 check "hub: /stacks lists the VM stack" vm "$(auth_request GET /stacks | body_of | jq -r '.stacks[] | select(.name == "smoke-photos") | .placement' 2>/dev/null)"
 check "hub: local stacks tagged hub"    hub "$(auth_request GET /stacks | body_of | jq -r '.stacks[] | select(.name == "demo") | .placement' 2>/dev/null)"
@@ -2028,7 +2110,9 @@ check "iso build: done at the boot"     "done" "$_IST"
 check "iso build: by hand from here"    true "$(auth_request GET "/fleet/jobs/$IJOB" | body_of | jq -r '.manual' 2>/dev/null)"
 _IVM=$(auth_request GET "/fleet/jobs/$IJOB" | body_of | jq -r '.vmid' 2>/dev/null)
 check "iso build: VM has the ISO"       yes "$(auth_request GET "/proxmox/vms/pve/qemu/$_IVM" | body_of | jq -r '.config.ide2 // ""' 2>/dev/null | grep -q 'tiny-installer.iso' && echo yes || echo no)"
-check "iso build: join line in the log" yes "$(auth_request GET "/fleet/jobs/$IJOB" | body_of | jq -r '.log[].text' 2>/dev/null | grep -q 'DCS_JOIN_TOKEN=' && echo yes || echo no)"
+_ICODE=$(auth_request GET "/fleet/jobs/$IJOB" | body_of | jq -r '.join_token // ""' 2>/dev/null)
+check "iso build: the one line in the log" yes "$(auth_request GET "/fleet/jobs/$IJOB" | body_of | jq -r '.log[].text' 2>/dev/null | grep -q "curl -fsSL 'http://.*/fleet/bootstrap?token=$_ICODE' | bash" && echo yes || echo no)"
+check "iso build: its code's installer names the stack" yes "$(request GET "/fleet/bootstrap?token=$_ICODE" '' "${AUTH[@]}" | body_of | grep -q '^export DCS_STACKS=by-hand-box DCS_MEMBER_NAME=by-hand-box$' && echo yes || echo no)"
 check "iso build: dismiss destroys it"  true "$(auth_request DELETE "/fleet/jobs/$IJOB?destroy=true" | body_of | jq -r '.vm_destroyed' 2>/dev/null)"
 # a baked DCS template: one bake job (the stand-in installs nothing and "powers off"; the hub shuts the VM down and makes it a template),
 # then a build that clones it instead of importing the image
@@ -2071,7 +2155,7 @@ rm -rf "$WORK/.data/fleet-jobs" "$WORK/.data/fleet-ssh"
 _fleet_stop_listeners
 _envdel API_AUTH_ENABLED; _envdel FLEET_SCAN_PORTS; _envset API_PORT 9876
 rm -f "$WORK/.data/fleet.json" "$WORK/.data/fleet-watch.stamp"; rm -rf "$WORK/.data/fleet-sessions"
-trap '(cd "$VMWORK/Stacks/smoke-photos" 2>/dev/null && docker compose -p smoke-photos down --remove-orphans >/dev/null 2>&1); rm -rf "$WORK" "$MWORK" "$PWORK" "$VMWORK"' EXIT
+trap '(cd "$VMWORK/Stacks/smoke-photos" 2>/dev/null && docker compose -p smoke-photos down --remove-orphans >/dev/null 2>&1); rm -rf "$WORK" "$MWORK" "$PWORK" "$NWORK" "$VMWORK"' EXIT
 
 check "proxmox: watcher silent first"   0 "$(PROXMOX_STATE_FILE="$WORK/.data/pve-state.json" _lib _pve_watch; grep -c 'proxmox_vm_stopped' "$WORK/.data/audit.jsonl" 2>/dev/null)"
 auth_request POST /proxmox/vms/pve/qemu/100/stop '{}' >/dev/null   # DCS asked: never an alert
@@ -6787,10 +6871,11 @@ cst_main
 if [[ "${SMOKE_ONLY:-}" != crowdsec ]]; then
 echo "Factory reset (last: it removes the accounts)"
 cp "$ROOT/.env.example" "$WORK/.env.example"   # what the reset copies back over .env
-_envset FLEET_ROLE hub
+_envset FLEET_ROLE hub; _envset DCS_ROLE hub
 check "factory reset: done"              200 "$(auth_request POST /auth/factory-reset '{"confirm":"FACTORY_RESET"}' | status_of)"
 check "factory reset: .env from the example" yes "$(grep -q '^PROXMOX_URL=$' "$WORK/.env" && echo yes || echo no)"
 check "factory reset: the hub stays a hub" hub "$(grep -m1 '^FLEET_ROLE=' "$WORK/.env" | cut -d= -f2)"
+check "factory reset: DCS_ROLE is kept too" hub "$(grep -m1 '^DCS_ROLE=' "$WORK/.env" | cut -d= -f2)"
 
 fi
 
