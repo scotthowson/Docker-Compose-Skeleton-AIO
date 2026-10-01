@@ -25,6 +25,20 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Traefik's file for the VMs' routes right after anything it forwarded into a VM, instead of at the loop's next half minute.
 - **A deploy into a VM did not show in the hub's Deploy history, nor its undeploy.** The VM recorded it and the hub, where the history
   is looked at, did not. The hub records every deploy and undeploy it forwards, with the VM named (`member`, `member_name`).
+- **A VM's app deployed again under another name was unreachable under both.** The hub made a DNS record only for a router it had not
+  seen before, so a route that was renamed in a VM, or an app removed and deployed again with another subdomain, kept the old record
+  and got none for the new host. The hub compares the hosts now: a router that is new or whose host changed gets its record (and its
+  Homarr tile), and a host no route of the fleet answers for any more loses its record - unless its VM is only unreachable right now,
+  another route took the host over, or the hub serves it itself.
+- **A stack in a VM joins the `proxy` network like one on the hub.** Its services get `networks: [default, proxy]` and the compose
+  declares the network, so a compose file reads the same wherever the stack runs, the services of a VM's stacks reach each other by
+  name, and a Traefik put into the VM later finds them (the hub's Traefik reaches a VM's services over their published ports either
+  way). The network is made when a stack that names it comes up without it - in a VM, where no Traefik stack brings it, and after a
+  prune took it - with the label Compose looks for, so a Traefik stack started later takes it over.
+- **A member that was down was reported as down again every minute, and never as back.** Every read of a member's `reachable` flag
+  through jq's `//` turned `false` into `true`: the watcher saw each down member as "was up" on every look (a *stopped answering*
+  notification a minute per VM, never *answers again*), a call to such a member never took the short way, the terminal never said the
+  VM was not answering, and the health summary never counted a VM whose Docker was down. All of them read the flag as it is now.
 - **Edit backups with a time in their name travelled into the hub's copy of a VM stack** (`docker-compose.yml.bak.20261001143241`): they
   stay where they are made, like the plain `.bak` files; the next pull takes them out of the hub's folder.
 - **A VM that missed one look answered 502 through the hub for up to a minute and a half** (4.0.7): a member marked unreachable is asked
@@ -34,7 +48,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Tests
 
 - `tests/fleet-files.sh`: a timed backup does not travel, the round's report forgets who left, a removed member leaves no token, session
-  or stamp behind, a deleted stack takes its routes along (65 checks).
+  or stamp behind, a deleted stack takes its routes along, a deploy into the VM is in the hub's history, the DNS follows the VMs'
+  routes, a stack in a VM joins the proxy network (83 checks).
 
 ## [4.0.8] - 2026-10-01
 

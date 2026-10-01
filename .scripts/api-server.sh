@@ -7655,7 +7655,7 @@ handle_fleet_member_terminal() {
     name=$(jq -r '.name // .id' <<< "$m"); vmid=$(jq -c '.vmid // null' <<< "$m"); ip=$(_fleet_member_host "$m")
     if [[ -z "$ip" ]]; then reason="the member record has no address"
     elif [[ ! -s "$FLEET_SSH_DIR/id_ed25519" ]]; then reason="this hub has no ssh key for its VMs yet (it makes one when it builds a VM)"
-    elif [[ "$(jq -r '.reachable // true' <<< "$m")" == "false" ]]; then reason="$name is not answering the hub right now — is the VM running?"
+    elif [[ "$(jq -r '.reachable != false' <<< "$m")" == "false" ]]; then reason="$name is not answering the hub right now — is the VM running?"
     else
         # ssh's own words tell a VM that is off from an account that refuses the key
         local _se; _se=$(_fleet_ssh "$ip" true </dev/null 2>&1 >/dev/null) && avail=true
@@ -7694,7 +7694,7 @@ handle_fleet_member_terminal_exec() {
     if _terminal_command_blocked "$command" "$session_user" "VM $name"; then _api_error 403 "Command blocked by security policy"; return; fi
     [[ -n "$ip" ]] || { _api_error 409 "The member record has no address"; return; }
     [[ -s "$FLEET_SSH_DIR/id_ed25519" ]] || { _api_error 409 "This hub has no ssh key for its VMs yet (it makes one when it builds a VM)"; return; }
-    [[ "$(jq -r '.reachable // true' <<< "$m")" != "false" ]] || { _api_error 409 "$name is not answering the hub right now — is the VM running?"; return; }
+    [[ "$(jq -r '.reachable != false' <<< "$m")" != "false" ]] || { _api_error 409 "$name is not answering the hub right now — is the VM running?"; return; }
     if _terminal_rate_limited; then _api_error 429 "Rate limit exceeded: 10 commands per minute"; return; fi
 
     # The command runs as the VM's DCS account in the directory asked for (its home when none),
@@ -16425,6 +16425,12 @@ AUTH_ROUTE_EOF
                 # a feed-only host just keeps the files for the remote Traefik to pull
                 local _local_traefik=true
                 _traefik_stack_appdata >/dev/null 2>&1 || _local_traefik=false
+                # the proxy network: where a Traefik runs on this host its routes reach the services over it. A VM of a
+                # fleet gets it all the same: a stack's compose then reads the same on the hub and in a VM, the services of
+                # a VM's stacks reach each other by name, and a Traefik put into the VM later finds them (the hub's Traefik
+                # reaches a VM's services over their published ports either way)
+                local _proxy_net="$_local_traefik"
+                if [[ "$_proxy_net" != true ]] && _fleet_is_member 2>/dev/null && dcs_ensure_proxy_network; then _proxy_net=true; fi
 
                 # Read CF_DNS_API_TOKEN for auto DNS record creation
                 # Priority: request body variables > stack .env files > root .env > environment
@@ -16678,7 +16684,7 @@ ROUTE_EOF
                     [[ "$_connect_proxy" == true ]] && docker network connect proxy "$_container_name" 2>/dev/null || true
 
                     # Also inject into compose file for persistence
-                    if [[ "$_local_traefik" == "true" && "$_connect_proxy" == true ]]; then
+                    if [[ "$_proxy_net" == "true" && "$_connect_proxy" == true ]]; then
                     local _tc
                     _tc=$(cat "$target_dir/docker-compose.yml")
                     # Check if this service already has proxy in its networks
@@ -16736,7 +16742,7 @@ print('\n'.join(result))
                 # Ensure the proxy external network is declared in the compose file
                 local _final_compose
                 _final_compose=$(cat "$target_dir/docker-compose.yml")
-                if [[ "$_local_traefik" == "true" ]] && ! printf '%s' "$_final_compose" | grep -q 'name: proxy'; then
+                if [[ "$_proxy_net" == "true" && "$_connect_proxy" == true ]] && ! printf '%s' "$_final_compose" | grep -q 'name: proxy'; then
                     # Add proxy network declaration at the end
                     if printf '%s' "$_final_compose" | grep -q '^networks:'; then
                         # networks section exists — append proxy to it
@@ -20365,7 +20371,7 @@ _fleet_call() {
     m=$(_fleet_member "$id"); [[ -n "$m" ]] || { _FLEET_HTTP=0; _FLEET_ERR="unknown member $id"; return 1; }
     url=$(jq -r '.url' <<< "$m"); insecure=$(jq -r '.insecure // false' <<< "$m")
     # a member the watcher marked unreachable is probed first (3 s) instead of a login and a call that each wait out their timeout
-    if [[ "$(jq -r '.reachable // true' <<< "$m")" == "false" ]]; then
+    if [[ "$(jq -r '.reachable != false' <<< "$m")" == "false" ]]; then
         # a member marked unreachable is asked at most every ten seconds, by whichever call comes first; the calls in
         # between fail at once (five VMs that were gone made every fleet answer wait seconds for each of them). A VM
         # that missed one look (a reboot, a busy moment) is back within those ten seconds. FLEET_PROBE=1 asks anyway
@@ -20707,7 +20713,7 @@ _fleet_watch() {
             _audit_log "fleet_member_up" "member $name ($url) answers the hub again"
             _fire_notifications "fleet_member_up" "member=$name" "url=$url" "message=DCS on $name ($url) answers the hub again" 2>/dev/null
         fi
-    done < <(jq -r '.members[] | [.id, .url, ((.insecure // false) | tostring), ((.reachable // true) | tostring), .name] | @tsv' <<< "$j")
+    done < <(jq -r '.members[] | [.id, .url, ((.insecure // false) | tostring), ((.reachable != false) | tostring), .name] | @tsv' <<< "$j")
     _fleet_update --argjson u "$updates" '.members = [(.members // [])[] | . as $m | ($u[$m.id] // null) as $x
         | if $x == null then . else .reachable = $x.reachable | (if $x.reachable then .last_seen = $x.now | .last_error = "" | .version = (if $x.version != "" then $x.version else .version end) else .last_error = "no answer" end) end]' || true
         _fleet_overview_json >/dev/null 2>&1 || true
@@ -20835,14 +20841,49 @@ _fleet_routes_write_local() {
     merged=$(FLEET_FEED_TIMEOUT=4 _fleet_merge_feeds '{"http":{"routers":{},"services":{}}}' 2>/dev/null); [[ "$merged" == \{* ]] || return 0
     n=$(jq -r '.http.routers | length' <<< "$merged" 2>/dev/null); [[ "$n" =~ ^[0-9]+$ ]] || n=0
     f="$dir/$FLEET_ROUTES_FILE_NAME"
-    if (( n == 0 )); then [[ -f "$f" ]] && rm -f "$f"; return 0; fi
+    # what the file said before: router -> rule (the hosts the hub made DNS records for)
+    local old_r; old_r=$(jq -c '(.http.routers // {}) | with_entries(.value = (.value.rule // ""))' "$f" 2>/dev/null); [[ "$old_r" == \{* ]] || old_r='{}'
+    if (( n == 0 )); then
+        [[ -f "$f" ]] && rm -f "$f"
+        _fleet_routes_departed "$old_r" '{"http":{"routers":{}}}'
+        return 0
+    fi
     merged=$(_routes_apply_local_chain "$merged")
     merged=$(_fleet_themes_apply "$merged")
     local body; body=$(jq -S . <<< "$merged")
     if [[ -f "$f" ]] && [[ "$(cat "$f" 2>/dev/null)" == "$body" ]]; then return 0; fi
-    local new_keys; new_keys=$(jq -r --argjson old "$(jq -c '.http.routers // {} | keys' "$f" 2>/dev/null || echo '[]')" '.http.routers | keys - $old | .[]' <<< "$merged" 2>/dev/null)
+    # a router that is new, or whose host changed (a route renamed in a VM, an app deployed again under another name):
+    # its DNS record and its Homarr tile are made for the host it answers for now
+    local new_keys; new_keys=$(jq -r --argjson old "$old_r" '.http.routers | to_entries[] | select(($old[.key] // "") != (.value.rule // "")) | .key' <<< "$merged" 2>/dev/null)
     printf '%s\n' "$body" > "$f.tmp.$$" 2>/dev/null && mv -f "$f.tmp.$$" "$f" && _audit_log "fleet_routes" "$n member route(s) written for the local Traefik ($FLEET_ROUTES_FILE_NAME)"
     _fleet_routes_arrived "$new_keys" "$merged"
+    _fleet_routes_departed "$old_r" "$merged"
+    return 0
+}
+# _fleet_routes_departed OLD MERGED — the DNS records of hosts no member's route answers for any more (the hub made them when
+# the routes arrived): a route that was renamed, an app that was removed, a member that left. A router of a member that is
+# only unreachable right now keeps its record (it comes back with the member), and a host one of the hub's own routes
+# serves is left alone.
+_fleet_routes_departed() {
+    local old_r="$1" merged="$2" k rule host mid cf_token domain own now_hosts
+    [[ "$old_r" == \{* && "$old_r" != '{}' ]] || return 0
+    cf_token=$(_find_cf_token 2>/dev/null); domain=$(_fleet_domain 2>/dev/null); [[ -n "$cf_token" && -n "$domain" ]] || return 0
+    now_hosts=$(jq -r '[.http.routers[]? | .rule // ""] | .[]' <<< "$merged" 2>/dev/null | sed -nE 's/.*Host\(`([^`]+)`\).*/\1/p')
+    own=$(_fleet_hub_hosts_json 2>/dev/null); [[ "$own" == \[* ]] || own='[]'
+    while IFS=$'\t' read -r k rule; do
+        [[ -n "$k" && -n "$rule" ]] || continue
+        # the same router with the same rule is still there
+        [[ "$(jq -r --arg k "$k" '.http.routers[$k].rule // ""' <<< "$merged" 2>/dev/null)" == "$rule" ]] && continue
+        host=$(sed -nE 's/.*Host\(`([^`]+)`\).*/\1/p' <<< "$rule"); [[ -n "$host" && "$host" == *".$domain" ]] || continue
+        # another router answers for that host now, or the hub itself does
+        grep -qxF -- "$host" <<< "$now_hosts" && continue
+        jq -e --arg h "${host,,}" 'index($h) != null' <<< "$own" >/dev/null 2>&1 && continue
+        # the router is gone from the answer: was its member asked? one that does not answer right now keeps its record
+        mid=""; for mid in $(_fleet_load | jq -r '.members[].id'); do [[ "$k" == "$mid-"* ]] && break; mid=""; done
+        if [[ -n "$mid" && "$(jq -r --arg k "$k" '.http.routers[$k] // empty' <<< "$merged" 2>/dev/null)" == "" && "$(_fleet_member "$mid" | jq -r '.reachable != false')" == "false" ]]; then continue; fi
+        _cloudflare_delete_dns "${host%".$domain"}" "$domain" "$cf_token" >/dev/null 2>&1
+        _audit_log "fleet_route_dns_removed" "$host: no route of the fleet answers for it any more, its DNS record is removed"
+    done < <(jq -r 'to_entries[] | [.key, .value] | @tsv' <<< "$old_r" 2>/dev/null)
     return 0
 }
 _fleet_routes_remove_local() {
@@ -22303,7 +22344,7 @@ _fleet_overview_json() {
     j=$(_fleet_load)
     tmp=$(mktemp -d "${TMPDIR:-/tmp}/dcs-fleet-XXXXXX") || { echo '{"hub":{},"members":[],"totals":{}}'; return 1; }
     for id in $(jq -r '.members[].id' <<< "$j"); do
-        [[ -s "$FLEET_SESSION_DIR/$id.token" ]] || [[ "$(_fleet_member "$id" | jq -r '.reachable // true')" == "false" ]] || _fleet_login "$id" >/dev/null 2>&1 || true
+        [[ -s "$FLEET_SESSION_DIR/$id.token" ]] || [[ "$(_fleet_member "$id" | jq -r '.reachable != false')" == "false" ]] || _fleet_login "$id" >/dev/null 2>&1 || true
     done
     for id in $(jq -r '.members[].id' <<< "$j"); do
         (
@@ -25191,7 +25232,7 @@ handle_health_score_fleet() {
         | (if $ct > 0 then (($ch / $ct) * 100 | floor) else 100 end) as $cs
         | (if $it > 0 then ((1 - ($is / $it)) * 100 | floor) else 100 end) as $ims
         | (($cs * 0.4) + ($own.factors.resources.score * 0.3) + ($ims * 0.15) + ($own.factors.uptime.score * 0.15) | floor) as $raw
-        | ([$members[] | select(.reachable and ((.docker.reachable // true) == false))] | length) as $dockerdown
+        | ([$members[] | select(.reachable and (.docker.reachable == false))] | length) as $dockerdown
         | (if $dockerdown > 0 and $raw > 39 then 39 else $raw end) as $total
         | $own
         | .factors.stacks = {score: $cs, weight: 0.4, healthy: $ch, unhealthy: $cu, total: $ct}

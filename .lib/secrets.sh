@@ -177,11 +177,24 @@ secrets_env_exports() {
 # Usage: compose_with_secrets COMPOSE_FILE ENV_FILE SUBCOMMAND [ARGS...]
 # ENV_FILE may be empty. References are collected from the compose file, the
 # stack .env and the root .env.
+# The shared "proxy" network, made when it is missing. A Traefik's own stack declares it by name and Compose makes it with
+# its labels; where no Traefik stack has (a VM of a fleet), or after a prune took it, a stack that names it as external
+# could not come up. It carries the label Compose looks for, so a Traefik stack started later takes it over instead of
+# refusing a network it did not make.
+dcs_ensure_proxy_network() {
+    docker network inspect proxy >/dev/null 2>&1 && return 0
+    docker network create --label com.docker.compose.network=proxy --label com.docker.compose.project=dcs-proxy proxy >/dev/null 2>&1
+}
+
 compose_with_secrets() {
     local compose_file="$1"; shift
     local env_file="$1"; shift
     local -a args=(-f "$compose_file")
     [[ -n "$env_file" && -f "$env_file" ]] && args+=(--env-file "$env_file")
+    if [[ " $* " == *" up "* ]] && grep -qE '^[[:space:]]+name:[[:space:]]*proxy[[:space:]]*$' "$compose_file" 2>/dev/null \
+        && grep -qE '^[[:space:]]+external:[[:space:]]*true' "$compose_file" 2>/dev/null; then
+        dcs_ensure_proxy_network || true
+    fi
     (
         eval "$(secrets_env_exports "$compose_file" "${env_file:-/dev/null}" "$BASE_DIR/.env")"
         ${DOCKER_COMPOSE_CMD:-docker compose} "${args[@]}" "$@"

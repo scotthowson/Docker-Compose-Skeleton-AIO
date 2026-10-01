@@ -198,5 +198,53 @@ check "leave: its session and stamps are gone"       0 "$(ls "$HUB/.data/fleet-s
 check "leave: the round's report went with it"       null "$(hub GET /fleet/versions | jq -r '.last_round | tostring' 2>/dev/null)"
 check "leave: …on disk too"                          no "$([[ -e "$HUB/.data/fleet-update-last.json" ]] && echo yes || echo no)"
 
+echo "The hub's DNS follows the VMs' routes"
+# function level, with the Cloudflare calls stood in for: which hosts lose their record when the routes file is rewritten
+printf '{"members":[{"id":"vmx","name":"vmx","url":"http://127.0.0.1:1","reachable":false,"stacks":[]},{"id":"vmy","name":"vmy","url":"http://127.0.0.1:1","reachable":true,"stacks":[]}],"join_tokens":[],"hub":null}\n' > "$W/fleet-dns.json"
+_departed() {   # OLD MERGED -> the hosts whose record would be removed
+    local _old="$1" _new="$2"; : > "$W/dns-del"
+    ( set --; cd "$HUB" && export FLEET_FILE="$W/fleet-dns.json" && source "$HUB/.scripts/api-server.sh" >/dev/null 2>&1
+      _find_cf_token() { echo tok; }; _fleet_domain() { echo example.org; }; _fleet_hub_hosts_json() { echo '["hubown.example.org"]'; }
+      _cloudflare_delete_dns() { printf '%s ' "$1" >> "$W/dns-del"; }; _audit_log() { :; }
+      _fleet_routes_departed "$_old" "$_new" ) >/dev/null 2>&1
+    cat "$W/dns-del"
+}
+_r() { jq -nc --arg r "$1" '{http: {routers: ($r | split(" ") | map(select(length > 0) | split("=")) | map({key: .[0], value: {rule: ("Host(`" + .[1] + "`)")}}) | from_entries)}}'; }
+_o() { _r "$1" | jq -c '.http.routers | with_entries(.value = .value.rule)'; }
+check "dns: a renamed route lets go of the old host" "watch " "$(_departed "$(_o 'vmy-jf-dcs=watch.example.org')" "$(_r 'vmy-jf-dcs=jellyfin.example.org')")"
+check "dns: an unchanged route keeps its record"     "" "$(_departed "$(_o 'vmy-jf-dcs=watch.example.org')" "$(_r 'vmy-jf-dcs=watch.example.org')")"
+check "dns: a removed app's host goes"               "gone " "$(_departed "$(_o 'vmy-a-dcs=gone.example.org vmy-b-dcs=stay.example.org')" "$(_r 'vmy-b-dcs=stay.example.org')")"
+check "dns: a member that left takes its hosts"      "left " "$(_departed "$(_o 'old-vm-a-dcs=left.example.org')" "$(_r '')")"
+check "dns: a VM that is only off keeps its record"  "" "$(_departed "$(_o 'vmx-a-dcs=keep.example.org')" "$(_r '')")"
+check "dns: a host another route took over stays"    "" "$(_departed "$(_o 'vmy-a-dcs=app.example.org')" "$(_r 'vmy-b-dcs=app.example.org')")"
+check "dns: a host the hub serves itself stays"      "" "$(_departed "$(_o 'vmy-a-dcs=hubown.example.org')" "$(_r '')")"
+
+echo "A stack in a VM joins the proxy network"
+# a third install that is a member of a hub, driven over stdin with a docker that only records what it is asked: a
+# template with a port is deployed, the service joins "proxy" and the network is made when it is missing
+NODE="$W/node"; install "$NODE" 1 "Node"; mkdir -p "$NODE/Stacks/demo" "$NODE/fake" "$NODE/.templates/webby"
+printf 'services:\n  demo:\n    image: alpine:3\n' > "$NODE/Stacks/demo/docker-compose.yml"
+printf 'services:\n  webby:\n    image: alpine:3\n    container_name: webby\n    ports:\n      - "18080:80"\n' > "$NODE/.templates/webby/docker-compose.yml"
+printf '{"name":"webby","description":"a test template","category":"other","tags":[],"variables":[]}\n' > "$NODE/.templates/webby/template.json"
+sed -i '/^PROXY_DOMAIN=/d;/^TRAEFIK_DOMAIN=/d' "$NODE/.env"; printf 'PROXY_DOMAIN=lab.test\n' >> "$NODE/.env"
+printf '{"members":[],"join_tokens":[],"hub":{"url":"http://127.0.0.1:1","name":"hub"}}\n' > "$NODE/.data/fleet.json"
+cat > "$NODE/fake/docker" <<'FAKEDOCKER'
+#!/bin/sh
+st="$(dirname "$0")"
+case "$*" in
+    "compose version"*) echo "Docker Compose version v2.99.0"; exit 0 ;;
+    *"network inspect proxy"*) [ -f "$st/proxy-net" ] && exit 0; exit 1 ;;
+    *"network create"*) : > "$st/proxy-net"; echo "$*" >> "$st/calls"; exit 0 ;;
+    *) exit 0 ;;
+esac
+FAKEDOCKER
+chmod +x "$NODE/fake/docker"
+ND=$(printf 'POST /templates/webby/deploy HTTP/1.1\r\nHost: t\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s' 42 '{"target_stack":"demo","auto_start":false}' | env PATH="$NODE/fake:$PATH" DOCKER_COMPOSE_CMD="docker compose" DCS_API_EFFECTIVE_AUTH=false DCS_API_EFFECTIVE_BIND=127.0.0.1 "$NODE/.scripts/api-server.sh" --handle-request 2>/dev/null | sed -n '/^\r*$/,$p' | sed '1d')
+check "proxy: the deploy went through"              true "$(jq -r '.success' <<< "$ND" 2>/dev/null)"
+check "proxy: the route is in the feed directory"   'Host(`webby.lab.test`)' "$(grep -o 'Host([^)]*)' "$NODE/.data/routes/demo/webby.yml" 2>/dev/null | head -1)"
+check "proxy: the network was made, with Compose's label" yes "$(grep -q -- '--label com.docker.compose.network=proxy' "$NODE/fake/calls" 2>/dev/null && echo yes || echo no)"
+check "proxy: the service joins it"                 yes "$(awk '/^  webby:/{f=1} f && /- proxy/{print "yes"; exit}' "$NODE/Stacks/demo/docker-compose.yml" | grep -q yes && echo yes || echo no)"
+check "proxy: the compose declares it external"     yes "$(grep -A3 '^networks:' "$NODE/Stacks/demo/docker-compose.yml" | tr -d '\n' | grep -q 'proxy:.*name: proxy.*external: true' && echo yes || echo no)"
+
 echo "$PASS passed, $FAIL failed"
 [[ "$FAIL" -eq 0 ]]
