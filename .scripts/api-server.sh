@@ -6979,7 +6979,7 @@ handle_delete_stack() {
     fi
 
     # where the routes live is asked before the folder goes (a Traefik's own stack takes its routes directory along)
-    local _rdir; _rdir=$(_find_traefik_routes_dir 2>/dev/null)
+    local _rdir; _rdir=$(_find_traefik_routes_dir 2>/dev/null) || _rdir=""
 
     # Remove the stack directory (falls back to Docker for root-owned files)
     _force_remove_dir "$stack_dir"
@@ -7000,7 +7000,7 @@ handle_delete_stack() {
         done
         rm -rf "${_rdir:?}/${name:?}" 2>/dev/null; touch "$_rdir/.reload" 2>/dev/null
         _audit_log "stack_routes_removed" "$name: ${#_subs[@]} route(s) removed with the stack${_subs[*]:+ (${_subs[*]})}"
-        _dom=$(_find_traefik_domain 2>/dev/null); _tok=$(_find_cf_token 2>/dev/null)
+        _dom=$(_find_traefik_domain 2>/dev/null) || _dom=""; _tok=$(_find_cf_token 2>/dev/null) || _tok=""
         if (( ${#_subs[@]} > 0 )) && [[ -n "$_dom" && -n "$_tok" ]]; then
             ( for _rsub in "${_subs[@]}"; do _cloudflare_delete_dns "$_rsub" "$_dom" "$_tok"; done ) </dev/null >/dev/null 2>&1 &
         fi
@@ -20842,7 +20842,8 @@ _fleet_routes_write_local() {
     n=$(jq -r '.http.routers | length' <<< "$merged" 2>/dev/null); [[ "$n" =~ ^[0-9]+$ ]] || n=0
     f="$dir/$FLEET_ROUTES_FILE_NAME"
     # what the file said before: router -> rule (the hosts the hub made DNS records for)
-    local old_r; old_r=$(jq -c '(.http.routers // {}) | with_entries(.value = (.value.rule // ""))' "$f" 2>/dev/null); [[ "$old_r" == \{* ]] || old_r='{}'
+    local old_r; old_r=$(jq -c '(.http.routers // {}) | with_entries(.value = (.value.rule // ""))' "$f" 2>/dev/null) || old_r='{}'
+    [[ "$old_r" == \{* ]] || old_r='{}'
     if (( n == 0 )); then
         [[ -f "$f" ]] && rm -f "$f"
         _fleet_routes_departed "$old_r" '{"http":{"routers":{}}}'
@@ -20867,9 +20868,10 @@ _fleet_routes_write_local() {
 _fleet_routes_departed() {
     local old_r="$1" merged="$2" k rule host mid cf_token domain own now_hosts
     [[ "$old_r" == \{* && "$old_r" != '{}' ]] || return 0
-    cf_token=$(_find_cf_token 2>/dev/null); domain=$(_fleet_domain 2>/dev/null); [[ -n "$cf_token" && -n "$domain" ]] || return 0
-    now_hosts=$(jq -r '[.http.routers[]? | .rule // ""] | .[]' <<< "$merged" 2>/dev/null | sed -nE 's/.*Host\(`([^`]+)`\).*/\1/p')
-    own=$(_fleet_hub_hosts_json 2>/dev/null); [[ "$own" == \[* ]] || own='[]'
+    cf_token=$(_find_cf_token 2>/dev/null) || cf_token=""; domain=$(_fleet_domain 2>/dev/null) || domain=""
+    [[ -n "$cf_token" && -n "$domain" ]] || return 0
+    now_hosts=$(jq -r '[.http.routers[]? | .rule // ""] | .[]' <<< "$merged" 2>/dev/null | sed -nE 's/.*Host\(`([^`]+)`\).*/\1/p') || now_hosts=""
+    own=$(_fleet_hub_hosts_json 2>/dev/null) || own='[]'; [[ "$own" == \[* ]] || own='[]'
     while IFS=$'\t' read -r k rule; do
         [[ -n "$k" && -n "$rule" ]] || continue
         # the same router with the same rule is still there
@@ -20881,7 +20883,7 @@ _fleet_routes_departed() {
         # the router is gone from the answer: was its member asked? one that does not answer right now keeps its record
         mid=""; for mid in $(_fleet_load | jq -r '.members[].id'); do [[ "$k" == "$mid-"* ]] && break; mid=""; done
         if [[ -n "$mid" && "$(jq -r --arg k "$k" '.http.routers[$k] // empty' <<< "$merged" 2>/dev/null)" == "" && "$(_fleet_member "$mid" | jq -r '.reachable != false')" == "false" ]]; then continue; fi
-        _cloudflare_delete_dns "${host%".$domain"}" "$domain" "$cf_token" >/dev/null 2>&1
+        _cloudflare_delete_dns "${host%".$domain"}" "$domain" "$cf_token" >/dev/null 2>&1 || true
         _audit_log "fleet_route_dns_removed" "$host: no route of the fleet answers for it any more, its DNS record is removed"
     done < <(jq -r 'to_entries[] | [.key, .value] | @tsv' <<< "$old_r" 2>/dev/null)
     return 0
@@ -22647,7 +22649,7 @@ handle_fleet_member_sync() {
 _fleet_services_json() {
     local host rows='[]' routes='{}' dir f sub svc snap
     # the routes of the Traefik here, by the service each file is named after
-    dir=$(_find_traefik_routes_dir 2>/dev/null)
+    dir=$(_find_traefik_routes_dir 2>/dev/null) || dir=""
     if [[ -n "$dir" && -d "$dir" ]]; then
         while IFS= read -r f; do
             [[ -n "$f" ]] || continue
@@ -22656,7 +22658,7 @@ _fleet_services_json() {
             [[ -n "$sub" ]] && routes=$(jq -c --arg s "$svc" --arg h "$sub" '.[$s] = ("https://" + $h)' <<< "$routes")
         done < <(find "$dir" -mindepth 2 -maxdepth 2 -type f -name '*.yml' ! -name "${FLEET_ROUTES_FILE_NAME:-fleet-members.yml}" 2>/dev/null)
     fi
-    host=$(_feed_detected_host 2>/dev/null)
+    host=$(_feed_detected_host 2>/dev/null) || host=""
     # the hub's own running containers
     if command -v docker >/dev/null 2>&1; then
         rows=$(timeout 10 docker ps --format '{{.Names}}\t{{.Ports}}\t{{.Label "com.docker.compose.project"}}\t{{.Label "com.docker.compose.service"}}' 2>/dev/null \
@@ -22665,7 +22667,7 @@ _fleet_services_json() {
     fi
     # every reachable member's, from the last snapshot
     if _fleet_has_members 2>/dev/null; then
-        snap=$(_fleet_snapshot 2>/dev/null); [[ "$snap" == \{* ]] || snap='{"members":[]}'
+        snap=$(_fleet_snapshot 2>/dev/null) || snap=""; [[ "$snap" == \{* ]] || snap='{"members":[]}'
         rows=$(jq -c --argjson m "$snap" '. + [$m.members[]? | select(.reachable == true) | . as $mem
               | ((($mem.url // "") | capture("^https?://(?<h>\\[[^]]+\\]|[^:/]+)") | .h) // "") as $h
               | select($h != "")
@@ -22723,7 +22725,7 @@ _fleet_services_prefill() {
 _fleet_round_view() {
     local last="$BASE_DIR/.data/fleet-update-last.json" ids
     [[ -s "$last" ]] || { printf 'null'; return 0; }
-    ids=$(jq -c '[(.members // [])[].id]' "$FLEET_FILE" 2>/dev/null); [[ "$ids" == \[* ]] || ids='[]'
+    ids=$(jq -c '[(.members // [])[].id]' "$FLEET_FILE" 2>/dev/null) || ids='[]'; [[ "$ids" == \[* ]] || ids='[]'
     jq -c --argjson ids "$ids" '
         if (.status // "") == "running" then .
         else ([(.results // [])[] | select(.id as $i | ($ids | index($i)) != null)]) as $r
@@ -22742,7 +22744,7 @@ _fleet_member_purge() {
     secrets_delete "FLEET_MEMBER_$(printf '%s' "$id" | tr '[:lower:]-' '[:upper:]_')_ADMIN_PASSWORD" >/dev/null 2>&1 || true
     rm -f "${FLEET_SESSION_DIR:?}/${id:?}.token" "${FLEET_SESSION_DIR:?}/${id:?}.probe" "${BASE_DIR:?}/.data/fleet-relay-tried/${id:?}" 2>/dev/null
     rm -f "${FLEET_PULL_DIR:?}/${id:?}--"* 2>/dev/null
-    [[ -s "$FLEET_RELAY_FILE" ]] && _api_jq_update_file "$FLEET_RELAY_FILE" --arg id "$id" 'del(.[$id])' >/dev/null 2>&1
+    if [[ -s "$FLEET_RELAY_FILE" ]]; then _api_jq_update_file "$FLEET_RELAY_FILE" --arg id "$id" 'del(.[$id])' >/dev/null 2>&1 || true; fi
     # the round's report on disk follows (the view filters it too, for a report written before this)
     if [[ -s "$BASE_DIR/.data/fleet-update-last.json" ]]; then
         view=$(_fleet_round_view)
@@ -22773,10 +22775,10 @@ _fleet_proxy_settle() {
         /start|/stop|/restart|/pause|/unpause|/kill|/logs|/logs/*|/containers|/containers/*|/pull-images|/images/*|/update|/stats) ;;
         /delete)
             rm -rf "${COMPOSE_DIR:?}/${stack:?}" 2>/dev/null
-            _fleet_placement_drop "$id" "$stack"; _api_cache_clear 2>/dev/null || true; rm -f "$FLEET_SNAPSHOT" 2>/dev/null ;;
+            _fleet_placement_drop "$id" "$stack" || true; _api_cache_clear 2>/dev/null || true; rm -f "$FLEET_SNAPSHOT" 2>/dev/null ;;
         /clone)
             local _cn; _cn=$(jq -r '.new_name // ""' <<< "$body" 2>/dev/null)
-            if [[ "$_cn" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]]; then _fleet_placement_add "$id" "$_cn"; rm -f "$FLEET_SNAPSHOT" 2>/dev/null; _fleet_stack_pull "$id" "$_cn" >/dev/null 2>&1 || true; fi ;;
+            if [[ "$_cn" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]]; then _fleet_placement_add "$id" "$_cn" || true; rm -f "$FLEET_SNAPSHOT" 2>/dev/null; _fleet_stack_pull "$id" "$_cn" >/dev/null 2>&1 || true; fi ;;
         *) _fleet_stack_pull "$id" "$stack" >/dev/null 2>&1 || true ;;
     esac
     return 0
@@ -22799,7 +22801,7 @@ _fleet_stack_forget() {
     local id="$1" name="$2" m vmid mname gone=unknown res left member_removed=false
     m=$(_fleet_member "$id"); mname=$(jq -r '.name // "?"' <<< "$m"); vmid=$(jq -r '.vmid // ""' <<< "$m")
     if [[ "$vmid" =~ ^[0-9]+$ ]] && _pve_configured 2>/dev/null; then
-        _pve_call res GET /cluster/resources type=vm
+        _pve_call res GET /cluster/resources type=vm || true
         if [[ "$_PVE_HTTP" == 200 ]]; then
             if jq -e --argjson v "$vmid" '[(.data // [])[] | select(.vmid == $v)] | length > 0' <<< "$res" >/dev/null 2>&1; then gone=no; else gone=yes; fi
         fi
@@ -22808,9 +22810,9 @@ _fleet_stack_forget() {
         _api_error 409 "VM #$vmid ($mname) does not answer: start it and delete the stack again, or use Remove from the fleet on the Proxmox page (it can destroy the VM too)"
         return 0
     fi
-    _fleet_placement_drop "$id" "$name"
-    [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] && rm -rf "${COMPOSE_DIR:?}/${name:?}" 2>/dev/null
-    left=$(_fleet_member "$id" | jq -r '(.stacks // []) | length' 2>/dev/null)
+    _fleet_placement_drop "$id" "$name" || true
+    if [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]]; then rm -rf "${COMPOSE_DIR:?}/${name:?}" 2>/dev/null || true; fi
+    left=$(_fleet_member "$id" | jq -r '(.stacks // []) | length' 2>/dev/null) || left=""
     if [[ "$gone" == yes && "$left" == 0 ]]; then
         _fleet_member_purge "$id"
         member_removed=true
