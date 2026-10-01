@@ -5,6 +5,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [4.0.5] - 2026-10-01
+
 ### Added
 
 - **Nodes: `DCS_ROLE=node`, the API alone.** A VM that runs stacks under a hub needs no dashboard, no accounts and no wizard of its
