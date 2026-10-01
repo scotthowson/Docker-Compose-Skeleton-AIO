@@ -4,7 +4,7 @@ Generated from the router in `.scripts/api-server.sh` by `.scripts/api-docs.sh` 
 Run `.scripts/api-docs.sh` after adding or changing a route; CI fails when this file is stale.
 
 The API listens on `API_BIND:API_PORT` (default `0.0.0.0:9876`) and answers JSON.
-Every endpoint below is `368` in total.
+Every endpoint below is `369` in total.
 
 ## Access levels
 
@@ -445,6 +445,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 |--------|------|--------|-------------|
 | GET | `/ping` | public | Liveness probe: no auth, no Docker call, a tiny body. The dashboard's heartbeat uses it, so the latency it shows is the round trip alone. |
 | GET | `/fleet/bundle` | public | The hub's own DCS code as a tar.gz for a VM being bootstrapped (needs ?token= — a valid join code, or the bundle code an update round minted for the member it names); never includes data, accounts, secrets, stacks or logs |
+| GET | `/fleet/bootstrap` | public | The node installer for any Debian, Ubuntu, Fedora or Arch machine (needs ?token=, a valid join code; &stack= names the one stack the node carries): a shell script that installs Docker and the tools, fetches this hub's code, sets DCS up as a node and joins — run as a user with sudo: curl -fsSL '…' \| bash |
 | GET | `/power` | user | UPS status: mains or battery, charge, runtime, load, and whether the watch loop runs |
 | GET | `/recovery` | admin | Recovery bundles on this box and how they are made (destination, off-box copy, retention, passphrase set?) |
 | GET | `/fleet/images` | user | Every image on the hub and on each member in one list, each tagged with where it runs (member null = the hub); the counts add up across the fleet, registry_checked_at is the oldest check, last_update_at the newest pull |
@@ -458,7 +459,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | GET | `/fleet/members` | user | The members this hub manages, with the guest each one runs in and when it last answered |
 | GET | `/fleet/overview` | user | Every member with its stacks, containers and Docker counts (images, networks, volumes), and the totals, fetched from the members in parallel (10 s cache) |
 | GET | `/fleet/discover` | admin | Scan the guests for DCS installs: Proxmox gives each running guest's addresses (guest agent / container interfaces) and the API port is probed; found installs come back with the guest already matched (30 s cache; POST forces a new scan and accepts Proxmox values to try before they are saved) |
-| GET | `/fleet/join-tokens` | admin | The join codes that are still valid (admin) |
+| GET | `/fleet/join-tokens` | admin | The join codes that are still valid (admin), each with node_command: the one line that installs DCS as a node of this hub on any VM and joins it |
 | GET | `/fleet/provision/defaults` | admin | Suggested values for creating VMs: node and its size, storages, bridge, an address range next to the hub, the cloud image, the admin name, the guests Proxmox already has (a stack cannot get a VM named like one), the stacks that already run on this server (they stay on it) and whether the hub's firewalld keeps the API port closed (admin) |
 | GET | `/fleet/jobs` | admin | VMs being created (and the ones that finished or failed), newest first |
 | GET | `/fleet/templates` | admin | The DCS templates the hub baked (VMs cloned from one build in about half a minute) |
@@ -479,7 +480,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | POST | `/proxmox/test` | admin | Try a Proxmox connection with the given url, token_id, token_secret and verify_tls without saving them |
 | POST | `/proxmox/vms/{node}/{type}/{vmid}/{action}` | admin | Power action on a VM or container: start, shutdown, stop, reboot, reset (VMs only), balloon (VMs only: a memory balloon whose floor keeps the guest three quarters of its memory, so Proxmox reports the guest's real usage and can take a little back; reboot afterwards), suspend, resume — audited and sent to the webhooks |
 | POST | `/fleet/members` | admin | Add a member by address and an account on it {url, username, password, name?, vmid?, node?, type?, insecure?}; the hub logs in, learns who it is and matches it to a guest |
-| POST | `/fleet/join-tokens` | admin | Mint a join code {ttl_hours?: 24}: a VM runs ./setup.sh with DCS_HUB_URL and DCS_JOIN_TOKEN (or ./setup.sh --join) and becomes a member |
+| POST | `/fleet/join-tokens` | admin | Mint a join code {ttl_hours?: 24}: node_command is the one line that installs DCS as a node of this hub on any Debian, Ubuntu, Fedora or Arch VM and joins it; a VM that already runs DCS joins with ./setup.sh --join (or ./setup.sh with DCS_HUB_URL and DCS_JOIN_TOKEN) |
 | POST | `/fleet/join-hub` | admin | Make this server a member of a hub {hub_url, token, name?, url?} or {pending: true} for the join setup.sh saved: creates the account dcs-hub here and registers with the hub |
 | POST | `/fleet/discover` | admin | Scan the guests for DCS installs: Proxmox gives each running guest's addresses (guest agent / container interfaces) and the API port is probed; found installs come back with the guest already matched (30 s cache; POST forces a new scan and accepts Proxmox values to try before they are saved) |
 | POST | `/fleet/provision` | admin | Build one VM per stack (the whole request is checked before anything is queued — a refused stack leaves nothing behind): {node, storage, image_storage, bridge, cidr, gateway, dns, ip_start, image\|image_url\|image_file\|iso, vms: [{stack, source, cores, memory_mb, disk_gb, ip, image\|image_url\|image_file\|iso}]}; a cloud image builds unattended, an ISO is installed by hand and joined; the hub's Stacks/<source> moves into the VM |
