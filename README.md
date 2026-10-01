@@ -83,7 +83,7 @@ Docker and DCS in it, moves the stack in and then drives the whole host as one m
 | | |
 |---|---|
 | 📄 **It is just Compose** | A stack is a folder: `Stacks/<name>/docker-compose.yml` and its `.env`. Read it, edit it, run it by hand with `./compose.sh`. Your containers keep running when DCS stops. |
-| 🖥️ **The VM is the stack** | On Proxmox, the hub builds one VM per stack and runs exactly that stack in it. Proxmox isolates, snapshots and backs up each VM; the hub shows them all as one. |
+| 🖥️ **The VM is the stack** | On Proxmox, the hub builds one VM per stack and runs exactly that stack in it; the stack's files stay on the hub (`Stacks/<name>/`), pushed into the VM on every save. Proxmox isolates, snapshots and backs up each VM; the hub shows them all as one. |
 | 🔋 **Batteries included** | Reverse proxy with HTTPS, DNS records, single sign-on, intrusion detection, updates, backups, health and alerts. The setup wizard wires them up for you. |
 | 🎛️ **One place to run it** | A web dashboard (also as Android, Linux and Windows apps), a REST API with 330+ endpoints and a Discord bot, all with the same accounts and roles. |
 | 🪶 **Nothing to compile** | The API is a Bash program behind `socat`; `jq` and Docker Compose do the work. It runs wherever Docker runs. |
@@ -187,7 +187,7 @@ walk you through it.
 <summary><b>Proxmox and the fleet</b></summary>
 
 - **The Proxmox page:** nodes, VMs and LXC containers with live load, power buttons and recent tasks. [Proxmox guide](docs/PROXMOX.md#3-what-you-get)
-- **The VM is the stack:** the hub builds a VM per stack from a cloud image or a baked template. [Proxmox guide](docs/PROXMOX.md#5-the-fleet-the-vm-is-the-stack)
+- **The VM is the stack:** the hub builds a VM per stack from a cloud image or a baked template, and keeps the stack's files (a rebuilt VM gets them back with one push). [Proxmox guide](docs/PROXMOX.md#5-the-fleet-the-vm-is-the-stack)
 - **Everything from the hub:** every list page opens on *Everywhere*, with a chip for the hub or one VM. [Proxmox guide](docs/PROXMOX.md#everything-from-the-hub)
 - **One version everywhere:** *Update all VMs* hands every member the hub's code. [Proxmox guide](docs/PROXMOX.md#keeping-the-vms-on-the-hubs-version)
 - **Bring your own VMs:** any DCS joins the hub with a join code. [Proxmox guide](docs/PROXMOX.md#vms-you-made-yourself)
