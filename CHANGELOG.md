@@ -64,6 +64,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   finds the file under the stack it was deployed into; the fleet update's running marker has the shape the Updates page reads; the
   nuke dialog's answer uses the names the dialog reads; a member refusing the hub's account answers 502 instead of a 401 that signed
   the dashboard out of the hub; a member's terminal sign-in goes through the hub; the hub's cache is cleared before a forwarded write.
+- **The deploy sheet's HTTPS routing switch and its per-service boxes switch a route off now** (`{routes: false}`, `{route_services:
+  [names]}` on a deploy): before, a service left unticked still got the default route, behind Authelia, because the API wrote one for
+  every service without a route file.
+- **A VM built by the hub has its stack's files on the hub from the start**: the build pulls them from the VM once the stack runs
+  there (a join that came in while the copy was under way had adopted the VM's placeholder compose instead).
 - **Homarr on the hub was never found** since the locator asked itself for the port (the hub branch was dead; a VM's Homarr was found).
   An imported template without metadata no longer breaks the Templates page; an edit of a template keeps the keys the editor does not
   carry (icon, auth, singleton, config_path, route_skip).

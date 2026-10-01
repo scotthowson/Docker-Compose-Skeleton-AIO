@@ -14797,7 +14797,7 @@ handle_theme_active_set() {
     _api_success "$(jq -nc --arg a "$n" '{success: true, active: $a}')"
 }
 
-# POST /templates/{template}/deploy — Deploy a template into a stack (merge, routes, DNS, optional start)
+# POST /templates/{template}/deploy — Deploy a template into a stack (merge, routes, DNS, optional start); {routes: false} writes no route, DNS record or proxy-network join, {route_services: [names]} routes only those
 # Shared by the template deploy, the route rebuild and the hub (routes of its VMs): a Cloudflare CNAME for a
 # routed service, and the dashboard icon a template gets
 _cloudflare_add_dns() {
@@ -16100,7 +16100,14 @@ AUTH_ROUTE_EOF
     # which auto-discovers new .yml files (no restart needed).
     # Skip for the traefik template itself (it ships its own routes).
     # -----------------------------------------------------------------------
-    if [[ "$name" != "traefik" ]]; then
+    # the deploy sheet's HTTPS routing switch ({routes: false} = no route, no DNS record, no proxy network for this deploy) and
+    # its per-service boxes ({route_services: [names]} = only those get a route; an empty list given on purpose = none)
+    local _routes_on _route_services_set=false _route_services=""
+    _routes_on=$(printf '%s' "$body" | jq -r 'if .routes == false then "false" else "true" end' 2>/dev/null); [[ "$_routes_on" == false ]] || _routes_on=true
+    if jq -e 'has("route_services") and (.route_services | type == "array")' <<< "$body" >/dev/null 2>&1; then
+        _route_services_set=true; _route_services=$(printf '%s' "$body" | jq -r '.route_services[] | select(type == "string")' 2>/dev/null)
+    fi
+    if [[ "$name" != "traefik" && "$_routes_on" == true ]]; then
         # traefik_routes_dir and traefik_domain already computed above
         if [[ -n "$traefik_routes_dir" && -n "$traefik_domain" && "$traefik_domain" != "example.com" ]]; then
                 mkdir -p "$traefik_routes_dir/$target_stack"
@@ -16229,6 +16236,10 @@ OVERRIDE_EOF
                     # A template lists non-HTTP services (game, voice, MQTT, DNS ports) in
                     # route_skip: no route, no DNS record, no proxy network for those
                     if [[ -f "$tdir/template.json" ]] && jq -e --arg s "$_svc_name" '(.route_skip // []) | index($s) != null' "$tdir/template.json" >/dev/null 2>&1; then
+                        continue
+                    fi
+                    # a service whose box the sheet left unticked gets no route (and no DNS record, no proxy network)
+                    if [[ "$_route_services_set" == true ]] && ! grep -qxF -- "$_svc_name" <<< "$_route_services"; then
                         continue
                     fi
 
@@ -22934,7 +22945,8 @@ _fleet_job_run() {
     _job_update "$id" --arg m "$mid" '.member_id = $m' >/dev/null
     _job_step "$id" join "done" "member $mid"
     # 8. the VM is born as the stack: the hub's Stacks/<source> (compose, .env, config files — never App-Data,
-    #    data or backups) moves into the VM and starts there; the hub's copy is a leftover from now on
+    #    data or backups) is copied into the VM and starts there; Stacks/<stack> on the hub is the stack's home
+    #    from now on (pulled from the VM once it runs, so the hub's copy is what the VM really has)
     _job_step "$id" stack running "moving the stack in"
     local src; src=$(jq -r '.source // .stack' <<< "$j"); [[ -n "$src" && "$src" != "null" ]] || src="$stack"
     # say exactly what the hub sees, so a "starts empty" is never a mystery
@@ -22962,6 +22974,10 @@ _fleet_job_run() {
             local sres
             if _fleet_call sres "$mid" POST "/stacks/$stack/start" '{}' 600; then
                 _job_step "$id" stack "done" "started in the VM"; _job_log "$id" "✓ $stack started in VM $vmid"
+                # the hub keeps the stack's files: its Stacks/<stack> becomes what the VM runs (a join that came in while
+                # the copy was under way may have adopted the VM's placeholder; this puts the real files there)
+                if _fleet_stack_pull "$mid" "$stack" >/dev/null 2>&1; then _job_log "$id" "the stack's files are kept on the hub in Stacks/$stack"
+                else _job_log "$id" "! the hub could not pull the stack's files from the VM: ${_FLEET_ERR:-no answer} (Pull files from the VM on the stack does it later)"; fi
                 # the VM runs it now: whatever containers the hub's copy still has are removed, so nothing can
                 # bring them back (a restart policy on a daemon restart, a start-all); the folder and App-Data stay
                 if [[ -n "$($DOCKER_COMPOSE_CMD -f "$COMPOSE_DIR/$src/docker-compose.yml" ps -aq 2>/dev/null)" ]]; then
