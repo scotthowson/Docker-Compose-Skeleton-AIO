@@ -20344,13 +20344,15 @@ _fleet_call() {
     url=$(jq -r '.url' <<< "$m"); insecure=$(jq -r '.insecure // false' <<< "$m")
     # a member the watcher marked unreachable is probed first (3 s) instead of a login and a call that each wait out their timeout
     if [[ "$(jq -r '.reachable // true' <<< "$m")" == "false" ]]; then
-        # the watcher looks at every member once a minute: within that minute its verdict stands and a call to a member
-        # that does not answer costs nothing (five VMs that were gone made every fleet answer wait seconds for each of
-        # them, which kept every API worker busy); FLEET_PROBE=1 asks anyway (the member's own Test button)
-        local _ws; _ws=$(stat -c %Y "$FLEET_WATCH_STAMP" 2>/dev/null || echo 0)
-        if [[ -z "${FLEET_PROBE:-}" ]] && (( $(date +%s) - _ws < 90 )); then
-            _FLEET_HTTP=0; _FLEET_ERR="$id does not answer (the hub looked $(( $(date +%s) - _ws )) s ago and looks again every minute)"; return 1
+        # a member marked unreachable is asked at most every ten seconds, by whichever call comes first; the calls in
+        # between fail at once (five VMs that were gone made every fleet answer wait seconds for each of them). A VM
+        # that missed one look (a reboot, a busy moment) is back within those ten seconds. FLEET_PROBE=1 asks anyway
+        # (the member's own Test button)
+        local _ps="$FLEET_SESSION_DIR/$id.probe" _pa; _pa=$(stat -c %Y "$_ps" 2>/dev/null || echo 0)
+        if [[ -z "${FLEET_PROBE:-}" ]] && (( $(date +%s) - _pa < 10 )); then
+            _FLEET_HTTP=0; _FLEET_ERR="$id does not answer (asked $(( $(date +%s) - _pa )) s ago; asked again every ten seconds)"; return 1
         fi
+        mkdir -p "$FLEET_SESSION_DIR" 2>/dev/null; touch "$_ps" 2>/dev/null
         local _pg; _fleet_http _pg GET "$url/ping" "" "" 3 "$insecure"
         if [[ "$_FLEET_HTTP" != 200 ]]; then _FLEET_HTTP=0; _FLEET_ERR="$id is marked unreachable and does not answer /ping"; return 1; fi
         _fleet_update --arg id "$id" --argjson now "$(date +%s)" '.members = [(.members // [])[] | if .id == $id then .reachable = true | .last_seen = $now | .last_error = "" else . end]' >/dev/null 2>&1 || true
@@ -21430,12 +21432,7 @@ handle_fleet_member_delete() {
     elif [[ "$(jq -r '.username' <<< "$m")" == "$FLEET_HUB_ACCOUNT" ]]; then
         _fleet_call res "$id" DELETE /fleet/hub "" 8 >/dev/null 2>&1 || true
     fi
-    _fleet_update --arg id "$id" '.members = [(.members // [])[] | select(.id != $id)]' || true
-        secrets_delete "$(_fleet_secret_name "$id")" >/dev/null 2>&1 || true
-    rm -f "$FLEET_SESSION_DIR/$id.token" 2>/dev/null
-    _api_cache_clear
-    secrets_delete "FLEET_MEMBER_$(printf '%s' "$id" | tr '[:lower:]-' '[:upper:]_')_ADMIN_PASSWORD" >/dev/null 2>&1 || true
-    rm -f "$FLEET_SNAPSHOT" 2>/dev/null
+    _fleet_member_purge "$id"
     _audit_log "fleet_member_removed" "member $(jq -r .name <<< "$m") ($(jq -r .url <<< "$m")) removed by ${AUTH_USERNAME:-?}"
     _api_success "$(jq -nc --arg id "$id" --argjson d "$destroyed" '{success: true, id: $id, vm_destroyed: $d}')"
 }
@@ -22026,7 +22023,7 @@ _fleet_update_round() {
 # GET /fleet/versions — The hub's DCS version next to every member's, asked live; behind = members on another version, plus the last update round and whether one is queued for after the hub's restart
 handle_fleet_versions() {
     local last=null pending=false
-    [[ -s "$BASE_DIR/.data/fleet-update-last.json" ]] && { last=$(jq -c . "$BASE_DIR/.data/fleet-update-last.json" 2>/dev/null); [[ -n "$last" ]] || last=null; }
+    last=$(_fleet_round_view); [[ -n "$last" ]] || last=null
     [[ -f "$BASE_DIR/.data/fleet-update-pending" ]] && pending=true
     _fleet_has_members || { _api_success "$(jq -nc --arg v "$DCS_VERSION" --argjson l "$last" --argjson p "$pending" '{hub: {version: $v}, members: [], behind: 0, unreachable: 0, pending: $p, last_round: $l}')"; return; }
     local j tmp id; j=$(_fleet_load); tmp=$(mktemp -d "${TMPDIR:-/tmp}/dcs-ver-XXXXXX") || { _api_error 500 "no temp space"; return; }
@@ -22361,7 +22358,7 @@ _stack_files_find() {
     local dir="$1"
     [[ -d "$dir" ]] || return 0
     find "$dir" -mindepth 1 -maxdepth 6 \( -type d \( -iname logs -o -iname log -o -iname cache -o -iname data -o -iname app-data -o -iname appdata -o -iname backups -o -name .git -o -name node_modules -o -name .versions \) -prune \) \
-        -o \( -type f ! -name '*.bak' ! -name '*.tmp.*' ! -name '.dcs-files.*' ! -name 'acme.json' ! -name '*.log' ! -name '*.sock' ! -name '*.pid' -printf '%P\0' \) 2>/dev/null | sort -z
+        -o \( -type f ! -name '*.bak' ! -name '*.bak.*' ! -name '*.tmp.*' ! -name '.dcs-files.*' ! -name 'acme.json' ! -name '*.log' ! -name '*.sock' ! -name '*.pid' -printf '%P\0' \) 2>/dev/null | sort -z
 }
 # _stack_files_json DIR — {"files": [{path, mode, size, content (base64)}], "total_bytes", "skipped": [{path, reason}]}
 _stack_files_json() {
@@ -22647,6 +22644,40 @@ _fleet_services_prefill() {
     printf '%s' "$out"
 }
 
+# _fleet_round_view — the last update round as the Updates page should read it: without the members that are no longer in
+# the fleet (a VM that was removed stayed in the report as a failure for good), and nothing when none of them is left
+_fleet_round_view() {
+    local last="$BASE_DIR/.data/fleet-update-last.json" ids
+    [[ -s "$last" ]] || { printf 'null'; return 0; }
+    ids=$(jq -c '[(.members // [])[].id]' "$FLEET_FILE" 2>/dev/null); [[ "$ids" == \[* ]] || ids='[]'
+    jq -c --argjson ids "$ids" '
+        if (.status // "") == "running" then .
+        else ([(.results // [])[] | select(.id as $i | ($ids | index($i)) != null)]) as $r
+            | if ($r | length) == 0 then null
+              else . + {results: $r, updated: ([$r[] | select(.success)] | length), failed: ([$r[] | select(.success | not)] | length)} end
+        end' "$last" 2>/dev/null || printf 'null'
+}
+# _fleet_member_purge ID — everything the hub keeps for a member goes with it: the record, the stored passwords, the session
+# and the probe stamp, the relay token (a VM that left must not be able to relay events any more), the stamps of the files
+# it was asked for, and its lines in the last update round
+_fleet_member_purge() {
+    local id="$1" view
+    [[ "$id" =~ ^[a-z0-9-]{1,40}$ ]] || return 1
+    _fleet_update --arg id "$id" '.members = [(.members // [])[] | select(.id != $id)]' >/dev/null 2>&1 || true
+    secrets_delete "$(_fleet_secret_name "$id")" >/dev/null 2>&1 || true
+    secrets_delete "FLEET_MEMBER_$(printf '%s' "$id" | tr '[:lower:]-' '[:upper:]_')_ADMIN_PASSWORD" >/dev/null 2>&1 || true
+    rm -f "${FLEET_SESSION_DIR:?}/${id:?}.token" "${FLEET_SESSION_DIR:?}/${id:?}.probe" "${BASE_DIR:?}/.data/fleet-relay-tried/${id:?}" 2>/dev/null
+    rm -f "${FLEET_PULL_DIR:?}/${id:?}--"* 2>/dev/null
+    [[ -s "$FLEET_RELAY_FILE" ]] && _api_jq_update_file "$FLEET_RELAY_FILE" --arg id "$id" 'del(.[$id])' >/dev/null 2>&1
+    # the round's report on disk follows (the view filters it too, for a report written before this)
+    if [[ -s "$BASE_DIR/.data/fleet-update-last.json" ]]; then
+        view=$(_fleet_round_view)
+        if [[ "$view" == null ]]; then rm -f "${BASE_DIR:?}/.data/fleet-update-last.json" 2>/dev/null
+        elif [[ "$view" == \{* ]]; then printf '%s\n' "$view" > "$BASE_DIR/.data/fleet-update-last.json.tmp" && mv -f "$BASE_DIR/.data/fleet-update-last.json.tmp" "$BASE_DIR/.data/fleet-update-last.json"; fi
+    fi
+    rm -f "$FLEET_SNAPSHOT" 2>/dev/null; _api_cache_clear 2>/dev/null || true
+    return 0
+}
 # _fleet_member_alive MEMBER — the member's API answers right now (a 4 s look, whatever the watcher last recorded)
 _fleet_member_alive() {
     local m url ins _pg
@@ -22678,10 +22709,7 @@ _fleet_stack_forget() {
     [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] && rm -rf "${COMPOSE_DIR:?}/${name:?}" 2>/dev/null
     left=$(_fleet_member "$id" | jq -r '(.stacks // []) | length' 2>/dev/null)
     if [[ "$gone" == yes && "$left" == 0 ]]; then
-        _fleet_update --arg id "$id" '.members = [(.members // [])[] | select(.id != $id)]' >/dev/null 2>&1 || true
-        secrets_delete "$(_fleet_secret_name "$id")" >/dev/null 2>&1 || true
-        secrets_delete "FLEET_MEMBER_$(printf '%s' "$id" | tr '[:lower:]-' '[:upper:]_')_ADMIN_PASSWORD" >/dev/null 2>&1 || true
-        rm -f "$FLEET_SESSION_DIR/$id.token" 2>/dev/null
+        _fleet_member_purge "$id"
         member_removed=true
     fi
     _api_cache_clear 2>/dev/null || true; rm -f "$FLEET_SNAPSHOT" 2>/dev/null

@@ -5,6 +5,27 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [4.0.9] - 2026-10-01
+
+### Fixed
+
+- **The Updates page kept reporting VMs that no longer exist.** *Last round: 0 updated, 5 failed* listed every VM that had been removed
+  since, for good. The report is read without the members that left the fleet (and is dropped when none of them is left), and removing
+  a member takes its lines out of it.
+- **A member that leaves takes everything of it along.** *Remove from the fleet* and a forgotten stack's member go through one path now:
+  the record, the stored passwords, the hub's session with it, its relay token (a VM that left could still have relayed events), the
+  stamps kept for it and its lines in the last update round.
+- **Edit backups with a time in their name travelled into the hub's copy of a VM stack** (`docker-compose.yml.bak.20261001143241`): they
+  stay where they are made, like the plain `.bak` files; the next pull takes them out of the hub's folder.
+- **A VM that missed one look answered 502 through the hub for up to a minute and a half** (4.0.7): a member marked unreachable is asked
+  again at most every ten seconds, by whichever call comes first; a VM that was rebooting or just built is back within those ten seconds,
+  and VMs that are gone still cost nothing in between.
+
+### Tests
+
+- `tests/fleet-files.sh`: a timed backup does not travel, the round's report forgets who left, a removed member leaves no token, session
+  or stamp behind (64 checks).
+
 ## [4.0.8] - 2026-10-01
 
 ### Changed

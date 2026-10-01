@@ -53,6 +53,7 @@ printf 'binary\0data\n' > "$MEM/Stacks/demo/data/state.db"
 printf 'a line\n' > "$MEM/Stacks/demo/logs/app.log"
 printf '{}' > "$MEM/Stacks/demo/config/acme.json"
 printf 'old\n' > "$MEM/Stacks/demo/docker-compose.yml.bak"
+printf 'older\n' > "$MEM/Stacks/demo/docker-compose.yml.bak.20260101120000"
 printf 'DOCKER_STACKS=demo\n' >> "$MEM/.env"
 
 start() { (cd "$1" && setsid nohup "$1/.scripts/api-server.sh" --bind 127.0.0.1 --port "$2" > "$1/logs/listener.log" 2>&1 < /dev/null &); }
@@ -165,6 +166,19 @@ check "forget: the delete answers"                  "true true" "$(jq -r '"\(.su
 check "forget: the hub's copy is gone"              no "$([[ -e "$HUB/Stacks/demo" ]] && echo yes || echo no)"
 check "forget: the placement is gone"               0 "$(hub GET /fleet/members | jq -r '[.members[] | select(.id == "'"$MID"'") | (.stacks // [])[] | select(. == "demo")] | length' 2>/dev/null)"
 check "forget: audited"                             yes "$(grep -q 'fleet_stack_forgotten' "$HUB/.data/audit.jsonl" 2>/dev/null && echo yes || echo no)"
+
+echo "A member that leaves takes everything of it along"
+# the last update round names this member and one that is long gone: the Updates page reads only who is still in the fleet
+printf '{"status":"done","at":1,"started_at":1,"finished_at":2,"hub_version":"9.9.9","results":[{"id":"%s","success":false,"message":"did not answer"},{"id":"gone-vm","success":false,"message":"did not answer"}],"updated":0,"failed":2}\n' "$MID" > "$HUB/.data/fleet-update-last.json"
+V=$(hub GET /fleet/versions)
+check "round: a member that is gone is not in the report" "$MID 1" "$(jq -r '"\(.last_round.results | map(.id) | join(" ")) \(.last_round.failed)"' <<< "$V" 2>/dev/null)"
+check "leave: the member had a relay token"          yes "$(jq -e --arg id "$MID" '.[$id] | length >= 24' "$HUB/.data/fleet-relay.json" >/dev/null 2>&1 && echo yes || echo no)"
+check "leave: the hub held a session for it"         yes "$([[ -n "$(ls "$HUB/.data/fleet-sessions/$MID".* 2>/dev/null)" ]] && echo yes || echo no)"
+check "leave: removed from the fleet"                true "$(hub DELETE "/fleet/members/$MID" | jq -r '.success' 2>/dev/null)"
+check "leave: its relay token is gone"               no "$(jq -e --arg id "$MID" 'has($id)' "$HUB/.data/fleet-relay.json" >/dev/null 2>&1 && echo yes || echo no)"
+check "leave: its session and stamps are gone"       0 "$(ls "$HUB/.data/fleet-sessions/$MID".* "$HUB/.data/fleet-pull/$MID--"* 2>/dev/null | wc -l)"
+check "leave: the round's report went with it"       null "$(hub GET /fleet/versions | jq -r '.last_round | tostring' 2>/dev/null)"
+check "leave: …on disk too"                          no "$([[ -e "$HUB/.data/fleet-update-last.json" ]] && echo yes || echo no)"
 
 echo "$PASS passed, $FAIL failed"
 [[ "$FAIL" -eq 0 ]]
