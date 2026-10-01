@@ -10,6 +10,7 @@ the first start.
 - [How a template becomes a stack](#how-a-template-becomes-a-stack)
 - [Authelia per route](#authelia-per-route)
 - [Start on demand](#start-on-demand)
+- [Traefik add-ons](#traefik-add-ons)
 - [Templates in a fleet](#templates-in-a-fleet)
 - [The catalogue](#the-catalogue)
 - [template.json reference](#templatejson-reference)
@@ -73,6 +74,7 @@ Authelia: deploy the Authelia template first*.
 ## Start on demand
 
 With the **Sablier** template deployed, an app can sleep while nobody uses it and wake on the first visit.
+The Traefik template's *Start containers on demand* switch deploys Sablier with Traefik, into the same stack.
 
 - Choose it per service on the deploy sheet, or later with **Start on demand** on the container's page.
 - Pick how long it may idle (5 minutes to 12 hours) and the waiting page visitors see (ghost, shuffle,
@@ -81,6 +83,37 @@ With the **Sablier** template deployed, an app can sleep while nobody uses it an
   before anything wakes up.
 - Health, Uptime and the Containers page show such apps as **on demand**, not stopped, and they raise
   no "container stopped" alert. Prunes leave them alone.
+
+## Traefik add-ons
+
+The Traefik template has five switches, on the Traefik step of the setup wizard and on its deploy sheet
+(`TRAEFIK_*` variables in the API). Each one declares a Traefik plugin and sets up what uses it. Traefik
+downloads every plugin its static config declares when it starts, and does not start at all when one
+cannot be fetched, so a plugin is declared only while its switch is on.
+
+| Switch | What it does |
+|---|---|
+| **Start containers on demand** (`TRAEFIK_SABLIER`) | Deploys the Sablier template into the same stack, started with Traefik (a Sablier that runs already is left alone), and declares its plugin. [Start on demand](#start-on-demand) has the rest. |
+| **Cloudflare real IP** (`TRAEFIK_CLOUDFLARE_REAL_IP`) | For a site behind Cloudflare's proxy: the `cloudflarewarp` middleware goes first in `traefik-chain`, so the CrowdSec bouncer, Geoblock and the apps see the visitor's address and scheme, not Cloudflare's. Leave it off when Cloudflare only serves your DNS. |
+| **Geoblock** (`TRAEFIK_GEOBLOCK`, `TRAEFIK_GEOBLOCK_COUNTRIES`) | Only visitors from the countries you list reach the routes DCS writes; everyone else gets 403. The list is ISO 3166-1 alpha-2 codes, comma separated (`GB,US,DE`; the UK is `GB`), checked before anything is written. Your LAN is always let in; a country is looked up at geojs.io once and cached. The `geoblock` middleware sits in `traefik-chain`. |
+| **theme.park themes** (`TRAEFIK_THEMEPARK`) | Declares the theme.park plugin at the start, so a theme put on an app's pages from its container page needs no Traefik restart. |
+| **Maintenance mode** (`TRAEFIK_MAINTENANCE`) | Declares the maintenance plugin and defines a `maintenance` middleware with a holding page (`App-Data/Traefik/maintenance.html`, yours to edit). It is defined, not attached: add `"maintenance"` to a route's middlewares, and the page shows there, with a 503, while `App-Data/Traefik/maintenance.trigger` exists. `touch` the trigger to start, remove it to stop; no restart either way. |
+
+`traefik-chain` is on every route DCS writes, so what goes into it covers them all: `cloudflarewarp`
+first, then the CrowdSec bouncer and `geoblock`, then the redirect and the security headers. The
+middlewares DCS writes for the add-ons are files of their own beside the chain
+(`App-Data/Traefik/custom_routes/<stack>/geoblock.yml`, `cloudflarewarp.yml`, `maintenance.yml`).
+
+Deploying the template again changes the switches. Such a deploy rewrites what DCS wrote and takes out
+what DCS wrote, nothing else: a `geoblock` middleware you defined yourself, and its place in the chain,
+stay. The proxy stack's `.env` remembers the switches, so a deploy that does not mention them keeps them
+as they are, and a running Traefik restarts when its static config changed. Turning Sablier off leaves
+its service in the stack; undeploy the Sablier template to remove it.
+
+In Traefik's static config the plugins sit between `# dcs-if: TRAEFIK_…` and `# dcs-end` markers, which
+DCS keeps in step with the switches. A `traefik.yml` from before the markers gets a plugin added under
+`experimental.plugins` when its switch is on, and a flow that needs a plugin on the spot (a theme from a
+container's page, *Start on demand*) turns its block on and records the switch in the stack's `.env`.
 
 ## Templates in a fleet
 
@@ -337,15 +370,17 @@ MQTT, DNS), *Optional* services can be left out.
 ## template.json reference
 
 Every template is a folder under `.templates/` with a `docker-compose.yml`, a `template.json` and, when
-the app needs files before its first start, a `config/` folder.
+the app needs files before its first start, a `config/` folder. A `files/` folder holds what DCS writes
+itself at deploy time (the CrowdSec bouncer's middleware, the Traefik add-ons' middlewares); it is not
+copied as it is.
 
 | Field | Meaning |
 |---|---|
 | `name`, `title`, `description`, `icon`, `tags` | What the gallery shows. The description should say what to do after the first start (default logins, where to click). |
 | `category` | The gallery group: `media`, `monitoring`, `web`, `databases`, `development`, `tools`, `productivity`, `automation`, `security`, `network`, `storage`, `download`, `entertainment`. The dashboard also takes aliases such as `notes`, `photos`, `vpn`, `backup`, `ai` and `gaming`. |
 | `target_stack` | The stack it lands in by default. |
-| `variables[]` | The deploy form: `name`, `label`, `description`, `default`, `required`. `type: "password"` hides the value; `options: [{value, label}]` makes a picker; `show_if: {OTHER_VAR: "value"}` hides a field until another one matches; `generate: "hex64"` fills an empty value with 64 random hex characters. |
-| `config_path` | The folder under the stack's `App-Data/` that receives the template's `config/` files before the first start. `${VAR:-default}` placeholders in `.yml`, `.yaml`, `.conf` and `.env` files are filled from the deploy variables. |
+| `variables[]` | The deploy form: `name`, `label`, `description`, `default`, `required`. `type: "password"` hides the value; `type: "boolean"` makes a switch (the value is `true` or `false`); `options: [{value, label}]` makes a picker; `show_if: {OTHER_VAR: "value"}` hides a field until another one matches; `generate: "hex64"` fills an empty value with 64 random hex characters. |
+| `config_path` | The folder under the stack's `App-Data/` that receives the template's `config/` files before the first start. `${VAR:-default}` placeholders in `.yml`, `.yaml`, `.conf` and `.env` files are filled from the deploy variables. A block between `# dcs-if: VAR` and `# dcs-end` lines is uncommented when the variable `VAR` is true (`true`, `yes`, `on`, `1`) and commented out when it is not, on every deploy: a plugin or a middleware declared only while its switch is on. |
 | `route_skip` | Services that get no Traefik route, DNS record or proxy network: game, voice, MQTT and DNS ports. Services without a published port, or bound to `127.0.0.1`, are skipped anyway. |
 | `route_override` | `{subdomain, port, protocol, use_host_ip, container}` for an app whose routable service is not in the compose file (Nextcloud AIO). |
 | `singleton` | `true` when only one copy may run on a server (Traefik, Portainer, Watchtower…). |

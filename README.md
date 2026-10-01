@@ -156,6 +156,7 @@ walk you through it.
 - **Authelia single sign-on.** Apps sit behind a login portal with 2FA; apps with their own clients stay open, and you can choose per route. [Templates](docs/TEMPLATES.md#authelia-per-route)
 - **CrowdSec.** Attackers are refused at the proxy, with an alert for every ban. [Discord guide](docs/DISCORD.md#2-crowdsec-alerts)
 - **Start on demand (Sablier).** Idle apps sleep and wake on the first visit. [Templates](docs/TEMPLATES.md#start-on-demand)
+- **Traefik add-ons as switches.** Geoblock with your countries, Cloudflare's real visitor address, theme.park and a maintenance page are switches of the Traefik template, in the wizard and on the deploy sheet; a plugin is declared only while its switch is on. [Templates](docs/TEMPLATES.md#traefik-add-ons)
 - **A route feed** for a Traefik on another machine. [Proxmox guide](docs/PROXMOX.md#4-a-traefik-in-another-vm-or-machine-the-route-feed)
 
 </details>
