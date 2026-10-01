@@ -173,6 +173,8 @@ _cs_profile_validate() {
 }
 
 # The jq that turns (settings, notify) into profiles.yaml. Filters are single-quoted YAML scalars; the header carries the settings.
+# jq 1.7 (Debian 13's) binds `as` tighter than `+`: `A + B as $x | rest` is `A + (B as $x | rest)` there (jq 1.8 reads it as `(A + B) as $x`),
+# so a sum that is bound to a name is kept in parentheses. Without them the overrides array was added to the finished file text.
 _CS_JQ_PROFILES='
 def sq: "'"'"'" + gsub("'"'"'"; "'"'"''"'"'") + "'"'"'";
 def secs($d): ($d | capture("^(?<n>[0-9]+)(?<u>[mh])$") | (.n | tonumber) * (if .u == "h" then 3600 else 60 end));
@@ -195,9 +197,9 @@ def emit($name; $cond; $dur; $expr; $notify; $on_success):
      (if (($n.filters.ignore // []) | length) > 0 then "!" + any_match($n.filters.ignore) else empty end) ]) as $base_nf
 | ($base_nf + (if $n.events.simulated == false then ["(Alert.Simulated == nil || !Alert.Simulated)"] else [] end) | join(" && ")) as $nf
 | ($base_nf | join(" && ")) as $nf_detect
-| [ ($p.overrides // [])[] | . as $o | {name: ("dcs_override_" + (($p.overrides | map(.pattern) | index($o.pattern)) + 1 | tostring)), cond: ("Alert.Remediation == true && " + scen_match($o.pattern)), dur: $o.duration} ]
+| ([ ($p.overrides // [])[] | . as $o | {name: ("dcs_override_" + (($p.overrides | map(.pattern) | index($o.pattern)) + 1 | tostring)), cond: ("Alert.Remediation == true && " + scen_match($o.pattern)), dur: $o.duration} ]
   + [ {name: "default_ip_remediation", cond: "Alert.Remediation == true && Alert.GetScope() == \"Ip\"", dur: $p.duration},
-      {name: "default_range_remediation", cond: "Alert.Remediation == true && Alert.GetScope() == \"Range\"", dur: $p.range_duration} ] as $groups
+      {name: "default_range_remediation", cond: "Alert.Remediation == true && Alert.GetScope() == \"Range\"", dur: $p.range_duration} ]) as $groups
 | [ $groups[] | . as $g
     | (if $p.escalate.enabled then dur_expr($g.dur; $p.escalate.max) else "" end) as $expr
     | if $on and ($n.events.bans != false) then

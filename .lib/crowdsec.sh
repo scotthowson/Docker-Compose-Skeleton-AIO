@@ -775,7 +775,7 @@ _cs_status_core() {
                     detail: "No bouncer is registered, so Traefik never hears about a ban: CrowdSec decides, nothing blocks. Registering the Traefik bouncer fixes it.",
                     fix: {id: "register_bouncer", label: "Register the Traefik bouncer", kind: "api", method: "POST", path: "/crowdsec/bouncers/register-traefik", body: null, primary: true}}] else [] end)
               + (if $tr.present and $b.registered and $enf.routes_dir != "" and (($mwok | not) or ($enf.in_chain | not)) then [{code: "bouncer_unchained", severity: "warning", title: "Traefik is not using the bouncer",
-                    detail: "The bouncer is registered in CrowdSec, but its middleware is not in Traefik'"'"'s chain (" + (if $mwok then "the chain does not list it" else "the middleware file is missing" end) + "). Registering again " + (if $enf.own_middleware then "adds it to the chain." else "rewrites both." end),
+                    detail: ("The bouncer is registered in CrowdSec, but its middleware is not in Traefik'"'"'s chain (" + (if $mwok then "the chain does not list it" else "the middleware file is missing" end) + "). Registering again " + (if $enf.own_middleware then "adds it to the chain." else "rewrites both." end)),
                     fix: {id: "register_bouncer", label: "Register again", kind: "api", method: "POST", path: "/crowdsec/bouncers/register-traefik", body: null, primary: true}}] else [] end)
               + (if $tr.present and $b.registered and $mwok and ($enf.plugin.declared | not) then [{code: "plugin_undeclared", severity: "warning", title: "Traefik does not know the bouncer plugin",
                     detail: "The middleware file is there, but Traefik'"'"'s static configuration does not declare the CrowdSec bouncer plugin, so Traefik refuses the middleware and every route that uses the chain answers 404. Registering again declares it and restarts Traefik once.",
@@ -796,7 +796,7 @@ _cs_status_core() {
                       + (if $b.pulled_by then ": Traefik asks CrowdSec as " + $b.pulled_by else "" end) + ". Protection is not affected. Delete DCS'"'"'s copy and its bouncer to tidy up, or keep them as a spare."), fix: null}] else [] end)
               + (if ($d.machines | map((.datasources // {}) | to_entries | map(.value) | add // 0) | add // 0) == 0 then [{code: "no_datasource", severity: "warning", title: "CrowdSec is not reading any log",
                     detail: "No acquisition source is configured, so nothing is analysed and no attack can be detected. The Traefik access log should be listed in /etc/crowdsec/acquis.d.", fix: null}] else [] end)
-              + (if $d.counts.updates > 0 then [{code: "hub_updates", severity: "info", title: ($d.counts.updates | tostring) + " hub item(s) can be updated",
+              + (if $d.counts.updates > 0 then [{code: "hub_updates", severity: "info", title: (($d.counts.updates | tostring) + " hub item(s) can be updated"),
                     detail: "Newer versions of installed collections, scenarios or parsers exist. Updating keeps the detections current.",
                     fix: {id: "open_hub", label: "Open the hub", kind: "ui", method: "", path: "", body: null, primary: false}}] else [] end) ) as $issues
             | {issues: $issues, enforcement: $enf, bouncer: $b}')
@@ -1392,7 +1392,7 @@ handle_crowdsec_metrics() {
         | { window: $w, since: $since, retention_days: $ret,
             window_supported: ((($w | if . == "24h" then 1 elif . == "7d" then 7 else 30 end)) <= $ret),
             totals: { alerts: $n, events: ($a | map(.events) | add // 0), sources: ($a | map(.value) | unique | length), countries: ($a | map(.cn) | map(select(. != "")) | unique | length),
-                      scenarios: ($a | map(.scenario) | unique | length), banned_now: ($bans | map(select(.simulated | not)) | length), manual: ($alerts | length) - $n },
+                      scenarios: ($a | map(.scenario) | unique | length), banned_now: ($bans | map(select(.simulated | not)) | length), manual: (($alerts | length) - $n) },
             bucket_seconds: $bucket,
             timeline: ( ((($since / $bucket) | floor) * $bucket) as $start | (($now / $bucket) | floor * $bucket) as $end
                         | [ range($start; $end + 1; $bucket) as $t | {t: $t, alerts: ([$a[] | select(.t >= $t and .t < $t + $bucket)] | length), events: ([$a[] | select(.t >= $t and .t < $t + $bucket) | .events] | add // 0)} ] ),

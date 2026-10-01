@@ -59,3 +59,32 @@ jobs:
 
       - name: Setup dry run
         run: ./setup.sh --dry-run
+
+  smoke-debian:
+    # The hub VM images and most home servers run Debian 13, whose jq (Debian's build of 1.7.1, reporting jq-1.7) parses
+    # stricter than Ubuntu's: an operator inside an object value, `f?.x` and `A + B as $x` are errors there and only there.
+    # 4.0.4's CrowdSec page and VM details failed on every Debian 13 hub while CI on Ubuntu stayed green.
+    runs-on: ubuntu-24.04
+    container: debian:trixie
+    timeout-minutes: 45
+    steps:
+      - name: Install tools
+        run: |
+          apt-get update -qq && apt-get install -y -qq jq socat curl git python3 ca-certificates procps ncat
+          jq --version
+      - uses: actions/checkout@v7
+
+      - name: Smoke tests on Debian 13's jq (request handler over stdin)
+        run: tests/smoke.sh 2>&1 | tee smoke-debian.log
+
+      - name: Smoke failures in the summary
+        if: failure()
+        run: |
+          {
+            echo '### Smoke checks that failed (debian:trixie)'
+            echo
+            echo '```'
+            grep -E '^  FAIL' smoke-debian.log || echo '(no FAIL line — the run stopped before the end; last lines below)'
+            tail -n 15 smoke-debian.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
