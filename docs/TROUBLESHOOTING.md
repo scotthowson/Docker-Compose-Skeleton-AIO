@@ -52,6 +52,7 @@ VM builds, the [Proxmox guide's table](PROXMOX.md#7-troubleshooting) goes step b
 | *Start on demand needs Sablier* | Deploy the Sablier template first. It is not offered for a stack that lives in a VM. |
 | An app answers without the Authelia portal | Templates whose apps bring their own clients (*Own sign-in* in the [catalogue](TEMPLATES.md#the-catalogue)) stay open on purpose. The deploy sheet's switch decides otherwise. |
 | *Run Command* on the Containers page stops after 30 seconds | It runs without a terminal and with its input closed, so interactive programs (`ollama run`, editors, shells) end or time out. Use the Terminal page. |
+| The hub's CPU sits at 100 % or more with a dashboard open (a small VM) | Every request is a bash process; before 4.0.5 each one read the whole API script. Update: the API keeps worker processes (`API_WORKERS`, see [Configuration](CONFIGURATION.md)), and the dashboard polls less often. Close dashboard tabs you do not use; a hub likes 4 vCPUs. |
 | A settings file was replaced by an empty one, and a `…corrupt-<time>` file appeared | An empty or broken state file (after a crash) is set aside and replaced by an empty default, with an entry in the audit log. The old file is there to inspect. |
 
 ## Proxy, DNS and certificates

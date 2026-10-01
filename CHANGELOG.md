@@ -7,6 +7,18 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **The API answers from a pool of worker processes (`API_WORKERS`, default 4).** Every request used to start bash on the 27,000-line API script
+  (about 0.15 s of CPU on a small VM, cached answer or not), and an open dashboard made five of them a second: a 2-vCPU hub sat at 100 % and more
+  with one browser tab. The server now keeps copies of itself that read the script once; a tiny front (`.scripts/api-dispatch.sh`, socat execs it per
+  connection) reads the request and hands it to a free worker with the client's address, tries the next one when that worker is busy, and waits a
+  few seconds when all are. A request runs in a subshell of the worker, so nothing a handler sets, changes or traps survives into the next; a worker
+  renews itself after `API_WORKER_REQUESTS` answers and a dead one is replaced. `API_WORKERS=0` is the old transport; ncat hosts keep it.
+- **Topology across the fleet.** On a hub, *Everywhere* on the Topology page is the fleet map: the hub's own stacks, containers and networks and every
+  reachable VM's, each under its server's band (`GET /topology?fleet=1`; a VM's names are kept apart under its own name). A VM that did not answer
+  is shown as such.
+- **Homarr in a VM counts.** The hub finds a running Homarr on any member (the fleet snapshot: a container named Homarr with 7575 published), so the
+  deploy sheet offers *Add to Homarr*, the Integrations panel says which VM it runs in, the stored key is checked against that Homarr, and every new
+  route of a VM gets its tile - with Homarr on the hub, in a VM, or at `HOMARR_URL`.
 - **`CROWDSEC_MEDIA_APPS`: a media app's web client is not a crawler.** One page of Jellyfin's web client makes dozens of API and artwork requests in a second, some of them answered 404
   (an item without a logo), and CrowdSec's generic HTTP scenarios (`http-crawl-non_statics`, `http-probing`) banned a friend who was just watching. The setting names the Traefik backends
   that are media apps (comma separated service hosts, default `jellyfin`, empty turns it off). For them DCS keeps `parsers/s02-enrich/dcs-media-apps.yaml` in CrowdSec's configuration,
@@ -25,6 +37,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **On Debian 13 the CrowdSec page said *Could not work out the CrowdSec state*, a VM's details sheet showed *empty answer* and never read the balloon
+  state, and the CrowdSec Settings tab wrote nothing.** Debian 13's jq (its build of 1.7.1, reporting `jq-1.7`) refuses three things jq 1.8 accepts:
+  an operator inside an object value (`{a: $x + 1}`), `f?.field`, and `A + B as $x | …` (bound as `A + (B as $x | …)`: the profiles file came out as an
+  array added to a string). Every such place is written the way both read it, CI runs the smoke suite inside `debian:trixie` as well, and the hub
+  VM images (all Debian 13) are covered by it.
 - **`traefik.<domain>` answered 502 on every default deploy.** The dashboard route (`.templates/traefik/config/custom_routes/*/traefik.yml`) pointed at `http://Traefik:${TRAEFIK_PORT_DASHBOARD}`, but that variable is the port published on the HOST (8180 by default, since the template moved off 8080); inside the Docker network the dashboard listens on 8080 only, so Traefik had nothing to talk to. The route now names the container port. An existing route file keeps the old port until you change it: `sed -i 's#http://Traefik:8180#http://Traefik:8080#' Stacks/<stack>/App-Data/Traefik/custom_routes/<stack>/traefik.yml` (the file provider picks it up in seconds).
 - **Every whitelist sync rewrote `dcs-whitelist.yaml` and reloaded CrowdSec, although nothing had changed.** The file was compared with the text it ends in a newline, and `$(cat …)` drops
   that newline, so the two never matched: CrowdSec got a reload every ten minutes (and every DDNS check). It is compared as it is written now, and the reload, like the
@@ -32,6 +49,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Tests
 
+- `tests/api-workers.sh`: the worker pool on a real loopback listener - the same answers and headers as the one-process transport, the client's address
+  reaches the handler, a 16-way burst, renewal in place, a killed worker replaced, `--stop` leaves nothing behind, `API_WORKERS=0`.
+- `tests/smoke.sh`: Homarr found in a VM (where, address, mode, hint), the fleet topology merge (both servers, the VM answered, its names kept apart).
+- CI: `smoke-debian` runs the whole smoke suite inside `debian:trixie` (the hub images' OS and jq).
 - `tests/smoke.sh` (`SMOKE_CS_PARTS=mediaapps`): the file for the default, two names, an empty setting, names that are not host names and letters of other alphabets; a sync that changes nothing
   rewrites nothing and reloads nothing; one reload for a change; CrowdSec absent or stopped; a loop that started with another value follows `.env`.
 - `tests/crowdsec-media-apps.sh` (opt-in: Docker, the CrowdSec image, the network): the file DCS writes, replayed through the real CrowdSec twice, without it and with it, over fifteen kinds

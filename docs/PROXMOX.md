@@ -368,7 +368,8 @@ Some things go further than a merged list:
   minute — with the hub's own middleware chain on every router, so a service in a VM is served,
   compressed, guarded by CrowdSec and put behind Authelia exactly like one on the hub (templates
   whose apps bring their own clients stay open; see the README). A new route also gets its
-  Cloudflare record and its Homarr tile from the hub when those are set up there. When the
+  Cloudflare record and its Homarr tile from the hub when those are set up there - Homarr on the hub
+  or in any VM of the fleet (store its API key on the hub's Integrations page). When the
   Traefik lives inside a VM instead, the hub pushes everyone else's routes into that VM's
   Traefik (`POST /fleet/routes`). A Traefik somewhere else keeps using the feed (section 4).
 - **One domain.** The fleet's domain is the hub's (`TRAEFIK_DOMAIN` or `PROXY_DOMAIN`): a VM the
@@ -377,7 +378,8 @@ Some things go further than a merged list:
   `PROXY_DOMAIN`); a member that has a domain of its own keeps it. When the domain arrives, the
   VM writes the routes for the services it already runs (`POST /traefik/routes/rebuild` does
   the same by hand, on any DCS that got Traefik after its stacks).
-- **Every page, every VM.** Containers, Logs, Uptime, Topology, Backup, File Browser,
+- **Every page, every VM.** *Everywhere* on the Topology page is the fleet map: the hub's stacks and
+  containers and every reachable VM's, each under its server's band. Containers, Logs, Uptime, Topology, Backup, File Browser,
   Environment, System and Maintenance take the same Everywhere / Hub / VM choice as the list
   pages: a container's buttons (start, stop, restart, recreate, remove, env, exec, logs, Sablier,
   Nuke & reinstall) act on the VM it lives in, a stack's backup runs on its VM and restores go to

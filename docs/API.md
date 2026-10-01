@@ -191,7 +191,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 |--------|------|--------|-------------|
 | GET | `/networks` | user | Fleet merged |
 | GET | `/volumes` | user | Fleet merged |
-| GET | `/topology` | user | Container and network topology graph |
+| GET | `/topology` | user | Container and network topology graph (?fleet=1 on a hub: this server's map and every reachable VM's in one answer) |
 | GET | `/networks/{network}` | user | Network detail with its members |
 | POST | `/networks` | admin | Create a Docker network {name, driver, subnet, gateway, ip_range, internal, attachable, ipv6, labels} |
 | POST | `/networks/{network}/delete` | admin | Remove a Docker network |

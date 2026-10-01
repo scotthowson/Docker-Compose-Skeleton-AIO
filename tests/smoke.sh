@@ -18,7 +18,7 @@ trap '[[ -n "${RIP_MAIN:-}" ]] && kill "$RIP_MAIN" 2>/dev/null; [[ -n "${RIP_DDN
 
 # Minimal isolated installation: scripts, config, one stack, an .env
 mkdir -p "$WORK/.scripts" "$WORK/.lib" "$WORK/.config" "$WORK/Stacks/demo" "$WORK/.data" "$WORK/logs" "$WORK/.api-auth" "$WORK/.templates"
-cp "$ROOT/.scripts/api-server.sh" "$WORK/.scripts/"
+cp "$ROOT/.scripts/api-server.sh" "$ROOT/.scripts/api-dispatch.sh" "$WORK/.scripts/"   # the API and the front of its worker pool
 cp "$ROOT/compose.sh" "$WORK/"
 cp "$ROOT/VERSION" "$WORK/"   # the hub's bundle carries it; /ping and /fleet/versions report it
 mkdir -p "$WORK/vm-images"; cp "$ROOT/vm-images/images.json" "$WORK/vm-images/"   # the list of purpose-built VM images (the catalogue reads it)
@@ -96,7 +96,8 @@ check "admin account created"           200 "$(printf '%s' "$SETUP" | status_of)
 TOKEN=$(printf '%s' "$SETUP" | body_of | jq -r '.token // empty' 2>/dev/null)
 check "token issued"                    yes "$([[ ${#TOKEN} -ge 32 ]] && echo yes || echo no)"
 check "second setup refused"            400 "$(request POST /auth/setup '{"username":"x","password":"yyyyyyyyy"}' "${AUTH[@]}" | status_of)"
-auth_request() { local m="$1" p="$2" b="${3:-}"; printf '%s %s HTTP/1.1\r\nAuthorization: Bearer %s\r\nContent-Length: %d\r\n\r\n%s' "$m" "$p" "$TOKEN" "${#b}" "$b" | env DOCKER_COMPOSE_CMD="${DOCKER_COMPOSE_CMD:-docker compose}" "${AUTH[@]}" "$API" --handle-request 2>/dev/null; }
+# auth_request METHOD PATH [BODY] [extra env assignments...]  (the same shape as request, with the session token)
+auth_request() { local m="$1" p="$2" b="${3:-}"; shift 3 2>/dev/null || shift $#; printf '%s %s HTTP/1.1\r\nAuthorization: Bearer %s\r\nContent-Length: %d\r\n\r\n%s' "$m" "$p" "$TOKEN" "${#b}" "$b" | env DOCKER_COMPOSE_CMD="${DOCKER_COMPOSE_CMD:-docker compose}" "${AUTH[@]}" "$@" "$API" --handle-request 2>/dev/null; }
 check "token grants access"             200 "$(auth_request GET /version | status_of)"
 check "wrong password rejected"         401 "$(request POST /auth/login '{"username":"admin","password":"wrong-password"}' "${AUTH[@]}" | status_of)"
 LOGIN=$(request POST /auth/login '{"username":"admin","password":"correct horse battery"}' "${AUTH[@]}")
@@ -652,7 +653,7 @@ kill "$RP2_PID" 2>/dev/null; wait "$RP2_PID" 2>/dev/null
 _rip_install() {
     local d="$1" port="$2"
     mkdir -p "$d/.scripts" "$d/.lib" "$d/.config" "$d/.data" "$d/logs" "$d/.api-auth" "$d/Stacks"
-    command cp "$API" "$d/.scripts/"; command cp "$ROOT/compose.sh" "$ROOT/VERSION" "$d/"
+    command cp "$API" "$ROOT/.scripts/api-dispatch.sh" "$d/.scripts/"; command cp "$ROOT/compose.sh" "$ROOT/VERSION" "$d/"
     command cp -r "$ROOT/.lib/." "$d/.lib/"; command cp -r "$ROOT/.config/." "$d/.config/"
     grep -vE '^(API_BIND|API_AUTH_ENABLED|API_INSECURE_NO_AUTH|API_TRUSTED_PROXIES|API_IP_WHITELIST|API_PORT|DDNS_ENABLED|CF_DNS_API_TOKEN|TRAEFIK_DOMAIN|DDNS_INTERVAL|METRICS_ENABLED|AUTOMATIONS_ENABLED)=' "$ROOT/.env.example" > "$d/.env"
     printf 'API_PORT=%s\nAPI_BIND=127.0.0.1\nAPI_AUTH_ENABLED=false\nMETRICS_ENABLED=false\nAUTOMATIONS_ENABLED=true\nDDNS_ENABLED=false\nDDNS_INTERVAL=300\nCF_DNS_API_TOKEN=smoke-not-a-token\nTRAEFIK_DOMAIN=smoke.test\nCF_API_BASE=http://127.0.0.1:9\n' "$port" >> "$d/.env"
@@ -1445,6 +1446,22 @@ check "theme: never forwarded"               1 "$(_lib _fleet_forward_if_remote 
 printf '%s' '{"members":[{"id":"vm-a","name":"vm-a","vmid":7,"url":"http://10.9.8.7:9876","reachable":true,"containers":[{"name":"web","ports":"0.0.0.0:8080->80/tcp"}]}]}' > "$WORK/snap-test.json"
 check "containers: a VM's row says where it is" "vm-a 10.9.8.7" "$(FLEET_SNAPSHOT="$WORK/snap-test.json" _lib _fleet_remote_containers_json | jq -r '.[0] | "\(.member) \(.member_host)"' 2>/dev/null)"
 rm -f "$WORK/snap-test.json"
+# Homarr in a VM of the fleet: the hub finds it in the last snapshot (a running container named Homarr with 7575 published), talks to the
+# VM's address, and the deploy sheet's question appears. No key stored: library mode, with a hint that names the VM.
+printf '%s' '{"members":[{"id":"'"$MID"'","name":"media-vm","vmid":100,"url":"http://10.9.8.7:9876","reachable":true,"containers":[{"name":"Homarr","state":"running","ports":"0.0.0.0:7575->7575/tcp, [::]:7575->7575/tcp"},{"name":"web","state":"running","ports":""}]}]}' > "$WORK/snap-homarr.json"
+_HS=$(auth_request GET /homarr/status '' FLEET_SNAPSHOT="$WORK/snap-homarr.json" FLEET_SNAPSHOT_TTL=999999 | body_of)
+check "homarr: found in a VM of the fleet"      true "$(jq -r '.active' <<< "$_HS" 2>/dev/null)"
+check "homarr: says which VM"                   "$MID media-vm" "$(jq -r '"\(.where) \(.where_name)"' <<< "$_HS" 2>/dev/null)"
+check "homarr: the VM's address and port"       "http://10.9.8.7:7575 7575" "$(jq -r '"\(.url) \(.port)"' <<< "$_HS" 2>/dev/null)"
+check "homarr: no key stored = library mode"    library "$(jq -r '.mode' <<< "$_HS" 2>/dev/null)"
+check "homarr: the hint names the VM"           yes "$(jq -r '.hint' <<< "$_HS" 2>/dev/null | grep -q 'media-vm' && echo yes || echo no)"
+rm -f "$WORK/snap-homarr.json"
+# Topology across the fleet: ?fleet=1 merges every reachable VM's map into the hub's; the plain answer is what it was
+_TF=$(auth_request GET '/topology?fleet=1' | body_of)
+check "topology: fleet merge lists both servers" "2 true media-vm" "$(jq -r '"\(.servers | length) \(.servers[0].hub) \(.servers[1].name)"' <<< "$_TF" 2>/dev/null)"
+check "topology: the VM answered"                true "$(jq -r '.servers[1].answered' <<< "$_TF" 2>/dev/null)"
+check "topology: the VM's things are namespaced" yes "$(jq -e '([.nodes[] | select(.member != null)] | all(.id | startswith("media-vm/"))) and ([.networks[] | select(.member != null)] | all(.name | startswith("media-vm/")))' <<< "$_TF" >/dev/null 2>&1 && echo yes || echo no)"
+check "topology: plain answer has no servers"    "edges networks nodes" "$(auth_request GET /topology | body_of | jq -r 'keys | sort | join(" ")' 2>/dev/null)"
 check "theme: a VM container asked"          false "$(auth_request GET "/containers/nope-zz/theme?member=$MID" | body_of | jq -r '.routed' 2>/dev/null)"
 check "fleet: viewer may read proxy"    200 "$(viewer_request GET "/fleet/members/$MID/api/stacks" | status_of)"
 check "fleet: viewer proxy inner denied" 403 "$(viewer_request GET "/fleet/members/$MID/api/secrets" | status_of)"

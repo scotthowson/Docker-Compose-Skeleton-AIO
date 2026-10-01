@@ -77,11 +77,13 @@ echo ""
 # "+" runs the command as root, "-" ignores a failure. Systemd older than 231 does not know the "+" prefix and gets no such line.
 # chcon rather than restorecon: it works with or without the persistent fcontext rule set further down.
 API_PRE=""
+DISPATCH_PRE=""
 STACKS_PRE=""
 if command -v getenforce >/dev/null 2>&1 && [[ "$(getenforce 2>/dev/null)" != "Disabled" ]] && command -v chcon >/dev/null 2>&1; then
     _sd_ver=$(systemctl --version 2>/dev/null | awk 'NR==1 {print $2}')
     if [[ "$_sd_ver" =~ ^[0-9]+$ ]] && (( _sd_ver >= 231 )); then
         API_PRE="ExecStartPre=+-$(command -v chcon) -t bin_t $BASE_DIR/.scripts/api-server.sh"
+        DISPATCH_PRE="ExecStartPre=+-$(command -v chcon) -t bin_t $BASE_DIR/.scripts/api-dispatch.sh"
         STACKS_PRE="ExecStartPre=+-$(command -v chcon) -t bin_t $BASE_DIR/start.sh"
     fi
 fi
@@ -107,6 +109,7 @@ Group=$DCS_GROUP
 SupplementaryGroups=docker
 WorkingDirectory=$BASE_DIR
 $API_PRE
+$DISPATCH_PRE
 ExecStart=$BASE_DIR/.scripts/api-server.sh --bind $API_BIND
 KillMode=mixed
 Restart=on-failure
