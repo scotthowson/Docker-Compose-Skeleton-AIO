@@ -12380,6 +12380,83 @@ _traefik_pick_challenge() {
     printf '%s\n' "$out" > "$file.tmp.$$" && chmod --reference="$file" "$file.tmp.$$" 2>/dev/null; mv -f "$file.tmp.$$" "$file"
 }
 
+# _template_render_switches FILE VARS [named] — the optional blocks of a config file a template ships. A block between
+# "# dcs-if: NAME" and "# dcs-end" is uncommented when the switch NAME is on in VARS (KEY=value lines: true, yes, on or 1)
+# and commented out when it is not, so a plugin or a middleware is declared only while its switch is on. With "named",
+# only the blocks whose switch VARS mentions are touched (a flow turning one plugin on); otherwise a block VARS does not
+# mention is off. A block is off when its first line is commented out, and every line of it is commented or uncommented
+# together, comments of its own included, so running it again changes nothing. A file without markers is left as it is.
+_template_render_switches() {
+    local file="$1" dvars="$2" mode="${3:-all}" out on all
+    [[ -f "$file" ]] || return 0
+    grep -q '# dcs-if: ' "$file" 2>/dev/null || return 0
+    on=$(printf '%s\n' "$dvars" | awk -F= '{ v = tolower($2); gsub(/^[ \t"\x27]+|[ \t"\x27]+$/, "", v); if (v == "true" || v == "yes" || v == "on" || v == "1") print $1 }')
+    all=$(printf '%s\n' "$dvars" | awk -F= '$1 != "" { print $1 }')
+    out=$(ON="$on" ALL="$all" awk -v named="$([[ "$mode" == named ]] && echo 1 || echo 0)" '
+        BEGIN {
+            n = split(ENVIRON["ON"], a, "\n"); for (i = 1; i <= n; i++) if (a[i] != "") on[a[i]] = 1
+            n = split(ENVIRON["ALL"], a, "\n"); for (i = 1; i <= n; i++) if (a[i] != "") all[a[i]] = 1
+        }
+        /^[ \t]*# dcs-if: / { name = $0; sub(/^[ \t]*# dcs-if: */, "", name); sub(/[ \t\r]+$/, "", name); want = (name in on); skip = (named && !(name in all)); state = -1; print; next }
+        /^[ \t]*# dcs-end[ \t\r]*$/ { name = ""; print; next }
+        name != "" && !skip {
+            match($0, /^[ \t]*/); ind = substr($0, 1, RLENGTH); rest = substr($0, RLENGTH + 1)
+            if (rest ~ /^[ \t\r]*$/) { print; next }
+            if (state == -1) { state = (rest ~ /^#/) ? 0 : 1; base = RLENGTH }
+            if (want && !state) sub(/^# ?/, "", rest)
+            else if (!want && state) {
+                # the "#" goes at the indentation of the block, so the file reads as shipped ("#   version:" under "# geoblock:")
+                if (RLENGTH > base) { ind = substr($0, 1, base); rest = substr($0, base + 1) }
+                rest = "# " rest
+            }
+            print ind rest; next
+        }
+        { print }' "$file") || return 1
+    printf '%s\n' "$out" > "$file.tmp.$$" && chmod --reference="$file" "$file.tmp.$$" 2>/dev/null; mv -f "$file.tmp.$$" "$file"
+}
+
+# _template_var_on NAME VARS — is the switch NAME on in VARS (KEY=value lines): true, yes, on or 1, in any case
+_template_var_on() {
+    local v
+    v=$(printf '%s\n' "$2" | sed -n "s/^$1=//p" | head -n 1 | tr -d '"'"'"' \t\r' | tr '[:upper:]' '[:lower:]')
+    [[ "$v" == true || "$v" == yes || "$v" == on || "$v" == 1 ]]
+}
+
+# _template_switch_of FILE MODULE — the switch ("# dcs-if: NAME") of the block of FILE that declares the plugin MODULE,
+# on or off; nothing when no block does
+_template_switch_of() {
+    awk -v mod="$2" '
+        /^[ \t]*# dcs-if: / { name = $0; sub(/^[ \t]*# dcs-if: */, "", name); sub(/[ \t\r]+$/, "", name); next }
+        /^[ \t]*# dcs-end/ { name = ""; next }
+        name != "" { l = $0; sub(/^[ \t]*/, "", l); sub(/^# ?/, "", l); sub(/^[ \t]*/, "", l)
+            if (tolower(l) ~ /^modulename:/) { v = l; sub(/^[^:]*:[ \t]*/, "", v); gsub(/["\x27 \t\r]/, "", v); if (v == mod) { print name; exit } } }' "$1" 2>/dev/null
+}
+
+# _stack_env_set FILE KEY VALUE — one KEY=VALUE line of a stack's .env: replaced where it is, appended when absent
+_stack_env_set() {
+    local f="$1" key="$2" val="$3"
+    [[ "$key" =~ ^[A-Z_][A-Z0-9_]*$ ]] || return 1
+    [[ -f "$f" ]] || touch "$f" 2>/dev/null || return 1
+    if grep -q "^${key}=" "$f" 2>/dev/null; then
+        K="$key" V="$val" awk 'index($0, ENVIRON["K"] "=") == 1 { print ENVIRON["K"] "=" ENVIRON["V"]; next } { print }' "$f" > "$f.tmp.$$" && chmod --reference="$f" "$f.tmp.$$" 2>/dev/null && mv -f "$f.tmp.$$" "$f"
+    else
+        [[ -s "$f" && "$(tail -c1 "$f")" != "" ]] && printf '\n' >> "$f"
+        printf '%s=%s\n' "$key" "$val" >> "$f"
+    fi
+}
+
+# The module and the version the Traefik template pins for a plugin: "MODULE VERSION" from the plugin's block in the
+# template's traefik.yml, whether that block is on or off. Usage: _traefik_template_plugin NAME
+_traefik_template_plugin() {
+    awk -v n="$1" '
+        { l = $0; sub(/\r$/, "", l); sub(/^[ \t]*/, "", l); sub(/^# ?/, "", l); sub(/^[ \t]*/, "", l) }
+        l == n ":" { inb = 1; next }
+        inb && l ~ /^[A-Za-z0-9_-]+:[ \t]*$/ { inb = 0 }
+        inb && tolower(l) ~ /^modulename:/ { m = l; sub(/^[^:]*:[ \t]*/, "", m); gsub(/["\x27 \t]/, "", m) }
+        inb && l ~ /^version:/ { v = l; sub(/^[^:]*:[ \t]*/, "", v); gsub(/["\x27 \t]/, "", v) }
+        END { if (m != "") print m, v }' "$TEMPLATES_DIR/traefik/config/traefik.yml" 2>/dev/null
+}
+
 # The stack running Traefik and its App-Data directory (empty when none).
 # Only the proxy image counts (traefik/whoami is not Traefik), and a stack
 # whose App-Data already holds Traefik's config wins over one that merely
@@ -12509,11 +12586,15 @@ _sablier_names_json() {
 # The name Traefik knows a plugin by: its key under experimental.plugins whose moduleName
 # (any case: Traefik reads modulename too) is MODULE. A middleware must use this key —
 # "plugin: <key>:" — or Traefik refuses it and the router answers 404. Nothing when the
-# static config does not declare the module.
+# static config does not declare the module. Usage: _traefik_plugin_name MODULE [FILE]
+# (FILE: a traefik.yml other than the running stack's, a deploy's freshly copied one)
 _traefik_plugin_name() {
-    local module="$1" line ad cfg
-    line=$(_traefik_stack_appdata) || return 1
-    ad="${line#*	}"; cfg="$ad/Traefik/traefik.yml"; [[ -f "$cfg" ]] || return 1
+    local module="$1" cfg="${2:-}" line ad
+    if [[ -z "$cfg" ]]; then
+        line=$(_traefik_stack_appdata) || return 1
+        ad="${line#*	}"; cfg="$ad/Traefik/traefik.yml"
+    fi
+    [[ -f "$cfg" ]] || return 1
     awk -v mod="$module" '
         function indent(l) { match(l, /^[ \t]*/); return RLENGTH }
         { sub(/\r$/, ""); sub(/[ \t]+#.*$/, "") }
@@ -12528,18 +12609,30 @@ _traefik_plugin_name() {
 }
 
 # Make sure Traefik's static config declares a plugin (older installs predate
-# the template's list). Usage: _traefik_ensure_plugin NAME MODULE VERSION
+# the template's list). Usage: _traefik_ensure_plugin NAME MODULE VERSION [FILE]
 # Returns 0 when it was already there, 1 when it was added (Traefik must restart).
 # TRAEFIK_PLUGIN_NAME is the key the middleware must use: the one the config
 # already declares the module under (a user's "theme-park"), else NAME.
+# A template-written config declares the plugin in a block that is switched off
+# ("# dcs-if: SWITCH"): that block goes on, and the switch is recorded in the
+# stack's .env, so a later deploy of the template keeps the plugin.
 _traefik_ensure_plugin() {
-    local pname="$1" module="$2" version="$3" line ad cfg declared
+    local pname="$1" module="$2" version="$3" cfg="${4:-}" line="" ad declared sw
     TRAEFIK_PLUGIN_NAME="$pname"
-    line=$(_traefik_stack_appdata) || return 0
-    ad="${line#*	}"; cfg="$ad/Traefik/traefik.yml"
+    if [[ -z "$cfg" ]]; then
+        line=$(_traefik_stack_appdata) || return 0
+        ad="${line#*	}"; cfg="$ad/Traefik/traefik.yml"
+    fi
     [[ -f "$cfg" ]] || return 0
-    declared=$(_traefik_plugin_name "$module")
+    declared=$(_traefik_plugin_name "$module" "$cfg")
     if [[ -n "$declared" ]]; then TRAEFIK_PLUGIN_NAME="$declared"; return 0; fi
+    sw=$(_template_switch_of "$cfg" "$module")
+    if [[ -n "$sw" ]]; then
+        _template_render_switches "$cfg" "$sw=true" named
+        declared=$(_traefik_plugin_name "$module" "$cfg"); [[ -n "$declared" ]] && TRAEFIK_PLUGIN_NAME="$declared"
+        [[ -n "$line" ]] && _stack_env_set "$COMPOSE_DIR/${line%%	*}/.env" "$sw" true
+        return 1
+    fi
     # mentioned in a form DCS does not read, or NAME already taken by another plugin: never a
     # second declaration (a duplicate key stops Traefik from starting) — the check after the
     # change catches a middleware Traefik refuses
@@ -12551,6 +12644,115 @@ _traefik_ensure_plugin() {
         printf '\nexperimental:\n  plugins:\n    %s:\n      moduleName: "%s"\n      version: "%s"\n' "$pname" "$module" "$version" >> "$cfg"
     fi
     return 1
+}
+
+# =============================================================================
+# The Traefik template's add-ons
+# =============================================================================
+# Switches of the traefik template (the Traefik step of the setup wizard, the deploy sheet): each declares a plugin in
+# Traefik's static config while it is on, and the middleware DCS writes for it. Traefik downloads every declared plugin
+# when it starts and does not start when one cannot be fetched, which is why nothing is declared on spec.
+TRAEFIK_ADDON_SWITCHES="TRAEFIK_SABLIER TRAEFIK_CLOUDFLARE_REAL_IP TRAEFIK_GEOBLOCK TRAEFIK_THEMEPARK TRAEFIK_MAINTENANCE"
+TRAEFIK_ADDON_VARS="$TRAEFIK_ADDON_SWITCHES TRAEFIK_GEOBLOCK_COUNTRIES"
+
+# ISO 3166-1 alpha-2: the codes geoblock compares a visitor's country with (the 249 of the iso-codes package)
+ISO_3166_1_ALPHA2="AD AE AF AG AI AL AM AO AQ AR AS AT AU AW AX AZ BA BB BD BE BF BG BH BI BJ BL BM BN BO BQ BR BS BT BV BW BY BZ CA CC CD CF CG CH CI CK CL CM CN CO CR CU CV CW CX CY CZ DE DJ DK DM DO DZ EC EE EG EH ER ES ET FI FJ FK FM FO FR GA GB GD GE GF GG GH GI GL GM GN GP GQ GR GS GT GU GW GY HK HM HN HR HT HU ID IE IL IM IN IO IQ IR IS IT JE JM JO JP KE KG KH KI KM KN KP KR KW KY KZ LA LB LC LI LK LR LS LT LU LV LY MA MC MD ME MF MG MH MK ML MM MN MO MP MQ MR MS MT MU MV MW MX MY MZ NA NC NE NF NG NI NL NO NP NR NU NZ OM PA PE PF PG PH PK PL PM PN PR PS PT PW PY QA RE RO RS RU RW SA SB SC SD SE SG SH SI SJ SK SL SM SN SO SR SS ST SV SX SY SZ TC TD TF TG TH TJ TK TL TM TN TO TR TT TV TW TZ UA UG UM US UY UZ VA VC VE VG VI VN VU WF WS YE YT ZA ZM ZW"
+
+# _geoblock_countries_norm LIST — the countries of a Geoblock deploy as geoblock wants them: "GB,US" from "gb, us"
+# (upper case, no blanks, each once). Prints the list; returns 1 with GEOBLOCK_ERR set when the list is empty or a
+# code is not ISO 3166-1 alpha-2 ("UK" is the one people reach for: the United Kingdom is GB).
+_geoblock_countries_norm() {
+    local raw="${1//[[:space:]]/}" c out="" seen=" "
+    GEOBLOCK_ERR=""
+    raw="${raw^^}"
+    if [[ -z "${raw//,/}" ]]; then GEOBLOCK_ERR="Geoblock needs at least one country: ISO 3166-1 alpha-2 codes, comma separated (GB,US,DE)"; return 1; fi
+    local IFS=','
+    for c in $raw; do
+        [[ -n "$c" ]] || continue
+        if [[ ! "$c" =~ ^[A-Z]{2}$ ]]; then GEOBLOCK_ERR="'$c' is not a country code: two letters per country, comma separated (GB,US,DE)"; return 1; fi
+        if [[ " $ISO_3166_1_ALPHA2 " != *" $c "* ]]; then
+            GEOBLOCK_ERR="'$c' is not an ISO 3166-1 alpha-2 country code"
+            case "$c" in UK|EN) GEOBLOCK_ERR+=" (the United Kingdom is GB)" ;; EU) GEOBLOCK_ERR+=" (list the countries, one code each)" ;; esac
+            return 1
+        fi
+        [[ "$seen" == *" $c "* ]] && continue
+        seen+="$c "; out+="${out:+,}$c"
+    done
+    printf '%s' "$out"
+}
+
+# What a template's variables must satisfy beyond "required": the deploy and the preview refuse a value that would render
+# a configuration Traefik cannot use. Returns 1 with TEMPLATE_VARS_ERR set. Usage: _template_vars_check NAME VARS
+_template_vars_check() {
+    local name="$1" dvars="$2" v
+    TEMPLATE_VARS_ERR=""
+    case "$name" in
+        traefik)
+            if _template_var_on TRAEFIK_GEOBLOCK "$dvars"; then
+                v=$(printf '%s\n' "$dvars" | sed -n 's/^TRAEFIK_GEOBLOCK_COUNTRIES=//p' | head -n 1)
+                _geoblock_countries_norm "$v" >/dev/null || { TEMPLATE_VARS_ERR="Geoblock: $GEOBLOCK_ERR"; return 1; }
+            fi ;;
+    esac
+    return 0
+}
+
+# The add-ons of a Traefik deploy, as its switches say. Runs once the template's config files are in place and rendered
+# (the "# dcs-if:" blocks of traefik.yml follow the switches by then):
+#   - a traefik.yml from before those blocks (an older install re-deployed) gets the declaration of a plugin that is on added
+#   - the middleware DCS defines for an add-on is written afresh from the template's files/ (so new countries apply on a
+#     re-deploy) and removed when the switch is off — DCS's own file only: a middleware of the same name written by hand
+#     elsewhere, and its place in a chain, are left alone
+#   - cloudflarewarp and geoblock go into traefik-chain, which every route DCS writes carries (cloudflarewarp first, so the
+#     CrowdSec bouncer and geoblock judge the visitor, not Cloudflare), and come out of it with their switch; maintenance is
+#     defined and left for routes to name; theme.park's middlewares are written per container by the theme page, Sablier's
+#     per route by the deploy sheet
+#   - the maintenance holding page goes beside traefik.yml the first time (edits are kept), never a trigger file
+# Sets TRAEFIK_ADDONS_JSON, what is on, for the deploy's answer. Usage: _traefik_addons_apply TDIR CONFIG_TARGET STACK VARS
+_traefik_addons_apply() {
+    local tdir="$1" cfg="$2" stack="$3" dvars="$4"
+    local static="$cfg/traefik.yml" dir="$cfg/custom_routes/$stack" chain n on mod ver key src dst countries
+    mkdir -p "$dir" 2>/dev/null
+    chain=$(_traefik_chain_file "$cfg/custom_routes"); [[ -n "$chain" ]] || chain="$dir/traefik.yml"
+    TRAEFIK_ADDONS_JSON='{}'
+    for n in sablier cloudflarewarp geoblock themepark maintenance; do
+        on=false; countries=""; key="$n"
+        case "$n" in
+            sablier)        _template_var_on TRAEFIK_SABLIER "$dvars" && on=true ;;
+            cloudflarewarp) _template_var_on TRAEFIK_CLOUDFLARE_REAL_IP "$dvars" && on=true ;;
+            geoblock)       _template_var_on TRAEFIK_GEOBLOCK "$dvars" && on=true ;;
+            themepark)      _template_var_on TRAEFIK_THEMEPARK "$dvars" && on=true ;;
+            maintenance)    _template_var_on TRAEFIK_MAINTENANCE "$dvars" && on=true ;;
+        esac
+        if [[ "$on" == true ]]; then
+            mod=""; ver=""
+            read -r mod ver < <(_traefik_template_plugin "$n")
+            if [[ -n "$mod" ]]; then
+                _traefik_ensure_plugin "$n" "$mod" "$ver" "$static" >/dev/null 2>&1 || true
+                key="${TRAEFIK_PLUGIN_NAME:-$n}"
+            fi
+        fi
+        src="$tdir/files/$n-middleware.yml"; dst="$dir/$n.yml"
+        if [[ "$on" == true && -f "$src" ]]; then
+            if [[ "$n" == geoblock ]]; then
+                countries=$(_geoblock_countries_norm "$(printf '%s\n' "$dvars" | sed -n 's/^TRAEFIK_GEOBLOCK_COUNTRIES=//p' | head -n 1)") || countries=""
+            fi
+            # the plugin key is the one this traefik.yml declares the module under; the countries become a list
+            K="$key" N="$n" L="$countries" awk '
+                index($0, "__COUNTRIES__") { match($0, /^[ \t]*/); ind = substr($0, 1, RLENGTH); print ind "countries:"; m = split(ENVIRON["L"], a, ","); for (i = 1; i <= m; i++) if (a[i] != "") print ind "  - " a[i]; next }
+                $0 ~ ("^        " ENVIRON["N"] ":[ \t]*$") { $0 = "        " ENVIRON["K"] ":" }
+                { print }' "$src" > "$dst.tmp.$$" && mv -f "$dst.tmp.$$" "$dst"
+            case "$n" in cloudflarewarp|geoblock) _traefik_chain_set "$n" add "$chain" ;; esac
+        elif [[ "$on" != true && -f "$dst" ]] && grep -q 'written by DCS' "$dst" 2>/dev/null; then
+            rm -f "$dst"
+            case "$n" in cloudflarewarp|geoblock) _traefik_chain_set "$n" remove "$chain" ;; esac
+        fi
+        TRAEFIK_ADDONS_JSON=$(jq -c --arg n "$n" --argjson on "$on" --arg c "$countries" \
+            '.[$n] = (if ($n == "geoblock" and $on) then {on: true, countries: ($c | split(",") | map(select(length > 0)))} else {on: $on} end)' <<< "$TRAEFIK_ADDONS_JSON")
+    done
+    if _template_var_on TRAEFIK_MAINTENANCE "$dvars" && [[ ! -f "$cfg/maintenance.html" ]]; then
+        cp -f "$tdir/files/maintenance.html" "$cfg/maintenance.html" 2>/dev/null || true
+    fi
+    return 0
 }
 
 # _sablier_forget NAME — Sablier keeps a session per container it woke and stops the container
@@ -12832,16 +13034,19 @@ _traefik_chains_with() {
         }' "${files[@]}" 2>/dev/null | LC_ALL=C sort -u
 }
 
-# Keep one middleware in (or out of) Traefik's traefik-chain. Usage: _traefik_chain_set NAME add|remove
-# The chain is found where it is (_traefik_chain_file) and read by its indentation. Adding a middleware the chain lists already changes
-# nothing. A new one goes first, or right after the entries that restore the visitor's address (cloudflarewarp, real-ip): a bouncer that
-# ran before them would judge Cloudflare's addresses. The file is rewritten IN PLACE (same inode, owner and mode): a stack may bind-mount
-# it as a single file, and a copy renamed over it would leave the container looking at the old one.
+# Keep one middleware in (or out of) Traefik's traefik-chain. Usage: _traefik_chain_set NAME add|remove [FILE]
+# The chain is found where it is (_traefik_chain_file; FILE names it when the caller knows, a deploy of the template) and read by its
+# indentation. Adding a middleware the chain lists already changes nothing. A new one goes first, or right after the entries that restore
+# the visitor's address (cloudflarewarp, real-ip): a bouncer that ran before them would judge Cloudflare's addresses. The file is rewritten
+# IN PLACE (same inode, owner and mode): a stack may bind-mount it as a single file, and a copy renamed over it would leave the container
+# looking at the old one.
 _traefik_chain_set() {
-    local mw="$1" op="${2:-add}" dir f
-    dir=$(_find_traefik_routes_dir) || return 0
-    f=$(_traefik_chain_file "$dir")
-    [[ -n "$f" ]] || f="$dir/core-infrastructure/traefik.yml"
+    local mw="$1" op="${2:-add}" f="${3:-}" dir
+    if [[ -z "$f" ]]; then
+        dir=$(_find_traefik_routes_dir) || return 0
+        f=$(_traefik_chain_file "$dir")
+        [[ -n "$f" ]] || f="$dir/core-infrastructure/traefik.yml"
+    fi
     [[ -f "$f" ]] || return 0
     if [[ "$op" == add ]] && _traefik_chain_has "$f" "$mw"; then return 0; fi
     awk -v mw="$mw" -v op="$op" '
@@ -15032,6 +15237,10 @@ handle_template_deploy() {
     # and containers Sablier starts on demand. Checked before anything is written.
     local -a _od_services=() _auth_services=()
     local _deploy_auth_mw="" _od_traefik_restarted=false _svc_name_re='^[A-Za-z0-9][A-Za-z0-9_.-]*$'
+    # The Traefik template's add-ons: whether Traefik was running before (its static config is read at start only, so a
+    # change to it restarts a running one), what that config said before this deploy, and what the Sablier switch did
+    local _traefik_was_running=false _traefik_static_before="" _traefik_restart_needed=false _sablier_json=null
+    TRAEFIK_ADDONS_JSON=null
     while IFS= read -r _s; do [[ -n "$_s" && "$_s" =~ $_svc_name_re ]] && _od_services+=("$_s"); done < <(printf '%s' "$body" | jq -r '.on_demand_services // [] | .[]' 2>/dev/null)
     while IFS= read -r _s; do [[ -n "$_s" && "$_s" =~ $_svc_name_re ]] && _auth_services+=("$_s"); done < <(printf '%s' "$body" | jq -r '.authelia_services // [] | .[]' 2>/dev/null)
     if [[ ${#_od_services[@]} -gt 0 ]] && ! docker inspect Sablier >/dev/null 2>&1; then
@@ -15135,6 +15344,27 @@ handle_template_deploy() {
             _api_error 400 "Missing required variables: $_missing_vars"
             return
         fi
+    fi
+
+    # The Traefik template's add-ons: the proxy stack's .env records which are on (this deploy writes it below, and so does
+    # a flow that declares a plugin on its own), so a deploy that does not mention a switch keeps it as it is rather than
+    # turning it off with the template's default; the countries of a Geoblock deploy are checked and written tidily
+    if [[ "$name" == "traefik" ]]; then
+        local _sw _cur
+        for _sw in $TRAEFIK_ADDON_VARS; do
+            printf '%s' "$body" | jq -e --arg k "$_sw" '(.variables // {}) | has($k)' >/dev/null 2>&1 && continue
+            _cur=$(grep -m1 "^${_sw}=" "$target_dir/.env" 2>/dev/null | cut -d= -f2- | tr -d '"' | tr -d "'"); [[ -n "$_cur" ]] || continue
+            vars=$(printf '%s\n' "$vars" | sed "s/^${_sw}=.*/${_sw}=$(_sed_escape_val "$_cur")/")
+        done
+        [[ "$(docker inspect -f '{{.State.Running}}' Traefik 2>/dev/null)" == "true" ]] && _traefik_was_running=true
+    fi
+    if ! _template_vars_check "$name" "$vars"; then
+        _api_error 400 "$TEMPLATE_VARS_ERR"
+        return
+    fi
+    if [[ "$name" == "traefik" ]] && _template_var_on TRAEFIK_GEOBLOCK "$vars"; then
+        _cur=$(_geoblock_countries_norm "$(printf '%s\n' "$vars" | sed -n 's/^TRAEFIK_GEOBLOCK_COUNTRIES=//p' | head -n 1)")
+        vars=$(printf '%s\n' "$vars" | sed "s/^TRAEFIK_GEOBLOCK_COUNTRIES=.*/TRAEFIK_GEOBLOCK_COUNTRIES=${_cur}/")
     fi
 
     while IFS='=' read -r key val; do
@@ -15621,6 +15851,13 @@ handle_template_deploy() {
         if grep -q 'SECRETS\.' "$env_file" 2>/dev/null; then
             sed -i 's/${SECRETS\.\([A-Za-z0-9_-]*\)}/${SECRETS_\1}/g' "$env_file"
         fi
+        # The add-on switches of the Traefik template mirror this deploy (a line that exists is updated, unlike the other
+        # variables, which keep the stack's value): the next deploy, and the dashboard, start from what is on now
+        if [[ "$name" == "traefik" ]]; then
+            for _sw in $TRAEFIK_ADDON_VARS; do
+                _stack_env_set "$env_file" "$_sw" "$(printf '%s\n' "$vars" | sed -n "s/^${_sw}=//p" | head -n 1)"
+            done
+        fi
     fi
 
     # Build JSON array of added service names
@@ -15731,26 +15968,33 @@ handle_template_deploy() {
                 done
 
                 # Move the traefik route file into the target stack's custom_routes
-                # (the template ships it under core-infrastructure/ by default)
+                # (the template ships it under core-infrastructure/ by default). A re-deploy
+                # copies the shipped file again (it was moved away): the stack's own copy is
+                # kept then — it carries the chain entries DCS and the person added, the
+                # CrowdSec bouncer and the add-ons among them — and the shipped copy is not
+                # left where Traefik would read its routers a second time. A route file of
+                # the person's own in another folder differs from the shipped one and stays.
                 if [[ -n "$target_stack" ]]; then
                     mkdir -p "$config_target/custom_routes/$target_stack"
-                    local route_src=""
-                    # Check all subdirs for a traefik.yml route file
-                    local route_file
+                    local route_file route_rel
                     for route_file in "$config_target"/custom_routes/*/traefik.yml; do
                         [[ -f "$route_file" ]] || continue
-                        local route_dir
-                        route_dir=$(basename "$(dirname "$route_file")")
-                        if [[ "$route_dir" != "$target_stack" ]]; then
-                            route_src="$route_file"
-                            break
+                        [[ "$(basename "$(dirname "$route_file")")" != "$target_stack" ]] || continue
+                        route_rel="${route_file#"$config_target/"}"
+                        [[ -f "$tdir/config/$route_rel" ]] && cmp -s "$route_file" "$tdir/config/$route_rel" || continue
+                        if [[ -f "$config_target/custom_routes/$target_stack/traefik.yml" ]]; then
+                            rm -f "$route_file"
+                        else
+                            mv "$route_file" "$config_target/custom_routes/$target_stack/traefik.yml"
                         fi
+                        break
                     done
-                    if [[ -n "$route_src" ]]; then
-                        mv "$route_src" "$config_target/custom_routes/$target_stack/traefik.yml"
-                    fi
                 fi
             fi
+
+            # Traefik: what its static config said before this deploy touches it (a re-deploy keeps the file; an
+            # add-on switched on or off changes it, and a running Traefik must then restart to read it)
+            [[ -f "$config_target/traefik.yml" ]] && _traefik_static_before=$(cksum < "$config_target/traefik.yml")
 
             # Apply variable substitution to deployed config files (.env, .yml,
             # .yaml, .conf). Uses $vars, which includes generated secrets.
@@ -15774,6 +16018,8 @@ handle_template_deploy() {
                     if [[ "$cfg_content" != "$orig_content" ]]; then
                         printf '%s\n' "$cfg_content" > "$cfg_file"
                     fi
+                    # the file's optional blocks ("# dcs-if: SWITCH") follow the deploy's switches
+                    _template_render_switches "$cfg_file" "$vars"
                 done < <(find "$config_target" -maxdepth 3 -type f \( -name '.env' -o -name '*.yml' -o -name '*.yaml' -o -name '*.conf' \) 2>/dev/null)
             fi
             # Traefik: keep the ACME challenge that matches this deploy — a
@@ -15782,6 +16028,15 @@ handle_template_deploy() {
                 local _cf_tok
                 _cf_tok=$(printf '%s\n' "$vars" | sed -n 's/^CF_DNS_API_TOKEN=//p' | head -1)
                 if [[ -n "$_cf_tok" ]]; then _traefik_pick_challenge "$config_target/traefik.yml" dns; else _traefik_pick_challenge "$config_target/traefik.yml" http; fi
+            fi
+            # Traefik: the add-ons this deploy chose — a plugin declared only while its switch is on, the middleware DCS
+            # writes for it, its place in traefik-chain. Traefik reads its static config at start only: a running one
+            # restarts when that file changed (after the start below, or right away when nothing is started)
+            if [[ "$name" == "traefik" && -f "$config_target/traefik.yml" ]]; then
+                _traefik_addons_apply "$tdir" "$config_target" "$target_stack" "$vars"
+                if [[ "$_traefik_was_running" == true && "$(cksum < "$config_target/traefik.yml")" != "$_traefik_static_before" ]]; then
+                    _traefik_restart_needed=true
+                fi
             fi
 
             # Ensure traefik.yml and acme.json are FILES not directories.
@@ -16484,6 +16739,30 @@ print('\n'.join(result))
     auto_start=$(printf '%s' "$body" | jq -r '.auto_start // false' 2>/dev/null)
     connect_proxy="$_connect_proxy"
     local started=false deploy_warning=""
+    # The Traefik template's "Start on demand" switch: Sablier (its own template) is merged into the same stack and starts
+    # with Traefik — unless a Sablier container exists already (an earlier deploy, another stack), when the plugin alone is
+    # declared. The inner deploy runs in a subshell and its answer is read here, so all it leaves behind is the compose
+    # merge, its own backup (a second later than ours, so the two are two files) and its deploy event.
+    if [[ "$name" == "traefik" ]] && _template_var_on TRAEFIK_SABLIER "$vars"; then
+        if docker inspect Sablier >/dev/null 2>&1; then
+            _sablier_json='{"deployed": false, "present": true}'
+        else
+            local _sab_out _sab_code _sab_msg
+            while [[ "$(date +%Y%m%d%H%M%S)" == "$timestamp" ]]; do sleep 0.3; done
+            _sab_out=$(handle_template_deploy sablier "$(jq -nc --arg s "$target_stack" --argjson r "$([[ "$replace_services" == "true" ]] && echo true || echo false)" '{target_stack: $s, auto_start: false, replace_services: $r}')" 2>/dev/null)
+            _sab_code=$(printf '%s\n' "$_sab_out" | head -n 1 | awk '{ print $2 }')
+            if [[ "$_sab_code" == "200" ]]; then
+                template_services+=$'\n'"sablier"
+                services_json=$(printf '%s\n' "$template_services" | jq -R -s -c 'split("\n") | map(select(length > 0))')
+                _sablier_json='{"deployed": true, "present": false}'
+            else
+                _sab_msg=$(printf '%s\n' "$_sab_out" | sed -n '/^\r*$/,$p' | sed '1d' | jq -r '.message // empty' 2>/dev/null)
+                [[ -n "$_sab_msg" ]] || _sab_msg="the Sablier template did not deploy (HTTP ${_sab_code:-?})"
+                _sablier_json=$(jq -nc --arg m "$_sab_msg" '{deployed: false, present: false, error: $m}')
+                deploy_warning="Sablier was not deployed: $_sab_msg"
+            fi
+        fi
+    fi
     local _deploy_ctx
     _deploy_ctx=$(jq -nc --arg t "$name" --argjson svcs "$services_json" '{template: $t, services: $svcs}')
     if [[ "$auto_start" == "true" ]]; then
@@ -16559,6 +16838,11 @@ print('\n'.join(result))
             [[ -f "$target_dir/.env" ]] && _deploy_env="$target_dir/.env"
             # shellcheck disable=SC2086
             _compose_with_secrets "$target_dir/docker-compose.yml" "$_deploy_env" "${_prog[@]}" up -d $_svc_list >>"$_activity_log" 2>&1 || _up_ok=false
+            # an add-on switched on or off in Traefik's static config, which it reads at start only
+            if [[ "$_traefik_restart_needed" == true ]]; then
+                echo "[dcs] Traefik's static config changed (an add-on): restarting Traefik" >> "$_activity_log"
+                docker restart Traefik >>"$_activity_log" 2>&1 || true
+            fi
 
             # Connect routed containers to the 'proxy' network so Traefik can reach them.
             # Controlled by the connect_proxy flag from the deploy request.
@@ -16620,10 +16904,15 @@ print('\n'.join(result))
     _record_deploy_event "deploy" "$name" "$target_stack" "$services_json" "docker-compose.yml.bak.${timestamp}"
     _audit_log "deploy" "Deployed template '$name' to $target_stack" 2>/dev/null
 
+    # Nothing started, but Traefik is running on a static config that changed: it restarts now
+    if [[ "$_traefik_restart_needed" == true && "$started" != true ]]; then
+        docker restart Traefik >/dev/null 2>&1 && _od_traefik_restarted=true
+    fi
+
     # Authelia just arrived: the services deployed before it go behind the portal too
     local _auth_protected=0
     [[ "$name" == "authelia" ]] && _auth_protected=$(_authelia_protect_existing_routes 2>/dev/null || echo 0)
-    _api_success "{\"success\": true, \"authelia_protected\": ${_auth_protected:-0}, \"target_stack\": \"$(_api_json_escape "$target_stack")\", \"services_added\": $services_json, \"on_demand\": $(_upd_json_list ${_od_services[@]+"${_od_services[@]}"}), \"traefik_restarted\": $_od_traefik_restarted, \"started\": $started, \"containers\": $_containers_json, \"activity_id\": \"$(_api_json_escape "$activity_id")\", \"warning\": \"$(_api_json_escape "$deploy_warning")\", \"backup_file\": \"docker-compose.yml.bak.${timestamp}\", \"message\": \"Template services merged into $target_stack successfully\"}"
+    _api_success "{\"success\": true, \"authelia_protected\": ${_auth_protected:-0}, \"target_stack\": \"$(_api_json_escape "$target_stack")\", \"services_added\": $services_json, \"on_demand\": $(_upd_json_list ${_od_services[@]+"${_od_services[@]}"}), \"traefik_restarted\": $_od_traefik_restarted, \"sablier\": $_sablier_json, \"addons\": ${TRAEFIK_ADDONS_JSON:-null}, \"started\": $started, \"containers\": $_containers_json, \"activity_id\": \"$(_api_json_escape "$activity_id")\", \"warning\": \"$(_api_json_escape "$deploy_warning")\", \"backup_file\": \"docker-compose.yml.bak.${timestamp}\", \"message\": \"Template services merged into $target_stack successfully\"}"
 }
 
 # POST /templates/{template}/dry-run — Preview a deployment: conflicts, ports, variables and policy findings
@@ -16670,6 +16959,11 @@ handle_template_dry_run() {
 
     local vars
     vars=$(printf '%s' "$body" | jq -r '.variables // {} | to_entries[] | "\(.key)=\(.value)"' 2>/dev/null)
+    # a value the deploy would refuse (Geoblock without a usable country list) is refused by the preview too
+    if ! _template_vars_check "$name" "$vars"; then
+        _api_error 400 "$TEMPLATE_VARS_ERR"
+        return
+    fi
     while IFS='=' read -r key val; do
         [[ -z "$key" ]] && continue
         if [[ ! "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then continue; fi

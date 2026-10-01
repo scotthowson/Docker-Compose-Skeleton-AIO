@@ -1,0 +1,13 @@
+# Traefik middleware for the cloudflarewarp plugin, written by DCS when the
+# traefik template is deployed with Cloudflare real IP on. It goes first in
+# traefik-chain: for a request that came through Cloudflare's proxy it puts
+# the visitor's address (CF-Connecting-IP) into X-Real-IP and X-Forwarded-For
+# and the visitor's scheme into X-Forwarded-Proto, so the CrowdSec bouncer,
+# geoblock and the apps see the visitor, not Cloudflare. Requests from other
+# addresses pass through unchanged.
+http:
+  middlewares:
+    cloudflarewarp:
+      plugin:
+        cloudflarewarp:
+          disableDefault: false

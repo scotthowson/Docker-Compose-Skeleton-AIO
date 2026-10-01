@@ -126,6 +126,19 @@ deploy real services. On a hub, a stack that runs in a VM is never started on th
 | `CROWDSEC_TRUSTED_IPS` | *(empty)* | Addresses CrowdSec must never ban, beside your public address |
 | `CROWDSEC_MEDIA_APPS` | `jellyfin` | Media apps whose web client CrowdSec must not take for a crawler: comma separated Traefik service hosts (the container name in the route's URL). Empty turns it off. [Details](CROWDSEC.md#media-apps-a-web-client-is-not-a-crawler) |
 
+**The Traefik template's add-ons** are switches of its deploy (the wizard's Traefik step, the deploy
+sheet). The deploy writes them to the proxy stack's `.env`, where a later deploy that does not mention
+them finds them; [Templates → Traefik add-ons](TEMPLATES.md#traefik-add-ons) says what each one does.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `TRAEFIK_SABLIER` | `false` | Deploy Sablier with Traefik and declare its plugin: containers that start on demand |
+| `TRAEFIK_CLOUDFLARE_REAL_IP` | `false` | Behind Cloudflare's proxy, the visitor's address replaces Cloudflare's before CrowdSec and Geoblock judge it (`cloudflarewarp`, first in `traefik-chain`) |
+| `TRAEFIK_GEOBLOCK` | `false` | Only the countries listed reach the routes DCS writes (`geoblock` in `traefik-chain`; your LAN always may) |
+| `TRAEFIK_GEOBLOCK_COUNTRIES` | *(empty)* | ISO 3166-1 alpha-2 codes, comma separated (`GB,US,DE`); required while Geoblock is on, and checked |
+| `TRAEFIK_THEMEPARK` | `false` | Declare the theme.park plugin at the start, so a theme on an app's pages needs no Traefik restart |
+| `TRAEFIK_MAINTENANCE` | `false` | Declare the maintenance plugin and define the `maintenance` middleware with its holding page |
+
 **A Traefik on another machine** pulls this server's routes as a feed:
 
 | Key | Default | Meaning |

@@ -47,8 +47,27 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   with 2xx/3xx, unless the path tries to leave the web root) and a 404 on an item's picture; 404/403/400/401 answers, other methods, path traversal and every other backend are judged
   as before, so scanners and brute forcers are still banned. Names are checked (`^[a-z0-9][a-z0-9_.-]*$`, any case) before they go into the file. See
   [docs/CROWDSEC.md](docs/CROWDSEC.md#media-apps-a-web-client-is-not-a-crawler).
+- **Traefik's add-ons are switches of the template.** The Traefik step of the setup wizard and the template's deploy sheet have five switches (`TRAEFIK_SABLIER`,
+  `TRAEFIK_CLOUDFLARE_REAL_IP`, `TRAEFIK_GEOBLOCK` with `TRAEFIK_GEOBLOCK_COUNTRIES`, `TRAEFIK_THEMEPARK`, `TRAEFIK_MAINTENANCE`). *Start containers on demand* deploys
+  the Sablier template into the same stack, started with Traefik (a Sablier that runs already is left alone). *Cloudflare real IP* puts `cloudflarewarp` first in
+  `traefik-chain`, so the CrowdSec bouncer and Geoblock judge the visitor and not Cloudflare. *Geoblock* defines a `geoblock` middleware in the chain with the
+  countries you list (ISO 3166-1 alpha-2, comma separated, checked before anything is written: `UK` is refused and told that the United Kingdom is `GB`; the
+  preview refuses the same). *theme.park themes* declares the plugin at the start, so a theme needs no Traefik restart. *Maintenance mode* defines a `maintenance`
+  middleware with a holding page, shown with a 503 on the routes that name it while `App-Data/Traefik/maintenance.trigger` exists. Each switch declares its plugin
+  only while it is on: Traefik downloads every declared plugin at start and does not start when one cannot be fetched. The proxy stack's `.env` remembers the
+  switches (a deploy that does not mention them keeps them), a re-deploy takes out what DCS wrote and nothing else (a `geoblock` of your own stays), and a running
+  Traefik restarts when its static config changed. The deploy's answer carries `addons` and `sablier`. See [docs/TEMPLATES.md](docs/TEMPLATES.md#traefik-add-ons).
+- **Optional blocks in a template's config files.** A block between `# dcs-if: VAR` and `# dcs-end` is uncommented when the deploy variable `VAR` is true and
+  commented out when it is not, on every deploy, the way the ACME challenge markers already work; `type: "boolean"` in `template.json` makes such a variable a
+  switch on the deploy sheet. The Traefik template's plugin declarations use it, and `_traefik_ensure_plugin` turns a block on instead of declaring a plugin twice.
 
 ### Changed
+
+- **The Traefik template declares a plugin only while its switch is on.** It declared geoblock, cloudflarewarp, log4shell and Sablier on every deploy, whether or
+  not anything used them, and a plugin that cannot be fetched (the registry down, no route out) stops Traefik from starting at all; the chain file also defined
+  `my-geoblock`, `cloudflarewarp` and `log4shell` middlewares for them. Only the CrowdSec bouncer stays declared always (the crowdsec template wires it); the
+  Log4Shell plugin, which nothing used, is gone; geoblock is pinned to v0.3.8. An existing install keeps its files: a plugin a flow needs on the spot (the theme
+  page, start on demand) is still declared then, by turning its block on.
 
 - **Docs: the cloud-init key step of the hub VM no longer fails on a fresh Proxmox host.** [Getting Started](docs/GETTING-STARTED.md), step 4, used `--sshkeys /root/my-key.pub` without saying where
   that file comes from, so `qm set` printed *can't open '/root/my-key.pub' - No such file or directory* - and still generated the cloud-init drive, which left a VM with no key (ssh takes keys
@@ -77,6 +96,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Homarr on the hub was never found** since the locator asked itself for the port (the hub branch was dead; a VM's Homarr was found).
   An imported template without metadata no longer breaks the Templates page; an edit of a template keeps the keys the editor does not
   carry (icon, auth, singleton, config_path, route_skip).
+||||||| 3df7c7e
+- **A re-deploy of the Traefik template reset the stack's route file.** `custom_routes/<stack>/traefik.yml` (the dashboard route and `traefik-chain`) was
+  overwritten with the shipped copy on every re-deploy, which dropped the CrowdSec bouncer's chain entry and any edit by hand, and the shipped copy was also left
+  under `custom_routes/core-infrastructure/`, where Traefik read its routers a second time. The stack's copy is kept now, and no second copy is left behind.
 - **On Debian 13 the CrowdSec page said *Could not work out the CrowdSec state*, a VM's details sheet showed *empty answer* and never read the balloon
   state, and the CrowdSec Settings tab wrote nothing.** Debian 13's jq (its build of 1.7.1, reporting `jq-1.7`) refuses three things jq 1.8 accepts:
   an operator inside an object value (`{a: $x + 1}`), `f?.field`, and `A + B as $x | …` (bound as `A + (B as $x | …)`: the profiles file came out as an
@@ -100,6 +123,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   rewrites nothing and reloads nothing; one reload for a change; CrowdSec absent or stopped; a loop that started with another value follows `.env`.
 - `tests/crowdsec-media-apps.sh` (opt-in: Docker, the CrowdSec image, the network): the file DCS writes, replayed through the real CrowdSec twice, without it and with it, over fifteen kinds
   of traffic: page loads are not alerts any more, scanners, brute forcers, traversal and other backends alert exactly as before.
+- `tests/smoke.sh`: the Traefik template deployed with every add-on off, on (the plugins declared and their modules, the countries tidied and listed, the chain
+  order, the maintenance middleware and page, Sablier merged into the stack, two backups), refused (`UK`, an empty list, three letters, `XX`; the preview too),
+  kept by a deploy that does not mention them, off again (the static config as shipped); a hand-written `geoblock` left alone; a flow declaring a plugin turns
+  its block on, once; the switch blocks change nothing when run again; a re-deploy keeps the bouncer in the chain and leaves no second route file.
 
 ## [4.0.4] - 2026-09-30
 

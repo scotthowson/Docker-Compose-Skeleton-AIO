@@ -1,0 +1,18 @@
+# Traefik middleware for the maintenance plugin, written by DCS when the
+# traefik template is deployed with Maintenance mode on. It is defined, not
+# attached: add "maintenance" to a route's middlewares to put that app behind
+# the holding page. The page shows only while the trigger file exists
+# (App-Data/Traefik/maintenance.trigger on the host: touch it to start,
+# remove it to stop; no restart), with a 503, so search engines come back
+# later. The page itself is App-Data/Traefik/maintenance.html; edit it as
+# you like, it is read on every request.
+http:
+  middlewares:
+    maintenance:
+      plugin:
+        maintenance:
+          enabled: true
+          filename: /etc/traefik/maintenance.html
+          triggerFilename: /etc/traefik/maintenance.trigger
+          httpResponseCode: 503
+          httpContentType: text/html; charset=utf-8
