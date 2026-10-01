@@ -58,7 +58,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 
 | Method | Path | Access | Description |
 |--------|------|--------|-------------|
-| GET | `/` | public | API name, version, authentication mode and the endpoint list |
+| GET | `/` | public | API name, version, authentication mode, role (hub or node) and the endpoint list |
 | GET | `/status` | user | Host and Docker overview: containers, images, stacks, load, memory, disk, GPU |
 | GET | `/health` | user | # GET /health?fleet=1 on a hub: the members' containers ride along (member, member_name, vmid on each row), the summary and the status cover the fleet, members[] says how each DCS is doing |
 | GET | `/config` | user | Effective configuration (secrets masked) |
@@ -107,7 +107,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 
 | Method | Path | Access | Description |
 |--------|------|--------|-------------|
-| GET | `/setup/status` | public | Always available, no auth. Reports whether server needs setup. |
+| GET | `/setup/status` | public | Always available, no auth. Reports whether the server needs setup; a node answers its role and the hub that manages it (null until it joined one) |
 | GET | `/setup/defaults` | public | Defaults and detected system values for the setup wizard (anonymous until setup is complete, admin afterwards) |
 | POST | `/setup/restore` | public | First-run only: restore a recovery bundle sent by the setup wizard {content_b64, passphrase} |
 | POST | `/setup/configure` | user | Apply the setup wizard's settings and stack list |
