@@ -41,6 +41,10 @@ install() {
     cp -r "$ROOT/.lib/." "$d/.lib/"; cp -r "$ROOT/.config/." "$d/.config/"; cp "$ROOT/vm-images/images.json" "$d/vm-images/"
     grep -vE '^(API_BIND|API_AUTH_ENABLED|API_INSECURE_NO_AUTH|API_TRUSTED_PROXIES|API_IP_WHITELIST|API_PORT|API_WORKERS|PROXMOX_|FLEET_SCAN_PORTS|SERVER_NAME|DOCKER_STACKS)' "$ROOT/.env.example" > "$d/.env"
     printf 'API_PORT=%s\nAPI_AUTH_ENABLED=true\nMETRICS_ENABLED=false\nDDNS_ENABLED=false\nSERVER_NAME=%s\nAPI_WORKERS=0\n' "$port" "$name" >> "$d/.env"
+    # one small template on both: a deploy the hub forwards into the member
+    mkdir -p "$d/.templates/tiny"
+    printf 'services:\n  tiny:\n    image: alpine:3\n    container_name: tiny\n    command: ["sleep","infinity"]\n' > "$d/.templates/tiny/docker-compose.yml"
+    printf '{"name":"tiny","description":"a test template","category":"other","tags":[],"variables":[]}\n' > "$d/.templates/tiny/template.json"
 }
 install "$HUB" "$HP" "Hub"
 install "$MEM" "$MP" "Media VM"
@@ -128,6 +132,16 @@ R=$(hub POST /stacks/demo/files "{\"files\":[{\"path\":\"config/hub-made.yml\",\
 check "files save on the hub: written and pushed"   "1 true" "$(jq -r '"\(.written) \(.pushed)"' <<< "$R" 2>/dev/null)"
 check "files save on the hub: the member has it"    evil "$(cat "$MEM/Stacks/demo/config/hub-made.yml" 2>/dev/null)"
 check "hub: files of a VM stack are the hub's copy" yes "$(hub GET /stacks/demo/files | jq -e '[.files[].path] | index("config/hub-made.yml") != null' >/dev/null 2>&1 && echo yes || echo no)"
+
+echo "A deploy into the VM is in the hub's history"
+D=$(hub POST /templates/tiny/deploy '{"target_stack":"demo","auto_start":false,"routes":false}')
+check "deploy: forwarded into the VM"               "true demo" "$(jq -r '"\(.success) \(.target_stack)"' <<< "$D" 2>/dev/null)"
+check "deploy: the VM's compose has the service"    yes "$(grep -q '^  tiny:' "$MEM/Stacks/demo/docker-compose.yml" && echo yes || echo no)"
+check "deploy: the hub's copy followed"             yes "$(grep -q '^  tiny:' "$HUB/Stacks/demo/docker-compose.yml" 2>/dev/null && echo yes || echo no)"
+check "deploy: in the hub's Deploy history"         "deploy tiny demo $MID" "$(hub GET /templates/deploy-history | jq -r '.history[0] | "\(.action) \(.template) \(.target_stack) \(.member)"' 2>/dev/null)"
+U=$(hub POST /templates/tiny/undeploy '{"target_stack":"demo","services":["tiny"],"remove_containers":false}')
+check "undeploy: forwarded"                         true "$(jq -r '.success' <<< "$U" 2>/dev/null)"
+check "undeploy: in the hub's Deploy history"       "undeploy tiny demo $MID" "$(hub GET /templates/deploy-history | jq -r '.history[0] | "\(.action) \(.template) \(.target_stack) \(.member)"' 2>/dev/null)"
 
 echo "Push and pull by hand"
 rm -f "$MEM/Stacks/demo/docker-compose.yml" "$MEM/Stacks/demo/config/app.yml"

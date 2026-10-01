@@ -7,6 +7,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [4.0.9] - 2026-10-01
 
+### Changed
+
+- The Jellyfin template follows `jellyfin/jellyfin:latest` (it was pinned to 10.9.11).
+
 ### Fixed
 
 - **The Updates page kept reporting VMs that no longer exist.** *Last round: 0 updated, 5 failed* listed every VM that had been removed
@@ -19,6 +23,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   were gone (a 502), and the same app deployed into another VM answered 502 while both routers claimed the host. A stack that is
   deleted takes its route files along (and their DNS records where the server holds the Cloudflare token), and the hub writes its
   Traefik's file for the VMs' routes right after anything it forwarded into a VM, instead of at the loop's next half minute.
+- **A deploy into a VM did not show in the hub's Deploy history, nor its undeploy.** The VM recorded it and the hub, where the history
+  is looked at, did not. The hub records every deploy and undeploy it forwards, with the VM named (`member`, `member_name`).
 - **Edit backups with a time in their name travelled into the hub's copy of a VM stack** (`docker-compose.yml.bak.20261001143241`): they
   stay where they are made, like the plain `.bak` files; the next pull takes them out of the hub's folder.
 - **A VM that missed one look answered 502 through the hub for up to a minute and a half** (4.0.7): a member marked unreachable is asked

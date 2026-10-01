@@ -12245,7 +12245,7 @@ _init_deploy_history() {
 # Record a deploy/undeploy event in the audit log
 # Usage: _record_deploy_event <action> <template_name> <target_stack> <services_json> [backup_file]
 _record_deploy_event() {
-    local action="$1" template_name="$2" target_stack="$3" services_json="$4" backup_file="${5:-}"
+    local action="$1" template_name="$2" target_stack="$3" services_json="$4" backup_file="${5:-}" member="${6:-}" member_name="${7:-}"
     _init_deploy_history
 
     if ! command -v jq >/dev/null 2>&1; then
@@ -12267,7 +12267,9 @@ _record_deploy_event() {
         --arg backup "$backup_file" \
         --arg ts "$timestamp" \
         --argjson epoch "$epoch" \
-        '{id:$id, action:$action, template:$template, target_stack:$target, services:$services, backup_file:$backup, timestamp:$ts, epoch:$epoch}')
+        --arg member "$member" --arg mname "$member_name" \
+        '{id:$id, action:$action, template:$template, target_stack:$target, services:$services, backup_file:$backup, timestamp:$ts, epoch:$epoch}
+         + (if $member != "" then {member: $member, member_name: $mname} else {} end)')
 
     # Prepend to array and cap at 200 entries
     local updated
@@ -21506,7 +21508,18 @@ handle_fleet_proxy() {
     if [[ "$code" == 401 ]]; then _api_error 502 "$(jq -r '.name // "the member"' <<< "$m") refused the hub's account (HTTP 401) — edit the member on the Proxmox page and enter its password again"; return; fi
     if [[ "$code" == 0 ]]; then _api_error 502 "${_FLEET_ERR:-the member did not answer}"; return; fi
     [[ "$method" != "GET" ]] && _audit_log "fleet_proxy" "$method $inner on member $(jq -r .name <<< "$m") by ${AUTH_USERNAME:-?} (HTTP $code)"
+    # a deploy or an undeploy that went into a VM belongs in the hub's Deploy history too: the one dashboard is where it is
+    # looked for (the VM keeps its own record; the hub's names the VM)
+    if [[ "$method" == "POST" && "$code" =~ ^2 && "$inner" =~ ^/templates/([A-Za-z0-9][A-Za-z0-9._-]*)/(deploy|undeploy)$ && "$res" == \{* ]]; then
+        local _dh_tpl="${BASH_REMATCH[1]}" _dh_act="${BASH_REMATCH[2]}" _dh_svcs _dh_stack
+        if [[ "$(jq -r '.success // true' <<< "$res" 2>/dev/null)" != "false" ]]; then
+            _dh_svcs=$(jq -c '(.services_added // .services_removed // []) | if type == "array" then . else [] end' <<< "$res" 2>/dev/null); [[ "$_dh_svcs" == \[* ]] || _dh_svcs='[]'
+            _dh_stack=$(jq -r '.target_stack // ""' <<< "$res" 2>/dev/null); [[ -n "$_dh_stack" ]] || _dh_stack=$(jq -r '.target_stack // ""' <<< "$body" 2>/dev/null)
+            _record_deploy_event "$_dh_act" "$_dh_tpl" "$_dh_stack" "$_dh_svcs" "$(jq -r '.backup_file // ""' <<< "$res" 2>/dev/null)" "$id" "$(jq -r '.name // ""' <<< "$m")" 2>/dev/null || true
+        fi
+    fi
     [[ "$res" == \{* || "$res" == \[* ]] || res=$(jq -nc --arg r "$res" '{raw: $r}')
+    _fleet_proxy_settle "$id" "$method" "$inner" "$body" "$code"
     _api_response "$code" "$res"
 }
 
@@ -22698,6 +22711,35 @@ _fleet_member_purge() {
     rm -f "$FLEET_SNAPSHOT" 2>/dev/null; _api_cache_clear 2>/dev/null || true
     return 0
 }
+# _fleet_proxy_settle ID METHOD INNER BODY CODE — what the hub does once a call it sent into a member came back well, before
+# it answers its own caller (so the next read already sees it), whichever way the call came (a stack's own path forwarded
+# by name, or /fleet/members/<id>/api/…): its copy of the stack's files follows what the VM did. A read of a stack the hub
+# has no files for yet adopts them; a write that can change files (a template rendered into the VM, a compose saved there)
+# pulls them again; a stack deleted on purpose takes the hub's copy and the placement with it (the compose history keeps
+# the versions), or the folder would come back as a stopped stack of the hub; a clone is placed with the same VM.
+_fleet_proxy_settle() {
+    local id="$1" method="$2" inner="$3" body="$4" code="$5" stack="" sub=""
+    [[ "$code" =~ ^2 ]] || return 0
+    case "$inner" in
+        /stacks/*) stack="${inner#/stacks/}"; stack="${stack%%/*}"; sub="${inner#/stacks/"$stack"}" ;;
+        /templates/*/deploy|/templates/*/undeploy) stack=$(jq -r '.target_stack // ""' <<< "$body" 2>/dev/null); sub="/template" ;;
+        *) return 0 ;;
+    esac
+    [[ "$stack" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || return 0
+    case "$stack" in order|rename|reorder|batch|create) return 0 ;; esac
+    if [[ "$method" == GET ]]; then _fleet_stack_adopt "$id" "$stack" >/dev/null 2>&1 || true; return 0; fi
+    case "$sub" in
+        /start|/stop|/restart|/pause|/unpause|/kill|/logs|/logs/*|/containers|/containers/*|/pull-images|/images/*|/update|/stats) ;;
+        /delete)
+            rm -rf "${COMPOSE_DIR:?}/${stack:?}" 2>/dev/null
+            _fleet_placement_drop "$id" "$stack"; _api_cache_clear 2>/dev/null || true; rm -f "$FLEET_SNAPSHOT" 2>/dev/null ;;
+        /clone)
+            local _cn; _cn=$(jq -r '.new_name // ""' <<< "$body" 2>/dev/null)
+            if [[ "$_cn" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]]; then _fleet_placement_add "$id" "$_cn"; rm -f "$FLEET_SNAPSHOT" 2>/dev/null; _fleet_stack_pull "$id" "$_cn" >/dev/null 2>&1 || true; fi ;;
+        *) _fleet_stack_pull "$id" "$stack" >/dev/null 2>&1 || true ;;
+    esac
+    return 0
+}
 # _fleet_member_alive MEMBER — the member's API answers right now (a 4 s look, whatever the watcher last recorded)
 _fleet_member_alive() {
     local m url ins _pg
@@ -22778,26 +22820,6 @@ _fleet_forward_if_remote() {
     fi
     _FLEET_PROXY_CODE=""
     handle_fleet_proxy "$member" "$p" "$body"
-    # the hub's copy of the stack's files follows what the VM did: a read of a stack the hub has no files for yet
-    # adopts them, a write that can change files (a template rendered into the VM, …) pulls them again
-    if [[ -n "$stack_name" && "$_FLEET_PROXY_CODE" =~ ^2 ]]; then
-        if [[ "$m" == GET ]]; then _fleet_stack_adopt "$member" "$stack_name" >/dev/null 2>&1 || true
-        else
-            case "${p#/stacks/"$stack_name"}" in
-                /start|/stop|/restart|/pause|/unpause|/kill|/logs|/logs/*|/containers|/containers/*|/pull-images|/images/*|/update|/stats) ;;
-                /delete)
-                    # the stack is gone from the VM on purpose: the hub's copy and the placement go with it (the compose
-                    # history keeps the versions), or the folder would come back as a stopped stack of the hub
-                    [[ "$stack_name" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] && rm -rf "${COMPOSE_DIR:?}/${stack_name:?}" 2>/dev/null
-                    _fleet_placement_drop "$member" "$stack_name"; _api_cache_clear 2>/dev/null; rm -f "$FLEET_SNAPSHOT" 2>/dev/null ;;
-                /clone)
-                    # the copy lives in the same VM: placed there, so its buttons reach it, and its files come to the hub
-                    local _cn; _cn=$(jq -r '.new_name // ""' <<< "$body" 2>/dev/null)
-                    if [[ "$_cn" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]]; then _fleet_placement_add "$member" "$_cn"; rm -f "$FLEET_SNAPSHOT" 2>/dev/null; _fleet_stack_pull "$member" "$_cn" >/dev/null 2>&1 || true; fi ;;
-                *) _fleet_stack_pull "$member" "$stack_name" >/dev/null 2>&1 || true ;;
-            esac
-        fi
-    fi
     # what the VM just did may have added or removed a route: the hub's file for its Traefik follows now, not at the
     # loop's next half minute (a deleted app's hostname answered 502 until then, a new one was not reachable yet)
     if [[ "$m" != GET && "$_FLEET_PROXY_CODE" =~ ^2 ]]; then ( _fleet_routes_write_local ) </dev/null >/dev/null 2>&1 & fi
