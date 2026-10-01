@@ -215,7 +215,8 @@ R=$(hub POST /stacks/demo/appdata/mount)
 check "appdata: no App-Data in the VM yet is said"  yes "$(jq -r '.message // .error' <<< "$R" 2>/dev/null | grep -q 'has no App-Data in media-vm yet' && echo yes || echo no)"
 check "appdata: …the state is waiting"              "waiting false" "$(hub GET /stacks/demo/appdata | jq -r '"\(.state) \(.mounted)"' 2>/dev/null)"
 check "appdata: …the link shows why"                yes "$([[ -L "$HUB/Stacks/demo/VM-App-Data" ]] && grep -q 'has no App-Data in media-vm yet' "$HUB/Stacks/demo/VM-App-Data/NOT-MOUNTED.txt" 2>/dev/null && echo yes || echo no)"
-check "appdata: …and nothing can be written there"  no "$( (: > "$HUB/Stacks/demo/VM-App-Data/x") 2>/dev/null; [[ -e "$VMDATA/.not-mounted/demo/x" ]] && echo yes || echo no)"
+# (the folder and its file are read-only; root, which the Debian job runs as, writes past any mode, so the modes are what is checked)
+check "appdata: …and nothing can be written there"  "555 444" "$(stat -c %a "$VMDATA/.not-mounted/demo" 2>/dev/null) $(stat -c %a "$VMDATA/.not-mounted/demo/NOT-MOUNTED.txt" 2>/dev/null)"
 # the VM makes its App-Data; an App-Data someone made by hand in the hub's copy holds nothing
 mkdir -p "$MEM/Stacks/demo/App-Data/Jellyfin/config" "$HUB/Stacks/demo/App-Data/Jellyfin/config" "$HUB/Stacks/demo/App-Data/Jellyfin/cache"
 printf '<xml/>\n' > "$MEM/Stacks/demo/App-Data/Jellyfin/config/system.xml"
