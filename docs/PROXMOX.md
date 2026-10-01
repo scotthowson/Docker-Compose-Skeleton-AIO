@@ -223,8 +223,11 @@ Every stack you would have run in a directory on one Docker host runs in its own
 instead, and the hub — the DCS linked to Proxmox — makes that invisible:
 
 - `media-services`, `networking-security`, `development-tools`… are **VMs named like the
-  stack**, each with Docker and an API-only DCS that carries that one stack (`DOCKER_STACKS=
-  media-services`). The hub keeps `core-infrastructure` (the dashboard, the bot, ntfy, uptime).
+  stack**, each with Docker and a DCS **node** that carries that one stack (`DOCKER_STACKS=
+  media-services`). A node is the API alone (`DCS_ROLE=node` in its `.env`): no dashboard, no
+  accounts of its own, no setup wizard, no first-admin gate — the hub's own account (`dcs-hub`),
+  made by the join, is the only one on it, and a person who opens a node's address is sent to the
+  hub's dashboard. The hub keeps `core-infrastructure` (the dashboard, the bot, ntfy, uptime).
 - The hub's **API is the fleet API**: `GET /stacks` lists the members' stacks next to its own
   (each with `placement: "vm"`, the member and the VMID), and `/stacks/{name}/…`,
   `/containers/{name}/…` and a template deploy whose target stack lives in a VM are **forwarded
@@ -267,7 +270,7 @@ stopped):
 | **Cloud-init** | User `dcs` (`FLEET_VM_USER`) with the hub's own ssh key (made once in `.data/fleet-ssh`), the static address, gateway and DNS. |
 | **Boot** | Starts the VM and waits for the Proxmox task. |
 | **SSH** | Waits for the VM to answer ssh (first boot runs cloud-init). |
-| **Install** | Copies `.scripts/fleet-bootstrap.sh` to the VM and runs it: a network check, curl/git/jq/socat/openssl/python3 and the QEMU guest agent, Docker (get.docker.com, with fallbacks) and Compose, then the hub's **own code** as a bundle (`GET /fleet/bundle?token=<join code>`, never data, accounts, secrets or stacks), then an **unattended member setup** that creates the admin (your username on the hub, a generated password kept in the hub's secret store as `FLEET_MEMBER_<STACK>_ADMIN_PASSWORD`), writes the configuration, creates the stack, starts the API without a dashboard and joins the hub, and finally the boot services (`dcs-api`, `dcs-stacks`). Every line lands in the job log. |
+| **Install** | Copies `.scripts/fleet-bootstrap.sh` to the VM and runs it: a network check, curl/git/jq/socat/openssl/python3 and the QEMU guest agent, Docker (get.docker.com, with fallbacks) and Compose, then the hub's **own code** as a bundle (`GET /fleet/bundle?token=<join code>`, never data, accounts, secrets or stacks), then an **unattended node setup** (`DCS_ROLE=node`: no admin account is made — the join creates the hub's account, the only one the VM needs), which writes the configuration, creates the stack, starts the API without a dashboard and joins the hub, and finally the boot services (`dcs-api`, `dcs-stacks`). Every line lands in the job log. |
 | **Join** | Waits for the VM's join, then maps the member to the VMID and marks it *provisioned*. |
 | **Stack** | Copies the hub's `Stacks/<source>` (default: the stack's own name) into the VM over ssh — compose, `.env` and config files, never `App-Data`, data, backups or logs — and starts it through the member's API. Nothing to copy: the VM starts empty. |
 | **Ready** | Asks the member for its stacks through the hub. |
@@ -451,23 +454,43 @@ For a fresh Proxmox host, this is the entire path — no terminal on the VMs, no
 
 ### VMs you made yourself
 
-Any VM with DCS in it can join the same fleet, and the hub then treats it like a built one:
+Any VM — one you installed from an ISO, a VM from before the hub, a machine that is not on
+Proxmox at all — becomes a node of the fleet with **one line**, and the hub then treats it like
+a built one. The hub's Proxmox page (*Join code*) shows a code, valid 24 h, and the line:
+
+```bash
+curl -fsSL 'http://<hub>:9876/fleet/bootstrap?token=<code>' | bash
+```
+
+Run it on the VM as a user with sudo (`sudo -v` first if sudo asks for a password, or as root).
+It installs curl, git, jq, socat, openssl, python3 and the guest agent, Docker and Compose
+(Debian, Ubuntu, Fedora, Arch; whatever is there already is kept), fetches the hub's own code
+(`GET /fleet/bundle`), sets DCS up as a **node** (`DCS_ROLE=node`: the API alone, no admin
+account, no wizard), joins the hub — the join creates the hub's `dcs-hub` account on the node
+and hands it over once — and installs the boot services. The node carries one stack named like
+the machine (`&stack=<name>` on the URL chooses another; a build's code names its VM's stack);
+give it its placement on the hub when the hub has a `Stacks/` folder of that name.
 
 | How | When | What happens |
 |-----|------|--------------|
+| **The one line** (node) | Any VM, fresh or installed, on Proxmox or not | Above. `GET /fleet/bootstrap?token=<code>` serves `.scripts/fleet-bootstrap.sh` with the join's values in front of it; the hub's Proxmox page and `POST /fleet/join-tokens` (`node_command`) show the line ready to paste. |
 | **Scan and link** (hub) | The wizard's Proxmox section after *Test connection*, or *Link VMs* on the Proxmox page | The hub asks Proxmox for each running guest's addresses (QEMU guest agent, or the container's interfaces) and probes DCS's API port; every install it finds gets a *Link* button (an account of that DCS), the rest the join code. |
-| **A join code** (member) | Installing DCS in a VM, or a VM set up before the hub | The hub's Proxmox page (*Join code*) shows a code, valid 24 h. On the VM: `DCS_HUB_URL=http://<hub>:9876 DCS_JOIN_TOKEN=<code> ./setup.sh` for a fresh install, `./setup.sh --join http://<hub>:9876 <code>` for an installed one, or *Join a DCS hub* in that VM's wizard or Proxmox page. The member creates the account `dcs-hub` for the hub and hands it over once. |
+| **A join code** (an installed DCS) | A VM that already runs a full DCS | `./setup.sh --join http://<hub>:9876 <code>` on the VM, or *Join a DCS hub* in that VM's wizard or Proxmox page: the member creates the account `dcs-hub` for the hub and hands it over once, and keeps its own dashboard and accounts. |
 | **By address** (hub) | Any time | *Add member* on the Proxmox page: address, an account that exists on that DCS, optionally the guest. |
 
 `./setup.sh` asks which one a machine is on its first run — **standalone**, **hub** (link
 Proxmox here) or **member** (hub address and join code) — and unattended installs answer with
 `DCS_FLEET_ROLE=hub|member|standalone`, `DCS_HUB_URL` + `DCS_JOIN_TOKEN` (+ `DCS_MEMBER_NAME`)
-and `DCS_PROXMOX_URL` + `DCS_PROXMOX_TOKEN_ID` + `DCS_PROXMOX_TOKEN_SECRET`. A join typed into
-`setup.sh` before the VM has an admin account is saved and runs in that VM's wizard, on the
-same progress card. A fully unattended install (what the hub runs inside a VM) takes
-`DCS_UNATTENDED=true`, `DCS_ADMIN_USER`, `DCS_ADMIN_PASSWORD`, `DCS_STACKS`, `DCS_MEMBER_NAME`,
-`DCS_TZ`, `DCS_PUID`, `DCS_PGID`, `DCS_PROXY_DOMAIN`, `DCS_CF_DNS_API_TOKEN`, `DCS_API_PORT`,
-`DCS_API_BIND` and `DCS_NO_UI=true` (API only).
+and `DCS_PROXMOX_URL` + `DCS_PROXMOX_TOKEN_ID` + `DCS_PROXMOX_TOKEN_SECRET`. `DCS_ROLE=node`
+makes the install a node (the one line sets it; a DCS node image says so in `/etc/dcs-role`):
+no role question, no admin, and the join runs at once. A full DCS (`DCS_ROLE=hub`, the default)
+that joins before it has an admin saves the join and runs it in its wizard, on the same progress
+card, because the hub's account made earlier would close the first-admin window — which is why a
+fresh VM joined that way, and never visited by its wizard, did not link; a node has no such wait.
+A fully unattended install (what the hub runs inside a VM) takes `DCS_UNATTENDED=true`,
+`DCS_STACKS`, `DCS_MEMBER_NAME`, `DCS_TZ`, `DCS_PUID`, `DCS_PGID`, `DCS_PROXY_DOMAIN`,
+`DCS_CF_DNS_API_TOKEN`, `DCS_API_PORT`, `DCS_API_BIND` and `DCS_NO_UI=true` (API only);
+`DCS_ADMIN_USER` + `DCS_ADMIN_PASSWORD` make the first admin of a full DCS without the wizard.
 
 The hub matches a member to its guest by the VM's **SMBIOS uuid** (`smbios1` in its
 configuration; root-only in the VM's sysfs, so the bootstrap keeps a copy in `.data/product_uuid`
@@ -479,7 +502,10 @@ guest*, and the member menu's *Test* re-matches.
 
 - The hub's account on a member is an **admin** (`dcs-hub`, a random 40-character password kept
   in the hub's secret store as `FLEET_MEMBER_<ID>_PASSWORD`), a *service account* that keeps its
-  session when someone else signs in on that member.
+  session when someone else signs in on that member. On a **node** it is the only account there
+  is: `POST /auth/setup`, invites, `POST /auth/users`, `POST /auth/register` and the wizard's
+  endpoints answer 403 naming the hub, and `POST /auth/login` refuses every name but a service
+  account's — a node's API, open on the LAN, offers nothing to sign in to but what the hub holds.
 - Every call the dashboard makes on a member goes **through the hub**
   (`/fleet/members/{id}/api/…`, or transparently for stacks, containers and deploys) with the
   caller's own role checked against the inner path — a viewer reads, a bot does what bots may,
@@ -493,6 +519,8 @@ guest*, and the member menu's *Test* re-matches.
 - **Removing**: *Remove from the fleet* forgets a member (its `dcs-hub` account is removed when
   it answers); *Stop and destroy the VM on Proxmox* also stops and deletes the VM with its
   disks after you type the stack's name. *Leave* on a member removes the hub's account there.
+  A node removed either way is left with no account at all: only a new join (the one line, or
+  `.scripts/api-server.sh --join-hub` on it) puts it under a hub again.
 - **Whose stack is it**: the hub treats a stack as its own when it is in the hub's `DOCKER_STACKS`
   or has containers up. A `Stacks/<name>` folder alone does not count — the repository ships one
   per stack, and a stack placed in a VM leaves its folder behind on the hub — so the VM's stack is
@@ -554,7 +582,7 @@ A member is another machine, so the hub treats everything it sends as data:
 
 | Method | Path | Access |
 |--------|------|--------|
-| GET | `/fleet/status` | user — hub, member or standalone; the hub this server joined; a pending join |
+| GET | `/fleet/status` | user — hub, member or standalone; `dcs_role` (hub or node); the hub this server joined; a pending join |
 | GET | `/fleet/members`, `/fleet/members/{id}` | user |
 | POST / PUT / DELETE | `/fleet/members`, `/fleet/members/{id}` (`?destroy=true` also destroys the VM) | admin — `PUT` also takes `stacks`, the placements: the stacks this member answers for |
 | POST | `/fleet/members/{id}/test` | admin — sign in afresh, read the identity, re-match the guest |
@@ -587,14 +615,16 @@ A member is another machine, so the hub treats everything it sends as data:
 | POST | `/system/docker-engine/update`, `/fleet/docker-engine/update` | admin — update the engine here (unattended with passwordless sudo, else with the Terminal session and password) / on members `{members}` |
 | POST | `/proxmox/vms/{node}/qemu/{vmid}/balloon` | admin — give a VM a memory balloon (three quarters of its memory kept): Proxmox then shows the guest's real usage and can take idle memory back |
 | GET / POST | `/proxmox/capabilities`, `/proxmox/storage` | admin — what the token may do, the storages |
-| GET / POST / DELETE | `/fleet/join-tokens`, `/fleet/join-tokens/{token}` | admin — join codes |
+| GET / POST / DELETE | `/fleet/join-tokens`, `/fleet/join-tokens/{token}` | admin — join codes, each with `node_command`: the one line that makes any VM a node of this hub |
 | POST | `/fleet/join` | public — a member registers with a join code |
 | GET | `/fleet/bundle?token=` | public with a join code — the hub's code for a VM being built; or with an update round's bundle code, for the member it names |
+| GET | `/fleet/bootstrap?token=[&stack=]` | public with a join code — the node installer: `.scripts/fleet-bootstrap.sh` with the join's values in front of it (`curl -fsSL '…' \| bash`); `stack` names the one stack the node carries |
 | GET | `/fleet/identity`, `/fleet/feed` | user — what a hub reads from a member |
 | POST / DELETE | `/fleet/join-hub`, `/fleet/hub` | admin — join a hub, leave it |
 
-Command line, on any DCS: `.scripts/api-server.sh --join-hub URL CODE [NAME]`, `--join-token
-[HOURS]`, `--fleet-status`.
+Command line, on any DCS: `.scripts/api-server.sh --join-hub URL CODE [NAME]` (a node joins at
+once; a full DCS without an admin yet saves the join for its wizard), `--join-token [HOURS]`
+(prints the code and the one line), `--fleet-status`.
 
 ---
 
