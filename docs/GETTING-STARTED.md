@@ -173,7 +173,8 @@ the guides assume it.
 **3. Answer its questions.** `setup.sh` first checks the machine, then:
 
 - asks how this DCS will be used: **Standalone** (the default), **Hub** (link Proxmox here) or
-  **Member** (a hub's address and a join code);
+  **Member** (a hub's address and a join code) — a **node**, the API alone managed from a hub, is
+  not asked for here: one line from the hub installs it, see [a node](#a-node-a-vm-the-hub-manages);
 - offers to install missing tools (`jq`, `socat`, `curl` and friends), to start Docker and to add you
   to the `docker` group, and carries on in the same run;
 - on a Proxmox guest, looks for the Proxmox API and offers to link it;
@@ -213,6 +214,23 @@ Every variable is listed in `./setup.sh --help` and in [Configuration](CONFIGURA
 
 </details>
 
+### A node: a VM the hub manages
+
+A VM that is to run stacks under a hub needs no dashboard, no accounts and no wizard of its own:
+it is a **node** (`DCS_ROLE=node`), the API alone, and the hub's dashboard manages it. On the
+hub, open the **Proxmox** page → **Join code** and copy the line it shows; run it on the VM as a
+user with sudo (`sudo -v` first if sudo asks for a password, or as root):
+
+```bash
+curl -fsSL 'http://192.168.1.20:9876/fleet/bootstrap?token=ABCD-EFGH-JKLM' | bash
+```
+
+That installs Docker and the tools if they are missing (Debian, Ubuntu, Fedora or Arch), fetches
+DCS from the hub, sets it up as a node, joins the hub — the join creates the hub's account on the
+node, the only one it will have — and installs the boot services. The VM then shows on the hub's
+Stacks page like a VM the hub built, carrying a stack named like the machine. Nothing is left to
+do on the VM: the first-admin step of path C belongs to a hub, and a node refuses it.
+
 ## D. A VM from an installer ISO
 
 The classic way on Proxmox: a VM you install yourself, then path C inside it.
@@ -237,7 +255,9 @@ The classic way on Proxmox: a VM you install yourself, then path C inside it.
 
    The guest agent lets Proxmox read the VM's address, shut it down cleanly and freeze the file system
    for backups; the hub also uses it to find VMs.
-5. **Install Docker and DCS** as your user: follow [C. Any Docker host](#c-any-docker-host) from step 1.
+5. **Install Docker and DCS** as your user: follow [C. Any Docker host](#c-any-docker-host) from step 1 for a
+   hub or a standalone server. For a node of a hub, [the one line](#a-node-a-vm-the-hub-manages) from the hub's
+   Join code card does the whole step, Docker included.
 
 With Proxmox linked, DCS tags its own VM `dcs` and `hub` in Proxmox when the wizard finishes *(new in 4.0)*.
 

@@ -213,6 +213,7 @@ The rules themselves (which events, which targets) live on the Notifications pag
 | `PROXMOX_VERIFY_TLS` | `true` | `false` accepts Proxmox's self-signed certificate |
 | `PROXMOX_NODE` | *(empty: all)* | Show only this node |
 | `FLEET_ROLE` | *(set by setup)* | `hub`, `member` or `standalone`, as chosen in `setup.sh` |
+| `DCS_ROLE` | `hub` | `hub`: the full DCS — the API, the dashboard, accounts and the setup wizard; a standalone server is a hub without members. `node`: the API alone, managed from its hub's dashboard — no dashboard, no accounts of its own, no wizard, no first-admin gate; the join creates only the hub's account (`dcs-hub`). `setup.sh` writes it; the hub's one-line join command and the DCS node images (`/etc/dcs-role`) make a node. |
 | `FLEET_SELF_URL` | *(detected)* | How other machines reach this API, `http://<address>:9876` |
 | `FLEET_SCAN_PORTS` | `9876` | Ports the hub probes when it scans guests for DCS |
 | `FLEET_IMAGE_URL` | Debian 13 cloud image | The image the hub imports for new VMs |
@@ -265,12 +266,17 @@ Back up `.secrets/.master-key` apart from the store itself: without it, the secr
 | `DCS_CF_DNS_API_TOKEN` | Stored in the secret store as `CF_DNS_API_TOKEN` |
 | `DCS_API_PORT`, `DCS_API_BIND` | Where the API listens |
 | `DCS_NO_UI=true` | An API-only install, driven from a hub's dashboard |
+| `DCS_ROLE=node` | Install a node: the API alone, no admin account, no wizard; with `DCS_HUB_URL` + `DCS_JOIN_TOKEN` the join runs at once. What the hub's one-line command sets; a DCS node image implies it. |
 | `DCS_FLEET_ROLE` | `hub`, `member` or `standalone` |
 | `DCS_HUB_URL`, `DCS_JOIN_TOKEN` | Join a hub as a member (a join code from the hub's Proxmox page) |
 | `DCS_PROXMOX_URL`, `DCS_PROXMOX_TOKEN_ID`, `DCS_PROXMOX_TOKEN_SECRET` | Link Proxmox during setup |
 
 `./setup.sh --join <hub-url> <code> [name]` joins an installed DCS to a hub, and `./setup.sh --dry-run`
 shows what setup would do without changing anything.
+
+A node needs no `setup.sh` run by hand at all: the hub's Proxmox page (*Join code*) and `POST /fleet/join-tokens`
+(`node_command`) show the one line, `curl -fsSL 'http://<hub>:9876/fleet/bootstrap?token=<code>' | bash`, that
+installs Docker, the tools and DCS as a node of that hub on any Debian, Ubuntu, Fedora or Arch machine and joins it.
 
 On hosts with Debian's own `docker.io` 26 and AppArmor 4, setup writes `DCS_UI_APPARMOR=unconfined` into
 `Stacks/core-infrastructure/.env` so the dashboard container can start; Docker CE needs nothing.

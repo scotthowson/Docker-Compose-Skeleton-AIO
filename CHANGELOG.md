@@ -7,6 +7,27 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Nodes: `DCS_ROLE=node`, the API alone.** A VM that runs stacks under a hub needs no dashboard, no accounts and no wizard of its
+  own. With `DCS_ROLE=node` in `.env` (what `setup.sh` writes for one; a DCS node image says so in `/etc/dcs-role`) the API has no
+  first-admin gate — an empty `users.json` means "not joined yet", never "set me up" — and `POST /auth/setup`, invites,
+  `POST /auth/users`, `POST /auth/register` and the wizard's endpoints answer 403 naming the hub (*This is a node of
+  Howson-Hub (http://…): accounts belong to the hub — open the hub's dashboard*); `POST /auth/login` refuses every name but a
+  service account's, so the hub's `dcs-hub` signs in and nobody else can. `GET /setup/status` on a node says `role: node` and
+  which hub manages it, `GET /` and `GET /fleet/status` carry the role (`dcs_role`), a node's identity does too (the hub keeps
+  it as `identity.role`), a factory reset keeps `DCS_ROLE` as it keeps `FLEET_ROLE`, `start.sh` and `stop.sh` on a node touch
+  only the stacks the hub gave it and never the dashboard's stack, and `setup.sh` on a node asks no role question, makes no
+  admin, takes no stack list from the example and binds the API for its hub. The default, `hub`, is what every install was
+  until now — the full DCS; a standalone server is a hub without members — and nothing changes for it. See
+  [Configuration](docs/CONFIGURATION.md#proxmox-and-the-fleet), [Proxmox → VMs you made yourself](docs/PROXMOX.md#vms-you-made-yourself)
+  and [Getting Started → a node](docs/GETTING-STARTED.md#a-node-a-vm-the-hub-manages).
+- **One line makes any VM a node of the hub.** `GET /fleet/bootstrap?token=<join code>` (public with a valid code, like the
+  bundle; `&stack=` names the one stack the node carries) serves `.scripts/fleet-bootstrap.sh` with the join's values in front
+  of it, so `curl -fsSL 'http://<hub>:9876/fleet/bootstrap?token=<code>' | bash`, run as a user with sudo on any Debian, Ubuntu,
+  Fedora or Arch machine, installs Docker and the tools, fetches the hub's code, sets DCS up as a node and joins.
+  `POST /fleet/join-tokens` and `GET /fleet/join-tokens` answer the line as `node_command`, the dashboard's Join code card shows
+  it first, `setup.sh` on a hub and `--join-token` print it, and a VM built from an installer ISO gets it in its build card. The
+  bootstrap now runs as root without sudo, says at once when sudo would ask for a password, installs with pacman on Arch, and
+  names the stack after the machine when the hub did not.
 - **The API answers from a pool of worker processes (`API_WORKERS`, default 4).** Every request used to start bash on the 27,000-line API script
   (about 0.15 s of CPU on a small VM, cached answer or not), and an open dashboard made five of them a second: a 2-vCPU hub sat at 100 % and more
   with one browser tab. The server now keeps copies of itself that read the script once; a tiny front (`.scripts/api-dispatch.sh`, socat execs it per
@@ -69,6 +90,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Log4Shell plugin, which nothing used, is gone; geoblock is pinned to v0.3.8. An existing install keeps its files: a plugin a flow needs on the spot (the theme
   page, start on demand) is still declared then, by turning its block on.
 
+- **The VMs the hub builds are nodes.** The bootstrap exports `DCS_ROLE=node`: no admin account is made in the VM any more and
+  no `FLEET_MEMBER_<STACK>_ADMIN_PASSWORD` is minted on the hub (the one kept for a VM built earlier is still removed with its
+  member). Members installed as a full DCS keep working as they are: a node is a role an install has, not something an update
+  does to it.
 - **Docs: the cloud-init key step of the hub VM no longer fails on a fresh Proxmox host.** [Getting Started](docs/GETTING-STARTED.md), step 4, used `--sshkeys /root/my-key.pub` without saying where
   that file comes from, so `qm set` printed *can't open '/root/my-key.pub' - No such file or directory* - and still generated the cloud-init drive, which left a VM with no key (ssh takes keys
   only). The step now makes the key (`ssh-keygen`), copies it (`scp`), shows it (`cat`), guards the `qm set` line (an `if [ -s ... ]`, so the VM is never started without a key) and says how to recover
@@ -96,10 +121,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Homarr on the hub was never found** since the locator asked itself for the port (the hub branch was dead; a VM's Homarr was found).
   An imported template without metadata no longer breaks the Templates page; an edit of a template keeps the keys the editor does not
   carry (icon, auth, singleton, config_path, route_skip).
-||||||| 3df7c7e
 - **A re-deploy of the Traefik template reset the stack's route file.** `custom_routes/<stack>/traefik.yml` (the dashboard route and `traefik-chain`) was
   overwritten with the shipped copy on every re-deploy, which dropped the CrowdSec bouncer's chain entry and any edit by hand, and the shipped copy was also left
   under `custom_routes/core-infrastructure/`, where Traefik read its routers a second time. The stack's copy is kept now, and no second copy is left behind.
+- **A VM you made yourself never linked to the hub.** `.scripts/api-server.sh --join-hub` (what `DCS_HUB_URL=… DCS_JOIN_TOKEN=…
+  ./setup.sh` runs at the end) found no account on the fresh VM and *saved* the join for the VM's own setup wizard to run — the
+  hub's account made earlier would have closed the first-admin window — and printed *Join saved*, so `setup.sh` reported success.
+  Nobody opens a wizard on a VM that is only meant to run stacks, so the VM stayed behind its first-admin gate for ever and the
+  hub never heard of it (`media-services` at 192.168.1.20). A node has no wizard and no admin of its own: it joins at once, and
+  the hub's account is the only one it ever has. A full DCS without an admin still defers its join to its wizard, which is right
+  for it.
 - **On Debian 13 the CrowdSec page said *Could not work out the CrowdSec state*, a VM's details sheet showed *empty answer* and never read the balloon
   state, and the CrowdSec Settings tab wrote nothing.** Debian 13's jq (its build of 1.7.1, reporting `jq-1.7`) refuses three things jq 1.8 accepts:
   an operator inside an object value (`{a: $x + 1}`), `f?.field`, and `A + B as $x | …` (bound as `A + (B as $x | …)`: the profiles file came out as an

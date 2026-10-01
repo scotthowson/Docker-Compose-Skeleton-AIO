@@ -12,8 +12,8 @@ runs on. No cloud-init, no snap, no desktop, no documentation, no second network
 | | Hub image | Node image |
 |---|---|---|
 | **What it is** | An appliance: import it, start it, open the dashboard | What the hub clones for each stack ("the VM is the stack") |
-| **Has DCS inside** | Yes, the current release, started at first boot as a hub | No: a member gets its DCS from the hub when it joins, so versions always match |
-| **You do** | Import once, open `http://<address>:3000`, follow the wizard | Nothing by hand: the hub uses it. Import it yourself only to build VMs without a hub |
+| **Has DCS inside** | Yes, the current release, started at first boot as a hub | No: a node gets its DCS from the hub when it joins, so versions always match. `/etc/dcs-role` says `node`, so DCS installed in it by hand is a node too (`DCS_ROLE=node`: the API alone, no dashboard, no accounts of its own) |
+| **You do** | Import once, open `http://<address>:3000`, follow the wizard | Nothing by hand: the hub uses it. Imported by yourself, the hub's one-line join command (Proxmox page → *Join code*) makes it a node of the hub |
 | **Suggested size** | 2 vCPU · 4 GB RAM · 32 GB disk | 2 vCPU · 2 GB RAM · 16 GB disk (per stack) |
 
 Pick the distribution you like; the four behave the same to DCS (which one the hub builds new VMs from is a setting of the *New VM* sheet):

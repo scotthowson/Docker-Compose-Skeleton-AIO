@@ -39,6 +39,9 @@
 # Otherwise fall back to the built-in default order.
 if [[ -n "${DOCKER_STACKS:-}" ]]; then
     read -ra DOCKER_SERVICES <<< "$DOCKER_STACKS"
+elif [[ "${DCS_ROLE:-hub}" == "node" ]]; then
+    # a node (DCS_ROLE=node) carries only the stacks its hub gave it: nothing by default, and never the dashboard
+    declare -a DOCKER_SERVICES=()
 else
     declare -a DOCKER_SERVICES=(
         "core-infrastructure"
@@ -237,6 +240,12 @@ start_docker_compose_services() {
     for service in "${services_to_start[@]}"; do
         if _fleet_owned_stack "$service"; then
             log_info "Stack '$service' runs in its own VM (fleet) — the folder here is a leftover, not started"
+            skipped_services+=("$service")
+            continue
+        fi
+        # a node runs the API alone: the dashboard (and the Redis beside it) is the hub's, whatever a list says
+        if [[ "${DCS_ROLE:-hub}" == "node" && "$service" == "core-infrastructure" ]]; then
+            log_info "Stack 'core-infrastructure' (the dashboard and Redis) is the hub's — a node has no dashboard, not started"
             skipped_services+=("$service")
             continue
         fi
@@ -453,11 +462,16 @@ start_docker_services() {
         services_to_start=("$@")
         log_info "Selective startup requested for: ${services_to_start[*]}"
     else
-        services_to_start=("${DOCKER_SERVICES[@]}")
+        services_to_start=(${DOCKER_SERVICES[@]+"${DOCKER_SERVICES[@]}"})
         log_info "Full system startup requested for all ${#DOCKER_SERVICES[@]} service stacks"
     fi
 
     if [[ ${#services_to_start[@]} -eq 0 ]]; then
+        # a node with nothing deployed into it yet is not a failed start
+        if [[ "${DCS_ROLE:-hub}" == "node" ]]; then
+            log_info "A node carries only the stacks its hub deploys into it: nothing to start yet"
+            return 0
+        fi
         log_warning "No services specified for startup"
         return 1
     fi
