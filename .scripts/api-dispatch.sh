@@ -12,8 +12,8 @@
 #
 # The pool is a fast path, never a queue: a request that stays open (an event
 # stream is open for as long as a dashboard is) and a request that finds every
-# worker busy (a slow call each, say to a VM that does not answer) are served
-# by a process of their own, the way every request was before the pool.
+# worker busy for a second (a slow call each, say to a VM that does not answer)
+# are served by a process of their own, the way every request was before the pool.
 # Written to be tiny: bash reads it in a millisecond, where the API script
 # takes a tenth of a second on a small VM.
 # =============================================================================
@@ -21,7 +21,9 @@ d="${DCS_API_RUN_DIR:-}"
 answer() { printf 'HTTP/1.1 %s\r\nContent-Type: application/json\r\nConnection: close\r\n%s\r\n{"error": true, "code": %s, "message": "%s"}\r\n' "$1" "$2" "${1%% *}" "$3"; exit 0; }
 [[ -n "$d" && -d "$d" ]] || answer "503 Service Unavailable" $'Retry-After: 2\r\n' "The API is starting"
 peer="${SOCAT_PEERADDR:-${NCAT_REMOTE_ADDR:-}}"
-tmp=$(mktemp "${TMPDIR:-/tmp}/dcs-req-XXXXXX") || answer "503 Service Unavailable" "" "No room for the request"
+# the buffered request lives in the run directory (the API's own, mode 700): a name without starting a process for it
+tmp="$d/req-$$-$RANDOM$RANDOM"
+( umask 077; : > "$tmp" ) 2>/dev/null || answer "503 Service Unavailable" "" "No room for the request"
 trap 'rm -f "$tmp"' EXIT
 # the request, buffered: the line and the headers (up to the blank line), then the body
 cl=0; n=0; req=""
@@ -50,19 +52,21 @@ path="${line#* }"; path="${path%% *}"; path="${path%%\?*}"
 case "$path" in */stream) oneshot ;; esac
 
 # A worker's socket file is away for a moment between two connections (socat removes it on close, the next one binds it
-# again), so the list is read on every round; a quarter of a second without a free worker is "all busy".
+# again), so the list is read on every round. A burst of dashboard polls is served by the pool one after the other (a
+# worker takes a request every few hundredths of a second); a second without a free worker is "all busy".
 start=$RANDOM
-for (( round = 0; round < 5; round++ )); do
+for (( round = 0; round < 20; round++ )); do
     socks=("$d"/w*.sock); nw=${#socks[@]}
     for (( i = 0; i < nw; i++ )); do
         s="${socks[(start + i) % nw]}"
         [[ -S "$s" ]] || continue
-        t0=$(date +%s%N)
+        t0="${EPOCHREALTIME/[.,]/}"; [[ -n "$t0" ]] || t0=$(date +%s%6N)
         # -t: the request is sent at once (EOF on the file), then socat must wait for the answer; its default is half a second
         socat -t 900 -T 900 STDIO "UNIX-CONNECT:$s" < "$tmp" 2>/dev/null && exit 0
         # a refusal (the worker is busy, or between two connections) ends in a few milliseconds and nothing was exchanged: try the next;
         # anything that took longer had the worker's attention and is not sent again (a POST must not run twice)
-        (( ($(date +%s%N) - t0) / 1000000 < 150 )) || exit 0
+        t1="${EPOCHREALTIME/[.,]/}"; [[ -n "$t1" ]] || t1=$(date +%s%6N)
+        (( (t1 - t0) / 1000 < 150 )) || exit 0
     done
     sleep 0.05
 done

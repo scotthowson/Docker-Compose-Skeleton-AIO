@@ -75,7 +75,7 @@ the API restarts: `sudo systemctl restart dcs-api`, or `POST /system/restart`.
 | `API_RATE_LIMIT`, `API_RATE_WINDOW` | `600`, `60` | Requests per client per window, in seconds (`0` turns it off) |
 | `API_MAX_BODY_SIZE` | `1048576` | Largest request body, in bytes |
 | `API_RESPONSE_CACHE` | `true` | Share one answer of the polled read endpoints between all clients |
-| `API_WORKERS` | `4` | Pre-read copies of the API script that answer the requests; the front hands each connection to a free one. Reading the 27,000-line script is what a request costs most, so this is what keeps a small hub idle with a dashboard open. `0` = one process per connection |
+| `API_WORKERS` | automatic | Pre-read copies of the API script that answer the requests; the front hands each connection to a free one. Empty = twice the cores, 4 to 8 (4 on a machine with less than 3 GB of memory); a request that stays open (an event stream) or finds no free worker for a second gets a process of its own. Reading the 27,000-line script is what a request costs most, so this is what keeps a small hub idle with a dashboard open. `0` = one process per connection |
 | `API_WORKER_REQUESTS` | `500` | A worker renews itself (same process id, fresh memory) after this many answers |
 | `API_WORKER_IDLE_SECS` | `900` | A worker's connection that goes quiet for this long (a handler that works in silence) is closed |
 | `API_CACHE_MAX_STALE` | `120` | Oldest cached answer, in seconds, that may be served while it refreshes |

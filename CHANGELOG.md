@@ -5,6 +5,20 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [4.0.8] - 2026-10-01
+
+### Changed
+
+- **A request through the worker pool costs about half of what it did, and a burst of dashboard polls stays in the pool.** Measured on a
+  4-core Debian 13 hub with a 430-line `.env`: a pooled request 39 ms → 22 ms, a burst of 24 parallel requests 1.8 s → 0.9 s of CPU.
+  - A worker parsed `.env` again for every request (so that a setting saved through another worker was in force at once): on a hub
+    with a long `.env` that cost more than the pool saved. It is read again only when the file is newer than the worker, a test bash
+    does itself.
+  - `API_WORKERS` is automatic when empty: twice the cores, 4 to 8 (4 on a machine with less than 3 GB). Four workers were fewer
+    than the requests three or four open dashboards send at the same moment, and what did not fit was served the expensive way.
+  - The front waits a second for a free worker before it gives a request a process of its own (a quarter of a second spilled most
+    of a burst), and neither the front nor a worker starts a process for a temporary name, the clock or a pause any more.
+
 ## [4.0.7] - 2026-10-01
 
 ### Fixed

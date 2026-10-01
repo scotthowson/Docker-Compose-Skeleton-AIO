@@ -28100,7 +28100,12 @@ start_server() {
     local self_path
     self_path="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
     # API_WORKERS (.env, default 4): pre-read copies of this script that answer the requests; 0 = read the script per connection
-    API_WORKERS="${API_WORKERS:-4}"; [[ "$API_WORKERS" =~ ^[0-9]+$ && "$API_WORKERS" -le 64 ]] || API_WORKERS=4
+    # unset = automatic: twice the cores, four at least and eight at most (a burst of dashboard polls is then served by the
+    # pool instead of spilling over), four on a machine with less than 3 GB (a worker holds about 25 MB)
+    if [[ -z "${API_WORKERS:-}" ]]; then
+        API_WORKERS=$(( $(nproc 2>/dev/null || echo 2) * 2 )); (( API_WORKERS < 4 )) && API_WORKERS=4; (( API_WORKERS > 8 )) && API_WORKERS=8
+        (( $(awk '/^MemTotal/ {print int($2 / 1024)}' /proc/meminfo 2>/dev/null || echo 0) < 3000 )) && API_WORKERS=4
+    fi; [[ "$API_WORKERS" =~ ^[0-9]+$ && "$API_WORKERS" -le 64 ]] || API_WORKERS=4
 
     # Start DDNS loop (only once, in the server process — not per-request)
     if [[ "$DDNS_ENABLED" == "true" && -n "${CF_DNS_API_TOKEN:-}" && -n "${TRAEFIK_DOMAIN:-}" ]]; then
@@ -28329,11 +28334,16 @@ _api_reexec() {
 # place: same PID, fresh memory); the server starts a replacement for one that dies. API_WORKERS=0 is the old way:
 # the whole script read again for every connection.
 _api_worker_loop() {
-    local sock="$1" served=0 first req sp="" _WORKER_ENV_MTIME
-    _WORKER_ENV_MTIME=$(stat -c %Y "$BASE_DIR/.env" 2>/dev/null)
+    local sock="$1" served=0 first req sp="" stamp zfd="" _g _gmax
+    # this worker read .env when it started; the stamp says when (two seconds early: a save in that very moment counts as
+    # newer). ".env newer than the stamp" is a test bash does itself, so a request pays nothing for it — parsing .env on
+    # every request cost a hub with a long .env more than the pool saved
+    stamp="${sock%.sock}.stamp"; touch -d '2 seconds ago' "$stamp" 2>/dev/null || : > "$stamp"
     # the socat waiting for a connection is a child of ours: it goes with us (a listener with nobody behind it would stay for good)
-    trap 'kill -TERM "${sp:-}" 2>/dev/null; rm -f "$sock"; exit 0' TERM INT HUP
+    trap 'kill -TERM "${sp:-}" 2>/dev/null; rm -f "$sock" "$stamp"; exit 0' TERM INT HUP
     _api_close_inherited_fds
+    # a descriptor nothing ever writes to: a timed read on it is a pause without starting a process (sleep is one per pause)
+    if mkfifo "${sock%.sock}.z" 2>/dev/null; then exec {zfd}<>"${sock%.sock}.z"; rm -f "${sock%.sock}.z"; fi
     while :; do
         # one connection: socat puts the client's bytes on the coprocess's output and our answer on its input
         coproc _WSOC { exec socat -t 900 -T "${API_WORKER_IDLE_SECS:-900}" "UNIX-LISTEN:$sock,unlink-early,umask=077,backlog=32" STDIO 2>/dev/null; }
@@ -28353,18 +28363,24 @@ _api_worker_loop() {
                 SOCAT_PEERADDR=""; export SOCAT_PEERADDR; req="$first"
             fi
             if [[ -n "$req" ]]; then
-                # the .env of now, not of the worker's start: a setting saved through another worker is already in force here
-                ( set +e; _api_load_env_file "$BASE_DIR/.env"; _API_PREREAD_SET=1; _API_PREREAD_LINE="$req"; handle_request ) <&"$rfd" >&"$wfd"
+                # the .env of now, not of the worker's start: a setting saved through another worker since then is read first
+                ( set +e; [[ -n "$zfd" ]] && exec {zfd}<&-
+                  [[ "$BASE_DIR/.env" -nt "$stamp" ]] && _api_load_env_file "$BASE_DIR/.env"
+                  _API_PREREAD_SET=1; _API_PREREAD_LINE="$req"; handle_request ) <&"$rfd" >&"$wfd"
                 served=$(( served + 1 ))
             fi
         fi
         exec {rfd}<&- {wfd}>&-
         # the answer is written (the subshell is gone); socat ends as soon as the front has read it. A detached job the handler left
         # behind may still hold the pipe open, which would keep this worker from its next connection: a few seconds, then it is cut off
-        local _g; for (( _g = 0; _g < 250; _g++ )); do kill -0 "$sp" 2>/dev/null || break; sleep 0.02; done
+        if [[ -n "$zfd" ]]; then _gmax=1000; else _gmax=250; fi
+        for (( _g = 0; _g < _gmax; _g++ )); do
+            kill -0 "$sp" 2>/dev/null || break
+            if [[ -n "$zfd" ]]; then read -r -t 0.005 -u "$zfd" _ 2>/dev/null; else sleep 0.02; fi
+        done
         kill -TERM "$sp" 2>/dev/null; wait "$sp" 2>/dev/null; sp=""
         # a renewal after the quota, or as soon as .env changed: a key removed from it would otherwise linger in this worker
-        if (( served >= ${API_WORKER_REQUESTS:-500} )) || [[ "$(stat -c %Y "$BASE_DIR/.env" 2>/dev/null)" != "$_WORKER_ENV_MTIME" ]]; then
+        if (( served >= ${API_WORKER_REQUESTS:-500} )) || [[ "$BASE_DIR/.env" -nt "$stamp" ]]; then
             exec "$_self_path" --worker "$sock"
         fi
     done
