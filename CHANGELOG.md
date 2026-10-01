@@ -16,6 +16,22 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Topology across the fleet.** On a hub, *Everywhere* on the Topology page is the fleet map: the hub's own stacks, containers and networks and every
   reachable VM's, each under its server's band (`GET /topology?fleet=1`; a VM's names are kept apart under its own name). A VM that did not answer
   is shown as such.
+- **A VM stack's files are the hub's.** `Stacks/<name>/` on the hub holds a VM stack's compose, `.env` and configuration like any
+  stack the hub runs itself: the dashboard reads the hub's copy (a VM that is off still shows its files) and writes it, and every save
+  is pushed into the VM right after (`POST /stacks/<name>/files` there; the answer says whether the VM took it). What the VM wrote
+  itself (a template deployed into it) is pulled back; a VM stack the hub has no files for yet is adopted on the first read, on join,
+  on a manual add and from the watcher. *Push files to the VM* / *Pull files from the VM* on the stack, *Sync stack files* on the VM
+  (`POST /stacks/<name>/push`, `/pull`, `POST /fleet/members/<id>/sync`). Only configuration travels: no App-Data, data, logs,
+  caches, `acme.json` or edit backups; 2 MB a file, 16 MB a stack; a path cannot leave the stack folder. A rebuilt VM gets its stack
+  back with one push, and a stack made last night is still there in the morning.
+- **A VM you linked by address or by code is placed.** A stack a member runs that nobody answers for, and that the hub does not run
+  itself, is placed with that member by the watcher — before, a VM whose stack was named like a folder the hub ships was never placed,
+  so its buttons landed on the hub's own folder.
+- `POST /auth/password` changes your own password (the Settings page only rewrote a copy in the browser); `/auth/verify` says whether
+  2FA is on; a session remembers the address it was opened from.
+- `POST /images/pull` (the Images page's Pull button had no route) and `POST /images/delete {image}` (a tagged image goes by its name).
+- A snapshot's row says the host and DCS version it came from; the Config page's *Force colour* and *Progress bar width* are keys the
+  save takes and reads back, *Pull images on boot* reads back.
 - **Homarr in a VM counts.** The hub finds a running Homarr on any member (the fleet snapshot: a container named Homarr with 7575 published), so the
   deploy sheet offers *Add to Homarr*, the Integrations panel says which VM it runs in, the stored key is checked against that Homarr, and every new
   route of a VM gets its tile - with Homarr on the hub, in a VM, or at `HOMARR_URL`.
@@ -37,6 +53,20 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **What an audit of every dashboard button against its handler found**, fixed on the API side: a worker serves each request with
+  the `.env` of now and renews itself when `.env` changed; the deploy sheet's proxy-network switch is honoured; batch *Update
+  selected* and batch "all" reach the stacks in VMs (they were pulled and started on the hub); a VM stack deleted on purpose takes
+  the hub's copy and placement with it, a clone made in a VM is placed there, a VM stack cannot be renamed on the hub (409 with the
+  reason), a renamed hub stack keeps its history; an emptied `.env` or crontab is a valid save; a member's dashboard/OS facts reach
+  the overview; a VM stack's row says qemu or lxc; a build's log shows 60 lines; the live framework log's `since` takes the stamp the
+  API printed and the log is readable by whoever may read the log; the hub's terminal follows `cd`; a webhook test says whether the
+  hook took it; a download through another origin (the Android app) carries the CORS headers; a member's route rename or delete
+  finds the file under the stack it was deployed into; the fleet update's running marker has the shape the Updates page reads; the
+  nuke dialog's answer uses the names the dialog reads; a member refusing the hub's account answers 502 instead of a 401 that signed
+  the dashboard out of the hub; a member's terminal sign-in goes through the hub; the hub's cache is cleared before a forwarded write.
+- **Homarr on the hub was never found** since the locator asked itself for the port (the hub branch was dead; a VM's Homarr was found).
+  An imported template without metadata no longer breaks the Templates page; an edit of a template keeps the keys the editor does not
+  carry (icon, auth, singleton, config_path, route_skip).
 - **On Debian 13 the CrowdSec page said *Could not work out the CrowdSec state*, a VM's details sheet showed *empty answer* and never read the balloon
   state, and the CrowdSec Settings tab wrote nothing.** Debian 13's jq (its build of 1.7.1, reporting `jq-1.7`) refuses three things jq 1.8 accepts:
   an operator inside an object value (`{a: $x + 1}`), `f?.field`, and `A + B as $x | …` (bound as `A + (B as $x | …)`: the profiles file came out as an
@@ -49,6 +79,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Tests
 
+- `tests/fleet-files.sh`: a VM stack's files against two real listeners — adoption on a read, pull, push, sync both ways, a save on the
+  hub reaching the VM, nothing but configuration travelling, a path that cannot leave the folder, a member that is off (52 checks).
+- `tests/smoke.sh`: a password change of one's own, the 2FA flag, the session address, the Config rows, image delete by reference.
 - `tests/api-workers.sh`: the worker pool on a real loopback listener - the same answers and headers as the one-process transport, the client's address
   reaches the handler, a 16-way burst, renewal in place, a killed worker replaced, `--stop` leaves nothing behind, `API_WORKERS=0`.
 - `tests/smoke.sh`: Homarr found in a VM (where, address, mode, hint), the fleet topology merge (both servers, the VM answered, its names kept apart).

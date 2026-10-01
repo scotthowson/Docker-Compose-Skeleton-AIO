@@ -233,11 +233,21 @@ instead, and the hub — the DCS linked to Proxmox — makes that invisible:
   list says which stacks are VMs, and the bot's `/stacks` and `/fleet` follow. Nothing is
   scheduled or moved between VMs: this is a control plane over independent compose hosts, and
   a VM that loses the hub keeps running its stack.
-- **The VM is born as the stack**: when the hub builds the VM for `media-services`, its own
-  `Stacks/media-services` folder (compose, `.env`, config files — never `App-Data`, data or
-  backups) moves into the VM and starts there; a row you renamed in the wizard keeps the folder it
-  came from. The hub's copy is a leftover from then on. A stack with no folder starts empty and
-  takes templates.
+- **The VM is born as the stack, and the hub keeps its files**: when the hub builds the VM for
+  `media-services`, its own `Stacks/media-services` folder (compose, `.env`, config files — never
+  `App-Data`, data or backups) is copied into the VM and starts there; a row you renamed in the
+  wizard keeps the folder it came from. From then on `Stacks/media-services/` on the hub is the
+  stack's home: the dashboard reads and writes the hub's copy, every save is pushed into the VM
+  right after (the answer says whether the VM took it), what the VM writes itself (a template
+  deployed into it) is pulled back, and a VM the hub did not build — linked by address or by a
+  join code — has its stacks adopted on the first read, on join and from the watcher, which also
+  places a stack that nobody answered for with the VM that runs it. Only configuration travels:
+  no `App-Data`, data, logs, caches, `acme.json` or edit backups, 2 MB a file, 16 MB a stack, and
+  a path cannot leave the stack folder. A VM that is off still shows its files; a rebuilt VM gets
+  its stack back with *Push files to the VM* (`POST /stacks/{name}/push`), *Pull files from the
+  VM* takes what the VM has (`/pull`), and *Sync stack files* on the VM does every stack of it
+  (`POST /fleet/members/{id}/sync`, `{direction: "push"}` the other way). A stack with no folder
+  starts empty and takes templates.
 - **The Stacks page is the VMs page** on a hub: the sidebar reads *VMs*, the VMs come first (each
   one a stack) and the hub's own stacks follow; open a VM for the containers running in it, with
   start/stop/restart per container, the compose editor, logs, and the VM's own power. *New VM*
@@ -558,6 +568,8 @@ A member is another machine, so the hub treats everything it sends as data:
 | GET | `/fleet/members`, `/fleet/members/{id}` | user |
 | POST / PUT / DELETE | `/fleet/members`, `/fleet/members/{id}` (`?destroy=true` also destroys the VM) | admin — `PUT` also takes `stacks`, the placements: the stacks this member answers for |
 | POST | `/fleet/members/{id}/test` | admin — sign in afresh, read the identity, re-match the guest |
+| GET / POST | `/stacks/{name}/files` | admin — a stack's files (compose, `.env`, configuration; nothing a stack makes while it runs), each base64; on a hub a VM stack's files are the hub's copy, written here and pushed into the VM |
+| POST | `/stacks/{name}/push`, `/stacks/{name}/pull`, `/fleet/members/{id}/sync` | admin — the hub's copy of a VM stack into the VM; the VM's files into the hub's copy; every stack of a VM at once (`{direction: "pull"|"push", stacks?: [names]}`) |
 | ANY | `/fleet/members/{id}/api/{path}` | the caller's role on the inner path — the proxy |
 | GET | `/fleet/overview` | user — every member with its stacks, containers and counts (10 s cache) |
 | GET / POST | `/fleet/discover` | admin — the scan (GET cached 30 s; POST scans now, accepts Proxmox values before they are saved) |
