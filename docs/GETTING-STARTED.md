@@ -71,14 +71,42 @@ rm /root/dcs-hub-debian-13.qcow2
 
 `import-from` copies the image into a new disk on `local-lvm`; after that the file is no longer needed.
 
-**4. Give it a user, a key and an address** through cloud-init, then start it. `--sshkeys` takes a file
-on the Proxmox host that holds your public ssh key.
+**4. Give it a user, a key and an address** through cloud-init, then start it. `--sshkeys` takes a **file on the
+Proxmox host** that holds your public ssh key. Proxmox does not make that file for you, so make it first: without it
+`qm set` says *can't open '/root/my-key.pub' - No such file or directory*.
+
+On the computer you will ssh from (not on the Proxmox host), look for your key, and make one if there is none (press Enter
+at every question):
 
 ```bash
-qm set 120 --ciuser dcs --sshkeys /root/my-key.pub \
-  --ipconfig0 ip=192.168.1.20/24,gw=192.168.1.1 --nameserver 1.1.1.1 --ciupgrade 0
-qm start 120
+ls ~/.ssh/*.pub || ssh-keygen -t ed25519
 ```
+
+Copy the public half to the Proxmox host as `/root/my-key.pub` and look at it there. It is one line that starts
+with `ssh-ed25519` (or `ssh-rsa`):
+
+```bash
+scp ~/.ssh/id_ed25519.pub root@192.168.1.2:/root/my-key.pub
+ssh root@192.168.1.2 cat /root/my-key.pub
+```
+
+No `scp`? Paste the line on the Proxmox shell instead: `echo 'ssh-ed25519 AAAA... you@laptop' > /root/my-key.pub`.
+
+Now the user, the key and the address, and start. The `if` does nothing when the key file is missing or empty, so the
+VM is never started without a key:
+
+```bash
+if [ -s /root/my-key.pub ]; then
+  qm set 120 --ciuser dcs --sshkeys /root/my-key.pub \
+    --ipconfig0 ip=192.168.1.20/24,gw=192.168.1.1 --nameserver 1.1.1.1 --ciupgrade 0 && qm start 120
+else echo "no key in /root/my-key.pub: copy it there first (see above)"; fi
+```
+
+> **Started without a key?** When the file is missing, `qm set` prints *can't open ...* and carries on anyway
+> (*generating cloud-init ISO*): the VM gets no key, and ssh takes keys only, so nothing can log in over the network.
+> Nothing is lost: make the file as above, run the `qm set` line again, then `qm reboot 120` (it applies the changed
+> cloud-init drive, and the image sets up the new key at that boot). Meanwhile `qm terminal 120` opens the VM's serial
+> console (press Enter), and a password set with `qm set 120 --cipassword 'choose-one'` logs in there.
 
 The image reads the cloud-init drive with its own small first-boot service: it sets the host name, the
 user (with the docker group and passwordless sudo), your key and the address. Password logins over ssh

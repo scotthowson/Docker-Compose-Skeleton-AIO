@@ -5,6 +5,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Docs: the cloud-init key step of the hub VM no longer fails on a fresh Proxmox host.** [Getting Started](docs/GETTING-STARTED.md), step 4, used `--sshkeys /root/my-key.pub` without saying where
+  that file comes from, so `qm set` printed *can't open '/root/my-key.pub' - No such file or directory* - and still generated the cloud-init drive, which left a VM with no key (ssh takes keys
+  only). The step now makes the key (`ssh-keygen`), copies it (`scp`), shows it (`cat`), guards the `qm set` line (an `if [ -s ... ]`, so the VM is never started without a key) and says how to recover
+  (`qm set` again, `qm reboot`, the serial console with `--cipassword`). The by-hand example in [VM-IMAGES.md](docs/VM-IMAGES.md) used `~/.ssh/id_ed25519.pub`, which a Proxmox host does not
+  have either; it points to the same step now, and the troubleshooting table has the message.
+
 ## [4.0.4] - 2026-09-30
 
 ### Fixed

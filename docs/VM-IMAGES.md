@@ -200,11 +200,14 @@ The hub VM is tagged `dcs;hub` in Proxmox, starts with the host (`onboot`), and 
 # 1. the image where Proxmox looks for imports (a directory storage with the "Import" content type; "local" by default)
 cp dcs-hub-debian-13.qcow2 /var/lib/vz/import/
 
-# 2. the VM: the image becomes its disk, a cloud-init drive carries your login and address
+# 2. your public ssh key as a FILE on the Proxmox host (Getting Started, step 4: scp ~/.ssh/id_ed25519.pub root@<proxmox>:/root/my-key.pub)
+[ -s /root/my-key.pub ] || echo "no key file: the VM would have no way in"
+
+# 3. the VM: the image becomes its disk, a cloud-init drive carries your login and address
 qm create 200 --name dcs-hub --tags "dcs;hub" --ostype l26 --cores 2 --memory 4096 --cpu host \
   --scsihw virtio-scsi-single --scsi0 local-lvm:0,import-from=local:import/dcs-hub-debian-13.qcow2,discard=on,iothread=1,ssd=1 \
   --boot order=scsi0 --net0 virtio,bridge=vmbr0 --serial0 socket --agent enabled=1 --onboot 1 \
-  --ide2 local-lvm:cloudinit --ciuser dcs --sshkeys ~/.ssh/id_ed25519.pub --ipconfig0 ip=dhcp
+  --ide2 local-lvm:cloudinit --ciuser dcs --sshkeys /root/my-key.pub --ipconfig0 ip=dhcp
 qm resize 200 scsi0 32G
 qm start 200
 ```
@@ -242,6 +245,7 @@ up in about a minute. The cloud images stay in the list for anything else.
 | Symptom | Look here |
 |---|---|
 | No address on the console / ssh does not answer | The cloud-init drive is `ide2`? The bridge is right? `qm terminal <id>` shows the serial console (press Enter); `journalctl -u dcs-init` inside |
+| `qm set` says *can't open '/root/my-key.pub' - No such file or directory* | The key file is not on the Proxmox host. `qm set` still makes the cloud-init drive, so the VM would have **no key** (ssh takes keys only). Copy it there (`scp ~/.ssh/id_ed25519.pub root@<proxmox>:/root/my-key.pub`), run the `qm set <id> --sshkeys /root/my-key.pub` again and `qm reboot <id>`; `qm terminal <id>` and a `--cipassword` give a console login meanwhile ([Getting Started, step 4](GETTING-STARTED.md#a-the-hub-vm-image-on-proxmox)) |
 | *"no cloud-init drive"* in the log | The VM has no cloud-init drive: `qm set <id> --ide2 local-lvm:cloudinit`, then reboot; it falls back to DHCP meanwhile |
 | The hub's dashboard does not open | `journalctl -u dcs-hub-init` (no internet to pull the dashboard image? it retries at every boot); `docker ps` should show `DCS-UI` |
 | Fedora: something is denied | `sudo ausearch -m avc -ts recent`; the image runs SELinux enforcing. Docker's containers are not confined by SELinux (as on a standard Fedora Docker install) |
