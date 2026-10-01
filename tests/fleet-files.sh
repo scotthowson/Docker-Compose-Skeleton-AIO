@@ -116,6 +116,7 @@ sleep 1
 check "hub: …and its files were adopted"            yes "$([[ -f "$HUB/Stacks/demo/docker-compose.yml" && -f "$HUB/Stacks/demo/.env" && -f "$HUB/Stacks/demo/config/app.yml" ]] && echo yes || echo no)"
 check "hub: the copy is the member's"               "$(cat "$MEM/Stacks/demo/docker-compose.yml")" "$(cat "$HUB/Stacks/demo/docker-compose.yml" 2>/dev/null)"
 check "hub: runtime data did not travel"            no "$([[ -e "$HUB/Stacks/demo/data/state.db" || -e "$HUB/Stacks/demo/logs/app.log" || -e "$HUB/Stacks/demo/config/acme.json" || -e "$HUB/Stacks/demo/docker-compose.yml.bak" ]] && echo yes || echo no)"
+check "hub: a note says where the stack and its data are" yes "$(grep -q 'runs in the VM "media-vm"' "$HUB/Stacks/demo/RUNS-IN-A-VM.txt" 2>/dev/null && grep -q 'App-Data' "$HUB/Stacks/demo/RUNS-IN-A-VM.txt" && echo yes || echo no)"
 check "hub: the next read is the hub's own copy"    "$(cat "$HUB/Stacks/demo/docker-compose.yml")" "$(hub GET /stacks/demo/compose | jq -r '.content' 2>/dev/null)"
 check "hub: audit says the files were adopted"      yes "$(grep -q 'fleet_stack_adopted' "$HUB/.data/audit.jsonl" 2>/dev/null && echo yes || echo no)"
 
@@ -132,6 +133,8 @@ R=$(hub POST /stacks/demo/files "{\"files\":[{\"path\":\"config/hub-made.yml\",\
 check "files save on the hub: written and pushed"   "1 true" "$(jq -r '"\(.written) \(.pushed)"' <<< "$R" 2>/dev/null)"
 check "files save on the hub: the member has it"    evil "$(cat "$MEM/Stacks/demo/config/hub-made.yml" 2>/dev/null)"
 check "hub: files of a VM stack are the hub's copy" yes "$(hub GET /stacks/demo/files | jq -e '[.files[].path] | index("config/hub-made.yml") != null' >/dev/null 2>&1 && echo yes || echo no)"
+check "hub: the note is not one of the files"        no "$(hub GET /stacks/demo/files | jq -e '[.files[].path] | index("RUNS-IN-A-VM.txt") != null' >/dev/null 2>&1 && echo yes || echo no)"
+check "hub: …and never reaches the VM"              no "$([[ -e "$MEM/Stacks/demo/RUNS-IN-A-VM.txt" ]] && echo yes || echo no)"
 
 echo "A deploy into the VM is in the hub's history"
 D=$(hub POST /templates/tiny/deploy '{"target_stack":"demo","auto_start":false,"routes":false}')

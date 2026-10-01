@@ -20416,6 +20416,7 @@ _fleet_placement_add() {
 _fleet_placement_drop() {
     local id="$1" name="$2"
     [[ "$id" =~ ^[a-z0-9-]{1,40}$ && "$name" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || return 1
+    rm -f "${COMPOSE_DIR:?}/${name:?}/RUNS-IN-A-VM.txt" 2>/dev/null || true
     _fleet_update --arg id "$id" --arg n "$name" '.members = [(.members // [])[] | if .id == $id then .stacks = [((.stacks // [])[] | if type == "object" then .name else . end) | select(. != $n)] else . end]' >/dev/null 2>&1
 }
 # _fleet_place_running MEMBER — a stack a reachable member runs that nobody answers for and the hub does not run itself is
@@ -22434,7 +22435,7 @@ _stack_files_find() {
     local dir="$1"
     [[ -d "$dir" ]] || return 0
     find "$dir" -mindepth 1 -maxdepth 6 \( -type d \( -iname logs -o -iname log -o -iname cache -o -iname data -o -iname app-data -o -iname appdata -o -iname backups -o -name .git -o -name node_modules -o -name .versions \) -prune \) \
-        -o \( -type f ! -name '*.bak' ! -name '*.bak.*' ! -name '*.tmp.*' ! -name '.dcs-files.*' ! -name 'acme.json' ! -name '*.log' ! -name '*.sock' ! -name '*.pid' -printf '%P\0' \) 2>/dev/null | sort -z
+        -o \( -type f ! -name '*.bak' ! -name '*.bak.*' ! -name '*.tmp.*' ! -name '.dcs-files.*' ! -name 'RUNS-IN-A-VM.txt' ! -name 'acme.json' ! -name '*.log' ! -name '*.sock' ! -name '*.pid' -printf '%P\0' \) 2>/dev/null | sort -z
 }
 # _stack_files_json DIR — {"files": [{path, mode, size, content (base64)}], "total_bytes", "skipped": [{path, reason}]}
 _stack_files_json() {
@@ -22535,6 +22536,7 @@ _fleet_stack_push() {
         return 1
     fi
     _FLEET_PUSHED=$(jq -r '.written // 0' <<< "$r" 2>/dev/null)
+    _fleet_stack_note "$id" "$name"
     return 0
 }
 # _fleet_stack_pull MEMBER NAME — the member's files into the hub's Stacks/NAME, file for file (the hub's copy becomes the
@@ -22547,9 +22549,10 @@ _fleet_stack_pull() {
         return 1
     fi
     [[ "$r" == \{* && "$(jq -r '.files | length' <<< "$r" 2>/dev/null)" =~ ^[1-9] ]] || { _FLEET_ERR="the VM has no files for $name"; return 1; }
-    _stack_files_same "$COMPOSE_DIR/$name" "$r" full && return 0
+    if _stack_files_same "$COMPOSE_DIR/$name" "$r" full; then _fleet_stack_note "$id" "$name"; return 0; fi
     [[ -f "$COMPOSE_DIR/$name/docker-compose.yml" ]] && _save_compose_version "$name"
     _stack_files_write "$COMPOSE_DIR/$name" "$r" true || { _FLEET_ERR="$_SFW_ERR"; return 1; }
+    _fleet_stack_note "$id" "$name"
     return 0
 }
 # _fleet_with_push NAME JSON — a write's answer with the push to the VM merged in: nothing changes for a stack this server
@@ -22565,6 +22568,28 @@ _fleet_with_push() {
         jq -c --arg m "$member" --arg e "${_FLEET_ERR:-the VM did not take the files}" \
             '. + {placement: "vm", member: $m, pushed: false, push_error: $e, message: ((.message // "Saved") + " on the hub; the VM did not take it: " + $e + " — push again from the stack menu once it answers")}' <<< "$ans"
     fi
+}
+# _fleet_stack_note MEMBER NAME — a few lines next to the hub's copy of a VM stack's files that say where the stack runs
+# and where its data is. The hub's folder looks like any stack folder (the compose names ./App-Data/…), and nothing runs
+# from it: an App-Data made there by hand is never filled, which is what the note is for. It never travels.
+FLEET_STACK_NOTE="RUNS-IN-A-VM.txt"
+_fleet_stack_note() {
+    local id="$1" name="$2" m host vmid mname d
+    d="$COMPOSE_DIR/$name"; [[ -d "$d" ]] || return 0
+    m=$(_fleet_member "$id" 2>/dev/null) || m=""; [[ -n "$m" ]] || return 0
+    host=$(_fleet_member_host "$m" 2>/dev/null) || host=""
+    vmid=$(jq -r '.vmid // ""' <<< "$m" 2>/dev/null) || vmid=""; mname=$(jq -r '.name // ""' <<< "$m" 2>/dev/null) || mname=""
+    [[ -n "$mname" ]] || mname="$id"
+    {
+        printf 'This folder is the hub'"'"'s copy of the stack "%s": its docker-compose.yml, .env and configuration.\n' "$name"
+        printf 'The stack itself runs in the VM "%s"%s%s. Its containers and its data are there, not here:\n\n' "$mname" "${vmid:+ (VM $vmid)}" "${host:+ at $host}"
+        printf '    Stacks/%s/App-Data   in the DCS folder of the VM (by default ~/.Docker-Compose-Skeleton-AIO)\n\n' "$name"
+        printf 'Nothing runs from this folder: an App-Data made here is never filled.\n'
+        printf 'To look at the data: the dashboard'"'"'s File Browser or Terminal with this VM chosen'
+        if [[ -n "$host" ]]; then printf ', or from the hub\n(a VM the hub built takes the hub'"'"'s key for its dcs account):\n\n    ssh -i %s/.data/fleet-ssh/id_ed25519 dcs@%s\n' "$BASE_DIR" "$host"; else printf '.\n'; fi
+        printf '\nA save of the compose or the .env on the dashboard is written here and pushed into the VM.\n'
+    } > "$d/$FLEET_STACK_NOTE" 2>/dev/null || true
+    return 0
 }
 # _fleet_stack_adopt MEMBER NAME — a VM stack the hub has no files for yet is pulled (asked at most every ten minutes)
 _fleet_stack_adopt() {
@@ -22739,6 +22764,10 @@ _fleet_round_view() {
 _fleet_member_purge() {
     local id="$1" view
     [[ "$id" =~ ^[a-z0-9-]{1,40}$ ]] || return 1
+    # its stacks' folders stay on the hub (the files to build the VM again from), without the note that said they ran in it
+    local _ps; for _ps in $(_fleet_member "$id" 2>/dev/null | jq -r '(.stacks // [])[] | if type == "object" then (.name // "") else . end' 2>/dev/null); do
+        [[ "$_ps" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] && rm -f "${COMPOSE_DIR:?}/${_ps:?}/RUNS-IN-A-VM.txt" 2>/dev/null
+    done
     _fleet_update --arg id "$id" '.members = [(.members // [])[] | select(.id != $id)]' >/dev/null 2>&1 || true
     secrets_delete "$(_fleet_secret_name "$id")" >/dev/null 2>&1 || true
     secrets_delete "FLEET_MEMBER_$(printf '%s' "$id" | tr '[:lower:]-' '[:upper:]_')_ADMIN_PASSWORD" >/dev/null 2>&1 || true

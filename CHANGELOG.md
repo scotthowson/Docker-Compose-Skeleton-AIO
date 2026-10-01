@@ -5,6 +5,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [4.0.10] - 2026-10-01
+
+### Added
+
+- **The hub's copy of a VM stack says where the stack and its data are.** `Stacks/<name>/` on the hub looks like any stack folder - the
+  compose names `./App-Data/...` - but nothing runs from it: the containers and their `App-Data` are in the VM, and an `App-Data` made
+  on the hub by hand is never filled. The folder carries `RUNS-IN-A-VM.txt` now (which VM, at which address, where its data is and how
+  to look at it); the note never travels into the VM and goes when the stack is no longer a VM's. The dashboard says the same on the
+  stack's page.
+
 ## [4.0.9] - 2026-10-01
 
 ### Changed
