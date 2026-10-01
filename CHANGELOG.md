@@ -5,6 +5,22 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [4.0.6] - 2026-10-01
+
+### Fixed
+
+- **Delete on a stack whose VM is gone did nothing.** The request was forwarded to a VM that no longer answered (deleted in Proxmox, or
+  off), and the card stayed on the Stacks page for good. The hub settles it now: a VM that Proxmox no longer has, or one the hub cannot
+  ask Proxmox about, is forgotten — the stack's placement and the hub's copy of its files go (the compose history keeps the versions),
+  and when the guest is gone and that was its last stack the member is removed from the fleet with it. A VM that still exists but is off
+  is left alone, and the answer says so: start it and delete again, or use *Remove from the fleet* on the Proxmox page.
+
+### Tests
+
+- `tests/fleet-files.sh`: deleting a stack whose VM does not answer forgets it (56 checks).
+- The two listener tests run where Docker is absent (the Debian CI container) and no longer count a worker's socket in the moment
+  between two connections.
+
 ## [4.0.5] - 2026-10-01
 
 ### Added

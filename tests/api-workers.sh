@@ -13,6 +13,11 @@
 set -u
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 for t in socat curl jq ss python3; do command -v "$t" >/dev/null 2>&1 || { echo "skip: $t is not installed"; exit 0; }; done
+# where Docker is absent (a CI container) the API would refuse to start: any command that answers stands in for Compose
+if ! docker compose version >/dev/null 2>&1 && ! command -v docker-compose >/dev/null 2>&1; then
+    DCS_FAKE_COMPOSE="$(mktemp "${TMPDIR:-/tmp}/dcs-fake-compose-XXXXXX")"; printf '#!/bin/sh\nexit 0\n' > "$DCS_FAKE_COMPOSE"; chmod +x "$DCS_FAKE_COMPOSE"
+    export DOCKER_COMPOSE_CMD="$DCS_FAKE_COMPOSE"
+fi
 PASS=0; FAIL=0
 check() { if [[ "$3" == "$2" ]]; then PASS=$((PASS + 1)); printf '  ok   %s\n' "$1"; else FAIL=$((FAIL + 1)); printf '  FAIL %s (expected %s, got %s)\n' "$1" "$2" "$3"; fi; }
 free_port() { python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])'; }
@@ -58,6 +63,8 @@ MAIN=$(cat "$W/.data/api-server.pid" 2>/dev/null)
 check "served through socat"                       socat "$(log_plain | awk '/Transport/{print $2; exit}')"
 check "two workers announced"                      "2" "$(log_plain | sed -n 's/^API workers: \([0-9]*\).*/\1/p' | head -1)"
 check "two worker processes run"                   2 "$(workers | wc -w)"
+# a worker's socket file is away for a moment between two connections: the count is taken once both are back
+for _ in $(seq 1 50); do [[ "$(ls "$W/.data/run"/w*.sock 2>/dev/null | wc -l)" -eq 2 ]] && break; sleep 0.2; done
 check "two sockets in the run dir"                 2 "$(ls "$W/.data/run"/w*.sock 2>/dev/null | wc -l)"
 W1=$(workers)
 # the same answers as the one-process transport: status line, JSON body, CORS and security headers

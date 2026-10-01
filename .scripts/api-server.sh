@@ -22640,6 +22640,49 @@ _fleet_services_prefill() {
     printf '%s' "$out"
 }
 
+# _fleet_member_alive MEMBER — the member's API answers right now (a 4 s look, whatever the watcher last recorded)
+_fleet_member_alive() {
+    local m url ins _pg
+    m=$(_fleet_member "$1"); [[ -n "$m" ]] || return 1
+    url=$(jq -r '.url // ""' <<< "$m"); ins=$(jq -r '.insecure // false' <<< "$m")
+    [[ -n "$url" ]] || return 1
+    _fleet_http _pg GET "$url/ping" "" "" 4 "$ins"
+    [[ "$_FLEET_HTTP" == 200 ]]
+}
+# _fleet_stack_forget MEMBER NAME — a stack is deleted while its VM does not answer. A VM that Proxmox still has (it is
+# off) is not touched: the answer says to start it or to remove it from the fleet. A VM that is gone (deleted in Proxmox),
+# or one the hub cannot ask Proxmox about, cannot delete anything any more: the hub forgets the stack — its placement and
+# its copy of the files (the compose history keeps the versions) — and, when the guest is gone and that was its last
+# stack, the member with it. Before this, Delete on such a stack did nothing: the request went to a VM that was not there.
+_fleet_stack_forget() {
+    local id="$1" name="$2" m vmid mname gone=unknown res left member_removed=false
+    m=$(_fleet_member "$id"); mname=$(jq -r '.name // "?"' <<< "$m"); vmid=$(jq -r '.vmid // ""' <<< "$m")
+    if [[ "$vmid" =~ ^[0-9]+$ ]] && _pve_configured 2>/dev/null; then
+        _pve_call res GET /cluster/resources type=vm
+        if [[ "$_PVE_HTTP" == 200 ]]; then
+            if jq -e --argjson v "$vmid" '[(.data // [])[] | select(.vmid == $v)] | length > 0' <<< "$res" >/dev/null 2>&1; then gone=no; else gone=yes; fi
+        fi
+    fi
+    if [[ "$gone" == no ]]; then
+        _api_error 409 "VM #$vmid ($mname) does not answer: start it and delete the stack again, or use Remove from the fleet on the Proxmox page (it can destroy the VM too)"
+        return 0
+    fi
+    _fleet_placement_drop "$id" "$name"
+    [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] && rm -rf "${COMPOSE_DIR:?}/${name:?}" 2>/dev/null
+    left=$(_fleet_member "$id" | jq -r '(.stacks // []) | length' 2>/dev/null)
+    if [[ "$gone" == yes && "$left" == 0 ]]; then
+        _fleet_update --arg id "$id" '.members = [(.members // [])[] | select(.id != $id)]' >/dev/null 2>&1 || true
+        secrets_delete "$(_fleet_secret_name "$id")" >/dev/null 2>&1 || true
+        secrets_delete "FLEET_MEMBER_$(printf '%s' "$id" | tr '[:lower:]-' '[:upper:]_')_ADMIN_PASSWORD" >/dev/null 2>&1 || true
+        rm -f "$FLEET_SESSION_DIR/$id.token" 2>/dev/null
+        member_removed=true
+    fi
+    _api_cache_clear 2>/dev/null || true; rm -f "$FLEET_SNAPSHOT" 2>/dev/null
+    _audit_log "fleet_stack_forgotten" "$name: its VM $mname${vmid:+ (#$vmid)} $([[ "$gone" == yes ]] && echo "no longer exists in Proxmox" || echo "does not answer"); the hub forgot the stack$([[ "$member_removed" == true ]] && echo " and removed the member") (by ${AUTH_USERNAME:-unknown})"
+    _api_success "$(jq -nc --arg n "$name" --arg m "$mname" --arg g "$gone" --argjson r "$member_removed" \
+        '{success: true, name: $n, forgotten: true, member_removed: $r,
+          message: ("Stack " + $n + " removed from the hub: its VM " + $m + (if $g == "yes" then " no longer exists in Proxmox" else " does not answer" end) + (if $r then "; the member was removed from the fleet too" else "" end))}')"
+}
 _fleet_forward_if_remote() {
     local m="$1" p="$2" body="$3" name="" member="" rest stack_name=""
     _fleet_has_members || return 1
@@ -22674,6 +22717,10 @@ _fleet_forward_if_remote() {
     esac
     [[ -n "$member" && -n "$(_fleet_member "$member")" ]] || return 1
     unset 'QUERY_PARAMS[member]'
+    # a stack whose VM does not answer cannot be deleted in it: the hub settles it (a VM that is gone is forgotten)
+    if [[ "$m" == POST && -n "$stack_name" && "$p" == "/stacks/$stack_name/delete" ]] && ! _fleet_member_alive "$member"; then
+        _fleet_stack_forget "$member" "$stack_name"; return 0
+    fi
     _FLEET_PROXY_CODE=""
     handle_fleet_proxy "$member" "$p" "$body"
     # the hub's copy of the stack's files follows what the VM did: a read of a stack the hub has no files for yet
