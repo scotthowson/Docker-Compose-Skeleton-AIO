@@ -24,6 +24,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (`POST /stacks/<name>/push`, `/pull`, `POST /fleet/members/<id>/sync`). Only configuration travels: no App-Data, data, logs,
   caches, `acme.json` or edit backups; 2 MB a file, 16 MB a stack; a path cannot leave the stack folder. A rebuilt VM gets its stack
   back with one push, and a stack made last night is still there in the morning.
+- **The fleet's services by name.** `GET /fleet/services` lists every running container with a published port on the hub and in every
+  reachable VM — where it runs, its LAN address, its route. A template deploy's `*_URL`, `*_ENDPOINT` and `*_HOST` variables left at
+  their compose-network default (`http://jellyfin:8096` reaches a Jellyfin on the same Docker network only) are pointed at the fleet's
+  service of that name when it runs on another server, on the hub and before a deploy is forwarded into a VM; a value you typed is
+  kept, a service of the template itself is left alone, and the Activity page says what was filled.
 - **A VM you linked by address or by code is placed.** A stack a member runs that nobody answers for, and that the hub does not run
   itself, is placed with that member by the watcher — before, a VM whose stack was named like a folder the hub ships was never placed,
   so its buttons landed on the hub's own folder.

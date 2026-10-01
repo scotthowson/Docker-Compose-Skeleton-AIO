@@ -382,6 +382,13 @@ Some things go further than a merged list:
   or in any VM of the fleet (store its API key on the hub's Integrations page). When the
   Traefik lives inside a VM instead, the hub pushes everyone else's routes into that VM's
   Traefik (`POST /fleet/routes`). A Traefik somewhere else keeps using the feed (section 4).
+- **Apps reach each other by name.** The hub knows every running container with a published
+  port, on the hub and in every VM, as a service with a LAN address and a route (`GET
+  /fleet/services`). When you deploy a template whose `*_URL` or `*_HOST` variable was left at its
+  compose-network default — `http://jellyfin:8096` reaches a Jellyfin on the same Docker network
+  only — the hub points it at the fleet's service of that name wherever it runs (on the hub, or
+  before the deploy is forwarded into a VM); a value you typed is kept, and the Activity page says
+  what was filled.
 - **One domain.** The fleet's domain is the hub's (`TRAEFIK_DOMAIN` or `PROXY_DOMAIN`): a VM the
   hub builds gets it at build time, a server that joins gets it with the join answer, and older
   members get it from the hub within a minute (`POST /fleet/hub/domain`, written as
@@ -572,6 +579,7 @@ A member is another machine, so the hub treats everything it sends as data:
 | POST | `/stacks/{name}/push`, `/stacks/{name}/pull`, `/fleet/members/{id}/sync` | admin — the hub's copy of a VM stack into the VM; the VM's files into the hub's copy; every stack of a VM at once (`{direction: "pull"|"push", stacks?: [names]}`) |
 | ANY | `/fleet/members/{id}/api/{path}` | the caller's role on the inner path — the proxy |
 | GET | `/fleet/overview` | user — every member with its stacks, containers and counts (10 s cache) |
+| GET | `/fleet/services` | user — the fleet's services by name: every running container with a published port on the hub and in every reachable VM, where it runs, its LAN address, its route (15 s cache) |
 | GET / POST | `/fleet/discover` | admin — the scan (GET cached 30 s; POST scans now, accepts Proxmox values before they are saved) |
 | GET / POST | `/fleet/provision/defaults` | admin — prefilled values for building VMs (POST with Proxmox values before they are saved) |
 | POST | `/fleet/provision` | admin — build one VM per stack `{node, storage, image_storage, bridge, cidr, gateway, dns, ip_start, vms: [{stack, source, cores, memory_mb, disk_gb, ip}]}`; `source` is the hub folder that moves into the VM (default: the stack name) |
