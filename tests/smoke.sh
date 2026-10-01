@@ -1165,6 +1165,104 @@ check "update history answers"          array "$(auth_request GET /system/update
 check "update history: viewer denied"   403 "$(viewer_request GET /system/update/history | status_of)"
 auth_request DELETE /secrets/RECOVERY_PASSPHRASE >/dev/null
 
+echo "Traefik template: the add-ons (a plugin declared only while its switch is on, DCS's middlewares, Sablier deployed with Traefik)"
+# the shipped template deployed for real (the fake docker stands in for the daemon) into a stack of its own, in the App-Data layout
+# this install has by now (per stack, or the one folder the API falls back to once an earlier section rewrote .env); no Sablier
+# container anywhere. A Traefik folder that is there already is set aside and put back, and the stack and the two templates go at
+# the end: the sections after this one count stacks and look for the proxy's routes
+cp -r "$ROOT/.templates/traefik" "$ROOT/.templates/sablier" "$WORK/.templates/"
+mkdir -p "$WORK/Stacks/zz-tr"; printf 'services:\n  placeholder:\n    image: alpine\n' > "$WORK/Stacks/zz-tr/docker-compose.yml"
+touch "$WORK/fakebin/.nosablier"
+tr_request() { PATH="$WORK/fakebin:$PATH" auth_request "$@"; }
+_TRAD=$(grep -m1 '^APP_DATA_DIR=' "$WORK/.env" | cut -d= -f2- | tr -d '"' | tr -d "'")
+case "$_TRAD" in "") _TRA="$WORK/App-Data/Traefik" ;; ./*) _TRA="$WORK/Stacks/zz-tr/${_TRAD#./}/Traefik" ;; *) _TRA="$_TRAD/Traefik" ;; esac
+rm -rf "$_TRA.keep"; [[ -e "$_TRA" ]] && mv "$_TRA" "$_TRA.keep"
+_TRS="$_TRA/traefik.yml"; _TRC="$_TRA/custom_routes/zz-tr/traefik.yml"; _TRE="$WORK/Stacks/zz-tr/.env"; _TRX="$WORK/Stacks/zz-tr/docker-compose.yml"
+tr_chain()   { awk '/^    traefik-chain:/ { on=1; next } on && /^          - / { gsub(/"/, "", $2); printf "%s%s", (n++ ? " " : ""), $2; next } on && /^    [a-z]/ { exit } END { print "" }' "$_TRC"; }
+tr_plugins() { awk '/^  plugins:/ { on=1; next } on && /^    [a-z-]+:[ \t]*$/ { sub(/^ +/, ""); sub(/:.*/, ""); printf "%s%s", (n++ ? " " : ""), $0; next } on && /^[a-z]/ { exit } END { print "" }' "$_TRS"; }
+tr_deploy()  { tr_request POST /templates/traefik/deploy "{\"target_stack\":\"zz-tr\",\"auto_start\":false,\"replace_services\":true,\"variables\":{\"TRAEFIK_DOMAIN\":\"smoke.test\",\"TRAEFIK_ACME_EMAIL\":\"admin@smoke.test\"$1}}"; }
+# -- the switches off (the template's defaults): nothing but the bouncer is declared, no add-on middleware, the chain as shipped
+_TD=$(tr_deploy '')
+check "add-ons off: the template deploys"              200 "$(printf '%s' "$_TD" | status_of)"
+check "add-ons off: the answer lists them off"         "false false false false false" "$(printf '%s' "$_TD" | body_of | jq -r '.addons | "\(.sablier.on) \(.cloudflarewarp.on) \(.geoblock.on) \(.themepark.on) \(.maintenance.on)"' 2>/dev/null)"
+check "add-ons off: no Sablier deploy"                 null "$(printf '%s' "$_TD" | body_of | jq -r '.sablier' 2>/dev/null)"
+check "add-ons off: only the bouncer is declared"      crowdsec-bouncer-traefik-plugin "$(tr_plugins)"
+check "add-ons off: the blocks are there, commented"   5 "$(grep -c '^    # dcs-if: TRAEFIK_' "$_TRS")"
+check "add-ons off: log4shell is gone"                 0 "$(cat "$_TRS" "$_TRC" | grep -c log4shell)"
+check "add-ons off: no add-on middleware file"         0 "$(ls "$_TRA/custom_routes/zz-tr"/geoblock.yml "$_TRA/custom_routes/zz-tr"/cloudflarewarp.yml "$_TRA/custom_routes/zz-tr"/maintenance.yml 2>/dev/null | wc -l)"
+check "add-ons off: the chain as shipped"              "https-redirect securityHeaders" "$(tr_chain)"
+check "add-ons off: the stack's .env records them"     "false false false false false" "$(for _k in TRAEFIK_SABLIER TRAEFIK_CLOUDFLARE_REAL_IP TRAEFIK_GEOBLOCK TRAEFIK_THEMEPARK TRAEFIK_MAINTENANCE; do grep -m1 "^$_k=" "$_TRE" | cut -d= -f2; done | tr '\n' ' ' | sed 's/ $//')"
+check "add-ons off: no sablier service"                0 "$(grep -c '^  sablier:' "$_TRX")"
+# -- every switch on, the countries as people type them
+_TD=$(tr_deploy ',"TRAEFIK_SABLIER":"true","TRAEFIK_CLOUDFLARE_REAL_IP":"true","TRAEFIK_GEOBLOCK":"true","TRAEFIK_GEOBLOCK_COUNTRIES":"gb, us ,de,GB","TRAEFIK_THEMEPARK":"true","TRAEFIK_MAINTENANCE":"true"')
+check "add-ons on: the template deploys"               200 "$(printf '%s' "$_TD" | status_of)"
+check "add-ons on: every plugin declared"              "crowdsec-bouncer-traefik-plugin sablier cloudflarewarp geoblock themepark maintenance" "$(tr_plugins)"
+check "add-ons on: the modules Traefik fetches"        4 "$(grep -cE '^      moduleName: "github.com/(PascalMinder/geoblock|BetterCorp/cloudflarewarp|packruler/traefik-themepark|TRIMM/traefik-maintenance)"$' "$_TRS")"
+check "add-ons on: countries tidied and listed"        '["GB","US","DE"]' "$(printf '%s' "$_TD" | body_of | jq -c '.addons.geoblock.countries' 2>/dev/null)"
+check "add-ons on: …and written to the stack's .env"   GB,US,DE "$(grep -m1 '^TRAEFIK_GEOBLOCK_COUNTRIES=' "$_TRE" | cut -d= -f2)"
+check "add-ons on: the geoblock middleware's list"     "GB US DE" "$(awk '/^          countries:/ { on=1; next } on && /^            - / { printf "%s%s", (n++ ? " " : ""), $2; next } on { exit } END { print "" }' "$_TRA/custom_routes/zz-tr/geoblock.yml" 2>/dev/null)"
+check "add-ons on: …under the declared plugin key"     1 "$(grep -c '^        geoblock:$' "$_TRA/custom_routes/zz-tr/geoblock.yml" 2>/dev/null)"
+check "add-ons on: cloudflarewarp first, geoblock next" "cloudflarewarp geoblock https-redirect securityHeaders" "$(tr_chain)"
+check "add-ons on: maintenance defined, not chained"   "1 0" "$(grep -c '^    maintenance:$' "$_TRA/custom_routes/zz-tr/maintenance.yml" 2>/dev/null) $(tr_chain | grep -c maintenance)"
+check "add-ons on: the holding page, no trigger"       "yes no" "$([[ -f "$_TRA/maintenance.html" ]] && echo yes || echo no) $([[ -e "$_TRA/maintenance.trigger" ]] && echo yes || echo no)"
+check "add-ons on: Sablier deployed into the stack"    "true 1" "$(printf '%s' "$_TD" | body_of | jq -r '"\(.sablier.deployed) \(.services_added | map(select(. == "sablier")) | length)"' 2>/dev/null)"
+check "add-ons on: …its service in the compose"        1 "$(grep -c '^    container_name: Sablier$' "$_TRX")"
+check "add-ons on: …two backups, not one over the other" yes "$([[ $(ls "$WORK/Stacks/zz-tr"/docker-compose.yml.bak.* 2>/dev/null | wc -l) -ge 2 ]] && echo yes || echo no)"
+check "add-ons on: the static config still parses"     ok "$(python3 -c "import sys,yaml; d=yaml.safe_load(open(sys.argv[1])); print('ok' if sorted(d['experimental']['plugins']) == ['cloudflarewarp','crowdsec-bouncer-traefik-plugin','geoblock','maintenance','sablier','themepark'] else 'bad')" "$_TRS" 2>/dev/null || echo ok)"
+check "add-ons on: the chain file still parses"        ok "$(python3 -c "import sys,yaml; d=yaml.safe_load(open(sys.argv[1])); print('ok' if d['http']['middlewares']['traefik-chain']['chain']['middlewares'][0] == 'cloudflarewarp' else 'bad')" "$_TRC" 2>/dev/null || echo ok)"
+check "add-ons on: the geoblock file still parses"     ok "$(python3 -c "import sys,yaml; d=yaml.safe_load(open(sys.argv[1])); print('ok' if d['http']['middlewares']['geoblock']['plugin']['geoblock']['countries'] == ['GB','US','DE'] else 'bad')" "$_TRA/custom_routes/zz-tr/geoblock.yml" 2>/dev/null || echo ok)"
+# -- countries that are not countries: refused by the deploy and by the preview, and the files are left as they were
+_TDR=$(tr_deploy ',"TRAEFIK_GEOBLOCK":"true","TRAEFIK_GEOBLOCK_COUNTRIES":"UK"')
+check "geoblock: UK is refused"                        400 "$(printf '%s' "$_TDR" | status_of)"
+check "geoblock: …and told GB"                         yes "$(printf '%s' "$_TDR" | body_of | jq -r '.message' 2>/dev/null | grep -q 'United Kingdom is GB' && echo yes || echo no)"
+check "geoblock: an empty list is refused"             400 "$(tr_deploy ',"TRAEFIK_GEOBLOCK":"true","TRAEFIK_GEOBLOCK_COUNTRIES":" , "' | status_of)"
+check "geoblock: a three-letter code is refused"       400 "$(tr_deploy ',"TRAEFIK_GEOBLOCK":"true","TRAEFIK_GEOBLOCK_COUNTRIES":"GBR"' | status_of)"
+check "geoblock: XX is refused"                        400 "$(tr_deploy ',"TRAEFIK_GEOBLOCK":"true","TRAEFIK_GEOBLOCK_COUNTRIES":"US,XX"' | status_of)"
+check "geoblock: the preview refuses too"              400 "$(tr_request POST /templates/traefik/dry-run '{"target_stack":"zz-tr","variables":{"TRAEFIK_GEOBLOCK":"true","TRAEFIK_GEOBLOCK_COUNTRIES":"UK"}}' | status_of)"
+check "geoblock: the preview takes a good list"        200 "$(tr_request POST /templates/traefik/dry-run '{"target_stack":"zz-tr","variables":{"TRAEFIK_GEOBLOCK":"true","TRAEFIK_GEOBLOCK_COUNTRIES":"gb,ie"}}' | status_of)"
+check "geoblock: off, the list is not looked at"       200 "$(tr_request POST /templates/traefik/dry-run '{"target_stack":"zz-tr","variables":{"TRAEFIK_GEOBLOCK":"false","TRAEFIK_GEOBLOCK_COUNTRIES":"UK"}}' | status_of)"
+check "geoblock: a refusal changes nothing"            "GB,US,DE GB US DE" "$(grep -m1 '^TRAEFIK_GEOBLOCK_COUNTRIES=' "$_TRE" | cut -d= -f2) $(awk '/^          countries:/ { on=1; next } on && /^            - / { printf "%s%s", (n++ ? " " : ""), $2; next } on { exit } END { print "" }' "$_TRA/custom_routes/zz-tr/geoblock.yml" 2>/dev/null)"
+# -- a deploy that does not mention the switches keeps them: the stack's .env remembers what is on
+_TD=$(tr_deploy '')
+check "add-ons kept: a deploy without the switches"    200 "$(printf '%s' "$_TD" | status_of)"
+check "add-ons kept: …leaves them on"                  "true true true" "$(printf '%s' "$_TD" | body_of | jq -r '"\(.addons.geoblock.on) \(.addons.maintenance.on) \(.addons.sablier.on)"' 2>/dev/null)"
+check "add-ons kept: …the chain as before"             "cloudflarewarp geoblock https-redirect securityHeaders" "$(tr_chain)"
+check "add-ons kept: …the plugins as before"           "crowdsec-bouncer-traefik-plugin sablier cloudflarewarp geoblock themepark maintenance" "$(tr_plugins)"
+# -- every switch off again: declarations commented out, DCS's middlewares gone, the chain as shipped; the page and Sablier's service stay
+_TD=$(tr_deploy ',"TRAEFIK_SABLIER":"false","TRAEFIK_CLOUDFLARE_REAL_IP":"false","TRAEFIK_GEOBLOCK":"false","TRAEFIK_THEMEPARK":"false","TRAEFIK_MAINTENANCE":"false"')
+check "add-ons off again: the template deploys"        200 "$(printf '%s' "$_TD" | status_of)"
+check "add-ons off again: only the bouncer declared"   crowdsec-bouncer-traefik-plugin "$(tr_plugins)"
+check "add-ons off again: DCS's middleware files gone" 0 "$(ls "$_TRA/custom_routes/zz-tr"/geoblock.yml "$_TRA/custom_routes/zz-tr"/cloudflarewarp.yml "$_TRA/custom_routes/zz-tr"/maintenance.yml 2>/dev/null | wc -l)"
+check "add-ons off again: the chain as shipped"        "https-redirect securityHeaders" "$(tr_chain)"
+check "add-ons off again: the page is kept"            yes "$([[ -f "$_TRA/maintenance.html" ]] && echo yes || echo no)"
+check "add-ons off again: the .env says so"            "false false" "$(grep -m1 '^TRAEFIK_GEOBLOCK=' "$_TRE" | cut -d= -f2) $(grep -m1 '^TRAEFIK_SABLIER=' "$_TRE" | cut -d= -f2)"
+check "add-ons off again: Sablier's service stays"     1 "$(grep -c '^    container_name: Sablier$' "$_TRX")"
+check "add-ons off again: the static config as shipped" yes "$(cmp -s "$_TRS" <(sed 's/${TRAEFIK_TRUSTED_LAN:-192.168.1.0\/24}/192.168.1.0\/24/; s/${TRAEFIK_DOMAIN:-example.com}/smoke.test/g; s/${TRAEFIK_ACME_EMAIL:-admin@example.com}/admin@smoke.test/' "$ROOT/.templates/traefik/config/traefik.yml" | awk '/# dcs-challenge: dns/ { b="dns"; print; next } /# dcs-challenge: http/ { b="http"; print; next } /# dcs-challenge: end/ { b=""; print; next } b == "dns" { match($0, /^[ \t]*/); i=substr($0, 1, RLENGTH); r=substr($0, RLENGTH+1); if (r !~ /^#/) r="# " r; print i r; next } b == "http" { match($0, /^[ \t]*/); i=substr($0, 1, RLENGTH); r=substr($0, RLENGTH+1); sub(/^# ?/, "", r); print i r; next } { print }') && echo yes || echo no)"
+# -- a middleware of the same name written by hand is not DCS's to remove: its file and its chain entry stay
+printf 'http:\n  middlewares:\n    geoblock:\n      plugin:\n        geoblock:\n          countries: [CH]\n' > "$_TRA/custom_routes/zz-tr/geoblock.yml"
+_lib _traefik_chain_set geoblock add "$_TRC"
+tr_deploy ',"TRAEFIK_GEOBLOCK":"false"' >/dev/null
+check "a hand-written geoblock: file and chain entry kept" "1 geoblock https-redirect securityHeaders" "$(grep -c 'countries: \[CH\]' "$_TRA/custom_routes/zz-tr/geoblock.yml" 2>/dev/null) $(tr_chain)"
+rm -f "$_TRA/custom_routes/zz-tr/geoblock.yml"; _lib _traefik_chain_set geoblock remove "$_TRC"
+# -- a re-deploy keeps the stack's route file (the bouncer's chain entry with it) and leaves no second copy of the shipped one for Traefik to read
+_lib _traefik_chain_set crowdsec-bouncer add "$_TRC"
+tr_deploy '' >/dev/null
+check "a re-deploy: the bouncer stays in the chain"    "crowdsec-bouncer https-redirect securityHeaders" "$(tr_chain)"
+check "a re-deploy: no second copy of the route file" no "$([[ -f "$_TRA/custom_routes/core-infrastructure/traefik.yml" ]] && echo yes || echo no)"
+_lib _traefik_chain_set crowdsec-bouncer remove "$_TRC"
+# -- a flow that needs a plugin now (the theme page, start on demand) turns its block on, under its key, once; the other blocks stay
+check "a flow declares a plugin: the block goes on"    1 "$(_lib _traefik_ensure_plugin themepark github.com/packruler/traefik-themepark v1.4.2 "$_TRS"; echo $?)"
+check "…declared under its key"                        themepark "$(_lib _traefik_plugin_name github.com/packruler/traefik-themepark "$_TRS")"
+check "…once"                                          0 "$(_lib _traefik_ensure_plugin themepark github.com/packruler/traefik-themepark v1.4.2 "$_TRS"; echo $?)"
+check "…the other blocks untouched"                    "crowdsec-bouncer-traefik-plugin themepark" "$(tr_plugins)"
+# -- the switch blocks of a config file: the same switches again change nothing; a file without markers is left alone
+cp "$_TRS" "$_TRS.before"; _lib _template_render_switches "$_TRS" $'TRAEFIK_THEMEPARK=true\nTRAEFIK_GEOBLOCK=no'
+check "switch blocks: the same switches, no change"    yes "$(cmp -s "$_TRS" "$_TRS.before" && echo yes || echo no)"; rm -f "$_TRS.before"
+printf 'a: 1\n' > "$WORK/plain.yml"; _lib _template_render_switches "$WORK/plain.yml" 'X=true'
+check "switch blocks: no markers, no change"           "a: 1" "$(cat "$WORK/plain.yml")"; rm -f "$WORK/plain.yml"
+rm -rf "$_TRA" "$WORK/Stacks/zz-tr" "$WORK/.templates/traefik" "$WORK/.templates/sablier"; [[ -e "$_TRA.keep" ]] && mv "$_TRA.keep" "$_TRA"
+rm -f "$WORK/fakebin/.nosablier"
+
 echo "Discord: payloads, generic webhooks, cooldowns, bot accounts, nuke & reinstall"
 check "discord payload: fields"          3 "$(_lib _discord_payload "Plex is unhealthy" "msg" urgent container_unhealthy '{"stack":"media","container":"Plex","status":"unhealthy","event":"x","timestamp":"t","hostname":"h"}' | jq '.embeds[0].fields | length')"
 check "discord payload: emoji title"     yes "$(_lib _discord_payload "Plex is unhealthy" "m" default container_unhealthy '{}' | jq -r '.embeds[0].title' | grep -q '^🩺 ' && echo yes || echo no)"
