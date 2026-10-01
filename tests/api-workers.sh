@@ -95,6 +95,16 @@ check "a killed worker is replaced"                2 "$(workers | wc -w)"
 check "…and the pool still answers"                200 "$(curl -s -m 5 -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOKEN" "http://127.0.0.1:$PORT/version")"
 # a request line that never comes: the front gives up after its 10 s, the worker is not held
 check "an idle connection does not hold a worker"  200 "$( (exec 3<>"/dev/tcp/127.0.0.1/$PORT"; sleep 0.3; exec 3>&-) ; curl -s -m 5 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/ping")"
+# an event stream stays open: it gets a process of its own, the workers stay free (two streams, two workers)
+curl -sN -m 6 "http://127.0.0.1:$PORT/stream?token=$TOKEN" >/dev/null 2>&1 &
+curl -sN -m 6 "http://127.0.0.1:$PORT/stream?token=$TOKEN" >/dev/null 2>&1 &
+sleep 1.5
+_t0=$(date +%s%N); _pc=$(curl -s -m 5 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/ping"); _ms=$(( ($(date +%s%N) - _t0) / 1000000 ))
+check "two open streams do not take the two workers" "200 fast" "$_pc $( (( _ms < 1500 )) && echo fast || echo "slow (${_ms} ms)")"
+# every worker busy (no socket to connect to): the request is answered by a process of its own, not refused
+mkdir -p "$W/norun"
+check "no free worker: answered all the same"      yes "$(printf 'GET /ping HTTP/1.1\r\nHost: x\r\n\r\n' | DCS_API_RUN_DIR="$W/norun" SOCAT_PEERADDR=127.0.0.1 DCS_API_EFFECTIVE_AUTH=true DCS_API_EFFECTIVE_BIND=127.0.0.1 timeout 20 bash "$W/.scripts/api-dispatch.sh" 2>/dev/null | grep -q '"ok": true' && echo yes || echo no)"
+wait 2>/dev/null
 # stop: the workers end and their sockets go
 (cd "$W" && "$W/.scripts/api-server.sh" --stop >/dev/null 2>&1)
 for i in $(seq 1 40); do alive "$MAIN" || break; sleep 0.25; done

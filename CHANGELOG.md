@@ -5,6 +5,23 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [4.0.7] - 2026-10-01
+
+### Fixed
+
+- **The dashboard kept losing the API on a hub with a dashboard open, and the CPU ran high** (4.0.5 and 4.0.6). The worker pool was a
+  queue: an event stream (the dashboard's *Live* feed is open for as long as its tab is) held a worker for good, and a request that
+  found every worker busy waited up to five seconds and was then refused. The pool is a fast path now: a stream, and any request that
+  finds no free worker within a quarter of a second, is served by a process of its own, the way every request was before the pool —
+  nothing waits behind a slow request and nothing is refused.
+- **Every fleet answer waited seconds for each VM that was gone.** A member the watcher had marked unreachable was asked again by every
+  call (3 s each, per member, per request). The watcher looks once a minute; within that minute its verdict stands and a call to such a
+  member fails at once. The member's *Test* button still asks for real.
+
+### Tests
+
+- `tests/api-workers.sh`: two open streams leave the two workers free; a request with no free worker is answered all the same (28 checks).
+
 ## [4.0.6] - 2026-10-01
 
 ### Fixed

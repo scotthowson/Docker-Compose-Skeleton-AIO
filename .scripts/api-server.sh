@@ -20344,6 +20344,13 @@ _fleet_call() {
     url=$(jq -r '.url' <<< "$m"); insecure=$(jq -r '.insecure // false' <<< "$m")
     # a member the watcher marked unreachable is probed first (3 s) instead of a login and a call that each wait out their timeout
     if [[ "$(jq -r '.reachable // true' <<< "$m")" == "false" ]]; then
+        # the watcher looks at every member once a minute: within that minute its verdict stands and a call to a member
+        # that does not answer costs nothing (five VMs that were gone made every fleet answer wait seconds for each of
+        # them, which kept every API worker busy); FLEET_PROBE=1 asks anyway (the member's own Test button)
+        local _ws; _ws=$(stat -c %Y "$FLEET_WATCH_STAMP" 2>/dev/null || echo 0)
+        if [[ -z "${FLEET_PROBE:-}" ]] && (( $(date +%s) - _ws < 90 )); then
+            _FLEET_HTTP=0; _FLEET_ERR="$id does not answer (the hub looked $(( $(date +%s) - _ws )) s ago and looks again every minute)"; return 1
+        fi
         local _pg; _fleet_http _pg GET "$url/ping" "" "" 3 "$insecure"
         if [[ "$_FLEET_HTTP" != 200 ]]; then _FLEET_HTTP=0; _FLEET_ERR="$id is marked unreachable and does not answer /ping"; return 1; fi
         _fleet_update --arg id "$id" --argjson now "$(date +%s)" '.members = [(.members // [])[] | if .id == $id then .reachable = true | .last_seen = $now | .last_error = "" else . end]' >/dev/null 2>&1 || true
@@ -21440,7 +21447,7 @@ handle_fleet_member_test() {
     rm -f "$FLEET_SESSION_DIR/$id.token" 2>/dev/null
     if _fleet_login "$id"; then
         ok=true
-        _fleet_call ident "$id" GET /fleet/identity "" 8 || ident='{}'
+        FLEET_PROBE=1 _fleet_call ident "$id" GET /fleet/identity "" 8 || ident='{}'
         [[ "$ident" == \{* ]] || ident='{}'
         ident=$(jq -c 'del(.machine_id)' <<< "$ident" 2>/dev/null || echo '{}')
         ver=$(jq -r '.version // ""' <<< "$ident")
