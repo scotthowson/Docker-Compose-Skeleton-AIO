@@ -90,6 +90,13 @@ hand), removes its own named volumes if you tick them, and creates the service a
 file: a first install. Folders another container also mounts are never touched. The preview lists
 everything with its size before you type the container's name to confirm.
 
+The folders are the stack's own: with the default `APP_DATA_DIR=./App-Data` every stack keeps its data
+in `Stacks/<stack>/App-Data`, and that is where the nuke looks and where its trash is
+(`Stacks/<stack>/App-Data/.trash`). An `App-Data` that Docker made belongs to root; the move into the
+trash is done as root in a small container, so nothing is lost there either. With an absolute
+`APP_DATA_DIR` (one root for every stack) only what lies two levels below the root counts as a
+container's own. A container in a VM is nuked in its VM: the hub forwards the request.
+
 ## Updating DCS
 
 The **Updates** page checks the release channel (`UPDATE_CHANNEL`: `stable` follows the tagged

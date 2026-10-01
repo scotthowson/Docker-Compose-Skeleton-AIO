@@ -218,6 +218,9 @@ The rules themselves (which events, which targets) live on the Notifications pag
 | `FLEET_SCAN_PORTS` | `9876` | Ports the hub probes when it scans guests for DCS |
 | `FLEET_IMAGE_URL` | Debian 13 cloud image | The image the hub imports for new VMs |
 | `FLEET_VM_USER` | `dcs` | The user cloud-init makes in the VMs the hub builds |
+| `FLEET_APPDATA_MOUNT` | `true` | A hub shows every VM stack's App-Data at `Stacks/<name>/VM-App-Data` (a link to an sshfs mount of the VM's folder); `false` takes the mounts and the links away |
+| `FLEET_APPDATA_INSTALL` | `true` | The hub installs `sshfs` by itself when it is missing and the DCS account has passwordless sudo; `false` leaves that to you |
+| `FLEET_MOUNT_DIR` | `~/.dcs-vm-data` | Where those mounts are made — outside the DCS folder on purpose (a folder inside it is refused) |
 
 `.config/fleet-images.json` on the hub (an array of `{id, label, url, file, family}`) replaces the list of
 operating systems the VM settings offer. [Proxmox guide](PROXMOX.md) explains every piece.

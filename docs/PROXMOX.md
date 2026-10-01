@@ -251,6 +251,26 @@ instead, and the hub — the DCS linked to Proxmox — makes that invisible:
   VM* takes what the VM has (`/pull`), and *Sync stack files* on the VM does every stack of it
   (`POST /fleet/members/{id}/sync`, `{direction: "push"}` the other way). A stack with no folder
   starts empty and takes templates.
+- **A VM's App-Data, live on the hub**: what a stack's containers write stays in its VM and is
+  never copied — and the hub shows it. `Stacks/<name>/VM-App-Data` on the hub is the VM's own
+  `Stacks/<name>/App-Data`, mounted over the hub's ssh key (sshfs): open a config file there,
+  save it, and it is saved in the VM. The far side serves as root when the VM's account has
+  passwordless sudo (a VM the hub built has), because an App-Data belongs to whatever user each
+  container runs as; a file edited in place keeps its owner, a file *made* from the hub belongs
+  to root in the VM. The mount comes by itself — after a deploy or a start in the VM, and from the
+  hub's watcher every minute for whatever is not mounted (a VM that was off, a hub that
+  restarted). While nothing is mounted the link shows one file, `NOT-MOUNTED.txt`, with the
+  reason; the stack's page says the same and has **Mount** and **Unmount**
+  (`GET /stacks/{name}/appdata`, `POST /stacks/{name}/appdata/mount`, `…/unmount` keeps it down
+  until Mount). It needs `sshfs` on the hub — installed by itself when the DCS account has
+  passwordless sudo (a hub image has), otherwise `sudo apt install sshfs` or
+  `sudo dnf install fuse-sshfs` — and the hub's key in the VM's account (see *VMs you made
+  yourself*). The link has a name of its own and points at a mount *outside* the DCS folder
+  (`~/.dcs-vm-data/<name>`, `FLEET_MOUNT_DIR`) on purpose: whatever on the hub copies, archives
+  or removes a stack folder — a deleted stack, a backup, a recovery bundle, removing DCS — meets
+  a link and never the VM's data behind it, and what the hub does with `App-Data` folders (its
+  Traefik's routes, Homarr's database, a factory reset) keeps meaning the stacks it runs itself.
+  `FLEET_APPDATA_MOUNT=false` switches it off.
 - **The Stacks page is the VMs page** on a hub: the sidebar reads *VMs*, the VMs come first (each
   one a stack) and the hub's own stacks follow; open a VM for the containers running in it, with
   start/stop/restart per container, the compose editor, logs, and the VM's own power. *New VM*
@@ -605,6 +625,7 @@ A member is another machine, so the hub treats everything it sends as data:
 | POST | `/fleet/members/{id}/test` | admin — sign in afresh, read the identity, re-match the guest |
 | GET / POST | `/stacks/{name}/files` | admin — a stack's files (compose, `.env`, configuration; nothing a stack makes while it runs), each base64; on a hub a VM stack's files are the hub's copy, written here and pushed into the VM |
 | POST | `/stacks/{name}/push`, `/stacks/{name}/pull`, `/fleet/members/{id}/sync` | admin — the hub's copy of a VM stack into the VM; the VM's files into the hub's copy; every stack of a VM at once (`{direction: "pull"|"push", stacks?: [names]}`) |
+| GET / POST | `/stacks/{name}/appdata`, `/stacks/{name}/appdata/mount`, `/stacks/{name}/appdata/unmount` | admin — where a stack's App-Data is; for a VM's stack on a hub whether the VM's folder is mounted at `Stacks/<name>/VM-App-Data` (`state`: `mounted`, `waiting`, `unavailable`, `held`, `off`, with the `reason`); mount it now (409 with the reason when it cannot be); take it down until mount |
 | ANY | `/fleet/members/{id}/api/{path}` | the caller's role on the inner path — the proxy |
 | GET | `/fleet/overview` | user — every member with its stacks, containers and counts (10 s cache) |
 | GET | `/fleet/services` | user — the fleet's services by name: every running container with a published port on the hub and in every reachable VM, where it runs, its LAN address, its route (15 s cache) |
@@ -677,6 +698,8 @@ once; a full DCS without an admin yet saves the join for its wizard), `--join-to
 | *The API token lacks permission* (403) | Give `VM.Audit`, `VM.PowerMgmt`, `Sys.Audit` on `/` to the user (privilege separation off) or to the token itself. |
 | *did not answer* | Wrong URL or port (the web UI's, `:8006`), a firewall in front of it, or certificate verification on with the self-signed certificate — switch it off, or install a real certificate on Proxmox. *HTTP 301* from a setup before 3.9.7: the address was `http://`; Proxmox wants `https://…:8006` (3.9.7 switches it by itself). |
 | Deploying a template into a VM stack: *Protecting a route needs Authelia* (before 3.9.8) | The hub owns Authelia for the VMs' routes (its Traefik serves them), so the choice is kept on the hub and the VM gets a plain deploy. Update the hub to 3.9.8. *Start on demand* is not offered for a stack in a VM: Sablier runs on the hub and wakes the hub's containers only. |
+| `Stacks/<name>/VM-App-Data` on the hub holds only `NOT-MOUNTED.txt` | The file says why: the VM is off or does not answer ssh (the mount comes back by itself when it does), the stack has made no App-Data yet (it is made when a container with a volume in it first starts), `sshfs` is not on the hub (`sudo apt install sshfs`, `sudo dnf install fuse-sshfs`; a hub whose DCS account has passwordless sudo installs it by itself), the VM's account does not take the hub's key (a VM you made yourself: put `.data/fleet-ssh/id_ed25519.pub` of the hub into its `authorized_keys`), or the hub's API runs as the systemd service without passwordless sudo (a mount it made would be invisible to your shell). **Mount** on the stack's page tries at once and answers with the reason. |
+| A file made in `VM-App-Data` cannot be written by the app | It belongs to root in the VM (the mount serves as root so every container's files can be read). Edit files in place — that keeps their owner — or `chown` the new file there to the user the container runs as. |
 | A build is refused: *A guest named 'x' already exists on Proxmox (qemu 103 on pve)* | Proxmox holds a VM (or container) named like the stack — often one built by an earlier hub that was deleted. The hub never builds a twin, and a refused request queues nothing. Remove or rename the old guest on Proxmox (or link it from the Proxmox page if it still belongs to this hub); the setup wizard marks such a stack "VM 103 exists" and builds the others. |
 | Setup stops on *Docker is not running* or *may not use Docker* | A fresh server: Docker installed but not started (Fedora does not start it), or your user outside the `docker` group. Setup offers both fixes and carries on; by hand: `sudo systemctl enable --now docker`, `sudo usermod -aG docker $USER`, log out and back in (or `newgrp docker`), then `./setup.sh` again. |
 | A hub on Fedora (set up by hand): a build stops at **Install** with *could not fetch the DCS bundle* or *this VM cannot reach the hub*, or the VMs cannot join | firewalld on the hub blocks the API port the VMs fetch DCS from and join on. The wizard and *New VM* warn about it before a build. Setup offers to open it; by hand: `sudo firewall-cmd --permanent --add-port=9876/tcp && sudo firewall-cmd --reload`, then *Retry*. |

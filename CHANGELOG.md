@@ -5,6 +5,33 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [4.0.11] - 2026-10-01
+
+### Added
+
+- **A VM's App-Data, live on the hub.** What a VM stack's containers write stays in the VM, and the hub's copy of the stack held only the
+  compose, the `.env` and the configuration: to look at an app's own files you had to go into the VM. `Stacks/<name>/VM-App-Data` on the
+  hub is the VM's `App-Data` now, mounted over the hub's ssh key (sshfs): a file edited there is edited in the VM at once. It comes by
+  itself (after a deploy or a start in the VM, and from the watcher for whatever is not mounted), goes when the stack or the VM does,
+  and while nothing is mounted the link shows one file with the reason. The stack's page has **Mount** and **Unmount**
+  (`GET /stacks/{name}/appdata`, `POST .../appdata/mount`, `.../appdata/unmount`). `sshfs` is installed on the hub by itself when the DCS
+  account has passwordless sudo (a hub image has). Nothing is copied and nothing on the hub can remove the VM's data by accident: the
+  link has a name of its own and points at a mount outside the DCS folder (`~/.dcs-vm-data`), so a deleted stack, a backup, a recovery
+  bundle or an `rm -rf` of the DCS folder meets a link, and the hub's own handling of `App-Data` folders is untouched.
+  `FLEET_APPDATA_MOUNT=false` switches it off; `FLEET_MOUNT_DIR` and `FLEET_APPDATA_INSTALL` are the other two settings.
+
+### Fixed
+
+- **Nuke & reinstall emptied nothing where every stack keeps its own App-Data** (`APP_DATA_DIR=./App-Data`, the default - and every VM
+  the hub builds). The folders were listed as `./App-Data/...` *missing* and the container came back with all its old files: the paths
+  were resolved against the directory the API runs in instead of the stack's folder. They are resolved for the stack the container
+  belongs to now, the preview shows the real folders with their sizes, and the trash is the stack's own (`App-Data/.trash`). An App-Data
+  Docker made belongs to root: the move into the trash is done as root, so those folders are kept for a week like the others instead
+  of only being wiped. A folder inside another folder of the list is listed once, and the Docker overview's App-Data size adds up every
+  stack's own folder.
+- **A volume written `${APP_DATA_DIR:-./App-Data}/...` was not recognised as App-Data** (the path was cut at the `:-`): a nuke did not
+  see it, and a deploy did not make the folder for the app's user before the first start.
+
 ## [4.0.10] - 2026-10-01
 
 ### Added

@@ -188,7 +188,7 @@ walk you through it.
 <summary><b>Proxmox and the fleet</b></summary>
 
 - **The Proxmox page:** nodes, VMs and LXC containers with live load, power buttons and recent tasks. [Proxmox guide](docs/PROXMOX.md#3-what-you-get)
-- **The VM is the stack:** the hub builds a VM per stack from a cloud image or a baked template, and keeps the stack's files (a rebuilt VM gets them back with one push). [Proxmox guide](docs/PROXMOX.md#5-the-fleet-the-vm-is-the-stack)
+- **The VM is the stack:** the hub builds a VM per stack from a cloud image or a baked template, and keeps the stack's files (a rebuilt VM gets them back with one push); the VM's `App-Data` shows up next to them on the hub, live (`Stacks/<name>/VM-App-Data`), so an app's own config can be edited from the hub. [Proxmox guide](docs/PROXMOX.md#5-the-fleet-the-vm-is-the-stack)
 - **Everything from the hub:** every list page opens on *Everywhere*, with a chip for the hub or one VM. [Proxmox guide](docs/PROXMOX.md#everything-from-the-hub)
 - **One version everywhere:** *Update all VMs* hands every member the hub's code. [Proxmox guide](docs/PROXMOX.md#keeping-the-vms-on-the-hubs-version)
 - **Bring your own VMs:** any DCS joins the hub with a join code. [Proxmox guide](docs/PROXMOX.md#vms-you-made-yourself)

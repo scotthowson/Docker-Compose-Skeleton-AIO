@@ -56,3 +56,6 @@ Thumbs.db
 !.plugins/health-watchdog/
 !.plugins/traefik-subdomain-guard/
 Stacks/*/.dcs-trusted-templates
+# a hub's copy of a VM stack: the note that says where it runs, the link to the VM's App-Data
+Stacks/*/RUNS-IN-A-VM.txt
+Stacks/*/VM-App-Data

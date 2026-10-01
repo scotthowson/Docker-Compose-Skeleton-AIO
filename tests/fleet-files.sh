@@ -7,7 +7,9 @@
 # a pull, a sync), that a save on the hub reaches the member (push after compose, .env and files
 # writes), that a rebuilt member gets its files back, that nothing but configuration travels, that
 # a path cannot leave the stack folder, and that a member that is off still shows its files from
-# the hub's copy.
+# the hub's copy. The VM's App-Data is shown on the hub through a link to a mount: ssh, sshfs and the
+# unmount helper are stood in for (no FUSE, no second machine), so what is checked is everything
+# around the mount itself — when it is made, what the link points at, what a delete leaves alone.
 #
 # Usage: tests/fleet-files.sh   (exit status 0 = all passed; needs socat, curl, jq, python3)
 # =============================================================================
@@ -48,6 +50,30 @@ install() {
 }
 install "$HUB" "$HP" "Hub"
 install "$MEM" "$MP" "Media VM"
+# the hub's view of a VM's App-Data: ssh runs the far side's command here, sshfs writes a line into a mount table of the
+# test's own (and fails on demand), the unmount helper takes the line out again
+FAKE="$W/fake"; VMDATA="$W/vm-data"; mkdir -p "$FAKE" "$HUB/.data/fleet-ssh"; : > "$FAKE/mountinfo"; printf 'not a real key\n' > "$HUB/.data/fleet-ssh/id_ed25519"
+cat > "$FAKE/ssh" <<'FAKESSH'
+#!/bin/bash
+# the last word is the command for the far side; what it finds of sftp-server and sudo depends on this machine, so both are pinned
+bash -c "${@: -1}" | sed -e 's#^sftp=.*#sftp=/usr/lib/openssh/sftp-server#' -e 's#^sudo=.*#sudo=#'
+FAKESSH
+cat > "$FAKE/sshfs" <<'FAKESSHFS'
+#!/bin/bash
+d="$(dirname "$0")"; mp="${@: -1}"; remote="${@: -2:1}"
+printf '%s\n' "$*" >> "$d/sshfs.log"
+[[ -f "$d/sshfs-fail" ]] && { echo "read: Connection reset by peer" >&2; exit 1; }
+[[ -d "$mp" && -w "$mp" ]] || { echo "fusermount3: user has no write access to mountpoint $mp" >&2; exit 1; }
+printf '900 1 0:90 / %s rw,nosuid,nodev,relatime - fuse.sshfs %s rw,user_id=0,group_id=0\n' "$mp" "$remote" >> "$d/mountinfo"
+FAKESSHFS
+cat > "$FAKE/fusermount3" <<'FAKEFUM'
+#!/bin/bash
+d="$(dirname "$0")"; mp="${@: -1}"
+awk -v mp="$mp" '$5 != mp' "$d/mountinfo" > "$d/mountinfo.new" && mv -f "$d/mountinfo.new" "$d/mountinfo"
+FAKEFUM
+chmod +x "$FAKE/ssh" "$FAKE/sshfs" "$FAKE/fusermount3"
+printf 'FLEET_SSH_CMD=%s\nFLEET_SSHFS_CMD=%s\nFLEET_FUSERMOUNT_CMD=%s\nFLEET_MOUNTINFO=%s\nFLEET_APPDATA_RUNNER=direct\nFLEET_APPDATA_INSTALL=false\nFLEET_MOUNT_DIR=%s\n' \
+    "$FAKE/ssh" "$FAKE/sshfs" "$FAKE/fusermount3" "$FAKE/mountinfo" "$VMDATA" >> "$HUB/.env"
 # the member runs "demo": compose, .env and configuration travel; what it makes while it runs does not
 mkdir -p "$MEM/Stacks/demo/config" "$MEM/Stacks/demo/data" "$MEM/Stacks/demo/logs"
 printf 'services:\n  demo:\n    image: alpine:3\n    command: ["sleep","infinity"]\n' > "$MEM/Stacks/demo/docker-compose.yml"
@@ -169,6 +195,90 @@ check "sync: …the member has the hand-made file"    "from: the-hub" "$(cat "$M
 check "sync: unknown member"                        404 "$(hub_code POST /fleet/members/nobody/sync '{}')"
 check "sync: a viewer may not"                      401 "$(curl -s -m 10 -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:$HP/fleet/members/$MID/sync" -H 'Content-Type: application/json' -d '{}')"
 
+echo "The VM's App-Data is shown on the hub"
+# function level on the hub's own folder, with the hub's settings
+_hublib() { ( cd "$HUB" && set -a && . "$HUB/.env" && set +a && source "$HUB/.scripts/api-server.sh" >/dev/null 2>&1; _audit_log() { :; }; "$@" ); }
+_mounts() { grep -c " $VMDATA/demo " "$FAKE/mountinfo" 2>/dev/null; }
+A=$(member GET /stacks/demo/appdata)
+check "appdata: a server names its own folder"      "local $MEM/Stacks/demo/App-Data false" "$(jq -r '"\(.placement) \(.path) \(.exists)"' <<< "$A" 2>/dev/null)"
+check "appdata: nothing to mount on the server that runs the stack" 400 "$(member_code POST /stacks/demo/appdata/mount)"
+check "appdata: unknown stack"                      404 "$(hub_code GET /stacks/nope/appdata)"
+check "appdata: a viewer may not"                   401 "$(curl -s -m 10 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$HP/stacks/demo/appdata")"
+A=$(hub GET /stacks/demo/appdata)
+check "appdata: the hub answers for a VM's stack"   "vm $MID Stacks/demo/VM-App-Data false" "$(jq -r '"\(.placement) \(.member) \(.link) \(.mounted)"' <<< "$A" 2>/dev/null)"
+# the stack has no App-Data in the VM yet: Mount says so, and so does the folder the link shows
+R=$(hub POST /stacks/demo/appdata/mount)
+check "appdata: no App-Data in the VM yet is said"  yes "$(jq -r '.message // .error' <<< "$R" 2>/dev/null | grep -q 'has no App-Data in media-vm yet' && echo yes || echo no)"
+check "appdata: …the state is waiting"              "waiting false" "$(hub GET /stacks/demo/appdata | jq -r '"\(.state) \(.mounted)"' 2>/dev/null)"
+check "appdata: …the link shows why"                yes "$([[ -L "$HUB/Stacks/demo/VM-App-Data" ]] && grep -q 'has no App-Data in media-vm yet' "$HUB/Stacks/demo/VM-App-Data/NOT-MOUNTED.txt" 2>/dev/null && echo yes || echo no)"
+check "appdata: …and nothing can be written there"  no "$( (: > "$HUB/Stacks/demo/VM-App-Data/x") 2>/dev/null; [[ -e "$VMDATA/.not-mounted/demo/x" ]] && echo yes || echo no)"
+# the VM makes its App-Data; an App-Data someone made by hand in the hub's copy holds nothing
+mkdir -p "$MEM/Stacks/demo/App-Data/Jellyfin/config" "$HUB/Stacks/demo/App-Data/Jellyfin/config" "$HUB/Stacks/demo/App-Data/Jellyfin/cache"
+printf '<xml/>\n' > "$MEM/Stacks/demo/App-Data/Jellyfin/config/system.xml"
+R=$(hub POST /stacks/demo/appdata/mount)
+check "appdata: Mount mounts"                       "true mounted true" "$(jq -r '"\(.success) \(.state) \(.mounted)"' <<< "$R" 2>/dev/null)"
+check "appdata: …from the VM's own folder"          "dcs@127.0.0.1:$MEM/Stacks/demo/App-Data account" "$(jq -r '"\(.remote) \(.access)"' <<< "$R" 2>/dev/null)"
+check "appdata: …sshfs got the far side's server and the hub's key" yes "$(tail -1 "$FAKE/sshfs.log" | grep -q "sftp_server=/usr/lib/openssh/sftp-server .*IdentityFile=$HUB/.data/fleet-ssh/id_ed25519\|IdentityFile=$HUB/.data/fleet-ssh/id_ed25519 .*sftp_server=/usr/lib/openssh/sftp-server" && echo yes || echo no)"
+check "appdata: …a far side that goes away takes the mount with it" yes "$(tail -1 "$FAKE/sshfs.log" | grep -q 'ServerAliveInterval=5 .*ServerAliveCountMax=3' && tail -1 "$FAKE/sshfs.log" | grep -q 'auto_unmount' && echo yes || echo no)"
+check "appdata: the link points at the mount"       "$VMDATA/demo" "$(readlink "$HUB/Stacks/demo/VM-App-Data" 2>/dev/null)"
+check "appdata: the mount is outside the DCS folder" no "$([[ "$VMDATA/" == "$HUB/"* ]] && echo yes || echo no)"
+check "appdata: the empty App-Data made by hand is gone" no "$([[ -e "$HUB/Stacks/demo/App-Data" ]] && echo yes || echo no)"
+check "appdata: the note names the link"            yes "$(grep -q '^VM-App-Data in this folder is that App-Data, live' "$HUB/Stacks/demo/RUNS-IN-A-VM.txt" 2>/dev/null && echo yes || echo no)"
+check "appdata: audited"                            yes "$(grep -q 'fleet_appdata_mounted' "$HUB/.data/audit.jsonl" 2>/dev/null && echo yes || echo no)"
+check "appdata: Mount again is the same mount"      "true 1" "$(hub POST /stacks/demo/appdata/mount | jq -r '.success' 2>/dev/null) $(_mounts)"
+check "appdata: the link is not one of the stack's files" no "$(hub GET /stacks/demo/files | jq -e '[.files[].path] | map(select(test("VM-App-Data"))) | length > 0' >/dev/null 2>&1 && echo yes || echo no)"
+hub POST /stacks/demo/pull >/dev/null
+check "appdata: a pull leaves the link alone"       "$VMDATA/demo" "$(readlink "$HUB/Stacks/demo/VM-App-Data" 2>/dev/null)"
+hub POST /stacks/demo/push >/dev/null
+check "appdata: a push never carries it into the VM" no "$([[ -e "$MEM/Stacks/demo/VM-App-Data" || -L "$MEM/Stacks/demo/VM-App-Data" ]] && echo yes || echo no)"
+# an App-Data in the hub's copy that holds a file (what a stack had on the hub before it moved into its VM) is not touched
+mkdir -p "$HUB/Stacks/demo/App-Data/Old"; printf 'kept\n' > "$HUB/Stacks/demo/App-Data/Old/data.db"
+_hublib _fleet_appdata_tidy demo
+check "appdata: an App-Data with a file in it stays" kept "$(cat "$HUB/Stacks/demo/App-Data/Old/data.db" 2>/dev/null)"
+rm -rf "${HUB:?}/Stacks/demo/App-Data"
+# unmounted on purpose: it stays down until Mount
+R=$(hub POST /stacks/demo/appdata/unmount)
+check "appdata: Unmount takes it down"              "true held false 0" "$(jq -r '"\(.success) \(.state) \(.mounted)"' <<< "$R" 2>/dev/null) $(_mounts)"
+check "appdata: …the link shows why"                yes "$(grep -q 'unmounted on purpose' "$HUB/Stacks/demo/VM-App-Data/NOT-MOUNTED.txt" 2>/dev/null && echo yes || echo no)"
+check "appdata: …the mountpoint is read-only meanwhile" 555 "$(stat -c %a "$VMDATA/demo" 2>/dev/null)"
+_hublib _fleet_appdata_round
+check "appdata: …the hub's own round leaves it down" "held 0" "$(hub GET /stacks/demo/appdata | jq -r '.state' 2>/dev/null) $(_mounts)"
+check "appdata: Mount brings it back"               "true 1" "$(hub POST /stacks/demo/appdata/mount | jq -r '.success' 2>/dev/null) $(_mounts)"
+# the far side goes away (the mount with it): the hub's round makes it again
+"$FAKE/fusermount3" -uz "$VMDATA/demo"
+check "appdata: a mount that went away is seen"     "waiting false" "$(hub GET /stacks/demo/appdata | jq -r '"\(.state) \(.mounted)"' 2>/dev/null)"
+_hublib _fleet_appdata_round
+check "appdata: the round mounts it again"          "mounted 1" "$(hub GET /stacks/demo/appdata | jq -r '.state' 2>/dev/null) $(_mounts)"
+# a mount that fails says the mount helper's own words, and is not hammered: the next automatic try waits
+"$FAKE/fusermount3" -uz "$VMDATA/demo"; : > "$FAKE/sshfs-fail"
+R=$(hub POST /stacks/demo/appdata/mount)
+check "appdata: a mount that fails says why"        yes "$(jq -r '.message // .error' <<< "$R" 2>/dev/null | grep -q 'Connection reset by peer' && echo yes || echo no)"
+check "appdata: …409, the state is unavailable"     "409 unavailable" "$(hub_code POST /stacks/demo/appdata/mount) $(hub GET /stacks/demo/appdata | jq -r '.state' 2>/dev/null)"
+N0=$(wc -l < "$FAKE/sshfs.log"); _hublib _fleet_appdata_round; _hublib _fleet_appdata_round
+check "appdata: …the round does not try again at once" "$N0" "$(wc -l < "$FAKE/sshfs.log")"
+rm -f "$FAKE/sshfs-fail"
+check "appdata: Mount does, and it is back"         "true 1" "$(hub POST /stacks/demo/appdata/mount | jq -r '.success' 2>/dev/null) $(_mounts)"
+# a folder of the hub's own in the link's place is left alone
+hub POST /stacks/demo/appdata/unmount >/dev/null; rm -f "$HUB/Stacks/demo/VM-App-Data"; mkdir -p "$HUB/Stacks/demo/VM-App-Data"; printf 'mine\n' > "$HUB/Stacks/demo/VM-App-Data/own.txt"
+R=$(hub POST /stacks/demo/appdata/mount)
+check "appdata: a folder of that name is left alone" "mine yes" "$(cat "$HUB/Stacks/demo/VM-App-Data/own.txt" 2>/dev/null) $(jq -r '.message // .error' <<< "$R" 2>/dev/null | grep -q 'not the link DCS makes' && echo yes || echo no)"
+rm -rf "${HUB:?}/Stacks/demo/VM-App-Data"
+check "appdata: …moved away, Mount links again"     "true $VMDATA/demo" "$(hub POST /stacks/demo/appdata/mount | jq -r '.success' 2>/dev/null) $(readlink "$HUB/Stacks/demo/VM-App-Data" 2>/dev/null)"
+# switched off in .env: everything of it goes, and comes back when it is switched on
+printf 'FLEET_APPDATA_MOUNT=false\n' >> "$HUB/.env"
+check "appdata: off in .env is said"                "off false" "$(hub GET /stacks/demo/appdata | jq -r '"\(.state) \(.enabled)"' 2>/dev/null)"
+check "appdata: …Mount is refused"                  409 "$(hub_code POST /stacks/demo/appdata/mount)"
+_hublib _fleet_appdata_round
+check "appdata: …the round takes mount and link away" "0 no no" "$(_mounts) $([[ -L "$HUB/Stacks/demo/VM-App-Data" ]] && echo yes || echo no) $([[ -e "$VMDATA/demo" ]] && echo yes || echo no)"
+sed -i '/^FLEET_APPDATA_MOUNT=false$/d' "$HUB/.env"
+_hublib _fleet_appdata_round
+check "appdata: on again, the round mounts"         "mounted 1 $VMDATA/demo" "$(hub GET /stacks/demo/appdata | jq -r '.state' 2>/dev/null) $(_mounts) $(readlink "$HUB/Stacks/demo/VM-App-Data" 2>/dev/null)"
+# whatever is below a mountpoint is never removed: a file stands in for the VM's data showing through
+mkdir -p "$VMDATA/ghost"; printf 'the VM'"'"'s\n' > "$VMDATA/ghost/library.db"; printf '900 1 0:91 / %s rw - fuse.sshfs x rw\n' "$VMDATA/ghost" >> "$FAKE/mountinfo"
+_hublib _fleet_appdata_release ghost forget
+check "appdata: forgetting never removes below the mountpoint" "the VM's" "$(cat "$VMDATA/ghost/library.db" 2>/dev/null)"
+chmod 755 "$VMDATA/ghost" 2>/dev/null; rm -rf "${VMDATA:?}/ghost"
+
 echo "A member that is off"
 (cd "$MEM" && "$MEM/.scripts/api-server.sh" --stop >/dev/null 2>&1)
 for _ in $(seq 1 40); do curl -s -m 1 "http://127.0.0.1:$MP/ping" >/dev/null 2>&1 || break; sleep 0.25; done
@@ -187,6 +297,8 @@ check "forget: the delete answers"                  "true true" "$(jq -r '"\(.su
 check "forget: the hub's copy is gone"              no "$([[ -e "$HUB/Stacks/demo" ]] && echo yes || echo no)"
 check "forget: the placement is gone"               0 "$(hub GET /fleet/members | jq -r '[.members[] | select(.id == "'"$MID"'") | (.stacks // [])[] | select(. == "demo")] | length' 2>/dev/null)"
 check "forget: audited"                             yes "$(grep -q 'fleet_stack_forgotten' "$HUB/.data/audit.jsonl" 2>/dev/null && echo yes || echo no)"
+check "forget: the mount of its App-Data went first" "0 no no" "$(_mounts) $([[ -e "$VMDATA/demo" ]] && echo yes || echo no) $([[ -e "$HUB/.data/fleet-appdata/demo.json" ]] && echo yes || echo no)"
+check "forget: the VM's data is where it was"       "<xml/>" "$(cat "$MEM/Stacks/demo/App-Data/Jellyfin/config/system.xml" 2>/dev/null)"
 
 echo "A member that leaves takes everything of it along"
 # the last update round names this member and one that is long gone: the Updates page reads only who is still in the fleet
@@ -233,11 +345,21 @@ sed -i '/^PROXY_DOMAIN=/d;/^TRAEFIK_DOMAIN=/d' "$NODE/.env"; printf 'PROXY_DOMAI
 printf '{"members":[],"join_tokens":[],"hub":{"url":"http://127.0.0.1:1","name":"hub"}}\n' > "$NODE/.data/fleet.json"
 cat > "$NODE/fake/docker" <<'FAKEDOCKER'
 #!/bin/sh
-st="$(dirname "$0")"
+st="$(dirname "$0")"; root="$(cd "$st/.." && pwd)"
 case "$*" in
     "compose version"*) echo "Docker Compose version v2.99.0"; exit 0 ;;
     *"network inspect proxy"*) [ -f "$st/proxy-net" ] && exit 0; exit 1 ;;
     *"network create"*) : > "$st/proxy-net"; echo "$*" >> "$st/calls"; exit 0 ;;
+    # the container "webby" of the stack "demo", for a nuke: its Compose labels, what is bound into it, who else there is
+    inspect*compose.project.working_dir*) echo "$root/Stacks/demo" ;;
+    inspect*compose.service*) echo webby ;;
+    inspect*'compose.project"'*) echo demo ;;
+    inspect*.Config.Image*) echo alpine:3 ;;
+    inspect*'"bind"'*webby) printf '%s\n' "$root/Stacks/demo/App-Data/Webby/config/nested" "$root/Stacks/demo/App-Data/Webby/config" "$root/Stacks/demo/App-Data/WebbyData" /var/run/docker.sock /srv/media ;;
+    inspect*'"bind"'*other) printf '%s\t' "$root/Stacks/demo/App-Data/Shared" ;;
+    inspect*'"volume"'*) ;;
+    "ps -a --format {{.Names}}") echo webby; echo other ;;
+    compose*" up "*|compose*" rm "*|compose*" pull "*) echo "$*" >> "$st/calls"; exit 0 ;;
     *) exit 0 ;;
 esac
 FAKEDOCKER
@@ -248,6 +370,37 @@ check "proxy: the route is in the feed directory"   'Host(`webby.lab.test`)' "$(
 check "proxy: the network was made, with Compose's label" yes "$(grep -q -- '--label com.docker.compose.network=proxy' "$NODE/fake/calls" 2>/dev/null && echo yes || echo no)"
 check "proxy: the service joins it"                 yes "$(awk '/^  webby:/{f=1} f && /- proxy/{print "yes"; exit}' "$NODE/Stacks/demo/docker-compose.yml" | grep -q yes && echo yes || echo no)"
 check "proxy: the compose declares it external"     yes "$(grep -A3 '^networks:' "$NODE/Stacks/demo/docker-compose.yml" | tr -d '\n' | grep -q 'proxy:.*name: proxy.*external: true' && echo yes || echo no)"
+
+echo "Nuke & reinstall finds the stack's own App-Data"
+# the compose file says ./App-Data/… (what a template leaves) and .env keeps APP_DATA_DIR at its default ./App-Data: both
+# mean the stack's folder. The same container also binds a folder one level down, a folder inside one it already binds,
+# a folder another container shares, the Docker socket and a media folder outside: only what is the stack's own App-Data
+# may be emptied, each folder once.
+_node() { local m="$1" p="$2" b="${3:-}"; printf '%s %s HTTP/1.1\r\nHost: t\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s' "$m" "$p" "${#b}" "$b" | env PATH="$NODE/fake:$PATH" DOCKER_COMPOSE_CMD="docker compose" DCS_API_EFFECTIVE_AUTH=false DCS_API_EFFECTIVE_BIND=127.0.0.1 "$NODE/.scripts/api-server.sh" --handle-request 2>/dev/null | sed -n '/^\r*$/,$p' | sed '1d'; }
+NA="$NODE/Stacks/demo/App-Data"
+printf 'services:\n  webby:\n    image: alpine:3\n    container_name: webby\n    volumes:\n      - ./App-Data/Webby/config:/config\n      - ${APP_DATA_DIR:-./App-Data}/Webby/cache:/cache\n      - ./App-Data/Shared:/shared\n      - /srv/media:/media\n' > "$NODE/Stacks/demo/docker-compose.yml"
+mkdir -p "$NA/Webby/config/nested" "$NA/Webby/cache" "$NA/WebbyData" "$NA/Shared"; printf 'old settings\n' > "$NA/Webby/config/app.conf"; printf 'c\n' > "$NA/Webby/cache/blob"; printf 'd\n' > "$NA/WebbyData/db"; printf 'theirs\n' > "$NA/Shared/keep.txt"
+check "nuke: the node keeps APP_DATA_DIR at ./App-Data" './App-Data' "$(sed -n 's/^APP_DATA_DIR=//p' "$NODE/.env" | tr -d '"' | tail -1)"
+P=$(_node GET /containers/webby/reset)
+check "nuke: the preview names the stack's own folders, each once" "$NA/Webby/cache $NA/Webby/config $NA/WebbyData" "$(jq -r '[.app_data[].path] | sort | join(" ")' <<< "$P" 2>/dev/null)"
+check "nuke: …and finds them"                       "true true true" "$(jq -r '[.app_data[].exists] | map(tostring) | join(" ")' <<< "$P" 2>/dev/null)"
+check "nuke: a folder another container uses is kept" "$NA/Shared other" "$(jq -r '.kept_shared[] | "\(.path) \(.shared_with)"' <<< "$P" 2>/dev/null)"
+check "nuke: nothing outside App-Data is listed"    no "$(jq -r '[.app_data[].path, .kept_shared[].path] | join(" ")' <<< "$P" 2>/dev/null | grep -q 'docker.sock\|/srv/media' && echo yes || echo no)"
+check "nuke: the trash is the stack's own"          "$NA/.trash/demo" "$(jq -r '.trash_dir' <<< "$P" 2>/dev/null)"
+N=$(_node POST /containers/webby/reset '{"confirm":"webby","pull":false}')
+check "nuke: it runs"                               true "$(jq -r '.success' <<< "$N" 2>/dev/null)"
+check "nuke: the folders are empty again"           "0 0 0" "$(find "$NA/Webby/config" -mindepth 1 2>/dev/null | wc -l) $(find "$NA/Webby/cache" -mindepth 1 2>/dev/null | wc -l) $(find "$NA/WebbyData" -mindepth 1 2>/dev/null | wc -l)"
+check "nuke: what was in them is in the trash"      "old settings" "$(cat "$NA"/.trash/demo/webby-*/config/app.conf 2>/dev/null)"
+check "nuke: the shared folder was not touched"     theirs "$(cat "$NA/Shared/keep.txt" 2>/dev/null)"
+check "nuke: the service was created again"         yes "$(grep -q 'compose .* up -d --force-recreate --no-deps webby' "$NODE/fake/calls" 2>/dev/null && echo yes || echo no)"
+check "nuke: the preview lists the reset"           1 "$(_node GET /containers/webby/reset | jq -r '.previous_resets | length' 2>/dev/null)"
+# an absolute APP_DATA_DIR is one root for every stack: only what lies two levels down is a container's own
+sed -i '/^APP_DATA_DIR=/d' "$NODE/.env"; printf 'APP_DATA_DIR=%s\n' "$NODE/AD" >> "$NODE/.env"
+_rootof() { ( cd "$NODE" && set -a && . "$NODE/.env" && set +a && source "$NODE/.scripts/api-server.sh" >/dev/null 2>&1; RST_PROJ_DIR="$NODE/Stacks/demo"; RST_ROOTS=("$(_stack_appdata_root "$RST_PROJ_DIR")" "$RST_PROJ_DIR/App-Data"); _container_reset_root_of "$1" || echo none ); }
+check "nuke: a shared root is used as it is"        "$NODE/AD" "$(_rootof "$NODE/AD/demo/Webby")"
+check "nuke: …its first level is never a container's" none "$(_rootof "$NODE/AD/demo")"
+check "nuke: …the stack's own App-Data still counts" "$NA" "$(_rootof "$NA/Webby")"
+check "nuke: the trash is never emptied into itself" none "$(_rootof "$NA/.trash/demo/webby-1")"
 
 echo "$PASS passed, $FAIL failed"
 [[ "$FAIL" -eq 0 ]]
