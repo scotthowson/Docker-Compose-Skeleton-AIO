@@ -8946,7 +8946,7 @@ _recovery_bundle_create() {
     for s in "$COMPOSE_DIR"/*/; do
         [[ -d "$s" ]] || continue
         s="${s%/}"; sn=$(basename "$s")
-        rsync -a --exclude='App-Data' --exclude='*.bak.*' --exclude='*.bak-repair' "$s/" "$b/stacks/$sn/" 2>/dev/null || { RCV_ERROR="Could not copy stack $sn"; rm -rf "$tmp"; return 1; }
+        rsync -a --exclude='App-Data' --exclude='VM-App-Data' --exclude='RUNS-IN-A-VM.txt' --exclude='*.bak.*' --exclude='*.bak-repair' "$s/" "$b/stacks/$sn/" 2>/dev/null || { RCV_ERROR="Could not copy stack $sn"; rm -rf "$tmp"; return 1; }
         RCV_STACKS=$((RCV_STACKS + 1))
         for d in Traefik Authelia; do
             if [[ -d "$s/App-Data/$d" ]]; then
@@ -24198,7 +24198,7 @@ _fleet_job_run() {
         # the tilde is the VM's shell's to expand (the string is part of the ssh command)
         # shellcheck disable=SC2088
         local remote_dir="~/.Docker-Compose-Skeleton-AIO/Stacks/$stack"
-        if (cd "$COMPOSE_DIR/$src" && tar --exclude='./App-Data' --exclude='./app-data' --exclude='./data' --exclude='./backups' --exclude='./.snapshots' --exclude='./logs' --exclude='./*.bak.*' --exclude='./*.log' -czf - .) \
+        if (cd "$COMPOSE_DIR/$src" && tar --exclude='./App-Data' --exclude='./app-data' --exclude='./data' --exclude='./backups' --exclude='./.snapshots' --exclude='./logs' --exclude='./*.bak.*' --exclude='./*.log' --exclude="./$FLEET_APPDATA_LINK" --exclude="./$FLEET_STACK_NOTE" -czf - .) \
             | _fleet_ssh "$ip" "mkdir -p $remote_dir && tar -xzf - -C $remote_dir" 2>/dev/null; then
             _job_log "$id" "Stacks/$src from the hub copied into the VM as $stack (compose, .env, config files)"
             # the secrets the stack refers to (${SECRETS_X}) travel with it: the VM's own store gets them
