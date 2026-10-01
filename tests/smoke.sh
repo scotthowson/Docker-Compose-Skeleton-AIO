@@ -622,9 +622,12 @@ check "handler: inherited descriptors closed" "0:open 1:open 2:open 7:closed 8:c
 _free_port() { python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])'; }
 # A port for a stand-in that starts a moment later: a random one in the range the tests use, but one nobody listens on (a busy machine
 # has dozens of labs and dev servers in that range, and a stand-in that could not bind made a check fail one run in a few hundred).
-_rport() { local p i; for i in $(seq 1 100); do p=$(( 20000 + RANDOM % 20000 )); ( exec 3<>"/dev/tcp/127.0.0.1/$p" ) 2>/dev/null || { echo "$p"; return; }; done; echo "$p"; }
+# The range ends below the kernel's ephemeral ports (32768 and up on Linux): up there a port can be the local end of somebody's outgoing
+# connection, which no connect probe sees and which still refuses a listener ("bind: Address already in use" — a second smoke run on
+# the same machine, with its thousands of loopback requests, made the NUT stand-in fail that way).
+_rport() { local p i; for i in $(seq 1 100); do p=$(( 20000 + RANDOM % 12768 )); ( exec 3<>"/dev/tcp/127.0.0.1/$p" ) 2>/dev/null || { echo "$p"; return; }; done; echo "$p"; }
 # three neighbouring ports nobody listens on (two stand-ins take the first two; the third stays empty on purpose)
-_rport3() { local p i; for i in $(seq 1 100); do p=$(( 20000 + RANDOM % 19990 )); ( exec 3<>"/dev/tcp/127.0.0.1/$p" ) 2>/dev/null || ( exec 3<>"/dev/tcp/127.0.0.1/$((p + 1))" ) 2>/dev/null || ( exec 3<>"/dev/tcp/127.0.0.1/$((p + 2))" ) 2>/dev/null || { echo "$p"; return; }; done; echo "$p"; }
+_rport3() { local p i; for i in $(seq 1 100); do p=$(( 20000 + RANDOM % 12760 )); ( exec 3<>"/dev/tcp/127.0.0.1/$p" ) 2>/dev/null || ( exec 3<>"/dev/tcp/127.0.0.1/$((p + 1))" ) 2>/dev/null || ( exec 3<>"/dev/tcp/127.0.0.1/$((p + 2))" ) 2>/dev/null || { echo "$p"; return; }; done; echo "$p"; }
 _alive() { [[ -d "/proc/$1" && "$(awk '{print $3}' "/proc/$1/stat" 2>/dev/null)" != Z ]]; }   # a zombie is not running
 # a helper that inherited the listening socket (what older versions left behind: the DDNS loop's 300 s sleep)
 RP=$(_free_port)
