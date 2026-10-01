@@ -72,6 +72,9 @@ d="$(dirname "$0")"; mp="${@: -1}"
 awk -v mp="$mp" '$5 != mp' "$d/mountinfo" > "$d/mountinfo.new" && mv -f "$d/mountinfo.new" "$d/mountinfo"
 FAKEFUM
 chmod +x "$FAKE/ssh" "$FAKE/sshfs" "$FAKE/fusermount3"
+# off until its own section below: after a start or a deploy it forwards, the hub looks for the VM's App-Data in the
+# background for a few minutes, at moments of its own choosing — the checks before that section must not meet it
+printf 'FLEET_APPDATA_MOUNT=false\n' >> "$HUB/.env"
 printf 'FLEET_SSH_CMD=%s\nFLEET_SSHFS_CMD=%s\nFLEET_FUSERMOUNT_CMD=%s\nFLEET_MOUNTINFO=%s\nFLEET_APPDATA_RUNNER=direct\nFLEET_APPDATA_INSTALL=false\nFLEET_MOUNT_DIR=%s\n' \
     "$FAKE/ssh" "$FAKE/sshfs" "$FAKE/fusermount3" "$FAKE/mountinfo" "$VMDATA" >> "$HUB/.env"
 # the member runs "demo": compose, .env and configuration travel; what it makes while it runs does not
@@ -199,6 +202,7 @@ echo "The VM's App-Data is shown on the hub"
 # function level on the hub's own folder, with the hub's settings
 _hublib() { ( cd "$HUB" && set -a && . "$HUB/.env" && set +a && source "$HUB/.scripts/api-server.sh" >/dev/null 2>&1; _audit_log() { :; }; "$@" ); }
 _mounts() { grep -c " $VMDATA/demo " "$FAKE/mountinfo" 2>/dev/null; }
+sed -i '/^FLEET_APPDATA_MOUNT=false$/d' "$HUB/.env"   # on from here
 A=$(member GET /stacks/demo/appdata)
 check "appdata: a server names its own folder"      "local $MEM/Stacks/demo/App-Data false" "$(jq -r '"\(.placement) \(.path) \(.exists)"' <<< "$A" 2>/dev/null)"
 check "appdata: nothing to mount on the server that runs the stack" 400 "$(member_code POST /stacks/demo/appdata/mount)"
@@ -249,6 +253,14 @@ check "appdata: Mount brings it back"               "true 1" "$(hub POST /stacks
 check "appdata: a mount that went away is seen"     "waiting false" "$(hub GET /stacks/demo/appdata | jq -r '"\(.state) \(.mounted)"' 2>/dev/null)"
 _hublib _fleet_appdata_round
 check "appdata: the round mounts it again"          "mounted 1" "$(hub GET /stacks/demo/appdata | jq -r '.state' 2>/dev/null) $(_mounts)"
+# a deploy the hub forwards into the VM brings the mount by itself, a moment later (nothing is started: auto_start is off)
+"$FAKE/fusermount3" -uz "$VMDATA/demo"
+hub POST /templates/tiny/deploy '{"target_stack":"demo","auto_start":false,"routes":false}' >/dev/null
+for _ in $(seq 1 40); do [[ "$(_mounts)" == 1 ]] && break; sleep 0.5; done
+check "appdata: a deploy into the VM brings the mount by itself" "1 mounted" "$(_mounts) $(hub GET /stacks/demo/appdata | jq -r '.state' 2>/dev/null)"
+hub POST /templates/tiny/undeploy '{"target_stack":"demo","services":["tiny"],"remove_containers":false}' >/dev/null
+for _ in $(seq 1 20); do [[ -e "$HUB/.data/fleet-appdata/demo.soon" ]] || break; sleep 0.5; done
+check "appdata: …and nobody keeps looking once it is there" no "$([[ -e "$HUB/.data/fleet-appdata/demo.soon" ]] && echo yes || echo no)"
 # a mount that fails says the mount helper's own words, and is not hammered: the next automatic try waits
 "$FAKE/fusermount3" -uz "$VMDATA/demo"; : > "$FAKE/sshfs-fail"
 R=$(hub POST /stacks/demo/appdata/mount)

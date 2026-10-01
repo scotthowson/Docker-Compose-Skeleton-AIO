@@ -22665,7 +22665,8 @@ _fleet_stack_note() {
 # the hub built has): an App-Data belongs to whatever user each container runs as.
 # =============================================================================
 FLEET_APPDATA_LINK="VM-App-Data"
-# per stack: the last outcome (<name>.json), unmounted on purpose (<name>.off), the last automatic try (<name>.retry), one actor at a time (<name>.lock)
+# per stack: the last outcome (<name>.json), unmounted on purpose (<name>.off), the last automatic try (<name>.retry), one actor at a time
+# (<name>.lock), who looks for the folder after a start (<name>.soon)
 FLEET_APPDATA_STATE_DIR="${FLEET_APPDATA_STATE_DIR:-$BASE_DIR/.data/fleet-appdata}"
 FLEET_SSHFS_CMD="${FLEET_SSHFS_CMD:-sshfs}"
 FLEET_MOUNTINFO="${FLEET_MOUNTINFO:-/proc/self/mountinfo}"
@@ -23037,12 +23038,20 @@ _fleet_appdata_ensure_locked() {
 # the image and made the folders (a stack starts detached), so the hub looks again for a few minutes while the only
 # thing missing is the folder; anything else is said once and left to the watcher
 _fleet_appdata_ensure_soon() {
-    local id="$1" name="$2" w
+    local id="$1" name="$2" w mark tok
+    [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || return 1
+    # the newest of these looks for a stack, an older one steps aside (a start, a restart and a deploy in a row would
+    # otherwise each look for four minutes): the mark holds the token of the one that looks
+    mkdir -p "$FLEET_APPDATA_STATE_DIR" 2>/dev/null || true
+    mark="$FLEET_APPDATA_STATE_DIR/$name.soon"; tok="$BASHPID.$RANDOM"
+    printf '%s' "$tok" > "$mark" 2>/dev/null || true
     for w in 2 5 10 15 30 45 60 90; do
         sleep "$w"
-        _fleet_appdata_ensure "$id" "$name" now && return 0
-        [[ "${_FAD_STATE:-}" == waiting ]] || return 1
+        [[ "$(cat "$mark" 2>/dev/null)" == "$tok" ]] || return 0
+        if _fleet_appdata_ensure "$id" "$name" now; then rm -f "${mark:?}" 2>/dev/null || true; return 0; fi
+        [[ "${_FAD_STATE:-}" == waiting ]] || break
     done
+    [[ "$(cat "$mark" 2>/dev/null)" == "$tok" ]] && { rm -f "${mark:?}" 2>/dev/null || true; }
     return 1
 }
 # _fleet_appdata_release NAME [forget] — the mount of a stack goes; with forget the link in the hub's stack folder, the
@@ -23058,7 +23067,7 @@ _fleet_appdata_release() {
     [[ -L "$link" ]] && { rm -f -- "${link:?}" 2>/dev/null || true; }
     if [[ -d "$why" ]]; then chmod 755 "$why" 2>/dev/null || true; rm -f -- "${why:?}/NOT-MOUNTED.txt" "${why:?}/NOT-MOUNTED.txt.tmp" 2>/dev/null || true; rmdir "${why:?}" 2>/dev/null || true; fi
     if [[ -d "$mp" ]] && ! _fleet_appdata_mounted "$name"; then chmod 755 "$mp" 2>/dev/null || true; rmdir "${mp:?}" 2>/dev/null || chmod 555 "$mp" 2>/dev/null || true; fi
-    rm -f -- "${FLEET_APPDATA_STATE_DIR:?}/${name:?}.json" "${FLEET_APPDATA_STATE_DIR:?}/${name:?}.json.tmp" "${FLEET_APPDATA_STATE_DIR:?}/${name:?}.off" "${FLEET_APPDATA_STATE_DIR:?}/${name:?}.retry" 2>/dev/null || true
+    rm -f -- "${FLEET_APPDATA_STATE_DIR:?}/${name:?}.json" "${FLEET_APPDATA_STATE_DIR:?}/${name:?}.json.tmp" "${FLEET_APPDATA_STATE_DIR:?}/${name:?}.off" "${FLEET_APPDATA_STATE_DIR:?}/${name:?}.retry" "${FLEET_APPDATA_STATE_DIR:?}/${name:?}.soon" 2>/dev/null || true
     rmdir "${FLEET_APPDATA_STATE_DIR:?}/${name:?}.lock" 2>/dev/null || true
     local root; root=$(_fleet_appdata_root)
     rmdir "${root:?}/.not-mounted" "${root:?}" 2>/dev/null || true   # only when they are empty
