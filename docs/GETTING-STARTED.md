@@ -82,8 +82,9 @@ at every question):
 ls ~/.ssh/*.pub || ssh-keygen -t ed25519
 ```
 
-Copy the public half to the Proxmox host as `/root/my-key.pub` and look at it there. It is one line that starts
-with `ssh-ed25519` (or `ssh-rsa`):
+Copy the public half to the Proxmox host as `/root/my-key.pub` (use the file name `ls` showed instead of
+`id_ed25519.pub` if yours is different) and look at it there. It is one line that starts with `ssh-ed25519`
+(or `ssh-rsa`):
 
 ```bash
 scp ~/.ssh/id_ed25519.pub root@192.168.1.2:/root/my-key.pub
@@ -108,9 +109,12 @@ else echo "no key in /root/my-key.pub: copy it there first (see above)"; fi
 > cloud-init drive, and the image sets up the new key at that boot). Meanwhile `qm terminal 120` opens the VM's serial
 > console (press Enter), and a password set with `qm set 120 --cipassword 'choose-one'` logs in there.
 
-The image reads the cloud-init drive with its own small first-boot service: it sets the host name, the
-user (with the docker group and passwordless sudo), your key and the address. Password logins over ssh
-are off. The disk grows to the size you gave it.
+**Where the user comes from.** `--ciuser dcs` only *names* the account: the image does not contain it. On its
+first boot the image's own small first-boot service reads the cloud-init drive Proxmox attaches and creates the
+account (leave `--ciuser` out and it is called `dcs` as well) with the docker group and passwordless `sudo`, installs
+your key for it, and sets the host name and the address. You log in as that account, with the private key that
+belongs to the public one: `ssh dcs@192.168.1.20`. Password logins over ssh are off. The disk grows to the size
+you gave it.
 
 **5. Open the dashboard.** The first boot pulls the dashboard image, so give it a minute. The VM's console
 (*Console* in Proxmox) prints the address when DCS is up. Then open:
