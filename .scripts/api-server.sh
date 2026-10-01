@@ -6978,12 +6978,32 @@ handle_delete_stack() {
         return
     fi
 
+    # where the routes live is asked before the folder goes (a Traefik's own stack takes its routes directory along)
+    local _rdir; _rdir=$(_find_traefik_routes_dir 2>/dev/null)
+
     # Remove the stack directory (falls back to Docker for root-owned files)
     _force_remove_dir "$stack_dir"
 
     if [[ -d "$stack_dir" ]]; then
         _api_error 500 "Failed to delete stack directory — some files may be owned by root. Try stopping all containers first."
         return
+    fi
+
+    # the routes of the stack's services go with it: a route left behind keeps its hostname pointed at containers that are
+    # gone (a 502 for that name, and for the same app deployed elsewhere while two routers claim the host), and its DNS
+    # record with it where this server holds the Cloudflare token
+    if [[ -n "$_rdir" && -d "$_rdir/$name" && "$_rdir/" != "$stack_dir/"* ]]; then
+        local _rf _rsub _dom _tok; local -a _subs=()
+        for _rf in "$_rdir/$name"/*.yml "$_rdir/$name"/*.yaml; do
+            [[ -f "$_rf" ]] || continue
+            _rsub=$(sed -n 's/.*Host(`\([^.`]*\)\..*/\1/p' "$_rf" 2>/dev/null | head -1); [[ -n "$_rsub" ]] && _subs+=("$_rsub")
+        done
+        rm -rf "${_rdir:?}/${name:?}" 2>/dev/null; touch "$_rdir/.reload" 2>/dev/null
+        _audit_log "stack_routes_removed" "$name: ${#_subs[@]} route(s) removed with the stack${_subs[*]:+ (${_subs[*]})}"
+        _dom=$(_find_traefik_domain 2>/dev/null); _tok=$(_find_cf_token 2>/dev/null)
+        if (( ${#_subs[@]} > 0 )) && [[ -n "$_dom" && -n "$_tok" ]]; then
+            ( for _rsub in "${_subs[@]}"; do _cloudflare_delete_dns "$_rsub" "$_dom" "$_tok"; done ) </dev/null >/dev/null 2>&1 &
+        fi
     fi
 
     _api_success "{\"success\": true, \"name\": \"$name\", \"message\": \"Stack '$name' deleted successfully\"}"
@@ -22778,6 +22798,9 @@ _fleet_forward_if_remote() {
             esac
         fi
     fi
+    # what the VM just did may have added or removed a route: the hub's file for its Traefik follows now, not at the
+    # loop's next half minute (a deleted app's hostname answered 502 until then, a new one was not reachable yet)
+    if [[ "$m" != GET && "$_FLEET_PROXY_CODE" =~ ^2 ]]; then ( _fleet_routes_write_local ) </dev/null >/dev/null 2>&1 & fi
     return 0
 }
 # The members' stacks for GET /stacks on a hub: [{name, status, running_containers, …, placement: "vm", member, member_name, vmid, reachable}]

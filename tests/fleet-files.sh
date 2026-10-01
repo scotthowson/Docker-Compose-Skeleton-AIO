@@ -101,6 +101,10 @@ check "the member joined"                           yes "$(grep -q '^✓ Joined'
 MID=$(hub GET /fleet/members | jq -r '.members[0].id // empty')
 check "one member"                                  media-vm "$MID"
 check "the hub lists the VM's stack"                vm "$(hub GET /stacks | jq -r '.stacks[] | select(.name == "demo") | .placement' 2>/dev/null)"
+# a stack that is deleted takes its routes along (on a member they live in the feed directory the hub reads)
+member POST /stacks '{"name":"tmpstack"}' >/dev/null
+mkdir -p "$MEM/.data/routes/tmpstack"; printf 'http:\n  routers:\n    x:\n      rule: "Host(`x.example.org`)"\n' > "$MEM/.data/routes/tmpstack/x.yml"
+check "delete: a stack's routes go with it"          "true no" "$(member POST /stacks/tmpstack/delete | jq -r '.success' 2>/dev/null) $([[ -e "$MEM/.data/routes/tmpstack" ]] && echo yes || echo no)"
 # a read of a stack the hub has no files for adopts them
 rm -rf "${HUB:?}/Stacks/demo"
 check "hub: a VM stack's compose reads through"     200 "$(hub_code GET /stacks/demo/compose)"
