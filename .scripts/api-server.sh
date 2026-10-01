@@ -18172,6 +18172,12 @@ handle_automation_create() {
     action_type=$(printf '%s' "$body" | jq -r '.action_type // empty' 2>/dev/null)
     action_target=$(printf '%s' "$body" | jq -r '.action_target // "*"' 2>/dev/null)
     enabled=$(printf '%s' "$body" | jq -r 'if .enabled == null then true else .enabled end' 2>/dev/null)
+    # a condition's threshold (percent) and cooldown (seconds) travel with the rule; the engine reads them, so they are checked here
+    local threshold cooldown tuning=""
+    threshold=$(printf '%s' "$body" | jq -r '.threshold // empty' 2>/dev/null); cooldown=$(printf '%s' "$body" | jq -r '.cooldown // empty' 2>/dev/null)
+    _automation_tuning_ok "$threshold" "$cooldown" || return
+    [[ -n "$threshold" ]] && tuning+=", \"threshold\": $threshold"
+    [[ -n "$cooldown" ]] && tuning+=", \"cooldown\": $cooldown"
 
     if [[ -z "$name" || -z "$trigger_type" || -z "$action_type" ]]; then
         _api_error 400 "Missing required fields: name, trigger_type, action_type"
@@ -18189,7 +18195,7 @@ handle_automation_create() {
     ts=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
 
     local automation
-    automation="{\"id\": \"$auto_id\", \"name\": \"$(_api_json_escape "$name")\", \"enabled\": $enabled, \"trigger_type\": \"$(_api_json_escape "$trigger_type")\", \"trigger_value\": \"$(_api_json_escape "$trigger_value")\", \"action_type\": \"$(_api_json_escape "$action_type")\", \"action_target\": \"$(_api_json_escape "$action_target")\", \"created_at\": \"$ts\", \"run_count\": 0, \"last_run\": null, \"history\": []}"
+    automation="{\"id\": \"$auto_id\", \"name\": \"$(_api_json_escape "$name")\", \"enabled\": $enabled, \"trigger_type\": \"$(_api_json_escape "$trigger_type")\", \"trigger_value\": \"$(_api_json_escape "$trigger_value")\", \"action_type\": \"$(_api_json_escape "$action_type")\", \"action_target\": \"$(_api_json_escape "$action_target")\", \"created_at\": \"$ts\", \"run_count\": 0, \"last_run\": null, \"history\": []$tuning}"
 
     if ! _api_jq_update_file "$AUTOMATIONS_FILE" --argjson auto "$automation" '. + [$auto]'; then
         _api_error 500 "Failed to save automation"
@@ -18228,6 +18234,7 @@ handle_automation_update() {
     # Validate what the rule will look like after the merge
     local _merged
     _merged=$(jq -c --arg id "$auto_id" --argjson upd "$updates" '.[] | select(.id == $id) | . + $upd' "$AUTOMATIONS_FILE" 2>/dev/null)
+    _automation_tuning_ok "$(jq -r '.threshold // empty' <<< "$_merged" 2>/dev/null)" "$(jq -r '.cooldown // empty' <<< "$_merged" 2>/dev/null)" || return
     _automation_validate_rule \
         "$(printf '%s' "$_merged" | jq -r '.trigger_type // empty')" \
         "$(printf '%s' "$_merged" | jq -r '.trigger_value // ""')" \
@@ -18353,6 +18360,13 @@ _AUTOMATION_CONDITIONS='container_unhealthy|container_stopped|high_cpu|high_memo
 _AUTOMATION_ACTIONS='stack_start|stack_stop|stack_restart|container_restart|docker_prune|notification_send|backup_trigger|dcs_update|recovery_bundle'
 
 # Validate a rule's shape. Answers 400 itself; returns 1 on failure.
+# _automation_tuning_ok THRESHOLD COOLDOWN — a condition's threshold is a whole percent 1-100, its cooldown whole seconds (0 = none)
+_automation_tuning_ok() {
+    local t="$1" c="$2"
+    if [[ -n "$t" && "$t" != null ]] && { [[ ! "$t" =~ ^[0-9]+$ ]] || (( t < 1 || t > 100 )); }; then _api_error 400 "threshold must be a whole number from 1 to 100 (percent)"; return 1; fi
+    if [[ -n "$c" && "$c" != null ]] && [[ ! "$c" =~ ^[0-9]+$ ]]; then _api_error 400 "cooldown must be whole seconds (0 = none)"; return 1; fi
+    return 0
+}
 _automation_validate_rule() {
     local trigger_type="$1" trigger_value="$2" action_type="$3" action_target="$4"
     local _tre="^(${_AUTOMATION_TRIGGERS})$" _cre="^(${_AUTOMATION_CONDITIONS})$" _are="^(${_AUTOMATION_ACTIONS})$"
@@ -22339,6 +22353,9 @@ _fleet_stack_is_hub() {
     local name="$1" s
     [[ -n "$name" && -d "$COMPOSE_DIR/$name" ]] || return 1
     for s in ${DOCKER_STACKS:-}; do [[ "$s" == "$name" ]] && return 0; done
+    # a stack placed with a member is that member's: the hub keeps its files (a folder with a compose file) and nothing
+    # the hub's own Docker says about a project of that name makes it the hub's
+    [[ -n "$(_fleet_member_for_stack "$name" 2>/dev/null)" ]] && return 1
     [[ "$(_api_stack_status "$name" 2>/dev/null)" == running:* ]]
 }
 # _fleet_wait_children — wait for this shell's own background children only. A bare "wait" in a shell

@@ -123,6 +123,10 @@ check "config: boot-pull and colour rows read back" "false false 50" "$(auth_req
 check "config: FORCE_COLOR is a key the save takes"  200 "$(auth_request POST /config '{"FORCE_COLOR":"true","PROGRESS_BAR_WIDTH":"40"}' | status_of)"
 check "config: …and reads back"          "true 40" "$(auth_request GET /config | body_of | jq -r '"\(.force_color) \(.progress_bar_width)"' 2>/dev/null)"
 check "images: delete by reference checks the name" 400 "$(auth_request POST /images/delete '{"image":"not a ref!"}' | status_of)"
+check "automation: a bad threshold is refused"      400 "$(auth_request POST /automations '{"name":"t","trigger_type":"condition","trigger_value":"high_cpu","action_type":"notify","action_target":"x","threshold":150}' | status_of)"
+_AUT=$(auth_request POST /automations '{"name":"tuned","trigger_type":"condition","trigger_value":"high_cpu","action_type":"notify","action_target":"x","threshold":85,"cooldown":120}' | body_of)
+check "automation: keeps its threshold and cooldown" "85 120" "$(auth_request GET /automations | body_of | jq -r '.automations[] | select(.name == "tuned") | "\(.threshold) \(.cooldown)"' 2>/dev/null)"
+auth_request DELETE "/automations/$(jq -r '.id // .automation.id // empty' <<< "$_AUT" 2>/dev/null)" >/dev/null 2>&1
 check "auth files are private"          600 "$(stat -c %a "$WORK/.api-auth/users.json" 2>/dev/null)"
 INVITE=$(auth_request POST /auth/invite '{"role":"user"}' | body_of | jq -r '.code // empty')
 check "invite created"                  yes "$([[ -n "$INVITE" ]] && echo yes || echo no)"
@@ -1473,6 +1477,23 @@ check "homarr: the VM's address and port"       "http://10.9.8.7:7575 7575" "$(j
 check "homarr: no key stored = library mode"    library "$(jq -r '.mode' <<< "$_HS" 2>/dev/null)"
 check "homarr: the hint names the VM"           yes "$(jq -r '.hint' <<< "$_HS" 2>/dev/null | grep -q 'media-vm' && echo yes || echo no)"
 rm -f "$WORK/snap-homarr.json"
+# the fleet's services by name: a VM's running container with a published port is a service with a LAN address; a deploy's
+# URL variable left at its compose-network default is pointed at it, a typed value is kept, a service of the template itself is left alone
+printf '%s' '{"members":[{"id":"'"$MID"'","name":"media-vm","vmid":100,"url":"http://10.9.8.7:9876","reachable":true,"containers":[{"name":"Jellyfin","state":"running","ports":"0.0.0.0:8096->8096/tcp, [::]:8096->8096/tcp","stack":"media"},{"name":"off","state":"exited","ports":"0.0.0.0:1->1/tcp"},{"name":"noport","state":"running","ports":""}]}]}' > "$WORK/snap-svc.json"
+_FS=$(auth_request GET /fleet/services '' FLEET_SNAPSHOT="$WORK/snap-svc.json" FLEET_SNAPSHOT_TTL=999999 | body_of)
+check "services: a VM's container is a service"   "media-vm http://10.9.8.7:8096 8096" "$(jq -r '.services[] | select(.name == "Jellyfin") | "\(.where_name) \(.url) \(.port)"' <<< "$_FS" 2>/dev/null)"
+check "services: a stopped one is not"            no "$(jq -e '.services[] | select(.name == "off")' <<< "$_FS" >/dev/null 2>&1 && echo yes || echo no)"
+check "services: one without a port has no url"   "" "$(jq -r '.services[] | select(.name == "noport") | .url' <<< "$_FS" 2>/dev/null)"
+mkdir -p "$WORK/.templates/seerr-tpl"
+printf 'services:\n  jellyseerr:\n    image: x\n' > "$WORK/.templates/seerr-tpl/docker-compose.yml"
+printf '{"name":"seerr-tpl","variables":[{"name":"JELLYFIN_URL","default":"http://jellyfin:8096"},{"name":"JELLYSEERR_URL","default":"http://jellyseerr:5055"},{"name":"OUT_URL","default":"https://example.com/x"}]}' > "$WORK/.templates/seerr-tpl/template.json"
+_PF=$(FLEET_SNAPSHOT="$WORK/snap-svc.json" FLEET_SNAPSHOT_TTL=999999 _lib _fleet_services_prefill '{"variables":{}}' "$WORK/.templates/seerr-tpl")
+check "prefill: the default points at the VM's service" "http://10.9.8.7:8096" "$(jq -r '.variables.JELLYFIN_URL' <<< "$_PF" 2>/dev/null)"
+check "prefill: the template's own service is left alone" null "$(jq -r '.variables.JELLYSEERR_URL' <<< "$_PF" 2>/dev/null)"
+check "prefill: a real address is left alone"     null "$(jq -r '.variables.OUT_URL' <<< "$_PF" 2>/dev/null)"
+check "prefill: says what it filled"              "JELLYFIN_URL media-vm" "$(jq -r '.fleet_prefilled[0] | "\(.variable) \(.from | split(",")[0])"' <<< "$_PF" 2>/dev/null)"
+check "prefill: a typed value is kept"            "http://typed:1 0" "$(FLEET_SNAPSHOT="$WORK/snap-svc.json" FLEET_SNAPSHOT_TTL=999999 _lib _fleet_services_prefill '{"variables":{"JELLYFIN_URL":"http://typed:1"}}' "$WORK/.templates/seerr-tpl" | jq -r '"\(.variables.JELLYFIN_URL) \(.fleet_prefilled | length)"' 2>/dev/null)"
+rm -rf "$WORK/.templates/seerr-tpl" "$WORK/snap-svc.json"
 # Topology across the fleet: ?fleet=1 merges every reachable VM's map into the hub's; the plain answer is what it was
 _TF=$(auth_request GET '/topology?fleet=1' | body_of)
 check "topology: fleet merge lists both servers" "2 true media-vm" "$(jq -r '"\(.servers | length) \(.servers[0].hub) \(.servers[1].name)"' <<< "$_TF" 2>/dev/null)"
