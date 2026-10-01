@@ -15649,24 +15649,27 @@ handle_template_deploy() {
                 done
 
                 # Move the traefik route file into the target stack's custom_routes
-                # (the template ships it under core-infrastructure/ by default)
+                # (the template ships it under core-infrastructure/ by default). A re-deploy
+                # copies the shipped file again (it was moved away): the stack's own copy is
+                # kept then — it carries the chain entries DCS and the person added, the
+                # CrowdSec bouncer and the add-ons among them — and the shipped copy is not
+                # left where Traefik would read its routers a second time. A route file of
+                # the person's own in another folder differs from the shipped one and stays.
                 if [[ -n "$target_stack" ]]; then
                     mkdir -p "$config_target/custom_routes/$target_stack"
-                    local route_src=""
-                    # Check all subdirs for a traefik.yml route file
-                    local route_file
+                    local route_file route_rel
                     for route_file in "$config_target"/custom_routes/*/traefik.yml; do
                         [[ -f "$route_file" ]] || continue
-                        local route_dir
-                        route_dir=$(basename "$(dirname "$route_file")")
-                        if [[ "$route_dir" != "$target_stack" ]]; then
-                            route_src="$route_file"
-                            break
+                        [[ "$(basename "$(dirname "$route_file")")" != "$target_stack" ]] || continue
+                        route_rel="${route_file#"$config_target/"}"
+                        [[ -f "$tdir/config/$route_rel" ]] && cmp -s "$route_file" "$tdir/config/$route_rel" || continue
+                        if [[ -f "$config_target/custom_routes/$target_stack/traefik.yml" ]]; then
+                            rm -f "$route_file"
+                        else
+                            mv "$route_file" "$config_target/custom_routes/$target_stack/traefik.yml"
                         fi
+                        break
                     done
-                    if [[ -n "$route_src" ]]; then
-                        mv "$route_src" "$config_target/custom_routes/$target_stack/traefik.yml"
-                    fi
                 fi
             fi
 
