@@ -1,0 +1,26 @@
+# Traefik middleware for the geoblock plugin, written by DCS when the traefik
+# template is deployed with Geoblock on (the countries come from the deploy).
+# It sits in traefik-chain, so every route DCS writes is covered: a visitor
+# from a country that is not listed gets 403. Addresses of your LAN and
+# unknown ones (a lookup that failed) are let through; the country of an
+# address is looked up at geojs.io once and cached.
+http:
+  middlewares:
+    geoblock:
+      plugin:
+        geoblock:
+          allowLocalRequests: "true"
+          allowUnknownCountries: "false"
+          api: https://get.geojs.io/v1/ip/country/{ip}
+          apiTimeoutMs: "750"
+          cacheSize: "50"
+          blackListMode: false
+          addCountryHeader: false
+          xForwardedForReverseProxy: true
+          forceMonthlyUpdate: "true"
+          logAllowedRequests: "false"
+          logApiRequests: "false"
+          logLocalRequests: "false"
+          silentStartUp: "false"
+          unknownCountryApiResponse: nil
+          countries: __COUNTRIES__

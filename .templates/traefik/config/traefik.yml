@@ -66,28 +66,45 @@ entryPoints:
               - '*.${TRAEFIK_DOMAIN:-example.com}'
 
 # -----------------------------------------------------------------------------
-# Plugins (optional — uncomment to enable)
+# Plugins
 # -----------------------------------------------------------------------------
-# Plugins Traefik downloads at start (versions pinned to a known-good set).
-# Middlewares in custom_routes/ refer to them; Sablier and the CrowdSec bouncer
-# are wired by DCS when those templates are deployed.
+# Traefik downloads every plugin declared here when it starts, and does not start
+# at all when one cannot be fetched — so a plugin is declared only while its add-on
+# is on. DCS keeps each block between "# dcs-if: SWITCH" and "# dcs-end" in step
+# with the deploy's switches (the Traefik step of the setup wizard, the deploy
+# sheet, TRAEFIK_* in the stack's .env); the middlewares that use them are written
+# by DCS into custom_routes/. The CrowdSec bouncer is declared always: the crowdsec
+# template wires it. Versions are pinned to a known-good set.
 experimental:
   plugins:
-    geoblock:
-      moduleName: "github.com/PascalMinder/geoblock"
-      version: "v0.3.3"
-    cloudflarewarp:
-      moduleName: "github.com/BetterCorp/cloudflarewarp"
-      version: "v1.3.3"
-    log4shell:
-      moduleName: "github.com/traefik/plugin-log4shell"
-      version: "v0.1.2"
-    sablier:
-      moduleName: "github.com/acouvreur/sablier"
-      version: "v1.7.0-beta.15"
     crowdsec-bouncer-traefik-plugin:
       moduleName: "github.com/maxlerebourg/crowdsec-bouncer-traefik-plugin"
       version: "v1.4.4"
+    # dcs-if: TRAEFIK_SABLIER
+    # sablier:
+    #   moduleName: "github.com/acouvreur/sablier"
+    #   version: "v1.7.0-beta.15"
+    # dcs-end
+    # dcs-if: TRAEFIK_CLOUDFLARE_REAL_IP
+    # cloudflarewarp:
+    #   moduleName: "github.com/BetterCorp/cloudflarewarp"
+    #   version: "v1.3.3"
+    # dcs-end
+    # dcs-if: TRAEFIK_GEOBLOCK
+    # geoblock:
+    #   moduleName: "github.com/PascalMinder/geoblock"
+    #   version: "v0.3.8"
+    # dcs-end
+    # dcs-if: TRAEFIK_THEMEPARK
+    # themepark:
+    #   moduleName: "github.com/packruler/traefik-themepark"
+    #   version: "v1.4.2"
+    # dcs-end
+    # dcs-if: TRAEFIK_MAINTENANCE
+    # maintenance:
+    #   moduleName: "github.com/TRIMM/traefik-maintenance"
+    #   version: "v1.0.1"
+    # dcs-end
 
 providers:
   providersThrottleDuration: 2s

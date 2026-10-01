@@ -23,8 +23,6 @@ http:
         - "traefik-chain"
         # Uncomment after deploying Authelia:
         # - "authelia-middlewares"
-        # Uncomment after enabling geoblock plugin:
-        # - "my-geoblock"
       tls: {}
 
   services:
@@ -38,6 +36,11 @@ http:
 # -----------------------------------------------------------------------------
 # Middleware Chains
 # -----------------------------------------------------------------------------
+# traefik-chain is on every route DCS writes. DCS adds the add-ons chosen at
+# deploy time to it (cloudflarewarp first, then the CrowdSec bouncer and
+# geoblock, so the visitor's own address is what they judge) and takes them out
+# again when an add-on is switched off; their middlewares live in files of
+# their own next to this one.
   middlewares:
     traefik-chain:
       chain:
@@ -132,39 +135,12 @@ http:
         memResponseBodyBytes: 200000000
 
 # -----------------------------------------------------------------------------
-# Traefik Plugins (require plugin installation in traefik.yml static config)
+# Plugin middlewares
 # -----------------------------------------------------------------------------
-    cloudflarewarp:
-      plugin:
-        cloudflarewarp:
-          disableDefault: false
-
-
-    log4shell:
-      plugin:
-        log4shell:
-          errorCode: 200
-
-    my-geoblock:
-      plugin:
-        geoblock:
-          allowLocalRequests: "true"
-          allowUnknownCountries: "false"
-          api: https://get.geojs.io/v1/ip/country/{ip}
-          apiTimeoutMs: "500"
-          cacheSize: "15"
-          blackListMode: false
-          addCountryHeader: false
-          xForwardedForReverseProxy: true
-          countries:
-            - CA   # Canada
-            - US   # United States
-          forceMonthlyUpdate: "true"
-          logAllowedRequests: "false"
-          logApiRequests: "true"
-          logLocalRequests: "true"
-          silentStartUp: "false"
-          unknownCountryApiResponse: nil
+# None are defined here: a middleware that names a plugin traefik.yml does not
+# declare is refused, and the route that uses it answers 404. The add-ons
+# (cloudflarewarp, geoblock, maintenance) are switched on at deploy time; DCS
+# then declares the plugin and writes <name>.yml beside this file.
 
 # =============================================================================
 # TLS Configuration

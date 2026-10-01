@@ -71,6 +71,54 @@
       "description": "Cloudflare API token (Zone:DNS:Edit) for the DNS-01 challenge; leave empty and Traefik uses the HTTP challenge on port 80 instead",
       "default": "",
       "required": false
+    },
+    {
+      "name": "TRAEFIK_SABLIER",
+      "label": "Start containers on demand (Sablier)",
+      "description": "Deploys Sablier into this stack and declares its plugin: an app can sleep while nobody uses it and wake on the first visit, chosen per route when you deploy it",
+      "default": "false",
+      "type": "boolean",
+      "required": false
+    },
+    {
+      "name": "TRAEFIK_CLOUDFLARE_REAL_IP",
+      "label": "Cloudflare real IP (cloudflarewarp)",
+      "description": "For sites behind Cloudflare's proxy: the visitor's address replaces Cloudflare's before CrowdSec and Geoblock judge it. Leave off when Cloudflare only serves your DNS",
+      "default": "false",
+      "type": "boolean",
+      "required": false
+    },
+    {
+      "name": "TRAEFIK_GEOBLOCK",
+      "label": "Geoblock",
+      "description": "Only visitors from the countries you list reach the routes DCS writes; your LAN is always let in. Countries are looked up at geojs.io and cached",
+      "default": "false",
+      "type": "boolean",
+      "required": false
+    },
+    {
+      "name": "TRAEFIK_GEOBLOCK_COUNTRIES",
+      "label": "Allowed countries",
+      "description": "ISO 3166-1 alpha-2 codes, comma separated: GB,US,DE (the UK is GB)",
+      "default": "",
+      "required": false,
+      "show_if": { "TRAEFIK_GEOBLOCK": "true" }
+    },
+    {
+      "name": "TRAEFIK_THEMEPARK",
+      "label": "theme.park themes",
+      "description": "Declares the theme.park plugin at the start, so a theme put on an app's pages from its container page needs no Traefik restart",
+      "default": "false",
+      "type": "boolean",
+      "required": false
+    },
+    {
+      "name": "TRAEFIK_MAINTENANCE",
+      "label": "Maintenance mode",
+      "description": "Declares the maintenance plugin and defines a \"maintenance\" middleware with a holding page: add it to a route and the page shows while App-Data/Traefik/maintenance.trigger exists",
+      "default": "false",
+      "type": "boolean",
+      "required": false
     }
   ],
   "singleton": true
