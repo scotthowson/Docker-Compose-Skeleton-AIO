@@ -4,7 +4,7 @@ Generated from the router in `.scripts/api-server.sh` by `.scripts/api-docs.sh` 
 Run `.scripts/api-docs.sh` after adding or changing a route; CI fails when this file is stale.
 
 The API listens on `API_BIND:API_PORT` (default `0.0.0.0:9876`) and answers JSON.
-Every endpoint below is `368` in total.
+Every endpoint below is `376` in total.
 
 ## Access levels
 
@@ -97,8 +97,9 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | POST | `/auth/invite` | admin | Generate an invite code (admin only) |
 | POST | `/auth/users` | admin | Create a user account directly {username, password, role} (admin; for bots and family) |
 | POST | `/auth/users/*/role` | admin | Change an account's role {role: admin\|user\|bot} (admin; the last admin cannot be demoted; the account's sessions are signed out) |
+| POST | `/auth/password` | admin | Change your own password {current_password, new_password}: the current one must match, the new one needs 8 characters, and every session of the account ends (sign in again with the new password) |
 | POST | `/auth/revoke` | admin | Revoke a user's access (admin only) |
-| POST | `/auth/logout-all` | admin | Invalidate all sessions for a user (admin only) |
+| POST | `/auth/logout-all` | admin | Auth logout all |
 | POST | `/auth/factory-reset` | admin | Wipe auth state and return server to first-run mode |
 | DELETE | `/auth/sessions/{token-prefix}` | admin | Revoke a specific session by token prefix (admin only) |
 | DELETE | `/auth/invite/{code}` | admin | Delete an invite code (admin only) |
@@ -124,6 +125,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | GET | `/stacks/{stack}/services` | user | Services of a stack with container state, health and image |
 | GET | `/stacks/{stack}/containers` | user | Containers of one stack |
 | GET | `/stacks/{stack}/logs` | user | Recent log lines of a stack |
+| GET | `/stacks/{stack}/files` | user | The files of a stack's folder (compose, .env, configuration; no data, logs, caches, certificates or edit backups), each base64: what a hub keeps of a VM's stack |
 | GET | `/stacks/{stack}/compose` | user | The stack's docker-compose.yml |
 | GET | `/stacks/{stack}/env` | admin | The stack's .env file |
 | GET | `/stacks/{stack}` | user | Stack detail: services, containers and images |
@@ -134,10 +136,13 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | POST | `/batch/stacks` | admin | Start, stop or restart several stacks in dependency order |
 | POST | `/batch/update` | admin | Pull images for several stacks and recreate what changed |
 | POST | `/stacks/{stack}/compose/validate` | user | Validate compose content for a stack without saving it |
+| POST | `/stacks/{stack}/files` | admin | Write a stack's files {files: [{path, mode, content (base64)}], prune: false}: the hub pushing the files it owns into this VM's stack folder; on a hub, a VM stack's files are written here and pushed on |
 | POST | `/stacks/{stack}/compose` | admin | Save the stack's docker-compose.yml (policy-scanned, previous version kept) |
 | POST | `/stacks/{stack}/env` | admin | Save the stack's .env file |
 | POST | `/stacks/{stack}/compose/rollback` | admin | Restore a saved compose version |
 | POST | `/stacks/{stack}/clone` | admin | Clone a stack |
+| POST | `/stacks/{stack}/push` | admin | Push the hub's files of a VM stack (Stacks/<name>/) into the VM that runs it: how a rebuilt VM gets its stack back, and how a change made on the hub by hand reaches the VM |
+| POST | `/stacks/{stack}/pull` | admin | Pull a VM stack's files from the VM into the hub's Stacks/<name>/ (the hub's copy becomes the VM's, file for file; the copy it replaces is kept in the compose history) |
 | POST | `/stacks/{stack}/start` | admin | Start, stop, restart or update (pull + recreate) a stack |
 | POST | `/stacks/{stack}/stop` | admin | Start, stop, restart or update (pull + recreate) a stack |
 | POST | `/stacks/{stack}/restart` | admin | Start, stop, restart or update (pull + recreate) a stack |
@@ -180,8 +185,10 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | GET | `/images/stale` | user | Images with age, size and staleness (/images/stale lists only stale ones) On a hub, ?fleet=1 adds every member's images (member, member_name, vmid) and per-member counts |
 | GET | `/images/check-updates` | user | Images check updates get |
 | GET | `/images/search` | user | Search Docker Hub for images |
-| POST | `/images/{image}/delete` | admin | Remove an image |
+| POST | `/images/delete` | admin | Remove an image by reference {image: "registry/name:tag" or an id}: a tagged image goes by its name, which Docker takes even when the id carries several tags |
+| POST | `/images/{image}/delete` | admin | Image delete |
 | POST | `/images/check-updates` | admin | Images check updates post |
+| POST | `/images/pull` | admin | Pull an image by name {image} and leave the containers on its old copy alone (the Images page's Pull button; /images/update recreates them) |
 | POST | `/images/update` | admin | Pull an image and recreate the Compose services that use it |
 | POST | `/images/{image}/update` | admin | Pull an image and recreate the Compose services that use it |
 
@@ -496,6 +503,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | POST | `/fleet/docker-engine/update` | admin | Bring the Docker Engine up to date on members {members: ["id", …] or "all"} (each VM the hub built has passwordless sudo, so no password travels); the answer says what each member started |
 | POST | `/fleet/jobs/{id}/retry` | admin | Run a failed VM job again from the step that failed |
 | POST | `/fleet/members/{id}/test` | admin | Log in to the member afresh, read its identity and version, and say which guest it matches |
+| POST | `/fleet/members/{id}/sync` | admin | Pull the files of every stack a VM runs into the hub's Stacks/ folders; {direction: "push"} sends the hub's copies into the VM instead; {stacks: [names]} limits it. The answer lists what moved and what failed |
 | POST | `/fleet/members/{id}/terminal/exec` | admin | Run a shell command inside a VM over the hub's ssh key {terminal_token, command, cwd?}: the hub's own Terminal session unlocks it; the same command guard, rate limit, 60 s limit and audit log as the host terminal |
 | POST | `/fleet/members/{id}/api/{path}` | admin | Forward the call (GET, POST, PUT or DELETE) to that member with the hub's account; the caller's own role is checked against the inner path as if it were local (streams and auth are not forwarded) |
 | POST | `/power/sample` | admin | Read the UPS right now (also refreshes what GET /power shows) |

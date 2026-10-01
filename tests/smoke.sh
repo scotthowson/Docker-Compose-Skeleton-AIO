@@ -106,6 +106,23 @@ check "login revokes the older session" 401 "$(auth_request GET /version | statu
 TOKEN=$(printf '%s' "$LOGIN" | body_of | jq -r '.token // empty' 2>/dev/null)
 check "new session token works"         200 "$(auth_request GET /version | status_of)"
 check "password hash is PBKDF2 (v2)"    2   "$(jq -r '.[0].hash_version' "$WORK/.api-auth/users.json" 2>/dev/null)"
+# a password change of one's own: the current one must match, the new one takes over, every session of the account ends
+check "password: wrong current refused"  401 "$(auth_request POST /auth/password '{"current_password":"nope-nope-nope","new_password":"brand new password"}' | status_of)"
+check "password: too short refused"      400 "$(auth_request POST /auth/password '{"current_password":"correct horse battery","new_password":"short"}' | status_of)"
+check "password: changed"                true "$(auth_request POST /auth/password '{"current_password":"correct horse battery","new_password":"brand new password"}' | body_of | jq -r '.success' 2>/dev/null)"
+check "password: the session ended"      401 "$(auth_request GET /version | status_of)"
+check "password: the old one is refused" 401 "$(request POST /auth/login '{"username":"admin","password":"correct horse battery"}' "${AUTH[@]}" | status_of)"
+LOGIN=$(request POST /auth/login '{"username":"admin","password":"brand new password"}' "${AUTH[@]}")
+check "password: the new one signs in"   200 "$(printf '%s' "$LOGIN" | status_of)"
+TOKEN=$(printf '%s' "$LOGIN" | body_of | jq -r '.token // empty' 2>/dev/null)
+auth_request POST /auth/password '{"current_password":"brand new password","new_password":"correct horse battery"}' >/dev/null   # back to the password the suite uses
+LOGIN=$(request POST /auth/login '{"username":"admin","password":"correct horse battery"}' "${AUTH[@]}"); TOKEN=$(printf '%s' "$LOGIN" | body_of | jq -r '.token // empty' 2>/dev/null)
+check "verify: says whether 2FA is on"   false "$(auth_request GET /auth/verify | body_of | jq -r '.totp_enabled' 2>/dev/null)"
+check "sessions: remember the address"   yes "$(auth_request GET /auth/sessions | body_of | jq -e '.sessions[0] | has("ip")' >/dev/null 2>&1 && echo yes || echo no)"
+check "config: boot-pull and colour rows read back" "false false 50" "$(auth_request GET /config | body_of | jq -r '"\(.update_on_boot) \(.force_color) \(.progress_bar_width)"' 2>/dev/null)"
+check "config: FORCE_COLOR is a key the save takes"  200 "$(auth_request POST /config '{"FORCE_COLOR":"true","PROGRESS_BAR_WIDTH":"40"}' | status_of)"
+check "config: …and reads back"          "true 40" "$(auth_request GET /config | body_of | jq -r '"\(.force_color) \(.progress_bar_width)"' 2>/dev/null)"
+check "images: delete by reference checks the name" 400 "$(auth_request POST /images/delete '{"image":"not a ref!"}' | status_of)"
 check "auth files are private"          600 "$(stat -c %a "$WORK/.api-auth/users.json" 2>/dev/null)"
 INVITE=$(auth_request POST /auth/invite '{"role":"user"}' | body_of | jq -r '.code // empty')
 check "invite created"                  yes "$([[ -n "$INVITE" ]] && echo yes || echo no)"
