@@ -46,6 +46,12 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: API worker pool (a real listener on loopback)
+        run: tests/api-workers.sh
+
+      - name: A VM stack's files are the hub's (a hub and a member, two real listeners)
+        run: tests/fleet-files.sh
+
       - name: VM images — the first-boot script against the seeds Proxmox writes
         run: vm-images/tests/dcs-init-test.sh
 
@@ -70,12 +76,15 @@ jobs:
     steps:
       - name: Install tools
         run: |
-          apt-get update -qq && apt-get install -y -qq jq socat curl git python3 ca-certificates procps ncat
+          apt-get update -qq && apt-get install -y -qq jq socat curl git python3 ca-certificates procps ncat iproute2
           jq --version
       - uses: actions/checkout@v7
 
       - name: Smoke tests on Debian 13's jq (request handler over stdin)
         run: tests/smoke.sh 2>&1 | tee smoke-debian.log
+
+      - name: API worker pool and a VM stack's files on Debian 13's jq
+        run: tests/api-workers.sh && tests/fleet-files.sh
 
       - name: Smoke failures in the summary
         if: failure()
