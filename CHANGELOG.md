@@ -5,6 +5,23 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [4.0.20] - 2026-10-02
+
+### Added
+
+- **API keys for dashboards and scripts.** A session belongs to a person at a keyboard: it ends in hours, and a second sign-in
+  ends the first. Homarr, a script or Home Assistant can only send one fixed header, for months. *Secrets > API keys* makes a
+  key for that: say what it is for, choose **read** (every `GET` a viewer may, nothing else) or **operate** (also what a bot
+  account may: start, stop, restart and update stacks and containers, deploy a template, run a backup), and optionally when it
+  expires. The key is shown once and DCS keeps its hash; send it as `Authorization: Bearer dcs_…` or `X-API-Key: dcs_…`.
+  A key is never an admin and never an account: users, sessions, secrets, the terminal, files, settings and the keys themselves
+  stay closed to it. The list shows when a key was last used, *Remove* ends it at once, and the audit log names it.
+  API: `GET/POST /auth/keys`, `DELETE /auth/keys/{id}`.
+- **`GET /summary`: the server at a glance** for whoever is signed in or holds a key (the version, stacks up of total,
+  containers running of total, the machine's processor, memory, disk and NVIDIA card). `/feed/summary` has the disk too.
+- A guide: [Homarr and other dashboards](docs/DASHBOARDS.md) - the header to send, a Homarr custom widget, a Home Assistant
+  sensor.
+
 ## [4.0.19] - 2026-10-02
 
 ### Fixed

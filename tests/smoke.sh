@@ -2325,6 +2325,7 @@ _DFS=$(request GET "/feed/summary?token=$_DFT" '' "${AUTH[@]}")
 check "dash feed: summary with the token" 200 "$(status_of <<< "$_DFS")"
 check "dash feed: summary has the version" yes "$(body_of <<< "$_DFS" | jq -e '(.version | type == "string") and (.containers.total | type == "number") and (.stacks | type == "array")' >/dev/null 2>&1 && echo yes || echo no)"
 check "dash feed: summary has the machine's load" yes "$(body_of <<< "$_DFS" | jq -e '(.system.cpu.percent | type == "number") and (.system.cpu.percent >= 0 and .system.cpu.percent <= 100) and (.system.memory.total_mb > 0) and (.system.cpu.threads > 0)' >/dev/null 2>&1 && echo yes || echo no)"
+check "dash feed: …and the disk" yes "$(body_of <<< "$_DFS" | jq -e '(.system.disk.percent | type == "number") and (.system.disk.total | type == "string")' >/dev/null 2>&1 && echo yes || echo no)"
 check "dash feed: Bearer works too"     200 "$(printf 'GET /feed/summary HTTP/1.1\r\nAuthorization: Bearer %s\r\n\r\n' "$_DFT" | env "${AUTH[@]}" "$API" --handle-request 2>/dev/null | status_of)"
 check "dash feed: the token opens nothing else" 401 "$(printf 'GET /stacks HTTP/1.1\r\nAuthorization: Bearer %s\r\n\r\n' "$_DFT" | env "${AUTH[@]}" "$API" --handle-request 2>/dev/null | status_of)"
 check "dash feed: crowdsec needs the token" 401 "$(request GET '/feed/crowdsec' '' "${AUTH[@]}" | status_of)"
@@ -2438,6 +2439,41 @@ check "scan: a template may name one device"            0 "$(_scan_dev deploy de
 check "scan: …but not the whole of /dev"                1 "$(_scan_dev deploy volumes /dev:/dev)"
 check "scan: …nor the machine's memory"                 1 "$(_scan_dev deploy devices /dev/mem:/dev/mem)"
 check "scan: an edited compose file still names no device" 1 "$(_scan_dev strict devices /dev/ttyUSB0:/dev/ttyUSB0)"
+# API keys: for a dashboard or a script that can only send a fixed header. Made by an admin, shown once, kept as a hash;
+# "read" reads what a viewer may, "operate" also does what a bot may; never an admin, never an account
+key_request() { local hdr="$1" m="$2" p="$3" b="${4:-}"; printf '%s %s HTTP/1.1\r\n%s\r\nContent-Length: %d\r\n\r\n%s' "$m" "$p" "$hdr" "${#b}" "$b" | env DOCKER_COMPOSE_CMD="${DOCKER_COMPOSE_CMD:-docker compose}" "${AUTH[@]}" PATH="$WORK/fakebin:$PATH" "$API" --handle-request 2>/dev/null; }
+check "api keys: a name is needed"                  400 "$(auth_request POST /auth/keys '{"name":"","role":"read"}' | status_of)"
+check "api keys: only the two roles"                400 "$(auth_request POST /auth/keys '{"name":"x","role":"admin"}' | status_of)"
+_AK=$(auth_request POST /auth/keys '{"name":"Homarr","role":"read"}' | body_of)
+_AKR=$(jq -r '.key // empty' <<< "$_AK" 2>/dev/null); _AKRID=$(jq -r '.id // empty' <<< "$_AK" 2>/dev/null)
+check "api keys: made, shown once"                  yes "$([[ "$_AKR" =~ ^dcs_[0-9a-f]{40}$ ]] && echo yes || echo no)"
+check "api keys: the same name twice is refused"    409 "$(auth_request POST /auth/keys '{"name":"Homarr","role":"read"}' | status_of)"
+check "api keys: only a hash is kept"               '1 0' "$(printf '%s %s' "$(jq '[.[] | select(.hash | test("^[0-9a-f]{64}$"))] | length' "$WORK/.api-auth/api-keys.json" 2>/dev/null)" "$(grep -c "$_AKR" "$WORK/.api-auth/api-keys.json")")"
+check "api keys: the list never shows it again"     'Homarr read no' "$(auth_request GET /auth/keys | body_of | jq -r '.keys[0] | "\(.name) \(.role) " + (if has("key") or has("hash") then "yes" else "no" end)' 2>/dev/null)"
+check "api keys: Authorization: Bearer"             200 "$(key_request "Authorization: Bearer $_AKR" GET /stacks | status_of)"
+check "api keys: X-API-Key"                         200 "$(key_request "X-API-Key: $_AKR" GET /summary | status_of)"
+check "api keys: the summary has the version"       yes "$(key_request "X-API-Key: $_AKR" GET /summary | body_of | jq -e '(.version | type == "string") and (.system.memory.total_mb > 0)' >/dev/null 2>&1 && echo yes || echo no)"
+check "api keys: a wrong key"                       401 "$(key_request "X-API-Key: dcs_0000000000000000000000000000000000000000" GET /stacks | status_of)"
+check "api keys: read reads what a viewer may"      403 "$(key_request "X-API-Key: $_AKR" GET /env | status_of)"
+check "api keys: read does nothing"                 403 "$(key_request "X-API-Key: $_AKR" POST /metrics/snapshot | status_of)"
+check "api keys: a key never sees the keys"         403 "$(key_request "X-API-Key: $_AKR" GET /auth/keys | status_of)"
+check "api keys: …nor the accounts"                 403 "$(key_request "X-API-Key: $_AKR" GET /auth/users | status_of)"
+check "api keys: a viewer sees no keys"             403 "$(viewer_request GET /auth/keys | status_of)"
+check "api keys: a viewer makes none"               403 "$(viewer_request POST /auth/keys '{"name":"v","role":"read"}' | status_of)"
+_AKO=$(auth_request POST /auth/keys '{"name":"Home Assistant","role":"operate","expires_days":30}' | body_of)
+_AKOK=$(jq -r '.key // empty' <<< "$_AKO" 2>/dev/null); _AKOID=$(jq -r '.id // empty' <<< "$_AKO" 2>/dev/null)
+check "api keys: operate may do what a bot may"     yes "$([[ "$(key_request "Authorization: Bearer $_AKOK" POST /metrics/snapshot | status_of)" != 403 ]] && echo yes || echo no)"
+check "api keys: operate is no admin"               403 "$(key_request "Authorization: Bearer $_AKOK" POST /auth/users '{"username":"x","password":"long-enough-1","role":"admin"}' | status_of)"
+check "api keys: operate makes no keys"             403 "$(key_request "Authorization: Bearer $_AKOK" POST /auth/keys '{"name":"more","role":"operate"}' | status_of)"
+check "api keys: operate opens no terminal"         403 "$(key_request "Authorization: Bearer $_AKOK" GET /terminal/web | status_of)"
+check "api keys: the audit log names the key"       yes "$(grep -q 'API_KEY_CREATED.*Home Assistant' "$WORK/.api-auth/auth-audit.log" 2>/dev/null && echo yes || echo no)"
+jq --arg id "$_AKOID" 'map(if .id == $id then .expires_at = 1 else . end)' "$WORK/.api-auth/api-keys.json" > "$WORK/.api-auth/api-keys.json.t" && command mv -f "$WORK/.api-auth/api-keys.json.t" "$WORK/.api-auth/api-keys.json"
+check "api keys: an expired key"                    401 "$(key_request "Authorization: Bearer $_AKOK" GET /stacks | status_of)"
+check "api keys: the list says expired"             true "$(auth_request GET /auth/keys | body_of | jq -r --arg id "$_AKOID" '.keys[] | select(.id == $id) | .expired' 2>/dev/null)"
+check "api keys: removed"                           200 "$(auth_request DELETE "/auth/keys/$_AKRID" | status_of)"
+check "api keys: a removed key is dead at once"     401 "$(key_request "X-API-Key: $_AKR" GET /stacks | status_of)"
+check "api keys: an id that is not one"             400 "$(auth_request DELETE /auth/keys/../../users | status_of)"
+
 # the web terminal: a shell on the server is never deployed without a sign-in in front of it, publishes no port, and gets a
 # key of its own that leaves with it ("auth": "required" and "route_ports" in template.json)
 command rm -rf "$WORK/.templates/web-terminal"; cp -r "$ROOT/.templates/web-terminal" "$WORK/.templates/web-terminal"

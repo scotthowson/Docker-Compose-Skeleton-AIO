@@ -4,7 +4,7 @@ Generated from the router in `.scripts/api-server.sh` by `.scripts/api-docs.sh` 
 Run `.scripts/api-docs.sh` after adding or changing a route; CI fails when this file is stale.
 
 The API listens on `API_BIND:API_PORT` (default `0.0.0.0:9876`) and answers JSON.
-Every endpoint below is `394` in total.
+Every endpoint below is `398` in total.
 
 ## Access levels
 
@@ -85,6 +85,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | GET | `/auth/users` | admin | List all users (admin only) |
 | GET | `/auth/invites` | admin | List active invite codes (admin only) |
 | GET | `/auth/sessions` | admin | List active sessions (admin only) |
+| GET | `/auth/keys` | admin | The API keys (name, role, when made, when last used, expiry); the key itself is never shown again (admin, not with a key) |
 | POST | `/auth/setup` | public | Create the first admin account (only when no users exist) |
 | POST | `/auth/login` | public | Authenticate and get a session token |
 | POST | `/auth/register` | public | Register a new account with an invite code |
@@ -96,6 +97,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | POST | `/auth/totp/disable` | user | Disable 2FA (requires password confirmation) |
 | POST | `/auth/invite` | admin | Generate an invite code (admin only) |
 | POST | `/auth/users` | admin | Create a user account directly {username, password, role} (admin; for bots and family) |
+| POST | `/auth/keys` | admin | Make an API key for a dashboard or a script {name, role: read\|operate, expires_days?: 0 = never}: the key is in the answer once, DCS keeps its hash (admin, not with a key) |
 | POST | `/auth/users/*/role` | admin | Change an account's role {role: admin\|user\|bot} (admin; the last admin cannot be demoted; the account's sessions are signed out) |
 | POST | `/auth/password` | admin | Change your own password {current_password, new_password}: the current one must match, the new one needs 8 characters, and every session of the account ends (sign in again with the new password) |
 | POST | `/auth/revoke` | admin | Revoke a user's access (admin only) |
@@ -103,6 +105,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | POST | `/auth/factory-reset` | admin | Wipe auth state and return server to first-run mode |
 | DELETE | `/auth/sessions/{token-prefix}` | admin | Revoke a specific session by token prefix (admin only) |
 | DELETE | `/auth/invite/{code}` | admin | Delete an invite code (admin only) |
+| DELETE | `/auth/keys/*` | admin | Remove an API key: it stops working at once (admin, not with a key) |
 
 ## Setup wizard
 
@@ -461,6 +464,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | GET | `/ping` | public | Liveness probe: no auth, no Docker call, a tiny body. The dashboard's heartbeat uses it, so the latency it shows is the round trip alone. |
 | GET | `/fleet/bundle` | public | The hub's own DCS code as a tar.gz for a VM being bootstrapped (needs ?token= — a valid join code, or the bundle code an update round minted for the member it names); never includes data, accounts, secrets, stacks or logs |
 | GET | `/fleet/bootstrap` | public | The node installer for any Debian, Ubuntu, Fedora or Arch machine (needs ?token=, a valid join code; &stack= names the one stack the node carries): a shell script that installs Docker and the tools, fetches this hub's code, sets DCS up as a node and joins — run as a user with sudo: curl -fsSL '…' \| bash |
+| GET | `/summary` | user | The server at a glance for whoever is signed in or holds an API key: the same answer as /feed/summary (version, stacks, containers, the machine's load and disk) |
 | GET | `/power` | user | UPS status: mains or battery, charge, runtime, load, and whether the watch loop runs |
 | GET | `/recovery` | admin | Recovery bundles on this box and how they are made (destination, off-box copy, retention, passphrase set?) |
 | GET | `/fleet/images` | user | Every image on the hub and on each member in one list, each tagged with where it runs (member null = the hub); the counts add up across the fleet, registry_checked_at is the oldest check, last_update_at the newest pull |

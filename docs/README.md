@@ -15,6 +15,7 @@ Read them in order the first time; after that, jump to what you need.
 | 🛠️ [Development](DEVELOPMENT.md) | Repository layout, tests, running the API locally, adding routes and templates |
 | 🖥️ [Proxmox and the fleet](PROXMOX.md) | The API token, the Proxmox page, the hub, the VMs it builds, the route feed |
 | 💬 [Discord](DISCORD.md) | Webhook alerts, CrowdSec alerts, the bot and its commands, Rich Presence |
+| 📊 [Homarr and other dashboards](DASHBOARDS.md) | API keys and the dashboard feed: the header to send, Homarr custom widgets, a Home Assistant sensor |
 | 📡 [API reference](API.md) | Every endpoint with its access level, generated from the router |
 | 💿 [VM images](VM-IMAGES.md) | The purpose-built hub and node images *(written with the 4.0 release)* |
 
