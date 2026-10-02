@@ -7692,6 +7692,85 @@ _web_terminal_write_options() {
     title="$(_hostname 2>/dev/null || echo server)"; title="${title//[^A-Za-z0-9 ._-]/}"
     printf "THEME='%s'\nFONT_SIZE='%s'\nTITLE='%s'\n" "$theme" "$size" "${SERVER_NAME:+${SERVER_NAME//[^A-Za-z0-9 ._-]/} · }${title}" > "$d/options.tmp" && command mv -f "$d/options.tmp" "$d/options"
 }
+# The start script and the page's few lines. _WEB_TERMINAL_START_REV is written into the script: a terminal deployed by an
+# earlier version gets the current one when the API starts (_web_terminal_upgrade).
+_WEB_TERMINAL_START_REV=2
+# _web_terminal_write_start CONFIG_DIR USER PORT
+_web_terminal_write_start() {
+    local c="$1" user="$2" port="$3"
+    [[ "$user" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]*$ && "$port" =~ ^[0-9]{1,5}$ ]] || return 1
+    # What DCS adds to ttyd's page. A terminal is one long connection, and what starts containers on demand (Sablier)
+    # counts requests: without these lines it stops the terminal in the middle of a session, and the page left behind
+    # asks for a terminal and is handed a waiting page it cannot show.
+    #  - while the terminal is in use (keys or output in the last ten minutes) the page asks for a small file twice a
+    #    minute: that is the request that keeps the session alive. An idle terminal is left to go to sleep.
+    #  - when the connection has ended, the first key, click or touch loads the page again: a container that sleeps
+    #    is woken by that (the waiting page shows), one that runs gives a new session at once.
+    cat > "$c/page.js.tmp" <<'PAGE_EOF'
+(function () {
+  var W = window.WebSocket, last = Date.now(), open = false, ended = false, IDLE = 10 * 60 * 1000;
+  function WS(url, protocols) {
+    var s = protocols === undefined ? new W(url) : new W(url, protocols), send = s.send;
+    s.addEventListener('open', function () { open = true; ended = false; last = Date.now(); });
+    s.addEventListener('message', function () { last = Date.now(); });
+    s.addEventListener('close', function () { open = false; ended = true; });
+    s.send = function (data) { last = Date.now(); return send.call(s, data); };
+    return s;
+  }
+  WS.prototype = W.prototype; WS.CONNECTING = 0; WS.OPEN = 1; WS.CLOSING = 2; WS.CLOSED = 3;
+  window.WebSocket = WS;
+  setInterval(function () {
+    if (open && Date.now() - last < IDLE) fetch('token', { cache: 'no-store', credentials: 'same-origin' }).catch(function () {});
+  }, 25000);
+  function back() { if (ended) { ended = false; window.location.reload(); } }
+  ['keydown', 'mousedown', 'touchstart'].forEach(function (e) { window.addEventListener(e, back, true); });
+})();
+PAGE_EOF
+    command mv -f "$c/page.js.tmp" "$c/page.js" || return 1
+    cat > "$c/start.sh.tmp" <<'START_EOF'
+#!/bin/sh
+# dcs-web-terminal-start: @@REV@@
+# Written by DCS (the web terminal): the image has ttyd and no ssh client, so the client is added once and kept in the
+# cache folder; then ttyd serves one ssh session to this server per browser tab.
+if ! command -v ssh >/dev/null 2>&1; then
+    apk add -q --no-progress --no-network openssh-client-default 2>/dev/null \
+        || apk add -q --no-progress openssh-client-default \
+        || { echo "the ssh client could not be installed (no network at the first start?)"; sleep 20; exit 1; }
+fi
+. /config/options
+# The page: ttyd's own with DCS's few lines in front (page.js). ttyd is asked for its page once, on the loopback; when
+# that does not work the stock page is served.
+PAGE=""
+if [ -s /config/page.js ]; then
+    ttyd -p 7682 -i lo true >/dev/null 2>&1 & tp=$!
+    i=0; until wget -q -O /tmp/stock.html http://127.0.0.1:7682/ 2>/dev/null || [ "$i" -ge 25 ]; do i=$((i + 1)); sleep 0.2; done
+    kill "$tp" 2>/dev/null; wait "$tp" 2>/dev/null
+    if [ -s /tmp/stock.html ] && awk 'NR == FNR { inj = inj $0 "\n"; next } { i = index($0, "<head>"); if (i && !done) { print substr($0, 1, i + 5) "<script>" inj "</script>" substr($0, i + 6); done = 1 } else print }' /config/page.js /tmp/stock.html > /tmp/index.html \
+        && grep -q '</html>' /tmp/index.html; then PAGE=/tmp/index.html; fi
+fi
+exec ttyd ${PAGE:+-I "$PAGE"} -W -p 7681 -O -m 6 \
+    -t "titleFixed=$TITLE" -t "fontSize=$FONT_SIZE" -t "theme=$THEME" \
+    -t 'fontFamily=JetBrains Mono, Fira Code, Cascadia Code, Menlo, Consolas, monospace' \
+    -t disableLeaveAlert=true -t cursorBlink=true -t enableZmodem=false -t enableTrzsz=false \
+    ssh -tt -i /config/id_ed25519 -o IdentitiesOnly=yes -o UserKnownHostsFile=/config/known_hosts -o HostKeyAlias=dcs-host \
+        -o StrictHostKeyChecking=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=4 -p @@PORT@@ @@USER@@@host.docker.internal
+START_EOF
+    sed -i "s/@@REV@@/$_WEB_TERMINAL_START_REV/; s/@@PORT@@/$port/; s/@@USER@@/$user/" "$c/start.sh.tmp" && command mv -f "$c/start.sh.tmp" "$c/start.sh" && chmod 644 "$c/start.sh" "$c/page.js" 2>/dev/null
+}
+# A terminal deployed by an earlier version: its start script and page are brought up to date and it starts again with them
+# (run once when the API starts; a container that sleeps is left asleep, its next start uses the new script)
+_web_terminal_upgrade() {
+    local stack c cid
+    stack=$(_web_terminal_stack); [[ -n "$stack" ]] || return 0
+    c="$COMPOSE_DIR/$stack/App-Data/Web-Terminal/config"
+    [[ -s "$c/start.sh" && -s "$c/id_ed25519" ]] || return 0
+    grep -q "^# dcs-web-terminal-start: ${_WEB_TERMINAL_START_REV}\$" "$c/start.sh" 2>/dev/null && return 0
+    _web_terminal_write_start "$c" "$(id -un)" "$(_web_terminal_ssh_port)" || return 0
+    cid=$(timeout 6 docker ps --filter "label=com.docker.compose.service=terminal" --format '{{.ID}}' 2>/dev/null | head -1) || cid=""
+    [[ -n "$cid" ]] && { timeout 40 docker restart "$cid" >/dev/null 2>&1 || true; }
+    _audit_log "web_terminal_upgrade" "the web terminal's start script was brought up to revision $_WEB_TERMINAL_START_REV"
+    return 0
+}
 # _web_terminal_prepare STACK_DIR — the key (made once), its line in the user's authorized_keys, the server's host key, the
 # start script and the look. Says why on stderr and returns 1 when the terminal could not work.
 _web_terminal_prepare() {
@@ -7724,24 +7803,7 @@ _web_terminal_prepare() {
       printf 'from="127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16",no-agent-forwarding,no-X11-forwarding,no-port-forwarding %s %s\n' "$pub" "$_WEB_TERMINAL_KEY_MARK"; } > "$ak.dcs-tmp" \
         && cat "$ak.dcs-tmp" > "$ak" && command rm -f "$ak.dcs-tmp" || { command rm -f "$ak.dcs-tmp"; echo "could not write $ak" >&2; return 1; }
     [[ -s "$c/options" ]] || _web_terminal_write_options "$c" "$_WEB_TERMINAL_DEFAULT_THEME" 15
-    cat > "$c/start.sh" <<START_EOF
-#!/bin/sh
-# Written by DCS (the web terminal): the image has ttyd and no ssh client, so the client is added once and kept in the
-# cache folder; then ttyd serves one ssh session to this server per browser tab.
-if ! command -v ssh >/dev/null 2>&1; then
-    apk add -q --no-progress --no-network openssh-client-default 2>/dev/null \\
-        || apk add -q --no-progress openssh-client-default \\
-        || { echo "the ssh client could not be installed (no network at the first start?)"; sleep 20; exit 1; }
-fi
-. /config/options
-exec ttyd -W -p 7681 -O -m 6 \\
-    -t "titleFixed=\$TITLE" -t "fontSize=\$FONT_SIZE" -t "theme=\$THEME" \\
-    -t 'fontFamily=JetBrains Mono, Fira Code, Cascadia Code, Menlo, Consolas, monospace' \\
-    -t disableLeaveAlert=true -t cursorBlink=true -t enableZmodem=false -t enableTrzsz=false \\
-    ssh -tt -i /config/id_ed25519 -o IdentitiesOnly=yes -o UserKnownHostsFile=/config/known_hosts -o HostKeyAlias=dcs-host \\
-        -o StrictHostKeyChecking=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=4 -p $port $user@host.docker.internal
-START_EOF
-    chmod 644 "$c/start.sh" 2>/dev/null || true
+    _web_terminal_write_start "$c" "$user" "$port" || { echo "could not write the start script" >&2; return 1; }
     _audit_log "web_terminal_key" "the web terminal's key was put in $ak (user $user, from private addresses only)"
     return 0
 }
@@ -30043,6 +30105,9 @@ start_server() {
             echo "  Fleet update queued: the members follow to DCS $DCS_VERSION in a moment"
         fi
     fi
+
+    # a web terminal deployed by an earlier version gets the current start script
+    ( sleep 6; _web_terminal_upgrade >/dev/null 2>&1 ) </dev/null >/dev/null 2>&1 &
 
     # Automations and schedules run in the server process (no crontab)
     if [[ "${AUTOMATIONS_ENABLED:-true}" == "true" ]]; then

@@ -2426,6 +2426,13 @@ check "web terminal: other keys are kept"          1 "$(grep -c 'someone@else' "
 check "web terminal: the private key is private"   600 "$(stat -c %a "$_WTD/id_ed25519" 2>/dev/null)"
 check "web terminal: the host key is pinned"       1 "$(grep -c '^dcs-host ssh-ed25519 ' "$_WTD/known_hosts" 2>/dev/null)"
 check "web terminal: the start script signs in as this user" 1 "$(grep -c -- "-o StrictHostKeyChecking=yes .* -p 22 $(id -un)@host.docker.internal" "$_WTD/start.sh" 2>/dev/null)"
+check "web terminal: the page keeps a session in use alive" 1 "$(grep -c "fetch('token'" "$_WTD/page.js" 2>/dev/null)"
+check "web terminal: the start script serves that page" 1 "$(grep -c -- '-I "\$PAGE"' "$_WTD/start.sh" 2>/dev/null)"
+# a terminal deployed by an earlier version gets the current start script when the API starts
+printf '#!/bin/sh\n# an earlier start script\n' > "$_WTD/start.sh"; command rm -f "$_WTD/page.js"
+DCS_WEB_TERMINAL_HOME="$WORK/wt-home" DCS_WEB_TERMINAL_HOSTKEYS="$WORK/wt-hostkeys" PATH="$WORK/fakebin:$PATH" _lib _web_terminal_upgrade >/dev/null 2>&1
+check "web terminal: an earlier start script is brought up to date" '1 1' "$(printf '%s %s' "$(grep -c '^# dcs-web-terminal-start: 2$' "$_WTD/start.sh" 2>/dev/null)" "$(grep -c -- "-p 22 $(id -un)@host.docker.internal" "$_WTD/start.sh" 2>/dev/null)")"
+check "web terminal: …with its page"                yes "$([[ -s "$_WTD/page.js" ]] && echo yes || echo no)"
 _WTS=$(wt_request GET /terminal/web | body_of)
 check "web terminal: status after"                 'true true true https://terminal.smoke.test' "$(jq -r '"\(.deployed) \(.protected) \(.key_installed) \(.url)"' <<< "$_WTS" 2>/dev/null)"
 check "web terminal: a viewer sees nothing"        403 "$(viewer_request GET /terminal/web | status_of)"

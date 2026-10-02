@@ -5,6 +5,18 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [4.0.17] - 2026-10-02
+
+### Fixed
+
+- **The web terminal with "start on demand" was stopped in the middle of a session, and the page left behind never came back.**
+  Sablier counts requests, and a terminal is one long connection: when its session time was up the container was stopped while
+  you typed, and the page then asked for a terminal and was handed a waiting page it could not show. The terminal's page now
+  keeps a session that is in use alive (keys or output in the last ten minutes) and leaves an idle one to go to sleep; when the
+  connection has ended, the first key, click or touch loads the page again, which wakes a sleeping container (the waiting page
+  shows, then the terminal) or gives a new session at once. A terminal that is already deployed gets this when the API starts
+  after the update.
+
 ## [4.0.16] - 2026-10-02
 
 ### Added
