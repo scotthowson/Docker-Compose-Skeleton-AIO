@@ -5,6 +5,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [4.0.19] - 2026-10-02
+
+### Fixed
+
+- **PrivateBin could not save a paste ("Could not create document: Error saving document").** Its image runs as `nobody` and
+  takes no `PUID`/`PGID`, so it could not write the data folder DCS makes for the stack's user. The template runs it as the
+  stack's user now, and its scratch folders live in memory, so a container made again never meets files an earlier one left
+  there as another user. An install from before this fix: remove PrivateBin and deploy it again (its pastes are kept), or add
+  the `user:` and `tmpfs:` lines of the template to its service in the compose editor.
+
 ## [4.0.18] - 2026-10-02
 
 ### Added
