@@ -475,6 +475,49 @@ Some things go further than a merged list:
 Without Proxmox and without members nothing of this shows: the pages are as they were, and a
 DCS with no fleet never asks anyone else.
 
+### Moving a stack of the hub into a VM, with its data
+
+A stack that already runs on the hub, with months of data, can move into a VM of its own without
+starting over. On the Stacks page every stack *on the hub* has a **To a VM** button; the sheet it
+opens says what goes with it, and *Move it* does the whole thing:
+
+1. The VM is built and joins the hub while the stack keeps running on the hub.
+2. The stack is stopped on the hub (not removed), so its data is at rest.
+3. Its configuration goes over, then its folders (`App-Data`, `data`) and its named volumes, with every
+   owner and permission as it is - a database's files stay the database's. Every copy is counted on both
+   sides; a count that differs stops the move.
+4. Its route files travel with it, so the same addresses reach it in the VM (the hub's own route files
+   for it are set aside in `.data/moved-routes/`, never deleted).
+5. It starts in the VM, and the move waits until as many containers are up there as ran on the hub.
+   Only then the hub lets go: the stack leaves `DOCKER_STACKS`, the hub's containers of it are removed.
+
+**Nothing is lost.** The hub's copy of the data stays where it was, as the copy to fall back on; remove it
+yourself once you trust the VM. If anything fails before the stack runs in the VM - the copy stops
+part-way, the VM cannot pull an image, a port is taken there - the stack is started on the hub again and
+the job says why. *Retry* picks the move up where it stopped (the VM it built is reused).
+
+What does not travel: **folders outside the stack**, such as a media library on another drive
+(`/mnt/media:/media`). The sheet lists them; give the VM the same path first - a [folder of the Proxmox
+host](#a-folder-of-the-proxmox-host-inside-a-vm-media-libraries) when the drive is on the Proxmox host, a
+network share otherwise - or the containers start with empty folders there. Apps in *other* stacks that
+reach this one by container name need its new address (`<the VM's address>:<port>`) afterwards.
+
+How the hub reads folders of other users: with passwordless sudo when it has it, else through a small
+read-only container (`alpine:3`, pulled once), else as its own user - and then a file it cannot read stops
+the move before anything was stopped. The VM's disk must hold the data: the sheet suggests a size, and
+the request is refused when the disk is too small.
+
+API: `GET /fleet/provision/move-check?stack=NAME` (what would go with it), and `{"move": true}` on a VM
+of `POST /fleet/provision`.
+
+### Two machines: the hub here, Proxmox there
+
+The hub does not have to run on the Proxmox host. A Docker server on one machine (the hub, say
+`192.168.2.11`) linked to a Proxmox on another (`192.168.2.50`) builds its VMs over there, joins them, and
+routes to them through its own Traefik exactly as if they were local - this is the layout the fleet was
+tested on. The hub's own stacks stay on the hub; *To a VM* moves the ones you want over. Give the VMs
+addresses on the same network as the hub (the `ip_start` of the VM settings).
+
 ### A folder of the Proxmox host inside a VM (media libraries)
 
 A VM's disk is for the system and the apps' own data. A media library that already sits on the

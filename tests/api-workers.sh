@@ -64,8 +64,10 @@ check "served through socat"                       socat "$(log_plain | awk '/Tr
 check "two workers announced"                      "2" "$(log_plain | sed -n 's/^API workers: \([0-9]*\).*/\1/p' | head -1)"
 check "two worker processes run"                   2 "$(workers | wc -w)"
 # a worker's socket file is away for a moment between two connections: the count is taken once both are back
-for _ in $(seq 1 50); do [[ "$(ls "$W/.data/run"/w*.sock 2>/dev/null | wc -l)" -eq 2 ]] && break; sleep 0.2; done
-check "two sockets in the run dir"                 2 "$(ls "$W/.data/run"/w*.sock 2>/dev/null | wc -l)"
+# the run dir is the listener's own: .data/run-<its pid> (a listener that replaces this one keeps its own sockets)
+for _ in $(seq 1 50); do [[ "$(ls "$W/.data/run-$MAIN"/w*.sock 2>/dev/null | wc -l)" -eq 2 ]] && break; sleep 0.2; done
+check "two sockets in the run dir"                 2 "$(ls "$W/.data/run-$MAIN"/w*.sock 2>/dev/null | wc -l)"
+check "the run dir is the listener's own"          yes "$([[ -d "$W/.data/run-$MAIN" && ! -d "$W/.data/run" ]] && echo yes || echo no)"
 W1=$(workers)
 # the same answers as the one-process transport: status line, JSON body, CORS and security headers
 H=$(curl -s -m 5 -D - -o /dev/null -H 'Origin: http://localhost:3000' "http://127.0.0.1:$PORT/ping")
@@ -111,8 +113,8 @@ for i in $(seq 1 40); do alive "$MAIN" || break; sleep 0.25; done
 check "stop: the listener ends"                    no "$(alive "$MAIN" && echo yes || echo no)"
 sleep 1
 check "stop: no worker is left"                    0 "$(workers | wc -w)"
-check "stop: the run dir is removed"               no "$([[ -d "$W/.data/run" ]] && echo yes || echo no)"
-check "stop: no socat keeps a worker socket"       0 "$(pgrep -fc -- "UNIX-LISTEN:$W/.data/run/" 2>/dev/null || true)"
+check "stop: the run dir is removed"               no "$(compgen -G "$W/.data/run-*" >/dev/null && echo yes || echo no)"
+check "stop: no socat keeps a worker socket"       0 "$(pgrep -fc -- "UNIX-LISTEN:$W/.data/run-" 2>/dev/null || true)"
 check "stop: the port is free"                     "" "$(ss -Hltn "sport = :$PORT" 2>/dev/null)"
 MAIN=""
 # API_WORKERS=0: the old transport, one process per connection

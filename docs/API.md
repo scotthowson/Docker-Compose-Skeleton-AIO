@@ -4,7 +4,7 @@ Generated from the router in `.scripts/api-server.sh` by `.scripts/api-docs.sh` 
 Run `.scripts/api-docs.sh` after adding or changing a route; CI fails when this file is stale.
 
 The API listens on `API_BIND:API_PORT` (default `0.0.0.0:9876`) and answers JSON.
-Every endpoint below is `398` in total.
+Every endpoint below is `399` in total.
 
 ## Access levels
 
@@ -481,6 +481,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | GET | `/fleet/discover` | admin | Scan the guests for DCS installs: Proxmox gives each running guest's addresses (guest agent / container interfaces) and the API port is probed; found installs come back with the guest already matched (30 s cache; POST forces a new scan and accepts Proxmox values to try before they are saved) |
 | GET | `/fleet/join-tokens` | admin | The join codes that are still valid (admin), each with node_command: the one line that installs DCS as a node of this hub on any VM and joins it |
 | GET | `/fleet/provision/defaults` | admin | Suggested values for creating VMs: node and its size, storages, bridge, an address range next to the hub, the cloud image, the admin name, the guests Proxmox already has (a stack cannot get a VM named like one), the stacks that already run on this server (they stay on it) and whether the hub's firewalld keeps the API port closed (admin) |
+| GET | `/fleet/provision/move-check` | admin | What moving a stack of this server into a VM would take with it: the size of its folders and named volumes, the disk a VM needs for them, its routes, and the folders outside the stack that do not travel (admin) |
 | GET | `/fleet/jobs` | admin | VMs being created (and the ones that finished or failed), newest first |
 | GET | `/fleet/templates` | admin | The DCS templates the hub baked (VMs cloned from one build in about half a minute) |
 | GET | `/fleet/versions` | admin | The hub's DCS version next to every member's, asked live; behind = members on another version, plus the last update round and whether one is queued for after the hub's restart |

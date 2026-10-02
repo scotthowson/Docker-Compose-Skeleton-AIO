@@ -5,6 +5,29 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [4.0.21] - 2026-10-02
+
+### Added
+
+- **Move a stack of the hub into a VM, with its data.** A stack that already runs on the hub used to need a stop by hand, a
+  build, and a start with empty folders. Every stack *on the hub* has a **To a VM** button now; the sheet says what goes with
+  it (its folders and named volumes with their sizes, its routes, and the folders outside the stack that do not travel), and
+  *Move it* does the whole thing: the VM is built while the stack keeps running, the stack is stopped, its folders and
+  volumes are copied with every owner and permission as it is (counted on both sides), its routes travel with it, it starts
+  in the VM, and the hub lets go only once as many containers are up there as ran on the hub. The hub's copy of the data is
+  never deleted. Whatever fails before the stack runs in the VM starts it on the hub again, and *Retry* picks the move up
+  where it stopped. Checked in a lab: a Redis data folder owned by another user, a root-only file, a named volume and a
+  web root all arrived as they were; a stack whose image the VM could not pull came back up on the hub.
+  API: `GET /fleet/provision/move-check?stack=NAME`, `{"move": true}` on a VM of `POST /fleet/provision`.
+  ([Proxmox guide](docs/PROXMOX.md#moving-a-stack-of-the-hub-into-a-vm-with-its-data))
+
+### Fixed
+
+- **An API that was restarted in place could answer nothing afterwards.** The listener that was shutting down removed the
+  run directory the new listener had just made, and ended the new one's workers along with its own (a self-update, a restart
+  that did not wait). Every listener has a run directory of its own now (`.data/run-<pid>`) and its shutdown touches only
+  that; what a listener that is gone left behind is removed at the next start.
+
 ## [4.0.20] - 2026-10-02
 
 ### Added
