@@ -5,6 +5,36 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [4.0.18] - 2026-10-02
+
+### Added
+
+- **Forty-five more templates: the gallery has 200.** Every one was started in a container before it went in, and 41 of them
+  were deployed through the API on a test server, started, checked and removed again (the three that need a device plugged in
+  were deployed without being started).
+  - *Media and downloads:* Jackett, NZBGet, Deluge, Tdarr, Recyclarr, Overseerr, Ombi, Emby, Calibre, LazyLibrarian, Mylar3,
+    Pinchflat, Maintainerr, autobrr, Stash.
+  - *Writing, reading, small tools:* Forgejo, HedgeDoc, Etherpad, wallabag, Miniflux, linkding, Joplin Server, Kanboard,
+    SilverBullet, DokuWiki, CyberChef, Homer, Heimdall, MicroBin, ConvertX.
+  - *Network, monitoring, home:* Technitium DNS, Blocky, SmokePing, LibreSpeed, OpenSpeedTest, Glances, cAdvisor,
+    VictoriaMetrics, Alertmanager, DDNS Updater, Apprise API, Z-Wave JS UI, OctoPrint, MySpeed, restic REST server.
+  DNS servers default to port 5353 (many servers already have a resolver on 53); passwords and keys are variables, generated
+  where the app only needs them to be random.
+
+### Fixed
+
+- **Templates that pass a device through could not be deployed at all.** The check a deploy runs refused every line that named
+  something under `/dev`, so Gluetun (the VPN's tunnel), Zigbee2MQTT (the stick), NUT (the UPS on USB) and Tailscale were in the
+  gallery and answered "mounting /dev is not allowed". A built-in template may name one device or one folder of devices now;
+  the whole of `/dev` and the machine's memory stay refused, and a compose file you edit yourself is checked as strictly as
+  before.
+- **Four templates needed more of the host than a deploy allows, with no way to say so.** Tailscale and the Beszel agent use
+  host networking, Duplicati reads the host's files, the Prometheus exporters read them and the host's process list: all
+  refused. A built-in template now declares what it needs (`"host_access": ["network", "pid", "root-ro"]` in its
+  `template.json`); exactly that is let through, it is written to the audit log, and a writable mount of `/` is never allowed.
+- A new check runs every template of the gallery through the deploy's own scan, so a rule that is too wide can no longer
+  leave a template nobody can deploy.
+
 ## [4.0.17] - 2026-10-02
 
 ### Fixed

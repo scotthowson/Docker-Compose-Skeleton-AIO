@@ -1,0 +1,19 @@
+services:
+  overseerr:
+    container_name: Overseerr
+    image: sctx/overseerr:latest
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-UTC}
+      - PORT=5055
+      - LOG_LEVEL=info
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Overseerr/config:/app/config
+    ports:
+      - "${PORT_OVERSEERR:-5055}:5055"
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://127.0.0.1:5055/api/v1/status || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s

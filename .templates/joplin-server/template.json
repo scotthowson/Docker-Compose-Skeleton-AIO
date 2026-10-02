@@ -1,0 +1,48 @@
+{
+  "name": "joplin-server",
+  "title": "Joplin Server",
+  "description": "Sync server for the Joplin note apps on desktop and phone, with note sharing between its users and publishing a note as a web page. After deploying, sign in as admin@localhost with the password admin, change both right away, then pick Joplin Server as the sync target in each app and give it this address.",
+  "category": "notes",
+  "target_stack": "communication-collaboration",
+  "icon": "🗒️",
+  "tags": [
+    "notes",
+    "sync",
+    "joplin",
+    "markdown",
+    "sharing"
+  ],
+  "route_skip": [
+    "joplin-server-db"
+  ],
+  "variables": [
+    {
+      "name": "PORT_JOPLIN_SERVER",
+      "label": "Host Port",
+      "description": "Port to expose Joplin Server on",
+      "default": "22300",
+      "required": false
+    },
+    {
+      "name": "JOPLIN_BASE_URL",
+      "label": "Public address",
+      "description": "The address the apps sync with, like https://joplin.example.com. It must be the one really used: the server turns away requests made under another address. Leave empty and DCS uses this deploy's route, or this server's address and the port above",
+      "default": "",
+      "required": false,
+      "fill": "public_url",
+      "service": "joplin-server",
+      "port_var": "PORT_JOPLIN_SERVER"
+    },
+    {
+      "name": "JOPLIN_DB_PASSWORD",
+      "label": "Database password",
+      "description": "Leave empty and DCS generates one on deploy",
+      "default": "",
+      "type": "password",
+      "required": false,
+      "generate": "hex64"
+    }
+  ],
+  "auth": "bypass",
+  "auth_note": "Not put behind Authelia: the Joplin apps sign in directly to sync (the deploy sheet can still protect it)"
+}

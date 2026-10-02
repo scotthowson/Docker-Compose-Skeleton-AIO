@@ -1,0 +1,27 @@
+{
+  "name": "rest-server",
+  "title": "Restic REST Server",
+  "description": "The REST server is a place for restic backups from your other machines: each machine sends its backups here over HTTP, faster than over SFTP, and with --append-only a compromised machine cannot delete its old backups. After deploying, make a user with: docker exec -it Rest-Server create_user <name> (it is picked up within a minute) — then on the machine: restic -r rest:http://<name>:<password>@<this host>:8498/<name>/ init. Put it behind HTTPS before using it across the internet.",
+  "category": "backup",
+  "target_stack": "storage-backup",
+  "icon": "🗄️",
+  "tags": ["backup", "restic", "repository", "storage", "append-only", "rest"],
+  "auth": "bypass",
+  "auth_note": "Not put behind Authelia: its own apps and clients sign in directly (the deploy sheet can still protect it)",
+  "variables": [
+    {
+      "name": "PORT_REST_SERVER",
+      "label": "Port",
+      "description": "Host port restic clients connect to",
+      "default": "8498",
+      "required": false
+    },
+    {
+      "name": "REST_SERVER_OPTIONS",
+      "label": "Options",
+      "description": "rest-server flags: --private-repos keeps each user in a folder of their own; add --append-only to forbid deleting",
+      "default": "--private-repos",
+      "required": false
+    }
+  ]
+}

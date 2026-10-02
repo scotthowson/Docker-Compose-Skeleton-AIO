@@ -1,0 +1,39 @@
+{
+  "name": "mylar3",
+  "title": "Mylar3",
+  "description": "Follows comic series and downloads new and missing issues through your indexers and download client, then renames and files them. After deploying, open Settings: it needs a free ComicVine API key (Web Interface tab) before it can search, and /comics as the comic location. It has no sign-in until you set one in the same place.",
+  "category": "media",
+  "target_stack": "media-services",
+  "icon": "🦸",
+  "tags": [
+    "comics",
+    "cbz",
+    "cbr",
+    "automation",
+    "download",
+    "arr"
+  ],
+  "variables": [
+    {
+      "name": "PORT_MYLAR3",
+      "label": "Host Port",
+      "description": "Port to expose Mylar3 on",
+      "default": "8090",
+      "required": false
+    },
+    {
+      "name": "MYLAR3_COMICS",
+      "label": "Comics folder",
+      "description": "The folder on this server your comics live in, mounted at /comics",
+      "default": "./App-Data/Comics",
+      "required": true
+    },
+    {
+      "name": "MYLAR3_DOWNLOADS",
+      "label": "Downloads folder",
+      "description": "The folder on this server your download client saves into, mounted at /downloads",
+      "default": "./App-Data/Downloads",
+      "required": true
+    }
+  ]
+}

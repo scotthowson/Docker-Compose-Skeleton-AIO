@@ -1,0 +1,44 @@
+{
+  "name": "forgejo",
+  "title": "Forgejo",
+  "description": "Self-hosted Git service with a web interface, pull requests, issues, packages and CI runners (a community fork of Gitea). It keeps everything in one data folder with a built-in SQLite database. After deploying, open it, confirm the install page, and register: the first account becomes the administrator.",
+  "category": "development",
+  "target_stack": "development-tools",
+  "icon": "🔨",
+  "tags": [
+    "git",
+    "version-control",
+    "code",
+    "development",
+    "ci",
+    "self-hosted"
+  ],
+  "variables": [
+    {
+      "name": "PORT_FORGEJO",
+      "label": "Web UI Port",
+      "description": "Port to expose the Forgejo web interface on",
+      "default": "3030",
+      "required": false
+    },
+    {
+      "name": "PORT_FORGEJO_SSH",
+      "label": "SSH Port",
+      "description": "Port on this server for Git over SSH; it is also the port shown in SSH clone URLs",
+      "default": "2222",
+      "required": false
+    },
+    {
+      "name": "FORGEJO_ROOT_URL",
+      "label": "Public address",
+      "description": "The address people open, like https://git.example.com. Clone URLs and links in mails are built from it. Leave empty and DCS uses this deploy's route, or this server's address and the port above",
+      "default": "",
+      "required": false,
+      "fill": "public_url",
+      "service": "forgejo",
+      "port_var": "PORT_FORGEJO"
+    }
+  ],
+  "auth": "bypass",
+  "auth_note": "Not put behind Authelia: git clients, CI runners and the API sign in directly (the deploy sheet can still protect it)"
+}

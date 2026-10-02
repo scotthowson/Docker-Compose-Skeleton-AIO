@@ -1,0 +1,41 @@
+{
+  "name": "zwave-js-ui",
+  "title": "Z-Wave JS UI",
+  "description": "Z-Wave JS UI runs a Z-Wave USB controller (Aeotec Z-Stick, Zooz ZST39, Home Assistant Connect ZWA-2…) with a web page to include and configure devices, and offers them to Home Assistant over WebSocket or to an MQTT broker. The controller must be plugged into this host and its path must exist, or the container does not start: find the stable path with ls /dev/serial/by-id/. After deploying, open Settings > Z-Wave, set the serial port to /dev/zwave and generate the security keys.",
+  "category": "automation",
+  "target_stack": "miscellaneous-services",
+  "icon": "🌊",
+  "tags": ["z-wave", "zwave", "home-automation", "smart-home", "home-assistant", "mqtt", "iot"],
+  "variables": [
+    {
+      "name": "PORT_ZWAVE_JS_UI",
+      "label": "Web port",
+      "description": "Host port of the web page",
+      "default": "8496",
+      "required": false
+    },
+    {
+      "name": "PORT_ZWAVE_JS_WS",
+      "label": "WebSocket port",
+      "description": "Host port Home Assistant's Z-Wave integration connects to (ws://<this host>:3600)",
+      "default": "3600",
+      "required": false
+    },
+    {
+      "name": "ZWAVE_DEVICE",
+      "label": "Controller device",
+      "description": "Host path of the Z-Wave USB stick; a /dev/serial/by-id/... path survives reboots. It appears in the container as /dev/zwave",
+      "default": "/dev/ttyUSB0",
+      "required": true
+    },
+    {
+      "name": "ZWAVE_SESSION_SECRET",
+      "label": "Session secret",
+      "description": "Signs the web page's sessions; leave empty and a random one is made",
+      "default": "",
+      "required": false,
+      "type": "password",
+      "generate": "hex64"
+    }
+  ]
+}

@@ -1,0 +1,26 @@
+services:
+  cadvisor:
+    container_name: cAdvisor-Standalone
+    image: gcr.io/cadvisor/cadvisor:latest
+    restart: unless-stopped
+    command:
+      - --housekeeping_interval=30s
+      - --docker_only=true
+      - --store_container_labels=false
+    environment:
+      - TZ=${TZ:-UTC}
+    volumes:
+      # read-only, and no more than it needs: the Docker and containerd sockets (container names), the cgroups
+      # (the numbers) and Docker's own folder (disk use per container)
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /run/containerd/containerd.sock:/run/containerd/containerd.sock:ro
+      - /sys:/sys:ro
+      - /var/lib/docker:/var/lib/docker:ro
+    ports:
+      - "${PORT_CADVISOR_WEB:-8492}:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/healthz >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s

@@ -25,7 +25,7 @@
 </p>
 
 <p align="center">
-  <a href="docs/TEMPLATES.md"><img src="https://img.shields.io/badge/templates-150%2B-34d399?style=flat-square" alt="150+ templates"></a>
+  <a href="docs/TEMPLATES.md"><img src="https://img.shields.io/badge/templates-200-34d399?style=flat-square" alt="200 templates"></a>
   <a href="docs/API.md"><img src="https://img.shields.io/badge/REST_API-360%2B_endpoints-22d3ee?style=flat-square" alt="360+ API endpoints"></a>
   <a href="docs/VM-IMAGES.md"><img src="https://img.shields.io/badge/VM_images-8-a78bfa?style=flat-square" alt="8 VM images"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-fbbf24?style=flat-square" alt="MIT license"></a>
@@ -140,7 +140,7 @@ walk you through it.
 <summary><b>Stacks and templates</b></summary>
 
 - **Ten ordered stacks.** `core-infrastructure` starts first and stops last; the order is yours to change. [Configuration](docs/CONFIGURATION.md#stacks-and-startup)
-- **150+ templates.** Jellyfin, Nextcloud, Immich, Home Assistant, Vaultwarden, Grafana and many more, each deployed and watched until healthy before it shipped. [Catalogue](docs/TEMPLATES.md)
+- **200 templates.** Jellyfin, Nextcloud, Immich, Home Assistant, Vaultwarden, Grafana and many more, each deployed and watched until healthy before it shipped. [Catalogue](docs/TEMPLATES.md)
 - **Deploys that do the plumbing.** A deploy checks ports and the compose file, merges it into the stack, writes the Traefik route and the DNS record and starts it. Undeploy reverses it. [How a template becomes a stack](docs/TEMPLATES.md#how-a-template-becomes-a-stack)
 - **Your own templates.** Write one on the Templates page or import one from a URL. [template.json reference](docs/TEMPLATES.md#templatejson-reference)
 - **Compose editor with history.** Every save is validated, backed up and can be rolled back. [Operations](docs/OPERATIONS.md#stacks-and-containers)

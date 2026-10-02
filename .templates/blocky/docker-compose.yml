@@ -1,0 +1,24 @@
+services:
+  blocky:
+    container_name: Blocky
+    image: spx01/blocky:latest
+    restart: unless-stopped
+    # runs as the stack's user so it can read the config the template writes
+    user: "${PUID:-1000}:${PGID:-1000}"
+    environment:
+      - TZ=${TZ:-UTC}
+      - BLOCKY_CONFIG_FILE=/app/config/config.yml
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Blocky/config:/app/config
+    ports:
+      # 5353 and not 53: many servers already have a resolver on 53 (systemd-resolved, Pi-hole, AdGuard Home)
+      - "${PORT_BLOCKY_DNS:-5353}:53/tcp"
+      - "${PORT_BLOCKY_DNS:-5353}:53/udp"
+      # the API and Prometheus metrics (/metrics); Blocky has no web page of its own
+      - "${PORT_BLOCKY_HTTP:-4004}:4000"
+    healthcheck:
+      test: ["CMD", "/app/blocky", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s

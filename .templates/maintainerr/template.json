@@ -1,0 +1,26 @@
+{
+  "name": "maintainerr",
+  "title": "Maintainerr",
+  "description": "Removes media nobody watches: rules such as 'added 90 days ago and never played' put films and series in a collection on the media server's home screen, and after the days you set they are deleted through Radarr and Sonarr. After deploying, connect your media server, Radarr and Sonarr under Settings, then write the first rule. It has no sign-in of its own, and what it deletes is gone.",
+  "category": "media",
+  "target_stack": "media-services",
+  "icon": "🧹",
+  "tags": [
+    "cleanup",
+    "plex",
+    "jellyfin",
+    "arr",
+    "radarr",
+    "sonarr",
+    "automation"
+  ],
+  "variables": [
+    {
+      "name": "PORT_MAINTAINERR",
+      "label": "Host Port",
+      "description": "Port to expose Maintainerr on",
+      "default": "6246",
+      "required": false
+    }
+  ]
+}

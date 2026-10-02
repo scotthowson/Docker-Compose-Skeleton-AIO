@@ -1,0 +1,17 @@
+services:
+  myspeed:
+    container_name: MySpeed
+    image: germannewsmaker/myspeed:latest
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-UTC}
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/MySpeed/data:/myspeed/data
+    ports:
+      - "${PORT_MYSPEED:-5216}:5216"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:5216/ >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s

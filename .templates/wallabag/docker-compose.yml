@@ -1,0 +1,29 @@
+services:
+  wallabag:
+    container_name: Wallabag
+    image: wallabag/wallabag:latest
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-UTC}
+      # The address people open: wallabag loads its styles and builds every link from it, so it must be the real one
+      - SYMFONY__ENV__DOMAIN_NAME=${WALLABAG_URL}
+      - SYMFONY__ENV__SERVER_NAME=wallabag
+      - SYMFONY__ENV__SECRET=${WALLABAG_SECRET}
+      # The built-in SQLite database (data/db): nothing else to run
+      - SYMFONY__ENV__DATABASE_DRIVER=pdo_sqlite
+      - SYMFONY__ENV__FOSUSER_REGISTRATION=${WALLABAG_REGISTRATION:-false}
+      - SYMFONY__ENV__FOSUSER_CONFIRMATION=false
+    # wallabag runs as "nobody" and only makes its database folder its own: the pictures folder is handed over
+    # here too, or saving article pictures on this server (off until switched on in the settings) could not write
+    command: ["sh", "-c", "chown nobody: /var/www/wallabag/web/assets/images && exec /entrypoint.sh wallabag"]
+    ports:
+      - "${PORT_WALLABAG:-8510}:80"
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Wallabag/data:/var/www/wallabag/data
+      - ${APP_DATA_DIR:-./App-Data}/Wallabag/images:/var/www/wallabag/web/assets/images
+    healthcheck:
+      test: ["CMD", "curl", "-fso", "/dev/null", "-A", "healthcheck", "http://127.0.0.1:80/api/info"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 90s

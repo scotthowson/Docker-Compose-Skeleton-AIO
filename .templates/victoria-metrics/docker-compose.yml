@@ -1,0 +1,21 @@
+services:
+  victoria-metrics:
+    container_name: VictoriaMetrics
+    image: victoriametrics/victoria-metrics:latest
+    restart: unless-stopped
+    command:
+      - -storageDataPath=/storage
+      - -retentionPeriod=${VICTORIA_RETENTION:-12}
+      - -httpListenAddr=:8428
+    environment:
+      - TZ=${TZ:-UTC}
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/VictoriaMetrics/data:/storage
+    ports:
+      - "${PORT_VICTORIA_METRICS:-8428}:8428"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8428/health >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s

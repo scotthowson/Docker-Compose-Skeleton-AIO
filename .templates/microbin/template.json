@@ -1,0 +1,49 @@
+{
+  "name": "microbin",
+  "title": "MicroBin",
+  "description": "Paste bin for text and files with expiry times, burn after reading, password protection, short links and QR codes. Anyone who can open it can make a paste. After deploying, the admin page at /admin opens with the user name and password you set below.",
+  "category": "tools",
+  "target_stack": "communication-collaboration",
+  "icon": "📋",
+  "tags": [
+    "pastebin",
+    "paste",
+    "file-sharing",
+    "snippets",
+    "url-shortener"
+  ],
+  "variables": [
+    {
+      "name": "PORT_MICROBIN",
+      "label": "Host Port",
+      "description": "Port to expose MicroBin on",
+      "default": "8580",
+      "required": false
+    },
+    {
+      "name": "MICROBIN_PUBLIC_URL",
+      "label": "Public address",
+      "description": "The address people open, like https://paste.example.com. The link and QR code of every paste are built from it. Leave empty and DCS uses this deploy's route, or this server's address and the port above",
+      "default": "",
+      "required": false,
+      "fill": "public_url",
+      "service": "microbin",
+      "port_var": "PORT_MICROBIN"
+    },
+    {
+      "name": "MICROBIN_ADMIN_USER",
+      "label": "Admin user name",
+      "description": "For the admin page at /admin",
+      "default": "admin",
+      "required": false
+    },
+    {
+      "name": "MICROBIN_ADMIN_PASSWORD",
+      "label": "Admin password",
+      "description": "Its password",
+      "default": "",
+      "type": "password",
+      "required": true
+    }
+  ]
+}

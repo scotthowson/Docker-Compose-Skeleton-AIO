@@ -1,0 +1,19 @@
+services:
+  ombi:
+    container_name: Ombi
+    image: lscr.io/linuxserver/ombi:latest
+    restart: unless-stopped
+    environment:
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+      - TZ=${TZ:-UTC}
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Ombi/config:/config
+    ports:
+      - "${PORT_OMBI:-3579}:3579"
+    healthcheck:
+      test: ["CMD", "curl", "-fso", "/dev/null", "http://127.0.0.1:3579/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s

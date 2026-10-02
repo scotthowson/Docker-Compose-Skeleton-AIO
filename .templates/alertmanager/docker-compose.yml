@@ -1,0 +1,23 @@
+services:
+  alertmanager:
+    container_name: Alertmanager
+    image: prom/alertmanager:latest
+    restart: unless-stopped
+    # runs as the stack's user so it can write the App-Data folders
+    user: "${PUID:-1000}:${PGID:-1000}"
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+    environment:
+      - TZ=${TZ:-UTC}
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Alertmanager/config:/etc/alertmanager
+      - ${APP_DATA_DIR:-./App-Data}/Alertmanager/data:/alertmanager
+    ports:
+      - "${PORT_ALERTMANAGER:-9093}:9093"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:9093/-/healthy >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s

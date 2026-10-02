@@ -1,0 +1,39 @@
+{
+  "name": "silverbullet",
+  "title": "SilverBullet",
+  "description": "Markdown notes in the browser that work offline and can be extended with queries, templates and scripts. The notes are plain .md files in the App-Data folder. After deploying, sign in with the user name and password you set below.",
+  "category": "notes",
+  "target_stack": "communication-collaboration",
+  "icon": "🪶",
+  "tags": [
+    "notes",
+    "markdown",
+    "wiki",
+    "knowledge-base",
+    "offline"
+  ],
+  "variables": [
+    {
+      "name": "PORT_SILVERBULLET",
+      "label": "Host Port",
+      "description": "Port to expose SilverBullet on",
+      "default": "3050",
+      "required": false
+    },
+    {
+      "name": "SILVERBULLET_USER",
+      "label": "User name",
+      "description": "The one account that can open the notes",
+      "default": "admin",
+      "required": false
+    },
+    {
+      "name": "SILVERBULLET_PASSWORD",
+      "label": "Password",
+      "description": "Its password (no colon in it). Change it here and deploy again to change it",
+      "default": "",
+      "type": "password",
+      "required": true
+    }
+  ]
+}

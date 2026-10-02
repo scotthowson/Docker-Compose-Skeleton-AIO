@@ -1,0 +1,27 @@
+{
+  "name": "ombi",
+  "title": "Ombi",
+  "description": "Request page for Plex, Emby and Jellyfin: your users ask for films, series and music, and an approved request goes to Radarr, Sonarr or Lidarr. Open it after deploying and follow the wizard, which makes the admin account and connects the media server.",
+  "category": "media",
+  "target_stack": "media-services",
+  "icon": "🎟️",
+  "tags": [
+    "requests",
+    "plex",
+    "emby",
+    "jellyfin",
+    "arr",
+    "media"
+  ],
+  "variables": [
+    {
+      "name": "PORT_OMBI",
+      "label": "Host Port",
+      "description": "Port to expose Ombi on",
+      "default": "3579",
+      "required": false
+    }
+  ],
+  "auth": "bypass",
+  "auth_note": "Not put behind Authelia: its own apps and clients sign in directly (the deploy sheet can still protect it)"
+}

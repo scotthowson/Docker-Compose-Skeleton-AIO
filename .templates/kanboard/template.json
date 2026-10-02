@@ -1,0 +1,24 @@
+{
+  "name": "kanboard",
+  "title": "Kanboard",
+  "description": "Kanban project board: columns, swimlanes, task limits, subtasks, time tracking and automatic actions. It stores everything in a SQLite file. After deploying, sign in as admin with the password admin and change that password right away.",
+  "category": "productivity",
+  "target_stack": "communication-collaboration",
+  "icon": "🗂️",
+  "tags": [
+    "kanban",
+    "tasks",
+    "project",
+    "board",
+    "planning"
+  ],
+  "variables": [
+    {
+      "name": "PORT_KANBOARD",
+      "label": "Host Port",
+      "description": "Port to expose Kanboard on",
+      "default": "8530",
+      "required": false
+    }
+  ]
+}

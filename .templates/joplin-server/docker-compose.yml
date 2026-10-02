@@ -1,0 +1,45 @@
+services:
+  joplin-server:
+    container_name: Joplin-Server
+    image: joplin/server:latest
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-UTC}
+      - APP_PORT=22300
+      # The address people open and the apps sync with: the server refuses requests that come in under another one
+      - APP_BASE_URL=${JOPLIN_BASE_URL}
+      - DB_CLIENT=pg
+      - POSTGRES_HOST=joplin-server-db
+      - POSTGRES_PORT=5432
+      - POSTGRES_DATABASE=joplin
+      - POSTGRES_USER=joplin
+      - POSTGRES_PASSWORD=${JOPLIN_DB_PASSWORD}
+    ports:
+      - "${PORT_JOPLIN_SERVER:-22300}:22300"
+    depends_on:
+      joplin-server-db:
+        condition: service_healthy
+    # the check asks under the public address's host name: the server answers "Invalid origin" to any other
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get({ host: '127.0.0.1', port: 22300, path: '/api/ping', headers: { Host: new URL(process.env.APP_BASE_URL).host } }, (r) => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1));"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  joplin-server-db:
+    container_name: Joplin-Server-DB
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=joplin
+      - POSTGRES_USER=joplin
+      - POSTGRES_PASSWORD=${JOPLIN_DB_PASSWORD}
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Joplin-Server/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U joplin -d joplin"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s

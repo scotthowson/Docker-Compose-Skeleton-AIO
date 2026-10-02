@@ -1,0 +1,15 @@
+services:
+  recyclarr:
+    container_name: Recyclarr
+    # Recyclarr publishes no "latest" tag: 8 follows every 8.x release
+    image: ghcr.io/recyclarr/recyclarr:8
+    restart: unless-stopped
+    user: "${PUID:-1000}:${PGID:-1000}"
+    environment:
+      - TZ=${TZ:-UTC}
+      # when the sync runs: a cron expression or @hourly, @daily, @weekly
+      - CRON_SCHEDULE=${RECYCLARR_SCHEDULE:-@daily}
+      # writes a commented example recyclarr.yml on the first start, never over an existing one
+      - RECYCLARR_CREATE_CONFIG=true
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Recyclarr:/config

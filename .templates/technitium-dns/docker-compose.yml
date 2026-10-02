@@ -1,0 +1,23 @@
+services:
+  technitium-dns:
+    container_name: Technitium-DNS
+    image: technitium/dns-server:latest
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-UTC}
+      - DNS_SERVER_DOMAIN=${TECHNITIUM_DOMAIN:-dns-server}
+      # read on the first start only; afterwards the password is changed on the web page
+      - DNS_SERVER_ADMIN_PASSWORD=${TECHNITIUM_ADMIN_PASSWORD}
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Technitium-DNS/config:/etc/dns
+    ports:
+      - "${PORT_TECHNITIUM_WEB:-5380}:5380"
+      # 5353 and not 53: many servers already have a resolver on 53 (systemd-resolved, Pi-hole, AdGuard Home)
+      - "${PORT_TECHNITIUM_DNS:-5353}:53/tcp"
+      - "${PORT_TECHNITIUM_DNS:-5353}:53/udp"
+    healthcheck:
+      test: ["CMD", "curl", "-fso", "/dev/null", "http://127.0.0.1:5380/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s

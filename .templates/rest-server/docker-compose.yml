@@ -1,0 +1,22 @@
+services:
+  rest-server:
+    container_name: Rest-Server
+    image: restic/rest-server:latest
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-UTC}
+      # --private-repos: each user reaches only the repositories under /<user name>/
+      # add --append-only so a client can add backups but never delete them
+      - OPTIONS=${REST_SERVER_OPTIONS:---private-repos}
+    volumes:
+      # the repositories and the users file (.htpasswd)
+      - ${APP_DATA_DIR:-./App-Data}/Rest-Server/data:/data
+    ports:
+      - "${PORT_REST_SERVER:-8498}:8000"
+    # every request needs a user, so the check only asks whether the port answers
+    healthcheck:
+      test: ["CMD", "nc", "-z", "127.0.0.1", "8000"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

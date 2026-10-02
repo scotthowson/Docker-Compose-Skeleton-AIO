@@ -1,0 +1,25 @@
+services:
+  forgejo:
+    container_name: Forgejo
+    image: codeberg.org/forgejo/forgejo:16
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-UTC}
+      - USER_UID=${PUID:-1000}
+      - USER_GID=${PGID:-1000}
+      # The address people open: clone URLs, links in mails and sign-in redirects are built from it
+      - FORGEJO__server__ROOT_URL=${FORGEJO_ROOT_URL}
+      # The port shown in SSH clone URLs is the one published on the host; inside the container SSH stays on 22
+      - FORGEJO__server__SSH_PORT=${PORT_FORGEJO_SSH:-2222}
+      - FORGEJO__server__SSH_LISTEN_PORT=22
+    ports:
+      - "${PORT_FORGEJO:-3030}:3000"
+      - "${PORT_FORGEJO_SSH:-2222}:22"
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Forgejo/data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fso", "/dev/null", "http://127.0.0.1:3000/api/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s

@@ -1,0 +1,23 @@
+services:
+  ddns-updater:
+    container_name: DDNS-Updater
+    image: qmcgaw/ddns-updater:latest
+    restart: unless-stopped
+    # runs as the stack's user so it can write the App-Data folder
+    user: "${PUID:-1000}:${PGID:-1000}"
+    environment:
+      - TZ=${TZ:-UTC}
+      - PERIOD=${DDNS_UPDATER_PERIOD:-5m}
+      - LISTENING_ADDRESS=:8000
+      - LOG_LEVEL=info
+    volumes:
+      # config.json (your records) and updates.json (the history)
+      - ${APP_DATA_DIR:-./App-Data}/DDNS-Updater/data:/updater/data
+    ports:
+      - "${PORT_DDNS_UPDATER:-8493}:8000"
+    healthcheck:
+      test: ["CMD", "/updater/ddns-updater", "healthcheck"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+      start_period: 15s

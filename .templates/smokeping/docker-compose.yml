@@ -1,0 +1,20 @@
+services:
+  smokeping:
+    container_name: SmokePing
+    image: lscr.io/linuxserver/smokeping:latest
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-UTC}
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/SmokePing/config:/config
+      - ${APP_DATA_DIR:-./App-Data}/SmokePing/data:/data
+    ports:
+      - "${PORT_SMOKEPING:-8490}:80"
+    healthcheck:
+      test: ["CMD", "curl", "-fso", "/dev/null", "http://127.0.0.1:80/smokeping/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s

@@ -1,0 +1,28 @@
+services:
+  microbin:
+    container_name: MicroBin
+    image: danielszabo99/microbin:latest
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-UTC}
+      - MICROBIN_BIND=0.0.0.0
+      - MICROBIN_PORT=8080
+      - MICROBIN_DATA_DIR=microbin_data
+      # The address people open: the links and QR codes of every paste are built from it
+      - MICROBIN_PUBLIC_PATH=${MICROBIN_PUBLIC_URL}
+      - MICROBIN_ADMIN_USERNAME=${MICROBIN_ADMIN_USER:-admin}
+      - MICROBIN_ADMIN_PASSWORD=${MICROBIN_ADMIN_PASSWORD}
+      - MICROBIN_EDITABLE=true
+      - MICROBIN_PRIVATE=true
+      - MICROBIN_HIGHLIGHTSYNTAX=true
+      - MICROBIN_QR=true
+      - MICROBIN_ENABLE_BURN_AFTER=true
+      - MICROBIN_ENCRYPTION_CLIENT_SIDE=true
+      - MICROBIN_ENCRYPTION_SERVER_SIDE=true
+      - MICROBIN_HASH_IDS=true
+      - MICROBIN_DISABLE_TELEMETRY=true
+    ports:
+      - "${PORT_MICROBIN:-8580}:8080"
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/MicroBin/data:/app/microbin_data
+    # no health check: the image holds only the microbin program, nothing that could ask the port

@@ -1,0 +1,19 @@
+{
+  "name": "alertmanager",
+  "title": "Alertmanager",
+  "description": "Alertmanager takes the alerts Prometheus raises, groups and silences them, and sends them on to Discord, e-mail, a webhook and more. It deploys with a receiver that sends nothing: add yours in App-Data/Alertmanager/config/alertmanager.yml and restart, then name this Alertmanager under alerting in prometheus.yml (targets: ['Alertmanager:9093']).",
+  "category": "monitoring",
+  "target_stack": "monitoring-management",
+  "icon": "🚨",
+  "tags": ["monitoring", "alerts", "prometheus", "notifications", "discord", "webhook"],
+  "config_path": "Alertmanager",
+  "variables": [
+    {
+      "name": "PORT_ALERTMANAGER",
+      "label": "Web port",
+      "description": "Host port of the web page and the API",
+      "default": "9093",
+      "required": false
+    }
+  ]
+}

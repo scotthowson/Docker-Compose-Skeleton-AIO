@@ -1,0 +1,21 @@
+services:
+  homer:
+    container_name: Homer
+    image: b4bz/homer:latest
+    restart: unless-stopped
+    # The image runs as a plain user: it runs as the stack's user so it can write the App-Data folder
+    user: "${PUID:-1000}:${PGID:-1000}"
+    environment:
+      - TZ=${TZ:-UTC}
+      # Copies the example config.yml and icons into an empty assets folder at the first start
+      - INIT_ASSETS=1
+    ports:
+      - "${PORT_HOMER:-8560}:8080"
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Homer/assets:/www/assets
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

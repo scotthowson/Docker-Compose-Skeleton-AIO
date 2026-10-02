@@ -1,0 +1,28 @@
+{
+  "name": "autobrr",
+  "title": "autobrr",
+  "description": "Watches the announce channels and feeds of torrent trackers and Usenet indexers and sends a release that matches your filters to the download client or to Sonarr and Radarr within seconds. Open it after deploying to make the admin account, then add an indexer, a download client and a filter.",
+  "category": "download",
+  "target_stack": "media-services",
+  "icon": "⚡",
+  "tags": [
+    "torrent",
+    "usenet",
+    "irc",
+    "automation",
+    "arr",
+    "download",
+    "filter"
+  ],
+  "variables": [
+    {
+      "name": "PORT_AUTOBRR",
+      "label": "Host Port",
+      "description": "Port to expose autobrr on",
+      "default": "7474",
+      "required": false
+    }
+  ],
+  "auth": "bypass",
+  "auth_note": "Not put behind Authelia: its own apps and clients sign in directly (the deploy sheet can still protect it)"
+}

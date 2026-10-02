@@ -1,0 +1,34 @@
+{
+  "name": "jackett",
+  "title": "Jackett",
+  "description": "Translates the searches of Sonarr, Radarr and other *arr apps into the language of several hundred torrent trackers. Add your trackers on its page, then copy each one's Torznab feed address and the API key (top right) into the app that should search it. Set an admin password at the bottom of the page: there is none at first.",
+  "category": "media",
+  "target_stack": "media-services",
+  "icon": "🧥",
+  "tags": [
+    "indexer",
+    "torrent",
+    "tracker",
+    "arr",
+    "torznab",
+    "search"
+  ],
+  "variables": [
+    {
+      "name": "PORT_JACKETT",
+      "label": "Host Port",
+      "description": "Port to expose Jackett on",
+      "default": "9117",
+      "required": false
+    },
+    {
+      "name": "JACKETT_BLACKHOLE",
+      "label": "Blackhole folder",
+      "description": "Where a .torrent file saved from Jackett's page is put, mounted at /downloads; point it at your download client's watch folder if you use that",
+      "default": "./App-Data/Downloads",
+      "required": false
+    }
+  ],
+  "auth": "bypass",
+  "auth_note": "Not put behind Authelia: its own apps and clients sign in directly (the deploy sheet can still protect it)"
+}

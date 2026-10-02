@@ -1,0 +1,39 @@
+# =============================================================================
+# Blocky — DNS proxy and ad blocker, written by the DCS template.
+# Edit, then restart the container. Docs: https://0xerr0r.github.io/blocky/
+# =============================================================================
+upstreams:
+  groups:
+    default:
+      - https://one.one.one.one/dns-query
+      - https://dns.quad9.net/dns-query
+
+# used once at start to find the upstreams above
+bootstrapDns:
+  - tcp+udp:1.1.1.1
+  - tcp+udp:9.9.9.9
+
+blocking:
+  denylists:
+    ads:
+      - https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts
+  clientGroupsBlock:
+    default:
+      - ads
+  loading:
+    # start answering at once; the lists are fetched in the background
+    strategy: fast
+
+# customDNS:
+#   mapping:
+#     nas.home.arpa: 192.168.1.10
+
+ports:
+  dns: 53
+  http: 4000
+
+prometheus:
+  enable: true
+
+log:
+  level: info

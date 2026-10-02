@@ -1,0 +1,20 @@
+services:
+  octoprint:
+    container_name: OctoPrint
+    image: octoprint/octoprint:latest
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-UTC}
+    devices:
+      # the printer's serial port
+      - ${OCTOPRINT_DEVICE:-/dev/ttyACM0}:/dev/ttyACM0
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/OctoPrint:/octoprint
+    ports:
+      - "${PORT_OCTOPRINT:-8497}:80"
+    healthcheck:
+      test: ["CMD", "curl", "-fso", "/dev/null", "http://127.0.0.1:80/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s

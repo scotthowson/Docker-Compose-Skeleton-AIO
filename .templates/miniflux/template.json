@@ -1,0 +1,63 @@
+{
+  "name": "miniflux",
+  "title": "Miniflux",
+  "description": "Feed reader for RSS and Atom that is small and fast: it fetches the full text of articles, strips trackers, and works with phone and desktop readers through the Fever and Google Reader APIs. After deploying, sign in with the user name and password you set below.",
+  "category": "content",
+  "target_stack": "web-applications",
+  "icon": "📡",
+  "tags": [
+    "rss",
+    "feeds",
+    "reader",
+    "news",
+    "atom"
+  ],
+  "route_skip": [
+    "miniflux-db"
+  ],
+  "variables": [
+    {
+      "name": "PORT_MINIFLUX",
+      "label": "Host Port",
+      "description": "Port to expose Miniflux on",
+      "default": "8520",
+      "required": false
+    },
+    {
+      "name": "MINIFLUX_BASE_URL",
+      "label": "Public address",
+      "description": "The address people open, like https://rss.example.com. Leave empty and DCS uses this deploy's route, or this server's address and the port above",
+      "default": "",
+      "required": false,
+      "fill": "public_url",
+      "service": "miniflux",
+      "port_var": "PORT_MINIFLUX"
+    },
+    {
+      "name": "MINIFLUX_ADMIN_USER",
+      "label": "Admin user name",
+      "description": "The first account, made at the first start",
+      "default": "admin",
+      "required": false
+    },
+    {
+      "name": "MINIFLUX_ADMIN_PASSWORD",
+      "label": "Admin password",
+      "description": "Its password, at least 6 characters. Only used at the first start: change it later in Miniflux itself",
+      "default": "",
+      "type": "password",
+      "required": true
+    },
+    {
+      "name": "MINIFLUX_DB_PASSWORD",
+      "label": "Database password",
+      "description": "Leave empty and DCS generates one on deploy",
+      "default": "",
+      "type": "password",
+      "required": false,
+      "generate": "hex64"
+    }
+  ],
+  "auth": "bypass",
+  "auth_note": "Not put behind Authelia: feed reader apps sign in directly through its API (the deploy sheet can still protect it)"
+}

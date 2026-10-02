@@ -13,6 +13,10 @@
     "grafana",
     "monitoring"
   ],
+  "host_access": [
+    "pid",
+    "root-ro"
+  ],
   "variables": [
     {
       "name": "PORT_NODE_EXPORTER",

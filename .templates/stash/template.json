@@ -1,0 +1,32 @@
+{
+  "name": "stash",
+  "title": "Stash",
+  "description": "Organizer for a private collection of videos and pictures: it scans your folders, makes previews, and lets you tag, filter and play everything in the browser. Open it after deploying and follow the wizard (the library is /data, the other paths are filled in), then run the first scan. It has no sign-in until you set a user name and password under Settings > Security.",
+  "category": "media",
+  "target_stack": "media-services",
+  "icon": "🗂️",
+  "tags": [
+    "video",
+    "images",
+    "organizer",
+    "library",
+    "tagging",
+    "media"
+  ],
+  "variables": [
+    {
+      "name": "PORT_STASH",
+      "label": "Host Port",
+      "description": "Port to expose Stash on; the Dozzle template uses 9999 too, change one when both run on one server",
+      "default": "9999",
+      "required": false
+    },
+    {
+      "name": "STASH_MEDIA",
+      "label": "Media folder",
+      "description": "The folder on this server with your collection, mounted at /data",
+      "default": "./App-Data/Media",
+      "required": true
+    }
+  ]
+}

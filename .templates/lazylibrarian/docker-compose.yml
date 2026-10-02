@@ -1,0 +1,22 @@
+services:
+  lazylibrarian:
+    container_name: LazyLibrarian
+    image: lscr.io/linuxserver/lazylibrarian:latest
+    restart: unless-stopped
+    environment:
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+      - TZ=${TZ:-UTC}
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/LazyLibrarian/config:/config
+      # the same folder, at the same path, that the download client sees
+      - ${LAZYLIBRARIAN_DOWNLOADS:-./App-Data/Downloads}:/downloads
+      - ${LAZYLIBRARIAN_BOOKS:-./App-Data/Books}:/books
+    ports:
+      - "${PORT_LAZYLIBRARIAN:-5299}:5299"
+    healthcheck:
+      test: ["CMD", "curl", "-fso", "/dev/null", "http://127.0.0.1:5299/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s

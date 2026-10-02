@@ -1,0 +1,32 @@
+{
+  "name": "pinchflat",
+  "title": "Pinchflat",
+  "description": "Keeps YouTube channels and playlists downloaded: it checks them on a schedule and saves new videos in a folder layout Jellyfin, Plex and Kodi understand, or serves them as a podcast feed. After deploying, make a media profile first (it decides quality and file names), then add a channel or playlist as a source. It has no sign-in of its own.",
+  "category": "download",
+  "target_stack": "media-services",
+  "icon": "📼",
+  "tags": [
+    "youtube",
+    "yt-dlp",
+    "download",
+    "video",
+    "podcast",
+    "media"
+  ],
+  "variables": [
+    {
+      "name": "PORT_PINCHFLAT",
+      "label": "Host Port",
+      "description": "Port to expose Pinchflat on",
+      "default": "8945",
+      "required": false
+    },
+    {
+      "name": "PINCHFLAT_DOWNLOADS",
+      "label": "Download folder",
+      "description": "The folder on this server the videos are saved in, mounted at /downloads; add it to your media server as a library",
+      "default": "./App-Data/Media/YouTube",
+      "required": true
+    }
+  ]
+}

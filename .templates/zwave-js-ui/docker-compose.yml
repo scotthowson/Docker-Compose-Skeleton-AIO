@@ -1,0 +1,23 @@
+services:
+  zwave-js-ui:
+    container_name: ZWave-JS-UI
+    image: zwavejs/zwave-js-ui:latest
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-UTC}
+      - SESSION_SECRET=${ZWAVE_SESSION_SECRET}
+      - ZWAVEJS_EXTERNAL_CONFIG=/usr/src/app/store/.config-db
+    devices:
+      - ${ZWAVE_DEVICE:-/dev/ttyUSB0}:/dev/zwave
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/ZWave-JS-UI/store:/usr/src/app/store
+    ports:
+      - "${PORT_ZWAVE_JS_UI:-8496}:8091"
+      # the Z-Wave JS WebSocket server Home Assistant connects to (switch it on under Settings > Home Assistant)
+      - "${PORT_ZWAVE_JS_WS:-3600}:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8091/ >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s

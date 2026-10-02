@@ -1,0 +1,23 @@
+services:
+  jackett:
+    container_name: Jackett
+    image: lscr.io/linuxserver/jackett:latest
+    restart: unless-stopped
+    environment:
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+      - TZ=${TZ:-UTC}
+      # the image is replaced on update; Jackett does not update itself inside the container
+      - AUTO_UPDATE=false
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Jackett/config:/config
+      # only for the "blackhole" option: .torrent files saved from Jackett's page land here
+      - ${JACKETT_BLACKHOLE:-./App-Data/Downloads}:/downloads
+    ports:
+      - "${PORT_JACKETT:-9117}:9117"
+    healthcheck:
+      test: ["CMD", "curl", "-fso", "/dev/null", "http://127.0.0.1:9117/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s

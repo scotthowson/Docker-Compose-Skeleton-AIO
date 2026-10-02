@@ -1,0 +1,59 @@
+services:
+  hedgedoc:
+    container_name: HedgeDoc
+    image: quay.io/hedgedoc/hedgedoc:latest
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-UTC}
+      - CMD_DB_URL=postgres://hedgedoc:${HEDGEDOC_DB_PASSWORD}@hedgedoc-db:5432/hedgedoc
+      - CMD_SESSION_SECRET=${HEDGEDOC_SESSION_SECRET}
+      # The address people open (see the command below)
+      - HEDGEDOC_URL=${HEDGEDOC_PUBLIC_URL}
+      - CMD_ALLOW_EMAIL_REGISTER=${HEDGEDOC_ALLOW_REGISTER:-true}
+      # Notes without an account: off, so only people who signed in can write
+      - CMD_ALLOW_ANONYMOUS=${HEDGEDOC_ALLOW_ANONYMOUS:-false}
+      # Pasted and uploaded pictures stay on this server
+      - CMD_IMAGE_UPLOAD_TYPE=filesystem
+    # HedgeDoc takes its address as a host name plus an https switch, and writes every link with it. A route
+    # (https://notes.example.com) is passed on that way; an address with a port (http://server:3040) is not: without
+    # a host name HedgeDoc writes relative links, which work on whatever address it is opened at
+    command:
+      - sh
+      - -c
+      - |
+        case "$$HEDGEDOC_URL" in
+          *://*:*) ;;
+          https://*) h="$${HEDGEDOC_URL#https://}"; export CMD_DOMAIN="$${h%%/*}" CMD_PROTOCOL_USESSL=true ;;
+          http://*) h="$${HEDGEDOC_URL#http://}"; export CMD_DOMAIN="$${h%%/*}" ;;
+        esac
+        exec node app.js
+    ports:
+      - "${PORT_HEDGEDOC:-3040}:3000"
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/HedgeDoc/uploads:/hedgedoc/public/uploads
+    depends_on:
+      hedgedoc-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "healthcheck.mjs"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  hedgedoc-db:
+    container_name: HedgeDoc-DB
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=hedgedoc
+      - POSTGRES_USER=hedgedoc
+      - POSTGRES_PASSWORD=${HEDGEDOC_DB_PASSWORD}
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/HedgeDoc/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hedgedoc -d hedgedoc"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s

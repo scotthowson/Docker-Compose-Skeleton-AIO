@@ -1,0 +1,21 @@
+services:
+  librespeed:
+    container_name: LibreSpeed
+    image: lscr.io/linuxserver/librespeed:latest
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-UTC}
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+      # the password of the results page (/results/stats.php)
+      - PASSWORD=${LIBRESPEED_PASSWORD}
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/LibreSpeed/config:/config
+    ports:
+      - "${PORT_LIBRESPEED:-8491}:80"
+    healthcheck:
+      test: ["CMD", "curl", "-fso", "/dev/null", "http://127.0.0.1:80/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s

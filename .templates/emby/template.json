@@ -1,0 +1,33 @@
+{
+  "name": "emby",
+  "title": "Emby",
+  "description": "Media server that streams your films, series and music to browsers, TVs and phones. Open it after deploying: the wizard makes the admin account, then add libraries from the folders under /media. Hardware transcoding and some apps need a paid Emby Premiere key.",
+  "category": "media",
+  "target_stack": "media-services",
+  "icon": "🎬",
+  "tags": [
+    "media",
+    "streaming",
+    "video",
+    "music",
+    "emby"
+  ],
+  "variables": [
+    {
+      "name": "PORT_EMBY",
+      "label": "Web UI Port",
+      "description": "Port for the Emby web page; Jellyfin's template uses 8096 too, change one when both run on one server",
+      "default": "8096",
+      "required": false
+    },
+    {
+      "name": "EMBY_MEDIA",
+      "label": "Media folder",
+      "description": "The folder on this server with your films, series and music, mounted at /media",
+      "default": "./App-Data/Media",
+      "required": true
+    }
+  ],
+  "auth": "bypass",
+  "auth_note": "Not put behind Authelia: its own apps and clients sign in directly (the deploy sheet can still protect it)"
+}

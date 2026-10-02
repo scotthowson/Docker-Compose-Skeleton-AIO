@@ -1,0 +1,25 @@
+{
+  "name": "cyberchef",
+  "title": "CyberChef",
+  "description": "Toolbox in the browser for encoding, decoding, hashing, compressing and picking data apart: Base64, hex, JSON, timestamps, ciphers and several hundred more operations chained as a recipe. Everything runs in your browser and nothing is stored on the server. There is nothing to set up: open it and drag operations into the recipe.",
+  "category": "tools",
+  "target_stack": "development-tools",
+  "icon": "🔪",
+  "tags": [
+    "encoding",
+    "decoding",
+    "hash",
+    "crypto",
+    "converter",
+    "developer"
+  ],
+  "variables": [
+    {
+      "name": "PORT_CYBERCHEF",
+      "label": "Host Port",
+      "description": "Port to expose CyberChef on",
+      "default": "8550",
+      "required": false
+    }
+  ]
+}

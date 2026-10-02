@@ -1,0 +1,27 @@
+services:
+  convertx:
+    container_name: ConvertX
+    image: ghcr.io/c4illin/convertx:latest
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-UTC}
+      # The server starts as root and drops to this user, so the files belong to the stack's user
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+      - JWT_SECRET=${CONVERTX_JWT_SECRET}
+      # Sign-in cookies over plain http (the port, without a route); over https only when this is false
+      - HTTP_ALLOWED=${CONVERTX_HTTP_ALLOWED:-true}
+      # The first account can always be made; this decides whether more can register afterwards
+      - ACCOUNT_REGISTRATION=${CONVERTX_REGISTRATION:-false}
+      - AUTO_DELETE_EVERY_N_HOURS=24
+    ports:
+      - "${PORT_CONVERTX:-3060}:3000"
+    volumes:
+      # The account database, uploads and converted files
+      - ${APP_DATA_DIR:-./App-Data}/ConvertX/data:/app/data
+    healthcheck:
+      test: ["CMD", "curl", "-fso", "/dev/null", "http://127.0.0.1:3000/healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s

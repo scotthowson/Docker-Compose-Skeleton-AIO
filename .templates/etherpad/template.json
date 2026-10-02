@@ -1,0 +1,80 @@
+{
+  "name": "etherpad",
+  "title": "Etherpad",
+  "description": "Text editor in the browser that several people type in at the same time, with a colour per author, a time slider through every change and a chat beside the pad. Anyone who can open it can make and edit pads; the pads are kept in PostgreSQL. After deploying, open it and name your first pad; the admin page at /admin takes the user admin and the password you set below.",
+  "category": "productivity",
+  "target_stack": "communication-collaboration",
+  "icon": "✍️",
+  "tags": [
+    "editor",
+    "collaboration",
+    "real-time",
+    "pads",
+    "documents",
+    "writing"
+  ],
+  "route_skip": [
+    "etherpad-db"
+  ],
+  "variables": [
+    {
+      "name": "PORT_ETHERPAD",
+      "label": "Host Port",
+      "description": "Port to expose Etherpad on",
+      "default": "9041",
+      "required": false
+    },
+    {
+      "name": "ETHERPAD_TITLE",
+      "label": "Title",
+      "description": "The name shown in the browser tab",
+      "default": "Etherpad",
+      "required": false
+    },
+    {
+      "name": "ETHERPAD_ADMIN_PASSWORD",
+      "label": "Admin password",
+      "description": "For the user admin on the page /admin (settings and plugins)",
+      "default": "",
+      "type": "password",
+      "required": true
+    },
+    {
+      "name": "ETHERPAD_PUBLIC_URL",
+      "label": "Public address",
+      "description": "The address people open, like https://pad.example.com. The sign-in for the admin page and for API clients is tied to it. Leave empty and DCS uses this deploy's route, or this server's address and the port above",
+      "default": "",
+      "required": false,
+      "fill": "public_url",
+      "service": "etherpad",
+      "port_var": "PORT_ETHERPAD"
+    },
+    {
+      "name": "ETHERPAD_DB_PASSWORD",
+      "label": "Database password",
+      "description": "Leave empty and DCS generates one on deploy",
+      "default": "",
+      "type": "password",
+      "required": false,
+      "generate": "hex64"
+    },
+    {
+      "name": "ETHERPAD_SSO_ADMIN_SECRET",
+      "label": "Sign-in secret (admin)",
+      "description": "Client secret of the built-in sign-in for the admin page. Leave empty and DCS generates one on deploy",
+      "default": "",
+      "type": "password",
+      "required": false,
+      "generate": "hex64"
+    },
+    {
+      "name": "ETHERPAD_SSO_USER_SECRET",
+      "label": "Sign-in secret (users)",
+      "description": "Client secret of the built-in sign-in for API clients. Leave empty and DCS generates one on deploy",
+      "default": "",
+      "type": "password",
+      "required": false,
+      "generate": "hex64"
+    }
+  ]
+}

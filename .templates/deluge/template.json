@@ -1,0 +1,40 @@
+{
+  "name": "deluge",
+  "title": "Deluge",
+  "description": "BitTorrent client with a web page, labels and plugins, and a download client Sonarr, Radarr and the other *arr apps know. The first sign-in uses the password deluge: change it at once under Preferences > Interface.",
+  "category": "download",
+  "target_stack": "media-services",
+  "icon": "🌊",
+  "tags": [
+    "torrent",
+    "download",
+    "bittorrent",
+    "arr",
+    "p2p"
+  ],
+  "variables": [
+    {
+      "name": "PORT_DELUGE",
+      "label": "Web UI Port",
+      "description": "Port for the Deluge web page",
+      "default": "8112",
+      "required": false
+    },
+    {
+      "name": "PORT_DELUGE_PEERS",
+      "label": "Peer port",
+      "description": "The port other peers reach Deluge on. In Deluge: Preferences > Network > Incoming Port, untick Random and enter this number. qBittorrent's template uses 6881 too: give this one another number when both run on one server",
+      "default": "6881",
+      "required": false
+    },
+    {
+      "name": "DELUGE_DOWNLOADS",
+      "label": "Downloads folder",
+      "description": "The folder on this server downloads are saved into, mounted at /downloads (use the folder Sonarr and Radarr see)",
+      "default": "./App-Data/Downloads",
+      "required": true
+    }
+  ],
+  "auth": "bypass",
+  "auth_note": "Not put behind Authelia: its own apps and clients sign in directly (the deploy sheet can still protect it)"
+}

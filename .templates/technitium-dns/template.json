@@ -1,0 +1,40 @@
+{
+  "name": "technitium-dns",
+  "title": "Technitium DNS",
+  "description": "Technitium is a DNS server with a web page: it resolves names itself or forwards them (DNS-over-HTTPS and DNS-over-TLS included), blocks ads from block lists and hosts your own zones. After deploying, sign in as admin with the password you set here, then point your router or devices at this server's DNS port; set that port to 53 once nothing else on the host uses it.",
+  "category": "network",
+  "target_stack": "networking-security",
+  "icon": "🧭",
+  "tags": ["dns", "ad-blocking", "resolver", "zones", "network", "privacy"],
+  "variables": [
+    {
+      "name": "PORT_TECHNITIUM_WEB",
+      "label": "Web port",
+      "description": "Host port of the web page",
+      "default": "5380",
+      "required": false
+    },
+    {
+      "name": "PORT_TECHNITIUM_DNS",
+      "label": "DNS port",
+      "description": "TCP and UDP. 5353 by default because many servers already have a resolver on 53; devices on your network can only use it as their DNS server on port 53",
+      "default": "5353",
+      "required": false
+    },
+    {
+      "name": "TECHNITIUM_ADMIN_PASSWORD",
+      "label": "Admin password",
+      "description": "Password of the admin user, set on the first start",
+      "default": "",
+      "required": true,
+      "type": "password"
+    },
+    {
+      "name": "TECHNITIUM_DOMAIN",
+      "label": "Server name",
+      "description": "The name this DNS server gives itself, for example dns.home.arpa",
+      "default": "dns-server",
+      "required": false
+    }
+  ]
+}

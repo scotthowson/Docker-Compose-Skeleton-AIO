@@ -1,0 +1,18 @@
+{
+  "name": "apprise-api",
+  "title": "Apprise API",
+  "description": "Apprise API is one address your apps and scripts post a message to, and it passes the message on to any of some 100 services (Discord, Telegram, ntfy, Gotify, e-mail, Matrix…). After deploying, open the page, make a configuration under a key of your choice and list your notification URLs in it; apps then post to http://Apprise-API:8000/notify/<key>. It has no sign-in of its own, so keep it off the internet or behind Authelia.",
+  "category": "notifications",
+  "target_stack": "communication-collaboration",
+  "icon": "📣",
+  "tags": ["notifications", "alerts", "webhook", "discord", "telegram", "api"],
+  "variables": [
+    {
+      "name": "PORT_APPRISE_API",
+      "label": "Web port",
+      "description": "Host port of the web page and the API",
+      "default": "8494",
+      "required": false
+    }
+  ]
+}

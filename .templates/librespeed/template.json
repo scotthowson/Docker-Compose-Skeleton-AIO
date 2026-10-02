@@ -1,0 +1,26 @@
+{
+  "name": "librespeed",
+  "title": "LibreSpeed",
+  "description": "LibreSpeed is a speed test you host yourself: open the page from any device and it measures download, upload, ping and jitter between that device and this server. Useful for testing Wi-Fi and cabling inside your network. Results are kept and listed at /results/stats.php with the password you set here.",
+  "category": "tools",
+  "target_stack": "networking-security",
+  "icon": "🚀",
+  "tags": ["speedtest", "network", "bandwidth", "wifi", "lan", "html5"],
+  "variables": [
+    {
+      "name": "PORT_LIBRESPEED",
+      "label": "Web port",
+      "description": "Host port of the speed test page",
+      "default": "8491",
+      "required": false
+    },
+    {
+      "name": "LIBRESPEED_PASSWORD",
+      "label": "Results password",
+      "description": "Password of the results page (/results/stats.php)",
+      "default": "",
+      "required": true,
+      "type": "password"
+    }
+  ]
+}

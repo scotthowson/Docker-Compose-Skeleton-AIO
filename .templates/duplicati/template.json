@@ -5,7 +5,17 @@
   "category": "backup",
   "target_stack": "storage-backup",
   "icon": "💾",
-  "tags": ["backup", "cloud", "encrypted", "incremental", "s3", "scheduled"],
+  "tags": [
+    "backup",
+    "cloud",
+    "encrypted",
+    "incremental",
+    "s3",
+    "scheduled"
+  ],
+  "host_access": [
+    "root-ro"
+  ],
   "variables": [
     {
       "name": "PORT_DUPLICATI",

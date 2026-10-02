@@ -1,0 +1,54 @@
+{
+  "name": "wallabag",
+  "title": "wallabag",
+  "description": "Read-later service: save an article from the browser or phone and read its text later without the clutter, with tags, annotations, full-text search and export to EPUB or PDF. After deploying, sign in as wallabag with the password wallabag and change that password right away.",
+  "category": "productivity",
+  "target_stack": "communication-collaboration",
+  "icon": "📰",
+  "tags": [
+    "read-later",
+    "articles",
+    "bookmarks",
+    "reader",
+    "pocket",
+    "epub"
+  ],
+  "variables": [
+    {
+      "name": "PORT_WALLABAG",
+      "label": "Host Port",
+      "description": "Port to expose wallabag on",
+      "default": "8510",
+      "required": false
+    },
+    {
+      "name": "WALLABAG_URL",
+      "label": "Public address",
+      "description": "The address people open, like https://wallabag.example.com. The pages load their styles from it, so a wrong one leaves the page bare. Leave empty and DCS uses this deploy's route, or this server's address and the port above",
+      "default": "",
+      "required": false,
+      "fill": "public_url",
+      "service": "wallabag",
+      "port_var": "PORT_WALLABAG"
+    },
+    {
+      "name": "WALLABAG_SECRET",
+      "label": "App secret",
+      "description": "Signs sessions and forms. Leave empty and DCS generates one on deploy",
+      "default": "",
+      "type": "password",
+      "required": false,
+      "generate": "hex64"
+    },
+    {
+      "name": "WALLABAG_REGISTRATION",
+      "label": "Open registration",
+      "description": "Lets anyone who can open the page make an account",
+      "default": "false",
+      "type": "boolean",
+      "required": false
+    }
+  ],
+  "auth": "bypass",
+  "auth_note": "Not put behind Authelia: the phone apps, browser extensions and e-readers sign in directly (the deploy sheet can still protect it)"
+}

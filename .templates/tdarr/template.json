@@ -1,0 +1,53 @@
+{
+  "name": "tdarr",
+  "title": "Tdarr",
+  "description": "Goes through a media library and transcodes or remuxes the files that do not meet your rules, for example everything to H.265 or without unwanted audio tracks, and health-checks them. After deploying, add a library that points at /media with /temp as its transcode cache, and choose its plugins. It replaces the original files, so try it on a copy of a few files first.",
+  "category": "media",
+  "target_stack": "media-services",
+  "icon": "🎞️",
+  "tags": [
+    "transcode",
+    "ffmpeg",
+    "handbrake",
+    "media",
+    "h265",
+    "automation"
+  ],
+  "variables": [
+    {
+      "name": "PORT_TDARR",
+      "label": "Web UI Port",
+      "description": "Port for the Tdarr web page",
+      "default": "8265",
+      "required": false
+    },
+    {
+      "name": "PORT_TDARR_SERVER",
+      "label": "Server port",
+      "description": "Port that Tdarr nodes on other machines connect to",
+      "default": "8266",
+      "required": false
+    },
+    {
+      "name": "TDARR_MEDIA",
+      "label": "Media folder",
+      "description": "The folder on this server with the files to work through, mounted at /media (writable: Tdarr replaces files)",
+      "default": "./App-Data/Media",
+      "required": true
+    },
+    {
+      "name": "TDARR_TRANSCODE_CACHE",
+      "label": "Transcode cache",
+      "description": "Folder for files while they are being transcoded, mounted at /temp; needs room for the largest file",
+      "default": "./App-Data/Tdarr/transcode-cache",
+      "required": false
+    },
+    {
+      "name": "TDARR_NODE_NAME",
+      "label": "Node name",
+      "description": "Name of the built-in node as the web page shows it",
+      "default": "InternalNode",
+      "required": false
+    }
+  ]
+}

@@ -1,0 +1,41 @@
+{
+  "name": "linkding",
+  "title": "linkding",
+  "description": "Bookmark manager with tags, full-text search, read-later marks and archive snapshots, plus browser extensions and a REST API. After deploying, sign in with the user name and password you set below.",
+  "category": "productivity",
+  "target_stack": "communication-collaboration",
+  "icon": "🔖",
+  "tags": [
+    "bookmarks",
+    "links",
+    "read-later",
+    "tags",
+    "archive"
+  ],
+  "variables": [
+    {
+      "name": "PORT_LINKDING",
+      "label": "Host Port",
+      "description": "Port to expose linkding on",
+      "default": "9390",
+      "required": false
+    },
+    {
+      "name": "LINKDING_ADMIN_USER",
+      "label": "Admin user name",
+      "description": "The first account, made at the first start",
+      "default": "admin",
+      "required": false
+    },
+    {
+      "name": "LINKDING_ADMIN_PASSWORD",
+      "label": "Admin password",
+      "description": "Its password. Only used at the first start: change it later in linkding itself",
+      "default": "",
+      "type": "password",
+      "required": true
+    }
+  ],
+  "auth": "bypass",
+  "auth_note": "Not put behind Authelia: the browser extensions and API clients sign in with a token (the deploy sheet can still protect it)"
+}

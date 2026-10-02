@@ -1,0 +1,25 @@
+{
+  "name": "victoria-metrics",
+  "title": "VictoriaMetrics",
+  "description": "VictoriaMetrics stores time series like Prometheus does, in less memory and disk, and answers the same queries (PromQL). After deploying, either add it to Prometheus as a remote_write target (http://VictoriaMetrics:8428/api/v1/write) or send data straight to it (InfluxDB, Graphite and OpenTelemetry formats are accepted), then add it to Grafana as a Prometheus data source with the URL http://VictoriaMetrics:8428.",
+  "category": "monitoring",
+  "target_stack": "monitoring-management",
+  "icon": "📈",
+  "tags": ["monitoring", "metrics", "time-series", "prometheus", "grafana", "database"],
+  "variables": [
+    {
+      "name": "PORT_VICTORIA_METRICS",
+      "label": "Web port",
+      "description": "Host port of the web page (vmui) and the API",
+      "default": "8428",
+      "required": false
+    },
+    {
+      "name": "VICTORIA_RETENTION",
+      "label": "Retention",
+      "description": "How long data is kept: a number is months (12), or use a unit such as 30d, 8w, 2y",
+      "default": "12",
+      "required": false
+    }
+  ]
+}

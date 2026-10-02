@@ -1,0 +1,18 @@
+{
+  "name": "myspeed",
+  "title": "MySpeed",
+  "description": "MySpeed tests your internet connection on a schedule (Ookla, LibreSpeed or Cloudflare servers) and keeps up to 30 days of download, upload and ping, so you can see whether you get the speed you pay for. After deploying, open the page, accept the test provider's terms in the welcome dialog and set how often it should test; a password can be set under Settings.",
+  "category": "monitoring",
+  "target_stack": "monitoring-management",
+  "icon": "🏎️",
+  "tags": ["speedtest", "internet", "bandwidth", "isp", "monitoring", "history"],
+  "variables": [
+    {
+      "name": "PORT_MYSPEED",
+      "label": "Web port",
+      "description": "Host port of the web page",
+      "default": "5216",
+      "required": false
+    }
+  ]
+}

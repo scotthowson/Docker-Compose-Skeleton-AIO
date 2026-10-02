@@ -1,0 +1,18 @@
+{
+  "name": "smokeping",
+  "title": "SmokePing",
+  "description": "SmokePing pings a list of hosts every few minutes and draws latency and packet loss over time, which shows when a connection is unstable and since when. The graphs are at /smokeping/ on its port. After deploying, put your own hosts (router, ISP gateway, DNS servers) in App-Data/SmokePing/config/Targets and restart.",
+  "category": "monitoring",
+  "target_stack": "monitoring-management",
+  "icon": "📶",
+  "tags": ["ping", "latency", "packet-loss", "network", "graphs", "monitoring"],
+  "variables": [
+    {
+      "name": "PORT_SMOKEPING",
+      "label": "Web port",
+      "description": "Host port of the web page (the graphs are under /smokeping/)",
+      "default": "8490",
+      "required": false
+    }
+  ]
+}

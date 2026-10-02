@@ -1,0 +1,38 @@
+services:
+  tdarr:
+    container_name: Tdarr
+    image: ghcr.io/haveagitgat/tdarr:latest
+    restart: unless-stopped
+    environment:
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+      - TZ=${TZ:-UTC}
+      - UMASK_SET=002
+      - serverIP=0.0.0.0
+      - serverPort=8266
+      - webUIPort=8265
+      # the server does the transcoding itself; further nodes on other machines connect to the server port
+      - internalNode=true
+      - inContainer=true
+      - ffmpegVersion=7
+      - nodeName=${TDARR_NODE_NAME:-InternalNode}
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Tdarr/server:/app/server
+      - ${APP_DATA_DIR:-./App-Data}/Tdarr/configs:/app/configs
+      - ${APP_DATA_DIR:-./App-Data}/Tdarr/logs:/app/logs
+      # the library Tdarr works through: it replaces files here, so it needs to write
+      - ${TDARR_MEDIA:-./App-Data/Media}:/media
+      # work in progress; a fast disk with room for the largest file
+      - ${TDARR_TRANSCODE_CACHE:-./App-Data/Tdarr/transcode-cache}:/temp
+    # Intel or AMD graphics for hardware transcoding: uncomment when this server has /dev/dri
+    # devices:
+    #   - /dev/dri:/dev/dri
+    ports:
+      - "${PORT_TDARR:-8265}:8265"
+      - "${PORT_TDARR_SERVER:-8266}:8266"
+    healthcheck:
+      test: ["CMD", "curl", "-fso", "/dev/null", "http://127.0.0.1:8265/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s

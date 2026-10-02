@@ -1,0 +1,23 @@
+services:
+  glances:
+    container_name: Glances
+    image: nicolargo/glances:latest-full
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-UTC}
+      # -w: the web page and the REST API on 61208
+      - GLANCES_OPT=-w
+    volumes:
+      # the container list and its per-container CPU, memory and network
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /etc/os-release:/etc/os-release:ro
+      # disk usage is shown for folders mounted here; add your own drives the same way
+      - /mnt:/mnt/host/mnt:ro
+    ports:
+      - "${PORT_GLANCES:-61208}:61208"
+    healthcheck:
+      test: ["CMD", "curl", "-fso", "/dev/null", "http://127.0.0.1:61208/api/4/status"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s

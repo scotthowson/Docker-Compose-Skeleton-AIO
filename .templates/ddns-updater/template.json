@@ -1,0 +1,26 @@
+{
+  "name": "ddns-updater",
+  "title": "DDNS Updater",
+  "description": "DDNS Updater keeps DNS records pointed at your home's changing public address, for some 50 providers (Cloudflare, DuckDNS, Namecheap, OVH, Porkbun, deSEC…), and shows each record's state on a web page. It deploys with an empty list: add your records to App-Data/DDNS-Updater/data/config.json as the project's README describes for your provider, then restart.",
+  "category": "network",
+  "target_stack": "networking-security",
+  "icon": "🔁",
+  "tags": ["ddns", "dns", "dynamic-ip", "cloudflare", "duckdns", "network"],
+  "config_path": "DDNS-Updater",
+  "variables": [
+    {
+      "name": "PORT_DDNS_UPDATER",
+      "label": "Web port",
+      "description": "Host port of the status page",
+      "default": "8493",
+      "required": false
+    },
+    {
+      "name": "DDNS_UPDATER_PERIOD",
+      "label": "Check every",
+      "description": "How often the public address is checked, for example 5m or 1h",
+      "default": "5m",
+      "required": false
+    }
+  ]
+}

@@ -1,0 +1,54 @@
+{
+  "name": "calibre",
+  "title": "Calibre",
+  "description": "The Calibre desktop program for e-books, used through the browser: add, convert and edit books and their metadata. The library is kept in App-Data/Calibre/config, which is the folder Calibre-Web can read. Anyone who can open the page controls the desktop, so set a password below or keep it behind the sign-in page; browsers want HTTPS for the desktop, which a route or the HTTPS port gives.",
+  "category": "media",
+  "target_stack": "media-services",
+  "icon": "📚",
+  "tags": [
+    "ebooks",
+    "books",
+    "library",
+    "convert",
+    "epub",
+    "calibre"
+  ],
+  "variables": [
+    {
+      "name": "PORT_CALIBRE",
+      "label": "Desktop port",
+      "description": "Port for the Calibre desktop in the browser (HTTP)",
+      "default": "8780",
+      "required": false
+    },
+    {
+      "name": "PORT_CALIBRE_HTTPS",
+      "label": "Desktop port (HTTPS)",
+      "description": "The same desktop over HTTPS with a self-signed certificate, for use without a route",
+      "default": "8781",
+      "required": false
+    },
+    {
+      "name": "PORT_CALIBRE_SERVER",
+      "label": "Content server port",
+      "description": "Port of Calibre's own content server, after you switch it on under Preferences > Sharing over the net",
+      "default": "8782",
+      "required": false
+    },
+    {
+      "name": "CALIBRE_USER",
+      "label": "User name",
+      "description": "Name for the sign-in in front of the desktop (only asked when a password is set)",
+      "default": "calibre",
+      "required": false
+    },
+    {
+      "name": "CALIBRE_PASSWORD",
+      "label": "Password",
+      "description": "Password in front of the desktop; empty for none",
+      "default": "",
+      "required": false,
+      "type": "password"
+    }
+  ]
+}

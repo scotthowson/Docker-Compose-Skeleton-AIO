@@ -1,0 +1,20 @@
+services:
+  linkding:
+    container_name: Linkding
+    image: sissbruecker/linkding:latest
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-UTC}
+      # The first account, created at the first start only (changing these later does not change the account)
+      - LD_SUPERUSER_NAME=${LINKDING_ADMIN_USER:-admin}
+      - LD_SUPERUSER_PASSWORD=${LINKDING_ADMIN_PASSWORD}
+    ports:
+      - "${PORT_LINKDING:-9390}:9090"
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Linkding/data:/etc/linkding/data
+    healthcheck:
+      test: ["CMD", "curl", "-fso", "/dev/null", "http://127.0.0.1:9090/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s

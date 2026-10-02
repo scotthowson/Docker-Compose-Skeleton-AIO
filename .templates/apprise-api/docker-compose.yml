@@ -1,0 +1,20 @@
+services:
+  apprise-api:
+    container_name: Apprise-API
+    image: lscr.io/linuxserver/apprise-api:latest
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-UTC}
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Apprise-API/config:/config
+      - ${APP_DATA_DIR:-./App-Data}/Apprise-API/attachments:/attachments
+    ports:
+      - "${PORT_APPRISE_API:-8494}:8000"
+    healthcheck:
+      test: ["CMD", "curl", "-fso", "/dev/null", "http://127.0.0.1:8000/status"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s

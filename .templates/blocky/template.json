@@ -1,0 +1,27 @@
+{
+  "name": "blocky",
+  "title": "Blocky",
+  "description": "Blocky is a small DNS proxy that blocks ads and trackers from block lists and forwards the rest over DNS-over-HTTPS. It has no web page: everything is in App-Data/Blocky/config/config.yml, which deploys with one block list and two upstreams. Point your router or devices at this server's DNS port; set that port to 53 once nothing else on the host uses it.",
+  "category": "network",
+  "target_stack": "networking-security",
+  "icon": "🧱",
+  "tags": ["dns", "ad-blocking", "privacy", "network", "doh", "prometheus"],
+  "config_path": "Blocky",
+  "route_skip": ["blocky"],
+  "variables": [
+    {
+      "name": "PORT_BLOCKY_DNS",
+      "label": "DNS port",
+      "description": "TCP and UDP. 5353 by default because many servers already have a resolver on 53; devices on your network can only use it as their DNS server on port 53",
+      "default": "5353",
+      "required": false
+    },
+    {
+      "name": "PORT_BLOCKY_HTTP",
+      "label": "API port",
+      "description": "Host port of the API and the Prometheus metrics (/metrics)",
+      "default": "4004",
+      "required": false
+    }
+  ]
+}

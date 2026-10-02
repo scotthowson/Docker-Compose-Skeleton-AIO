@@ -1,0 +1,25 @@
+services:
+  deluge:
+    container_name: Deluge
+    image: lscr.io/linuxserver/deluge:latest
+    restart: unless-stopped
+    environment:
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+      - TZ=${TZ:-UTC}
+      - DELUGE_LOGLEVEL=error
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Deluge/config:/config
+      # the same folder, at the same path, that Sonarr and Radarr see
+      - ${DELUGE_DOWNLOADS:-./App-Data/Downloads}:/downloads
+    ports:
+      - "${PORT_DELUGE:-8112}:8112"
+      # the port other peers connect to: the same number outside and inside, set it in Preferences > Network too
+      - "${PORT_DELUGE_PEERS:-6881}:${PORT_DELUGE_PEERS:-6881}"
+      - "${PORT_DELUGE_PEERS:-6881}:${PORT_DELUGE_PEERS:-6881}/udp"
+    healthcheck:
+      test: ["CMD", "curl", "-fso", "/dev/null", "http://127.0.0.1:8112/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s

@@ -1,0 +1,39 @@
+{
+  "name": "lazylibrarian",
+  "title": "LazyLibrarian",
+  "description": "Follows authors and finds their e-books, audiobooks and magazines through your indexers and download client, then files them in your library. After deploying, open Config: set the e-book folder to /books and the download folder to /downloads, add a download client and at least one provider. It has no sign-in until you set a user name and password under Config > Interface.",
+  "category": "media",
+  "target_stack": "media-services",
+  "icon": "📖",
+  "tags": [
+    "books",
+    "ebooks",
+    "audiobooks",
+    "magazines",
+    "automation",
+    "download"
+  ],
+  "variables": [
+    {
+      "name": "PORT_LAZYLIBRARIAN",
+      "label": "Host Port",
+      "description": "Port to expose LazyLibrarian on",
+      "default": "5299",
+      "required": false
+    },
+    {
+      "name": "LAZYLIBRARIAN_DOWNLOADS",
+      "label": "Downloads folder",
+      "description": "The folder on this server your download client saves into, mounted at /downloads",
+      "default": "./App-Data/Downloads",
+      "required": true
+    },
+    {
+      "name": "LAZYLIBRARIAN_BOOKS",
+      "label": "Books folder",
+      "description": "The folder on this server your book library lives in, mounted at /books",
+      "default": "./App-Data/Books",
+      "required": true
+    }
+  ]
+}

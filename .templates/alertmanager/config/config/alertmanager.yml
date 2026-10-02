@@ -1,0 +1,31 @@
+# =============================================================================
+# Alertmanager — written by the DCS template.
+# Add a receiver, then restart the container.
+# Docs: https://prometheus.io/docs/alerting/latest/configuration/
+# =============================================================================
+route:
+  receiver: default
+  group_by: ['alertname']
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+
+receivers:
+  # a receiver with nothing in it: alerts are shown on the web page and sent nowhere
+  - name: default
+  #   discord_configs:
+  #     - webhook_url: https://discord.com/api/webhooks/...
+  #   webhook_configs:
+  #     - url: http://ntfy/alerts
+  #   email_configs:
+  #     - to: you@example.com
+  #       from: alertmanager@example.com
+  #       smarthost: smtp.example.com:587
+  #       auth_username: alertmanager@example.com
+  #       auth_password: ...
+
+inhibit_rules:
+  # a critical alert silences the warning of the same name on the same instance
+  - source_matchers: ['severity="critical"']
+    target_matchers: ['severity="warning"']
+    equal: ['alertname', 'instance']

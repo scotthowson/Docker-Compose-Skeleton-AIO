@@ -1,0 +1,24 @@
+{
+  "name": "dokuwiki",
+  "title": "DokuWiki",
+  "description": "Wiki that keeps its pages as plain text files, with no database to look after. It has page history, access control lists and a large plugin collection. After deploying, open /install.php once to name the wiki and make the administrator account.",
+  "category": "knowledge",
+  "target_stack": "communication-collaboration",
+  "icon": "📚",
+  "tags": [
+    "wiki",
+    "documentation",
+    "knowledge-base",
+    "notes",
+    "flat-file"
+  ],
+  "variables": [
+    {
+      "name": "PORT_DOKUWIKI",
+      "label": "Host Port",
+      "description": "Port to expose DokuWiki on",
+      "default": "8540",
+      "required": false
+    }
+  ]
+}

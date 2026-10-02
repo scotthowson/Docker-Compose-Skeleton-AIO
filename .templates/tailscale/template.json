@@ -13,6 +13,9 @@
     "remote-access",
     "headscale"
   ],
+  "host_access": [
+    "network"
+  ],
   "variables": [
     {
       "name": "TAILSCALE_AUTHKEY",

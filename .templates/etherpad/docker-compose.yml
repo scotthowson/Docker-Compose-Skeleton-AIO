@@ -1,0 +1,53 @@
+services:
+  etherpad:
+    container_name: Etherpad
+    image: etherpad/etherpad:latest
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-UTC}
+      - TITLE=${ETHERPAD_TITLE:-Etherpad}
+      - DB_TYPE=postgres
+      - DB_HOST=etherpad-db
+      - DB_PORT=5432
+      - DB_NAME=etherpad
+      - DB_USER=etherpad
+      - DB_PASS=${ETHERPAD_DB_PASSWORD}
+      # The password of the user "admin" for the settings and plugin pages at /admin
+      - ADMIN_PASSWORD=${ETHERPAD_ADMIN_PASSWORD}
+      # The address people open: sign-in for the admin page and for API clients goes through Etherpad's own
+      # OpenID provider, which only accepts redirects to these addresses
+      - SSO_ISSUER=${ETHERPAD_PUBLIC_URL}
+      - ADMIN_REDIRECT=${ETHERPAD_PUBLIC_URL}/admin/
+      - USER_REDIRECT=${ETHERPAD_PUBLIC_URL}/
+      - ADMIN_SECRET=${ETHERPAD_SSO_ADMIN_SECRET}
+      - USER_SECRET=${ETHERPAD_SSO_USER_SECRET}
+      # Behind Traefik the visitor's address comes from the proxy headers
+      - TRUST_PROXY=true
+    ports:
+      - "${PORT_ETHERPAD:-9041}:9001"
+    depends_on:
+      etherpad-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:9001/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+
+  etherpad-db:
+    container_name: Etherpad-DB
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=etherpad
+      - POSTGRES_USER=etherpad
+      - POSTGRES_PASSWORD=${ETHERPAD_DB_PASSWORD}
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Etherpad/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U etherpad -d etherpad"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s

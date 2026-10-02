@@ -1758,10 +1758,20 @@ _api_scan_compose_security() {
         fi
     fi
 
-    # Mount /dev (device access) — allow only /dev/null, /dev/urandom, /dev/random
-    if printf '%s' "$lower_content" | grep -qE '^\s+-\s*["'"'"']?/dev[/:]'; then
-        if ! printf '%s' "$lower_content" | grep -E '^\s+-\s*["'"'"']?/dev[/:]' | grep -qE '/dev/(null|urandom|random)'; then
-            violations+=("mounting /dev is not allowed (device access)")
+    # /dev (device access). In a compose file someone edits (strict): only /dev/null, /dev/urandom, /dev/random.
+    # In a built-in template (deploy): one device, or one folder of devices, is what a VPN client (/dev/net/tun), a
+    # Zigbee or Z-Wave stick, a printer's serial port, a UPS on USB or a disk-health exporter is there for, so it
+    # passes; the whole of /dev and the machine's memory stay refused. (This rule used to refuse every device in both
+    # modes, so those templates could not be deployed at all.)
+    local _dev_lines
+    _dev_lines=$(printf '%s' "$lower_content" | grep -E '^\s+-\s*["'"'"']?/dev[/:]' || true)
+    if [[ -n "$_dev_lines" ]]; then
+        if [[ "$mode" == "strict" ]]; then
+            if ! printf '%s' "$_dev_lines" | grep -qE '/dev/(null|urandom|random)'; then
+                violations+=("mounting /dev is not allowed (device access)")
+            fi
+        elif printf '%s' "$_dev_lines" | grep -qE '^\s+-\s*["'"'"']?/dev/?:' || printf '%s' "$_dev_lines" | grep -qE '/dev/(mem|kmem|port)([:"'"'"'/[:space:]]|$)'; then
+            violations+=("mounting the whole of /dev, or the machine's memory, is not allowed (name the one device the app needs)")
         fi
     fi
 
@@ -15962,6 +15972,10 @@ handle_template_deploy() {
         _scan_compose=$(printf '%s' "$template_compose" | sed '/^\s*privileged:\s*/d')
         _api_audit_log "${CLIENT_IP:-unknown}" "DEPLOY_PRIVILEGED" "${AUTH_USERNAME:-anonymous}" "Privileged mode approved for template: $name"
     fi
+    # the host access the template declares for itself (host networking, the host's process list, its files read-only)
+    _scan_compose=$(_template_host_access_strip "$_scan_compose" "$tdir/template.json")
+    local _ha_declared; _ha_declared=$(jq -r '(.host_access // []) | map(select(type == "string")) | join(", ")' "$tdir/template.json" 2>/dev/null) || _ha_declared=""
+    [[ -n "$_ha_declared" ]] && _api_audit_log "${CLIENT_IP:-unknown}" "DEPLOY_HOST_ACCESS" "${AUTH_USERNAME:-anonymous}" "Template $name is deployed with the host access it declares: $_ha_declared"
     if ! _api_scan_compose_security "$_scan_compose" "template deploy ($name)" "deploy"; then
         return
     fi
@@ -17682,7 +17696,7 @@ handle_template_dry_run() {
     if command -v _api_scan_compose_security >/dev/null 2>&1; then
         # Capture violations without rejecting
         local _scan_out
-        if ! _scan_out=$(_API_SCAN_QUIET=true _api_scan_compose_security "$template_compose" "dry-run ($name)" "deploy"); then
+        if ! _scan_out=$(_API_SCAN_QUIET=true _api_scan_compose_security "$(_template_host_access_strip "$template_compose" "$tdir/template.json")" "dry-run ($name)" "deploy"); then
             security_warnings="[\"$(_api_json_escape "$_scan_out")\"]"
         fi
     fi
@@ -17762,6 +17776,24 @@ handle_template_dry_run() {
     fi
 
     _api_success "{\"success\": true, \"template\": \"$(_api_json_escape "$name")\", \"target_stack\": \"$(_api_json_escape "$target_stack")\", \"services\": $services_json, \"service_conflicts\": \"$(_api_json_escape "$service_conflicts")\", \"has_service_conflicts\": $has_svc_conflict, \"port_conflicts\": \"$(_api_json_escape "$port_conflicts")\", \"has_port_conflicts\": $has_port_conflict, \"port_conflicts_detail\": $port_conflicts_detail, \"env_additions\": $env_additions, \"env_existing\": $env_existing, \"lines_added\": ${lines_added:-0}, \"compose_preview\": \"$(_api_json_escape "$tpl_svc_block")\", \"is_singleton\": $is_singleton, \"singleton_conflict\": \"$(_api_json_escape "$singleton_conflict")\", \"has_singleton_conflict\": $has_singleton_conflict, \"missing_required_vars\": \"$(_api_json_escape "$missing_vars")\", \"has_missing_vars\": $has_missing_vars, \"security_warnings\": $security_warnings, \"plugin_results\": $plugin_results}"
+}
+
+# What a built-in template says it needs of the host ("host_access" in its template.json): "network" (host networking: a
+# VPN that joins the host itself to a network, an agent that measures the host's interfaces), "pid" (the host's process
+# list: a metrics exporter) and "root-ro" (the host's files, read-only: a backup that reads everything, an exporter that
+# measures every file system). The scan refuses all three, and for a template that has no other way to do its job that
+# made it one nobody could deploy. For exactly what the template declares, the lines are taken out of the copy the
+# scan reads; anything else of the kind is still refused, and a writable mount of / is never waved through.
+# _template_host_access_strip COMPOSE TEMPLATE_JSON — prints the copy for the scan; TEMPLATE_HOST_ACCESS = what was declared
+_template_host_access_strip() {
+    local c="$1" tj="$2" ha=""
+    TEMPLATE_HOST_ACCESS=""
+    [[ -f "$tj" ]] && ha=$(jq -r '(.host_access // []) | map(select(type == "string")) | join(" ")' "$tj" 2>/dev/null) || ha=""
+    if [[ " $ha " == *" network "* ]]; then c=$(printf '%s\n' "$c" | sed -E '/^[[:space:]]*network_mode:[[:space:]]*["'"'"']?host["'"'"']?[[:space:]]*$/d'); TEMPLATE_HOST_ACCESS+="network "; fi
+    if [[ " $ha " == *" pid "* ]]; then c=$(printf '%s\n' "$c" | sed -E '/^[[:space:]]*pid:[[:space:]]*["'"'"']?host["'"'"']?[[:space:]]*$/d'); TEMPLATE_HOST_ACCESS+="pid "; fi
+    if [[ " $ha " == *" root-ro "* ]]; then c=$(printf '%s\n' "$c" | sed -E '/^[[:space:]]*-[[:space:]]*["'"'"']?\/:[^:]+:ro(,[a-z]+)*["'"'"']?[[:space:]]*$/d'); TEMPLATE_HOST_ACCESS+="root-ro "; fi
+    TEMPLATE_HOST_ACCESS="${TEMPLATE_HOST_ACCESS% }"
+    printf '%s' "$c"
 }
 
 # POST /templates/{template}/undeploy — Remove a template's services from a stack with their containers (remove_containers=false keeps them; optionally data, images, routes)

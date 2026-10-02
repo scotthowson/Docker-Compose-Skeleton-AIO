@@ -1,0 +1,28 @@
+{
+  "name": "recyclarr",
+  "title": "Recyclarr",
+  "description": "Copies the TRaSH Guides' quality definitions, custom formats and quality profiles into Sonarr and Radarr and keeps them current on a schedule. It has no web page: after the first start, edit App-Data/Recyclarr/recyclarr.yml (the address and API key of each app, and the profiles you want) and it syncs at the next run. To sync at once: docker exec Recyclarr recyclarr sync.",
+  "category": "media",
+  "target_stack": "media-services",
+  "icon": "♻️",
+  "tags": [
+    "arr",
+    "sonarr",
+    "radarr",
+    "trash-guides",
+    "quality",
+    "automation"
+  ],
+  "route_skip": [
+    "recyclarr"
+  ],
+  "variables": [
+    {
+      "name": "RECYCLARR_SCHEDULE",
+      "label": "Schedule",
+      "description": "When the sync runs: @hourly, @daily, @weekly or a cron expression like 0 4 * * *",
+      "default": "@daily",
+      "required": false
+    }
+  ]
+}

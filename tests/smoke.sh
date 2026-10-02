@@ -2404,6 +2404,40 @@ check "deploy: bypass template stays open"  0 "$(grep -c '"authelia-forwardauth"
 fake_request POST /templates/routed-tpl/deploy '{"target_stack":"demo2","auto_start":false,"authelia_services":[]}' >/dev/null
 check "deploy: explicit none respected"     0 "$(grep -c '"authelia-forwardauth"' "$_ZZR/demo2/routed-tpl.yml")"
 check "deploy: explicit none is marked"     1 "$(grep -c '^# authelia: off' "$_ZZR/demo2/routed-tpl.yml")"
+# every built-in template passes the scan a deploy runs on it (its variables at their defaults): a rule that is too
+# wide makes a template in the gallery one nobody can deploy (the /dev rule refused every device: a VPN's tunnel,
+# a Zigbee stick, a UPS on USB)
+_tpl_scan() {
+    local d f c k v
+    for d in "$ROOT"/.templates/*/; do
+        f="$d/docker-compose.yml"; [[ -f "$f" ]] || continue
+        c=$(cat "$f")
+        if [[ -f "$d/template.json" ]]; then
+            while IFS=$'\t' read -r k v; do
+                [[ "$k" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
+                v="${v//[&|\\]/}"
+                c=$(printf '%s' "$c" | sed -E "s|\\\$\\{$k(:-[^}]*)?\\}|$v|g")
+            done < <(jq -r '.variables[]? | select(.name != null) | [.name, ((.default // "") | tostring)] | @tsv' "$d/template.json" 2>/dev/null)
+        fi
+        c=$(printf '%s' "$c" | sed -E 's/\$\{[A-Za-z_][A-Za-z0-9_]*:-([^}]*)\}/\1/g' | sed '/^\s*privileged:\s*/d')
+        c=$(_template_host_access_strip "$c" "$d/template.json")     # the host access the template declares, as the deploy does
+        _API_SCAN_QUIET=true _api_scan_compose_security "$c" "smoke" deploy >/dev/null 2>&1 || printf '%s ' "$(basename "$d")"
+    done
+}
+check "templates: every built-in one passes the deploy scan" "" "$(set --; source "$API" >/dev/null 2>&1; _tpl_scan 2>/dev/null)"
+_scan_dev() { local _mode="$1" _key="$2" _val="$3"; ( set --; source "$API" >/dev/null 2>&1; _API_SCAN_QUIET=true _api_scan_compose_security "$(printf 'services:\n  a:\n    image: x\n    %s:\n      - %s\n' "$_key" "$_val")" smoke "$_mode" >/dev/null 2>&1 && echo 0 || echo 1 ); }
+# host access is waved through only for what the template itself declares, and never a writable mount of /
+_ha_tpl="$WORK/ha-tpl.json"
+_ha_scan() { local _m="$2"; printf '%s' "$1" > "$_ha_tpl"; ( set --; source "$API" >/dev/null 2>&1; c=$(_template_host_access_strip "$(printf 'services:\n  a:\n    image: x\n    network_mode: host\n    pid: host\n    volumes:\n      - %s\n' "$_m")" "$_ha_tpl"); _API_SCAN_QUIET=true _api_scan_compose_security "$c" smoke deploy 2>&1 | tr '\n' ' ' ); }
+_ha_none=$(_ha_scan '{}' '/:/host:ro')
+check "host access: nothing declared, everything refused" yes "$([[ "$_ha_none" == *"host network"* && "$_ha_none" == *"host PID"* && "$_ha_none" == *"root filesystem"* ]] && echo yes || echo no)"
+check "host access: what is declared passes"            "" "$(_ha_scan '{"host_access":["network","pid","root-ro"]}' '/:/host:ro,rslave')"
+check "host access: only what is declared"              yes "$([[ "$(_ha_scan '{"host_access":["network"]}' '/:/host:ro')" == *"host PID"* ]] && echo yes || echo no)"
+check "host access: never a writable /"                 yes "$([[ "$(_ha_scan '{"host_access":["network","pid","root-ro"]}' '/:/host')" == *"root filesystem"* ]] && echo yes || echo no)"
+check "scan: a template may name one device"            0 "$(_scan_dev deploy devices /dev/ttyUSB0:/dev/ttyUSB0)"
+check "scan: …but not the whole of /dev"                1 "$(_scan_dev deploy volumes /dev:/dev)"
+check "scan: …nor the machine's memory"                 1 "$(_scan_dev deploy devices /dev/mem:/dev/mem)"
+check "scan: an edited compose file still names no device" 1 "$(_scan_dev strict devices /dev/ttyUSB0:/dev/ttyUSB0)"
 # the web terminal: a shell on the server is never deployed without a sign-in in front of it, publishes no port, and gets a
 # key of its own that leaves with it ("auth": "required" and "route_ports" in template.json)
 command rm -rf "$WORK/.templates/web-terminal"; cp -r "$ROOT/.templates/web-terminal" "$WORK/.templates/web-terminal"

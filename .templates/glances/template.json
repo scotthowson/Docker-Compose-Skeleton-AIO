@@ -1,0 +1,18 @@
+{
+  "name": "glances",
+  "title": "Glances",
+  "description": "Glances shows this server's CPU, memory, load, disk I/O, sensors and Docker containers on one web page, with a REST API that Homepage and Home Assistant can read. It runs without host networking or the host's process list, so the process table shows only Glances itself and the network panel shows the container's own interface; CPU, memory, load and the container list are the host's. Nothing to set up after deploying: open the page.",
+  "category": "monitoring",
+  "target_stack": "monitoring-management",
+  "icon": "👀",
+  "tags": ["monitoring", "system", "cpu", "memory", "containers", "api"],
+  "variables": [
+    {
+      "name": "PORT_GLANCES",
+      "label": "Web port",
+      "description": "Host port of the web page and the API",
+      "default": "61208",
+      "required": false
+    }
+  ]
+}

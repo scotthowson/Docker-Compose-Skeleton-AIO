@@ -1,0 +1,19 @@
+services:
+  kanboard:
+    container_name: Kanboard
+    image: kanboard/kanboard:latest
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-UTC}
+    ports:
+      - "${PORT_KANBOARD:-8530}:80"
+    volumes:
+      # The SQLite database and uploaded files
+      - ${APP_DATA_DIR:-./App-Data}/Kanboard/data:/var/www/app/data
+      - ${APP_DATA_DIR:-./App-Data}/Kanboard/plugins:/var/www/app/plugins
+    healthcheck:
+      test: ["CMD", "curl", "-fso", "/dev/null", "http://127.0.0.1:80/healthcheck.php"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s

@@ -1,0 +1,50 @@
+{
+  "name": "convertx",
+  "title": "ConvertX",
+  "description": "File converter in the browser for more than a thousand formats: pictures, documents, e-books, audio and video, using FFmpeg, ImageMagick, LibreOffice, Pandoc and others on this server. Uploaded and converted files are deleted after 24 hours. After deploying, open it and register: the first account is the only one unless you allow more below. The image is large (about 4 GB), so the first deploy takes a while.",
+  "category": "tools",
+  "target_stack": "development-tools",
+  "icon": "🔄",
+  "tags": [
+    "converter",
+    "files",
+    "ffmpeg",
+    "images",
+    "documents",
+    "video"
+  ],
+  "variables": [
+    {
+      "name": "PORT_CONVERTX",
+      "label": "Host Port",
+      "description": "Port to expose ConvertX on",
+      "default": "3060",
+      "required": false
+    },
+    {
+      "name": "CONVERTX_JWT_SECRET",
+      "label": "Session secret",
+      "description": "Signs the sign-in sessions. Leave empty and DCS generates one on deploy",
+      "default": "",
+      "type": "password",
+      "required": false,
+      "generate": "hex64"
+    },
+    {
+      "name": "CONVERTX_HTTP_ALLOWED",
+      "label": "Allow sign-in over plain http",
+      "description": "Needed when you open it by this server's address and port. Turn it off when it is only opened over https",
+      "default": "true",
+      "type": "boolean",
+      "required": false
+    },
+    {
+      "name": "CONVERTX_REGISTRATION",
+      "label": "Open registration",
+      "description": "Lets more people make an account after the first one",
+      "default": "false",
+      "type": "boolean",
+      "required": false
+    }
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "name": "heimdall",
+  "title": "Heimdall",
+  "description": "Start page for your services that is set up in the browser: add an app, pick its icon and colour, and pin it. Known apps can show live numbers on their tile. After deploying, open it and add your first application; there is no sign-in until you set a password for the admin user under Users.",
+  "category": "dashboard",
+  "target_stack": "web-applications",
+  "icon": "🛡️",
+  "tags": [
+    "dashboard",
+    "homepage",
+    "startpage",
+    "links",
+    "launcher"
+  ],
+  "variables": [
+    {
+      "name": "PORT_HEIMDALL",
+      "label": "Host Port",
+      "description": "Port to expose Heimdall on",
+      "default": "8570",
+      "required": false
+    }
+  ]
+}

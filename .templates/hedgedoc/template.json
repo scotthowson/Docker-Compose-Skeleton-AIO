@@ -1,0 +1,72 @@
+{
+  "name": "hedgedoc",
+  "title": "HedgeDoc",
+  "description": "Markdown notes that several people write at the same time, with a live preview, slide mode, diagrams and a link to share each note. It keeps its notes in PostgreSQL and uploaded pictures in the App-Data folder. After deploying, open it and register with an e-mail address and a password (no mail is sent), then turn registration off below and deploy again if nobody else should join.",
+  "category": "notes",
+  "target_stack": "communication-collaboration",
+  "icon": "🦔",
+  "tags": [
+    "markdown",
+    "notes",
+    "collaboration",
+    "real-time",
+    "editor",
+    "slides"
+  ],
+  "route_skip": [
+    "hedgedoc-db"
+  ],
+  "variables": [
+    {
+      "name": "PORT_HEDGEDOC",
+      "label": "Host Port",
+      "description": "Port to expose HedgeDoc on",
+      "default": "3040",
+      "required": false
+    },
+    {
+      "name": "HEDGEDOC_PUBLIC_URL",
+      "label": "Public address",
+      "description": "The address people open, like https://notes.example.com. HedgeDoc writes its links with it. Leave empty and DCS uses this deploy's route; opened by this server's address and port it needs nothing",
+      "default": "",
+      "required": false,
+      "fill": "public_url",
+      "service": "hedgedoc",
+      "port_var": "PORT_HEDGEDOC"
+    },
+    {
+      "name": "HEDGEDOC_DB_PASSWORD",
+      "label": "Database password",
+      "description": "Leave empty and DCS generates one on deploy",
+      "default": "",
+      "type": "password",
+      "required": false,
+      "generate": "hex64"
+    },
+    {
+      "name": "HEDGEDOC_SESSION_SECRET",
+      "label": "Session secret",
+      "description": "Signs the sign-in sessions. Leave empty and DCS generates one on deploy",
+      "default": "",
+      "type": "password",
+      "required": false,
+      "generate": "hex64"
+    },
+    {
+      "name": "HEDGEDOC_ALLOW_REGISTER",
+      "label": "Open registration",
+      "description": "Anyone who can open the page can make an account. Deploy with it on, make your own account, then turn it off and deploy again",
+      "default": "true",
+      "type": "boolean",
+      "required": false
+    },
+    {
+      "name": "HEDGEDOC_ALLOW_ANONYMOUS",
+      "label": "Notes without an account",
+      "description": "Lets visitors who are not signed in make notes",
+      "default": "false",
+      "type": "boolean",
+      "required": false
+    }
+  ]
+}

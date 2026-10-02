@@ -1,0 +1,48 @@
+{
+  "name": "nzbget",
+  "title": "NZBGet",
+  "description": "Usenet download client that is light on memory and CPU: it downloads, verifies, repairs and unpacks NZB files, and Sonarr, Radarr and the other *arr apps can hand it their downloads. After deploying, add your Usenet provider under Settings > News-Servers.",
+  "category": "download",
+  "target_stack": "media-services",
+  "icon": "📥",
+  "tags": [
+    "usenet",
+    "download",
+    "nzb",
+    "automation",
+    "arr"
+  ],
+  "variables": [
+    {
+      "name": "PORT_NZBGET",
+      "label": "Host Port",
+      "description": "Port to expose NZBGet on",
+      "default": "6789",
+      "required": false
+    },
+    {
+      "name": "NZBGET_USER",
+      "label": "User name",
+      "description": "Name to sign in with",
+      "default": "nzbget",
+      "required": false
+    },
+    {
+      "name": "NZBGET_PASSWORD",
+      "label": "Password",
+      "description": "Password to sign in with; the same pair goes into Sonarr and Radarr when you add NZBGet as their download client",
+      "default": "",
+      "required": true,
+      "type": "password"
+    },
+    {
+      "name": "NZBGET_DOWNLOADS",
+      "label": "Downloads folder",
+      "description": "The folder on this server finished and unfinished downloads are kept in, mounted at /downloads (use the folder Sonarr and Radarr see)",
+      "default": "./App-Data/Downloads",
+      "required": true
+    }
+  ],
+  "auth": "bypass",
+  "auth_note": "Not put behind Authelia: its own apps and clients sign in directly (the deploy sheet can still protect it)"
+}

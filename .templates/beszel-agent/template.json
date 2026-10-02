@@ -12,6 +12,9 @@
     "beszel",
     "docker"
   ],
+  "host_access": [
+    "network"
+  ],
   "variables": [
     {
       "name": "BESZEL_AGENT_HUBKEY",

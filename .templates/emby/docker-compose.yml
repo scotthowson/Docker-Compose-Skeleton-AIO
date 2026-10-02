@@ -1,0 +1,23 @@
+services:
+  emby:
+    container_name: Emby
+    image: lscr.io/linuxserver/emby:latest
+    restart: unless-stopped
+    # Intel or AMD graphics for hardware transcoding (Emby Premiere): uncomment when this server has /dev/dri
+    # devices:
+    #   - /dev/dri:/dev/dri
+    environment:
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+      - TZ=${TZ:-UTC}
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Emby/config:/config
+      - ${EMBY_MEDIA:-./App-Data/Media}:/media
+    ports:
+      - "${PORT_EMBY:-8096}:8096"
+    healthcheck:
+      test: ["CMD", "curl", "-fso", "/dev/null", "http://127.0.0.1:8096/emby/System/Ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s

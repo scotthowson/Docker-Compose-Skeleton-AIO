@@ -1,0 +1,19 @@
+services:
+  heimdall:
+    container_name: Heimdall
+    image: lscr.io/linuxserver/heimdall:latest
+    restart: unless-stopped
+    environment:
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+      - TZ=${TZ:-UTC}
+    ports:
+      - "${PORT_HEIMDALL:-8570}:80"
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Heimdall/config:/config
+    healthcheck:
+      test: ["CMD", "curl", "-fso", "/dev/null", "http://127.0.0.1:80/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s

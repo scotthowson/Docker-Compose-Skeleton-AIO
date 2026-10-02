@@ -1,0 +1,43 @@
+services:
+  miniflux:
+    container_name: Miniflux
+    image: miniflux/miniflux:latest
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-UTC}
+      - DATABASE_URL=postgres://miniflux:${MINIFLUX_DB_PASSWORD}@miniflux-db:5432/miniflux?sslmode=disable
+      - RUN_MIGRATIONS=1
+      # The first account, made at the first start (later changes here do not change it)
+      - CREATE_ADMIN=1
+      - ADMIN_USERNAME=${MINIFLUX_ADMIN_USER:-admin}
+      - ADMIN_PASSWORD=${MINIFLUX_ADMIN_PASSWORD}
+      # The address people open: links, the feed reader APIs and sign-in redirects are built from it
+      - BASE_URL=${MINIFLUX_BASE_URL}
+    ports:
+      - "${PORT_MINIFLUX:-8520}:8080"
+    depends_on:
+      miniflux-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/usr/bin/miniflux", "-healthcheck", "auto"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  miniflux-db:
+    container_name: Miniflux-DB
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=miniflux
+      - POSTGRES_USER=miniflux
+      - POSTGRES_PASSWORD=${MINIFLUX_DB_PASSWORD}
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Miniflux/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U miniflux -d miniflux"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s

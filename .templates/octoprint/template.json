@@ -1,0 +1,27 @@
+{
+  "name": "octoprint",
+  "title": "OctoPrint",
+  "description": "OctoPrint controls a 3D printer over USB from a web page: upload G-code, start and watch prints, see temperatures, add plugins. The printer must be connected to this host and its serial path must exist, or the container does not start (usually /dev/ttyACM0 or /dev/ttyUSB0; ls /dev/serial/by-id/ gives a path that survives reboots). After deploying, follow the setup wizard and pick /dev/ttyACM0 as the serial port.",
+  "category": "tools",
+  "target_stack": "miscellaneous-services",
+  "icon": "🐙",
+  "tags": ["3d-printing", "printer", "gcode", "octoprint", "usb", "maker"],
+  "auth": "bypass",
+  "auth_note": "Not put behind Authelia: its own apps and clients sign in directly (the deploy sheet can still protect it)",
+  "variables": [
+    {
+      "name": "PORT_OCTOPRINT",
+      "label": "Web port",
+      "description": "Host port of the web page",
+      "default": "8497",
+      "required": false
+    },
+    {
+      "name": "OCTOPRINT_DEVICE",
+      "label": "Printer device",
+      "description": "Host path of the printer's serial port; a /dev/serial/by-id/... path survives reboots. It appears in the container as /dev/ttyACM0",
+      "default": "/dev/ttyACM0",
+      "required": true
+    }
+  ]
+}

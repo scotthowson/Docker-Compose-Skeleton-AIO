@@ -1,0 +1,20 @@
+services:
+  dokuwiki:
+    container_name: DokuWiki
+    image: lscr.io/linuxserver/dokuwiki:latest
+    restart: unless-stopped
+    environment:
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+      - TZ=${TZ:-UTC}
+    ports:
+      - "${PORT_DOKUWIKI:-8540}:80"
+    volumes:
+      # Pages, media, plugins and the configuration: plain files, no database
+      - ${APP_DATA_DIR:-./App-Data}/DokuWiki/config:/config
+    healthcheck:
+      test: ["CMD", "curl", "-fso", "/dev/null", "http://127.0.0.1:80/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s

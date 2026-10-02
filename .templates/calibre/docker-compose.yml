@@ -1,0 +1,28 @@
+services:
+  calibre:
+    container_name: Calibre
+    image: lscr.io/linuxserver/calibre:latest
+    restart: unless-stopped
+    # the desktop is drawn in the browser: it wants more shared memory than Docker's 64 MB
+    shm_size: "1gb"
+    environment:
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+      - TZ=${TZ:-UTC}
+      # a sign-in in front of the desktop; empty password: none
+      - CUSTOM_USER=${CALIBRE_USER:-calibre}
+      - PASSWORD=${CALIBRE_PASSWORD:-}
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Calibre/config:/config
+    ports:
+      - "${PORT_CALIBRE:-8780}:8080"
+      # the same desktop over HTTPS with a self-signed certificate
+      - "${PORT_CALIBRE_HTTPS:-8781}:8181"
+      # Calibre's content server, once it is switched on (Preferences > Sharing over the net)
+      - "${PORT_CALIBRE_SERVER:-8782}:8081"
+    healthcheck:
+      test: ["CMD", "curl", "-so", "/dev/null", "http://127.0.0.1:8080/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s

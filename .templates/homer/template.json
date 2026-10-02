@@ -1,0 +1,24 @@
+{
+  "name": "homer",
+  "title": "Homer",
+  "description": "Static start page for your services, built from one YAML file: groups, links, icons, a search box and live status cards for common apps. After deploying, edit App-Data/Homer/assets/config.yml (an example is put there at the first start) and reload the page.",
+  "category": "dashboard",
+  "target_stack": "web-applications",
+  "icon": "🏠",
+  "tags": [
+    "dashboard",
+    "homepage",
+    "startpage",
+    "links",
+    "yaml"
+  ],
+  "variables": [
+    {
+      "name": "PORT_HOMER",
+      "label": "Host Port",
+      "description": "Port to expose Homer on",
+      "default": "8560",
+      "required": false
+    }
+  ]
+}

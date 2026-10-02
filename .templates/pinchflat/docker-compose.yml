@@ -1,0 +1,18 @@
+services:
+  pinchflat:
+    container_name: Pinchflat
+    image: ghcr.io/kieraneglin/pinchflat:latest
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-UTC}
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Pinchflat/config:/config
+      - ${PINCHFLAT_DOWNLOADS:-./App-Data/Media/YouTube}:/downloads
+    ports:
+      - "${PORT_PINCHFLAT:-8945}:8945"
+    healthcheck:
+      test: ["CMD", "curl", "-fso", "/dev/null", "http://127.0.0.1:8945/healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
