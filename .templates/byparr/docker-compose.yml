@@ -1,0 +1,16 @@
+services:
+  byparr:
+    container_name: Byparr
+    image: ghcr.io/thephaseless/byparr:latest
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-UTC}
+    ports:
+      - "${PORT_BYPARR:-8192}:8191"
+    # the check asks whether the port answers; Byparr's own /health opens a browser on a real page each time
+    healthcheck:
+      test: ["CMD", "/app/.venv/bin/python", "-c", "import socket; socket.create_connection(('127.0.0.1', 8191), 5).close()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s

@@ -5,6 +5,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [4.0.14] - 2026-10-02
+
+### Added
+
+- **Three templates for a download setup.** **Gluetun**: a VPN client other containers send their traffic through (WireGuard or
+  OpenVPN, some 60 providers, an HTTP proxy on 8888, nothing leaves when the tunnel drops; the key and password are kept as
+  secrets). **Byparr**: gets Prowlarr's indexers past "Verify you are human" pages, a current stand-in for FlareSolverr on the
+  same protocol (host port 8192, so both can run). **Unpackerr**: unpacks downloads that arrive as archives so Sonarr and Radarr
+  can import them.
+
 ## [4.0.13] - 2026-10-02
 
 ### Added

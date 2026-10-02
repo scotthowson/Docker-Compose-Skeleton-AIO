@@ -1,0 +1,19 @@
+services:
+  unpackerr:
+    container_name: Unpackerr
+    image: golift/unpackerr:latest
+    restart: unless-stopped
+    user: "${PUID:-1000}:${PGID:-1000}"
+    environment:
+      - TZ=${TZ:-UTC}
+      - UN_LOG_FILE=/config/unpackerr.log
+      - UN_SONARR_0_URL=${UNPACKERR_SONARR_URL:-http://sonarr:8989}
+      - UN_SONARR_0_API_KEY=${UNPACKERR_SONARR_API_KEY:-}
+      - UN_SONARR_0_PATHS_0=/downloads
+      - UN_RADARR_0_URL=${UNPACKERR_RADARR_URL:-http://radarr:7878}
+      - UN_RADARR_0_API_KEY=${UNPACKERR_RADARR_API_KEY:-}
+      - UN_RADARR_0_PATHS_0=/downloads
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Unpackerr:/config
+      # the same folder, at the same path, that Sonarr, Radarr and the download client see
+      - ${UNPACKERR_DOWNLOADS:-./App-Data/Downloads}:/downloads

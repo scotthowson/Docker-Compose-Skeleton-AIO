@@ -1,0 +1,49 @@
+{
+  "name": "unpackerr",
+  "title": "Unpackerr",
+  "description": "Unpacks downloads that arrive as .rar archives so Sonarr and Radarr can import them, and deletes the unpacked copy once it is imported. Without it such a download sits in the queue as 'no files found are eligible for import'. Give it the two API keys (Settings > General in each app) and the downloads folder those apps use.",
+  "category": "media",
+  "target_stack": "media-services",
+  "icon": "📦",
+  "tags": ["arr", "sonarr", "radarr", "download", "extract", "rar"],
+  "route_skip": ["unpackerr"],
+  "variables": [
+    {
+      "name": "UNPACKERR_DOWNLOADS",
+      "label": "Downloads folder",
+      "description": "The folder on this server your download client saves into, mounted at /downloads (use the path Sonarr and Radarr see it at)",
+      "default": "./App-Data/Downloads",
+      "required": true
+    },
+    {
+      "name": "UNPACKERR_SONARR_URL",
+      "label": "Sonarr address",
+      "description": "Leave as it is when Sonarr runs in the same stack",
+      "default": "http://sonarr:8989",
+      "required": false
+    },
+    {
+      "name": "UNPACKERR_SONARR_API_KEY",
+      "label": "Sonarr API key",
+      "description": "Sonarr > Settings > General; empty leaves Sonarr out",
+      "default": "",
+      "required": false,
+      "type": "password"
+    },
+    {
+      "name": "UNPACKERR_RADARR_URL",
+      "label": "Radarr address",
+      "description": "Leave as it is when Radarr runs in the same stack",
+      "default": "http://radarr:7878",
+      "required": false
+    },
+    {
+      "name": "UNPACKERR_RADARR_API_KEY",
+      "label": "Radarr API key",
+      "description": "Radarr > Settings > General; empty leaves Radarr out",
+      "default": "",
+      "required": false,
+      "type": "password"
+    }
+  ]
+}

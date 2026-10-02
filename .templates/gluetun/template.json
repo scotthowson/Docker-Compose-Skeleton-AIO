@@ -1,0 +1,77 @@
+{
+  "name": "gluetun",
+  "title": "Gluetun",
+  "description": "A VPN client in a container that other containers send their traffic through. Pick your provider (Mullvad, ProtonVPN, AirVPN, NordVPN, Private Internet Access and some 60 more), give it the WireGuard key or the OpenVPN login, and point an app at it: either with network_mode \"service:gluetun\" in that app's service (all of its traffic, with the app's ports published on Gluetun), or through the HTTP proxy on port 8888. When the tunnel drops, nothing leaves.",
+  "category": "vpn",
+  "target_stack": "networking-security",
+  "icon": "🛡️",
+  "tags": ["vpn", "wireguard", "openvpn", "proxy", "privacy", "kill-switch", "download"],
+  "route_skip": ["gluetun"],
+  "variables": [
+    {
+      "name": "GLUETUN_PROVIDER",
+      "label": "VPN provider",
+      "description": "The provider's name as Gluetun spells it: mullvad, protonvpn, airvpn, nordvpn, private internet access, surfshark, windscribe, custom …",
+      "default": "mullvad",
+      "required": true
+    },
+    {
+      "name": "GLUETUN_VPN_TYPE",
+      "label": "Protocol",
+      "description": "wireguard or openvpn",
+      "default": "wireguard",
+      "required": false
+    },
+    {
+      "name": "GLUETUN_WIREGUARD_PRIVATE_KEY",
+      "label": "WireGuard private key",
+      "description": "From the WireGuard configuration your provider makes for you (PrivateKey = …). Leave empty with OpenVPN.",
+      "default": "",
+      "required": false,
+      "type": "password"
+    },
+    {
+      "name": "GLUETUN_WIREGUARD_ADDRESSES",
+      "label": "WireGuard address",
+      "description": "The Address line of that configuration, for example 10.64.222.21/32. Leave empty with OpenVPN.",
+      "default": "",
+      "required": false
+    },
+    {
+      "name": "GLUETUN_OPENVPN_USER",
+      "label": "OpenVPN user",
+      "description": "Leave empty with WireGuard",
+      "default": "",
+      "required": false
+    },
+    {
+      "name": "GLUETUN_OPENVPN_PASSWORD",
+      "label": "OpenVPN password",
+      "description": "Leave empty with WireGuard",
+      "default": "",
+      "required": false,
+      "type": "password"
+    },
+    {
+      "name": "GLUETUN_SERVER_COUNTRIES",
+      "label": "Countries",
+      "description": "Where the tunnel should come out, comma separated (Canada,Switzerland); empty lets the provider choose",
+      "default": "",
+      "required": false
+    },
+    {
+      "name": "GLUETUN_LAN_SUBNETS",
+      "label": "Your network",
+      "description": "Lets your own network reach the apps behind the tunnel, for example 192.168.1.0/24; empty for none",
+      "default": "",
+      "required": false
+    },
+    {
+      "name": "PORT_GLUETUN_PROXY",
+      "label": "HTTP proxy port",
+      "description": "Host port of the HTTP proxy",
+      "default": "8888",
+      "required": false
+    }
+  ]
+}

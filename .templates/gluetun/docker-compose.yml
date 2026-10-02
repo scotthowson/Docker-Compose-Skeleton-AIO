@@ -1,0 +1,37 @@
+services:
+  gluetun:
+    container_name: Gluetun
+    image: qmcgaw/gluetun:latest
+    restart: unless-stopped
+    # the tunnel is made inside this container: it needs the right to set up its own network interface, nothing else
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    environment:
+      - TZ=${TZ:-UTC}
+      - VPN_SERVICE_PROVIDER=${GLUETUN_PROVIDER:-mullvad}
+      - VPN_TYPE=${GLUETUN_VPN_TYPE:-wireguard}
+      # WireGuard: the private key and the address your provider gave you
+      - WIREGUARD_PRIVATE_KEY=${GLUETUN_WIREGUARD_PRIVATE_KEY:-}
+      - WIREGUARD_ADDRESSES=${GLUETUN_WIREGUARD_ADDRESSES:-}
+      # OpenVPN: the account's name and password
+      - OPENVPN_USER=${GLUETUN_OPENVPN_USER:-}
+      - OPENVPN_PASSWORD=${GLUETUN_OPENVPN_PASSWORD:-}
+      - SERVER_COUNTRIES=${GLUETUN_SERVER_COUNTRIES:-}
+      # an HTTP proxy for apps that take one (Prowlarr, a browser): http://gluetun:8888 on the Docker network
+      - HTTPPROXY=on
+      # your own network may still reach the apps that share this tunnel
+      - FIREWALL_OUTBOUND_SUBNETS=${GLUETUN_LAN_SUBNETS:-}
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Gluetun:/gluetun
+    ports:
+      - "${PORT_GLUETUN_PROXY:-8888}:8888"
+      # An app that should use the tunnel sets  network_mode: "service:gluetun"  and has no ports of its own:
+      # publish its ports here instead, for example  - "8080:8080"  for qBittorrent's web page.
+    healthcheck:
+      test: ["CMD", "/gluetun-entrypoint", "healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 45s

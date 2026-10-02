@@ -1,0 +1,19 @@
+{
+  "name": "byparr",
+  "title": "Byparr",
+  "description": "Gets Prowlarr's indexers past 'Verify you are human' pages. It speaks FlareSolverr's protocol and is kept current with a patched Firefox, so it works where FlareSolverr no longer does. In Prowlarr: Settings > Indexers > add a FlareSolverr proxy with the host http://byparr:8191 and a tag, then give that tag to the indexers that need it.",
+  "category": "media",
+  "target_stack": "media-services",
+  "icon": "🧩",
+  "tags": ["cloudflare", "proxy", "arr", "indexer", "prowlarr", "flaresolverr", "captcha"],
+  "route_skip": ["byparr"],
+  "variables": [
+    {
+      "name": "PORT_BYPARR",
+      "label": "Host Port",
+      "description": "Port on this server (apps on the Docker network use byparr:8191 whatever this is); 8192 by default so it can sit next to FlareSolverr",
+      "default": "8192",
+      "required": false
+    }
+  ]
+}
