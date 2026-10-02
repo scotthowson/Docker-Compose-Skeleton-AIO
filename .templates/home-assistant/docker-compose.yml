@@ -15,7 +15,8 @@ services:
     mem_limit: 2G
     cpus: 2.0
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://127.0.0.1:8123/api/ || exit 1"]
+      # /api/ answers 401 without a token, which made a healthy Home Assistant look unhealthy: the manifest is public
+      test: ["CMD-SHELL", "curl -fsS -o /dev/null http://127.0.0.1:8123/manifest.json || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 5

@@ -10,6 +10,11 @@ services:
       - /proc:/mnt/host/proc:ro
       - /sys:/mnt/host/sys:ro
       - /etc/os-release:/mnt/host/etc/os-release:ro
+      # dash. finds a drive by the folders mounted from it: the usual places drives are mounted, read-only
+      # (without them the storage widget says "no mount found"; add your own mount points the same way)
+      - /mnt:/mnt/host/mnt:ro
+      - /media:/mnt/host/media:ro
+      - /home:/mnt/host/home:ro
     ports:
       - "${PORT_DASHDOT:-3001}:3001"
     healthcheck:
