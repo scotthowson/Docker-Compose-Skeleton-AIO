@@ -15,6 +15,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   same protocol (host port 8192, so both can run). **Unpackerr**: unpacks downloads that arrive as archives so Sonarr and Radarr
   can import them.
 
+- **The dashboard feed says how busy the machine is.** `GET /feed/summary` has a `system` part now: the processor's load, the
+  memory in use and the NVIDIA card (load, memory, temperature) when the host has one, so a board can draw them in one card.
+
 ## [4.0.13] - 2026-10-02
 
 ### Added

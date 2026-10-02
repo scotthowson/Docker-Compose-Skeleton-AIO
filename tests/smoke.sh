@@ -2324,6 +2324,7 @@ check "dash feed: no token"             401 "$(request GET '/feed/summary' '' "$
 _DFS=$(request GET "/feed/summary?token=$_DFT" '' "${AUTH[@]}")
 check "dash feed: summary with the token" 200 "$(status_of <<< "$_DFS")"
 check "dash feed: summary has the version" yes "$(body_of <<< "$_DFS" | jq -e '(.version | type == "string") and (.containers.total | type == "number") and (.stacks | type == "array")' >/dev/null 2>&1 && echo yes || echo no)"
+check "dash feed: summary has the machine's load" yes "$(body_of <<< "$_DFS" | jq -e '(.system.cpu.percent | type == "number") and (.system.cpu.percent >= 0 and .system.cpu.percent <= 100) and (.system.memory.total_mb > 0) and (.system.cpu.threads > 0)' >/dev/null 2>&1 && echo yes || echo no)"
 check "dash feed: Bearer works too"     200 "$(printf 'GET /feed/summary HTTP/1.1\r\nAuthorization: Bearer %s\r\n\r\n' "$_DFT" | env "${AUTH[@]}" "$API" --handle-request 2>/dev/null | status_of)"
 check "dash feed: the token opens nothing else" 401 "$(printf 'GET /stacks HTTP/1.1\r\nAuthorization: Bearer %s\r\n\r\n' "$_DFT" | env "${AUTH[@]}" "$API" --handle-request 2>/dev/null | status_of)"
 check "dash feed: crowdsec needs the token" 401 "$(request GET '/feed/crowdsec' '' "${AUTH[@]}" | status_of)"
