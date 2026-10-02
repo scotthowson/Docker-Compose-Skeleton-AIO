@@ -1,6 +1,9 @@
 services:
   grafana:
     image: grafana/grafana:11.4.0
+    # The image runs as a user of its own and takes no PUID/PGID: as the stack's user it can write the folders DCS
+    # makes for it (as its own user it stopped at once: "GF_PATHS_DATA is not writable")
+    user: "${PUID:-1000}:${PGID:-1000}"
     container_name: grafana
     restart: unless-stopped
     environment:

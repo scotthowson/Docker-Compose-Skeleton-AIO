@@ -14,6 +14,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   stack's user now, and its scratch folders live in memory, so a container made again never meets files an earlier one left
   there as another user. An install from before this fix: remove PrivateBin and deploy it again (its pastes are kept), or add
   the `user:` and `tmpfs:` lines of the template to its service in the compose editor.
+- **Prometheus, Grafana and Loki stopped right after a deploy.** The same cause: each image runs as a user of its own
+  (`nobody`, 472, 10001) and could not write the data folder made for the stack's user ("permission denied", "GF_PATHS_DATA is
+  not writable"). The three templates run as the stack's user now. An install from before this fix: remove the app and deploy
+  it again, or add the template's `user:` line to its service.
 
 ## [4.0.18] - 2026-10-02
 

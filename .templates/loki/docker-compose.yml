@@ -2,6 +2,9 @@ services:
   loki:
     container_name: Loki
     image: grafana/loki:latest
+    # The image runs as a user of its own and takes no PUID/PGID: as the stack's user it can write the folders DCS
+    # makes for it (as its own user it stopped at once: "mkdir /loki/rules: permission denied")
+    user: "${PUID:-1000}:${PGID:-1000}"
     restart: unless-stopped
     command: -config.file=/etc/loki/local-config.yaml
     environment:
