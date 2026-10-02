@@ -5,6 +5,26 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [4.0.15] - 2026-10-02
+
+### Added
+
+- **A web terminal: a real terminal on the server in a browser tab, without port 22 on the router.** The terminal in the dashboard
+  runs one command at a time; this one is the same shell as ssh, with full-screen programs (htop, vim, tmux), colours and copy and
+  paste. *Settings > Web terminal* switches it on (or deploy the **Web Terminal** template): a small container serves it at
+  `terminal.<your domain>` and reaches the server over ssh with a key DCS makes for it.
+  - **It is never reachable without a sign-in.** The container publishes no port; the only way in is its HTTPS route, and that
+    route is behind Authelia whatever the deploy request says. Without Authelia and a domain the deploy is refused. Whoever passes
+    the sign-in has a shell as the user DCS runs as, so give Authelia a second factor.
+  - **Its key is its own.** One line in that user's `authorized_keys`, accepted from private addresses only (this server's
+    containers), with forwarding off; the server's host key is pinned for the container. Switching the terminal off removes the
+    line and deletes the key.
+  - **It wears the dashboard's theme.** *Match this dashboard's theme* gives the terminal the colours of the theme you use; the
+    text size is yours to set.
+  - With a Cloudflare Tunnel whose public hostname points at Traefik it is reached through the tunnel like every other route.
+  API: `GET /terminal/web`, `POST /terminal/web/theme`. Templates gained two keys: `"auth": "required"` (never deployed without
+  Authelia in front) and `"route_ports"` (a route for a service that publishes no port).
+
 ## [4.0.14] - 2026-10-02
 
 ### Added

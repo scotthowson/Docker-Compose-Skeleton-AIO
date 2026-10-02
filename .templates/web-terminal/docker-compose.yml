@@ -1,0 +1,23 @@
+services:
+  terminal:
+    container_name: Web-Terminal
+    image: tsl0922/ttyd:alpine
+    restart: unless-stopped
+    # No port is published on purpose: the terminal is a shell on this server, and the only way in is its route, which
+    # DCS always puts behind Authelia. The container reaches the server over ssh with a key of its own.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      - TZ=${TZ:-UTC}
+    entrypoint: ["/bin/sh", "/config/start.sh"]
+    volumes:
+      # written by DCS when the terminal is switched on: the key, the server's host key, the look and the start script
+      - ${APP_DATA_DIR:-./App-Data}/Web-Terminal/config:/config:ro
+      # the ssh client is added to the image at the first start and kept here, so later starts need no network
+      - ${APP_DATA_DIR:-./App-Data}/Web-Terminal/cache:/etc/apk/cache
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:7681/ || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s

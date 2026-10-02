@@ -1,0 +1,14 @@
+{
+  "name": "web-terminal",
+  "title": "Web Terminal",
+  "description": "A full terminal on this server in a browser tab: the same shell as ssh, with colours, full-screen programs (htop, vim, tmux) and copy and paste. It is reached through its HTTPS route only, always behind Authelia's sign-in, so port 22 no longer has to be open on your router. DCS makes a key for it that works from this server's own containers only; switching it off removes the key. Needs Traefik with a domain and Authelia.",
+  "category": "remote",
+  "target_stack": "core-infrastructure",
+  "icon": "⌨️",
+  "tags": ["terminal", "ssh", "shell", "remote-access", "ttyd", "console"],
+  "singleton": true,
+  "auth": "required",
+  "auth_note": "The web terminal is a shell on this server: its route is always behind Authelia, and it cannot be deployed without it.",
+  "route_ports": { "terminal": 7681 },
+  "variables": []
+}
