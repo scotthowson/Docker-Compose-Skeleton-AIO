@@ -22,6 +22,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   ([Proxmox guide](docs/PROXMOX.md#a-folder-of-the-proxmox-host-inside-a-vm-media-libraries)). Checked end to end on Proxmox VE 9.2.
   API: `GET/POST /fleet/members/{id}/folders`, `DELETE …/folders/{name}`, `POST …/folders/{name}/mount`, `POST …/folders/{name}/use`.
 
+- **A dashboard feed: this server's numbers for Homarr and friends, behind a token of its own.** A board that shows DCS used to
+  need an admin's API key in its settings. The Secrets page has a **Dashboard feed** card now: switch it on and DCS makes a token
+  that opens two read-only addresses and nothing else - `GET /feed/summary` (the version, stacks up, containers running) and
+  `GET /feed/crowdsec` (what the CrowdSec page draws: totals, the map's points, countries, scenarios, the hourly timeline). The
+  token goes in `?token=` or as a Bearer header, is shown once, lives in `.env` as `DASHBOARD_FEED_TOKEN`, and *New token* or
+  *Switch off* ends the old one at once. Off by default: without a token both addresses answer 401.
+  API: `GET /feed/status`, `POST /feed/token`, `DELETE /feed/token` (admin).
+
 - **A template can ask for its own public address.** A variable marked `"fill": "public_url"` (with the `service` it belongs to and
   its `port_var`) that is left empty becomes the route this deploy gives the service (`https://<subdomain>.<domain>`), or
   `http://<this server>:<port>` without one. Apps that build links and sign-in callbacks from that address (Reactive Resume is the
@@ -48,6 +56,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   passed whatever the suite said. One check had been stale since 4.0.12 (it read the prune's candidates the way they were handed over
   before that fix) and nothing noticed. Every step runs under `bash -eo pipefail` now, and the check reads the two lists the prune
   really uses.
+  The Debian job gets what a Debian server that runs DCS has (the Docker CLI, Compose, ssh, rsync) and lets git read a checkout
+  that belongs to another user, which the stand-in VM build clones.
+- **A release that changes no VM image no longer builds all eight again.** When nothing under `vm-images/` changed since the release
+  before, the new release takes that release's images over (same files, new checksum list); a hub image taken over this way
+  carries the earlier DCS and offers the update at its first start.
 
 ## [4.0.12] - 2026-10-01
 

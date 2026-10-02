@@ -24,15 +24,33 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       matrix: ${{ steps.m.outputs.matrix }}
+      reuse: ${{ steps.m.outputs.reuse }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
       - id: m
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
         run: |
+          # A release that changed nothing under vm-images/ would build the very same images again (eight builds, an hour of
+          # runners): its release takes the images of the release before instead. A hub image taken over this way carries that
+          # release's DCS and offers the update at its first start.
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            prev=$(git tag -l 'v[0-9]*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | grep -B1 -x -- "$TAG" | head -1 || true)
+            if [[ -n "$prev" && "$prev" != "$TAG" ]] && git diff --quiet "$prev" "$TAG" -- vm-images \
+               && [[ "$(gh release view "$prev" --json assets -q '[.assets[] | select(.name | endswith(".qcow2"))] | length' 2>/dev/null)" == "$(jq '(.images | length) * (.roles | length)' vm-images/images.json)" ]]; then
+              echo "vm-images/ is the same as in $prev: its images are taken over"
+              echo "reuse=$prev" >> "$GITHUB_OUTPUT"
+            fi
+          fi
           echo "matrix=$(jq -c '{distro: [.images[].id], role: .roles}' vm-images/images.json)" | tee -a "$GITHUB_OUTPUT"
 
   build:
     name: ${{ matrix.role }} · ${{ matrix.distro }}
     needs: plan
+    if: needs.plan.outputs.reuse == ''
     runs-on: ubuntu-24.04
     timeout-minutes: 75
     strategy:
@@ -70,8 +88,8 @@ jobs:
 
   publish:
     name: attach to the release
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
+    if: always() && startsWith(github.ref, 'refs/tags/v') && (needs.build.result == 'success' || needs.plan.outputs.reuse != '')
+    needs: [plan, build]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -79,9 +97,16 @@ jobs:
       - uses: actions/checkout@v7
 
       - uses: actions/download-artifact@v7
+        if: needs.plan.outputs.reuse == ''
         with:
           path: images
           merge-multiple: true
+
+      - name: The images of the release before (nothing under vm-images/ changed)
+        if: needs.plan.outputs.reuse != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download "${{ needs.plan.outputs.reuse }}" --pattern 'dcs-*.qcow2' --dir images
 
       - name: Checksums and the Proxmox importer
         working-directory: images

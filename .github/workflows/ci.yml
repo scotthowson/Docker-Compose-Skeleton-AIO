@@ -88,6 +88,10 @@ jobs:
           docker compose version
           jq --version
       - uses: actions/checkout@v7
+      - name: Let git read the checkout
+        # the job container runs as root and the checkout belongs to the runner's user: git refuses such a repository
+        # ("dubious ownership"), and the stand-in VM build clones this very checkout
+        run: git config --global --add safe.directory '*'
 
       - name: Smoke tests on Debian 13's jq (request handler over stdin)
         run: tests/smoke.sh 2>&1 | tee smoke-debian.log

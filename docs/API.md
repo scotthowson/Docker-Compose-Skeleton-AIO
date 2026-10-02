@@ -4,7 +4,7 @@ Generated from the router in `.scripts/api-server.sh` by `.scripts/api-docs.sh` 
 Run `.scripts/api-docs.sh` after adding or changing a route; CI fails when this file is stale.
 
 The API listens on `API_BIND:API_PORT` (default `0.0.0.0:9876`) and answers JSON.
-Every endpoint below is `386` in total.
+Every endpoint below is `391` in total.
 
 ## Access levels
 
@@ -453,6 +453,8 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 
 | Method | Path | Access | Description |
 |--------|------|--------|-------------|
+| GET | `/feed/summary` | public | The server at a glance, for a dashboard: version, stacks and containers (running of total, per stack). Needs the dashboard feed's token (?token= or Bearer) |
+| GET | `/feed/crowdsec` | public | What CrowdSec has been seeing, for a dashboard: detections over time, the countries, the scenarios and the map points (window=24h\|7d\|30d). Needs the dashboard feed's token (?token= or Bearer) |
 | GET | `/ping` | public | Liveness probe: no auth, no Docker call, a tiny body. The dashboard's heartbeat uses it, so the latency it shows is the round trip alone. |
 | GET | `/fleet/bundle` | public | The hub's own DCS code as a tar.gz for a VM being bootstrapped (needs ?token= — a valid join code, or the bundle code an update round minted for the member it names); never includes data, accounts, secrets, stacks or logs |
 | GET | `/fleet/bootstrap` | public | The node installer for any Debian, Ubuntu, Fedora or Arch machine (needs ?token=, a valid join code; &stack= names the one stack the node carries): a shell script that installs Docker and the tools, fetches this hub's code, sets DCS up as a node and joins — run as a user with sudo: curl -fsSL '…' \| bash |
@@ -484,6 +486,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | GET | `/fleet/members/{id}/terminal` | admin | Can the hub open a shell in this VM: its ssh key, the VM's address and a live test {available, member, member_name, vmid, host, user, reason} |
 | GET | `/fleet/members/{id}/folders` | user | The folders of the Proxmox host a VM of the fleet has (virtiofs): what Proxmox maps, what the VM is given, where the VM mounts it and which containers use it; whether the token may share folders (it needs the role PVEMappingAdmin on /mapping/dir) and the steps under way. ?op=1: the steps alone (for polling) |
 | GET | `/fleet/members/{id}` | user | One member, with a live check that it answers |
+| GET | `/feed/status` | user | The dashboard feed: on or off, and its two addresses (admin). The token itself is shown once, when it is made |
 | GET | `/themes` | user | The themes stored on this server (without their CSS) and the one every dashboard follows (active, "" = the default look) |
 | GET | `/themes/{name}` | user | One stored theme, the whole document (palette and CSS) |
 | GET | `/recovery/*/download` | admin | Download a recovery bundle |
@@ -517,6 +520,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | POST | `/fleet/members/{id}/folders/*/use` | admin | Mount a folder the VM was given, in the VM, now {mount?, readonly?}: the line in its /etc/fstab and the mount (after a VM that was off is started, or to change read-only); the stacks that name the folder are restarted |
 | POST | `/power/sample` | admin | Read the UPS right now (also refreshes what GET /power shows) |
 | POST | `/sablier/repair` | admin | Recreate on-demand containers that a prune removed (created, not started, so Sablier can wake them) |
+| POST | `/feed/token` | admin | Switch the dashboard feed on: makes a new token (the one before stops working) and answers it once (admin) |
 | POST | `/themes` | admin | Store a theme: the document itself {schema: 1, name, title, mode, palette: {accent, accentSecondary, bg, surface, surfaceRaised, border, text, textMuted, success, warning, danger, info}, font, radius, css}; replaces a theme of the same name; CSS that loads or runs something is cut out and reported (stripped) |
 | POST | `/themes/import` | admin | Fetch a theme document from an https address {url, replace} (256 KB at most) and store it; 409 when the name is taken and replace is not true |
 | POST | `/recovery/bundle` | admin | Write an encrypted recovery bundle now {passphrase?, include_app_data: [stacks], copy_remote} |
@@ -527,6 +531,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | PUT | `/fleet/members/{id}/api/{path}` | admin | Forward the call (GET, POST, PUT or DELETE) to that member with the hub's account; the caller's own role is checked against the inner path as if it were local (streams and auth are not forwarded) |
 | PUT | `/fleet/members/{id}` | admin | Change a member's name, address, account, the guest it is mapped to, or the stacks it answers for {name?, url?, username?, password?, vmid?, node?, type?, insecure?, stacks?: ["name", …]} (a placement makes the hub forward that stack's requests to this member; a stack the hub runs itself cannot be placed) |
 | DELETE | `/themes/{name}` | admin | Remove a stored theme (dashboards following it go back to the default look) |
+| DELETE | `/feed/token` | admin | Switch the dashboard feed off: the token is removed and both addresses answer 401 (admin) |
 | DELETE | `/fleet/members/{id}/api/{path}` | admin | Forward the call (GET, POST, PUT or DELETE) to that member with the hub's account; the caller's own role is checked against the inner path as if it were local (streams and auth are not forwarded) |
 | DELETE | `/fleet/members/{id}/folders/*` | admin | Take a shared folder from a VM (?restart=false leaves the VM running: the device goes at its next start; ?mapping=true also removes the mapping from Proxmox): unmounted in the VM and out of its /etc/fstab, the device off the VM. Answers at once (202); nothing is deleted on the host |
 | DELETE | `/fleet/members/{id}` | admin | Forget a member (its dcs-hub account is removed there when it answers) |

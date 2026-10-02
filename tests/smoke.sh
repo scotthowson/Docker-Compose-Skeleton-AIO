@@ -2312,6 +2312,23 @@ _envdel PROXMOX_URL; _envdel PROXMOX_TOKEN_ID; _envdel PROXMOX_TOKEN_SECRET
 check "proxmox: unlinked again"         false "$(auth_request GET /proxmox/status | body_of | jq -r '.configured' 2>/dev/null)"
 
 echo "Traefik feed"
+# the dashboard feed: what a dashboard that cannot sign in may read. Off until a token exists; the token is made by an admin
+check "dash feed: off by default"       401 "$(request GET '/feed/summary?token=x' '' "${AUTH[@]}" | status_of)"
+check "dash feed: status says off"      false "$(auth_request GET /feed/status | body_of | jq -r '.enabled' 2>/dev/null)"
+_DFT=$(auth_request POST /feed/token '{}' | body_of | jq -r '.token // ""' 2>/dev/null)
+check "dash feed: a token is made"      yes "$([[ ${#_DFT} -ge 32 ]] && echo yes || echo no)"
+check "dash feed: the token is in .env" yes "$(grep -q "^DASHBOARD_FEED_TOKEN=.*${_DFT}" "$WORK/.env" && echo yes || echo no)"
+check "dash feed: wrong token"          401 "$(request GET '/feed/summary?token=nope' '' "${AUTH[@]}" | status_of)"
+check "dash feed: no token"             401 "$(request GET '/feed/summary' '' "${AUTH[@]}" | status_of)"
+_DFS=$(request GET "/feed/summary?token=$_DFT" '' "${AUTH[@]}")
+check "dash feed: summary with the token" 200 "$(status_of <<< "$_DFS")"
+check "dash feed: summary has the version" yes "$(body_of <<< "$_DFS" | jq -e '(.version | type == "string") and (.containers.total | type == "number") and (.stacks | type == "array")' >/dev/null 2>&1 && echo yes || echo no)"
+check "dash feed: Bearer works too"     200 "$(printf 'GET /feed/summary HTTP/1.1\r\nAuthorization: Bearer %s\r\n\r\n' "$_DFT" | env "${AUTH[@]}" "$API" --handle-request 2>/dev/null | status_of)"
+check "dash feed: the token opens nothing else" 401 "$(printf 'GET /stacks HTTP/1.1\r\nAuthorization: Bearer %s\r\n\r\n' "$_DFT" | env "${AUTH[@]}" "$API" --handle-request 2>/dev/null | status_of)"
+check "dash feed: crowdsec needs the token" 401 "$(request GET '/feed/crowdsec' '' "${AUTH[@]}" | status_of)"
+check "dash feed: a viewer cannot make a token" 403 "$(printf 'POST /feed/token HTTP/1.1\r\nAuthorization: Bearer %s\r\nContent-Length: 2\r\n\r\n{}' "${VTOKEN:-none}" | env "${AUTH[@]}" "$API" --handle-request 2>/dev/null | status_of)"
+check "dash feed: switched off"         true "$(auth_request DELETE /feed/token | body_of | jq -r '.success' 2>/dev/null)"
+check "dash feed: the old token is dead" 401 "$(request GET "/feed/summary?token=$_DFT" '' "${AUTH[@]}" | status_of)"
 check "feed: off by default"            401 "$(request GET '/traefik/dynamic?token=x' '' "${AUTH[@]}" | status_of)"
 check "feed: status off"                false "$(auth_request GET /traefik/feed/status | body_of | jq -r '.enabled' 2>/dev/null)"
 _envset TRAEFIK_FEED_ENABLED true; _envset TRAEFIK_FEED_TOKEN feed-secret; _envset TRAEFIK_FEED_TARGET_HOST 10.0.0.9
