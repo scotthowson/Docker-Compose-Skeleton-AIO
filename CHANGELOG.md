@@ -52,6 +52,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **dash. said "no mount found" for every drive.** The template gave it `/proc` and `/sys` but none of the folders drives are mounted
   on. It now also sees `/mnt`, `/media` and `/home`, read-only (add your own mount points the same way).
 
+- **An OS or Docker Engine update stopped at once on a host without systemd.** The step that asks which systemd is there ended the
+  request when `systemctl` does not exist (a container, a system with another init), before the plain run meant for such hosts.
+
 - **CI could not fail on a smoke check.** The workflow piped the smoke suite into `tee` under a shell without `pipefail`, so the step
   passed whatever the suite said. One check had been stale since 4.0.12 (it read the prune's candidates the way they were handed over
   before that fix) and nothing noticed. Every step runs under `bash -eo pipefail` now, and the check reads the two lists the prune

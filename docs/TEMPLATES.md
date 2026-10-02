@@ -259,7 +259,7 @@ MQTT, DNS), *Optional* services can be left out.
 | 🎨 **Excalidraw**<br>[`excalidraw`](../.templates/excalidraw) | Virtual whiteboard for sketching diagrams with a hand-drawn feel | 3380 | `development-tools` |  |
 | 🧰 **IT-Tools**<br>[`it-tools`](../.templates/it-tools) | Collection of 100+ handy developer utilities in a beautiful web interface | 8092 | `development-tools` |  |
 | 📋 **PrivateBin**<br>[`privatebin`](../.templates/privatebin) | Minimalist, open-source online pastebin where the server has zero knowledge of pasted data | 8888 | `communication-collaboration` |  |
-| 📝 **Reactive Resume**<br>[`reactive-resume`](../.templates/reactive-resume) | Free, privacy-first resume builder | 3200 | `web-applications` |  |
+| 📝 **Reactive Resume**<br>[`reactive-resume`](../.templates/reactive-resume) | Free, privacy-first resume builder | 3200 | `web-applications` | Own sign-in |
 | 🖥️ **RustDesk Server**<br>[`rustdesk`](../.templates/rustdesk) | Self-hosted remote desktop server — open-source TeamViewer/AnyDesk alternative | — | `miscellaneous-services` |  |
 | ⏱️ **Sablier**<br>[`sablier`](../.templates/sablier) | Sablier on-demand container scaling that starts containers when traffic arrives and stops them after idle timeout | — | `core-infrastructure` |  |
 | 📄 **Stirling-PDF**<br>[`stirling-pdf`](../.templates/stirling-pdf) | Powerful self-hosted PDF manipulation toolkit with 50+ tools — merge, split, convert, compress, sign, OCR, redact, and more | 8088 | `development-tools` |  |

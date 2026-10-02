@@ -748,7 +748,8 @@ if command -v ncat >/dev/null 2>&1 && command -v ss >/dev/null 2>&1; then
     _rip_wait 60
     check "ncat restart: the API answers again"  yes "$([[ "$(_rip_ping)" == *ok* ]] && echo yes || echo no)"
     check "ncat restart: same process, alive"    yes "$(kill -0 "$RIP_MAIN" 2>/dev/null && echo yes || echo no)"
-    check "ncat restart: the old DDNS loop ended" no "$(kill -0 "$RIP_DDNS_OLD" 2>/dev/null && echo yes || echo no)"
+    # ended = gone, or a zombie nobody reaped (a job container's first process is not an init; kill -0 still answers for a zombie)
+    check "ncat restart: the old DDNS loop ended" no "$(kill -0 "$RIP_DDNS_OLD" 2>/dev/null && [[ "$(awk '{print $3}' "/proc/$RIP_DDNS_OLD/stat" 2>/dev/null)" != Z ]] && echo yes || echo no)"
     sleep 1
     RIP_DDNS=$(cat "$RIP/.data/ddns.pid" 2>/dev/null)
     check "ncat restart: a new DDNS loop runs"   yes "$([[ -n "$RIP_DDNS" && "$RIP_DDNS" != "$RIP_DDNS_OLD" ]] && kill -0 "$RIP_DDNS" 2>/dev/null && echo yes || echo no)"
@@ -2518,11 +2519,14 @@ printf '#!/bin/bash\n[[ "$1" == -n ]] && shift\nexec "$@"\n' > "$_HB/sudo"
 printf '#!/bin/bash\necho "Failed to start transient service unit: no bus" >&2; exit 1\n' > "$_HB/systemd-run"
 printf '#!/bin/bash\nexit 0\n' > "$_HB/journalctl"; chmod +x "$_HB"/*
 check "host run: no unit could start, the command runs here"   direct-run "$(PATH="$_HB:$PATH" _lib _run_host '' '' echo direct-run)"
+# the unit path is taken on a host that runs systemd only (a CI job container has none: the plain run above is its path)
+if [[ -d /run/systemd/system ]] && command -v systemctl >/dev/null 2>&1; then
 printf '#!/bin/bash\nexit 0\n' > "$_HB/systemd-run"
 printf '#!/bin/bash\n[[ "$*" == *--sync* ]] && exit 0\necho "from the journal"\n' > "$_HB/journalctl"
 check "host run: the unit's output is the journal's"           "from the journal" "$(PATH="$_HB:$PATH" _lib _run_host '' '' echo never-printed)"
 printf '#!/bin/bash\nexit 3\n' > "$_HB/systemd-run"
 check "host run: the unit's exit status is kept"               3 "$(PATH="$_HB:$PATH" _lib eval '_run_host "" "" true >/dev/null || echo $?')"
+fi
 command rm -rf "$_HB"
 # a machine without the hostname and crontab commands: Arch's minimal image has no hostname, and none of the DCS VM images has cron
 _NB="$WORK/nocmd-bin"; mkdir -p "$_NB"; ln -sf /usr/bin/* /bin/* "$_NB"/ 2>/dev/null || true; command rm -f "$_NB/hostname" "$_NB/crontab"

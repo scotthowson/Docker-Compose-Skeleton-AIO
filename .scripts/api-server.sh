@@ -10111,7 +10111,8 @@ _detect_pkg_manager() {
 # file: systemd may not open one in a home directory there).
 _run_host() {
     local _pw="$1" _user="$2" _rc=0 _sdv _unit
-    _sdv=$(systemctl --version 2>/dev/null | awk 'NR==1 {print $2}')
+    # "|| true": a host without systemctl (a container, a system without systemd) must reach the plain run below, not end here
+    _sdv=$(systemctl --version 2>/dev/null | awk 'NR==1 {print $2}') || true
     if [[ -d /run/systemd/system ]] && command -v systemd-run >/dev/null 2>&1 && [[ "$_sdv" =~ ^[0-9]+$ ]] && (( _sdv >= 236 )); then
         _unit="dcs-hostrun-$$-$RANDOM"
         local _args=("$@") _log _first
