@@ -5,6 +5,22 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [4.0.12] - 2026-10-01
+
+### Fixed
+
+- **Every prune failed with `PRUNE_KEPT: unbound variable`**, on the hub and in every VM: *Docker system prune* and *Deep prune* on the
+  Maintenance page, the prune an automation runs, and the scheduled one. The list of on-demand containers a prune keeps was made in a
+  subshell and read outside it, where it never existed. It is made where it is read now, and a prune is part of the test suite (a
+  stopped container goes, one that Traefik starts on demand stays, deep prune the same).
+
+### Docs
+
+- **A folder of the Proxmox host inside a VM** ([Proxmox guide](docs/PROXMOX.md#a-folder-of-the-proxmox-host-inside-a-vm-media-libraries)):
+  a media library that sits on the host is shared into the VM with virtiofs instead of being copied onto the VM's disk - the three
+  steps (the mapping and the Virtiofs device on Proxmox, the mount in the VM, the volume in the stack), checked on Proxmox VE 9.2 with
+  the DCS Debian 13 image. And how to reach a VM over ssh from your own computer through the hub.
+
 ## [4.0.11] - 2026-10-01
 
 ### Added

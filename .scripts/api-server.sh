@@ -5823,15 +5823,19 @@ handle_sablier_repair() {
 
 # Stopped containers a prune may remove: every exited/created/dead container
 # except the ones Traefik starts on demand (Sablier stops them on purpose).
+# Sets PRUNE_RM (to remove) and PRUNE_KEPT (kept). Call it directly, never in $( ), a pipe or < <( ): what a subshell
+# sets is gone when it ends. It used to print the names and set PRUNE_KEPT, and its one caller read the names from a
+# process substitution, so PRUNE_KEPT never existed where it was read and every prune ended in
+# "PRUNE_KEPT: unbound variable" — on the hub and in every VM.
 _prune_stopped_candidates() {
     local keep c
-    keep=$(_sablier_names 2>/dev/null | sort -u)
-    PRUNE_KEPT=()
+    PRUNE_RM=(); PRUNE_KEPT=()
+    keep=$(_sablier_names 2>/dev/null | sort -u) || keep=""
     while IFS= read -r c; do
         [[ -n "$c" ]] || continue
-        if [[ -n "$keep" ]] && grep -qx -- "$c" <<< "$keep"; then PRUNE_KEPT+=("$c"); continue; fi
-        printf '%s\n' "$c"
+        if [[ -n "$keep" ]] && grep -qx -- "$c" <<< "$keep"; then PRUNE_KEPT+=("$c"); else PRUNE_RM+=("$c"); fi
     done < <(docker ps -a --filter status=exited --filter status=created --filter status=dead --format '{{.Names}}' 2>/dev/null)
+    return 0
 }
 
 # A prune that never removes on-demand containers, their images, volumes or
@@ -5839,7 +5843,9 @@ _prune_stopped_candidates() {
 _docker_prune_safe() {
     local deep="${1:-false}" out="" rc=0 n
     local -a rm_list=() keep_nets=()
-    mapfile -t rm_list < <(_prune_stopped_candidates)
+    PRUNE_RM=(); PRUNE_KEPT=()
+    _prune_stopped_candidates
+    rm_list=(${PRUNE_RM[@]+"${PRUNE_RM[@]}"})
     if [[ ${#rm_list[@]} -gt 0 ]]; then
         docker rm -f "${rm_list[@]}" >/dev/null 2>&1 || rc=1
         out+="Removed ${#rm_list[@]} stopped container(s): ${rm_list[*]}"$'\n'

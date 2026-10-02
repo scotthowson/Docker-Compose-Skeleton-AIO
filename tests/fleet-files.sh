@@ -379,6 +379,9 @@ case "$*" in
     inspect*'"bind"'*other) printf '%s\t' "$root/Stacks/demo/App-Data/Shared" ;;
     inspect*'"volume"'*) ;;
     "ps -a --format {{.Names}}") echo webby; echo other ;;
+    # two stopped containers for a prune: one that Traefik starts on demand (it stays), one that is just old
+    ps*status=exited*) echo old-one; echo sleeper ;;
+    rm\ -f*) echo "$*" >> "$st/calls"; exit 0 ;;
     compose*" up "*|compose*" rm "*|compose*" pull "*) echo "$*" >> "$st/calls"; exit 0 ;;
     *) exit 0 ;;
 esac
@@ -414,6 +417,24 @@ check "nuke: what was in them is in the trash"      "old settings" "$(cat "$NA"/
 check "nuke: the shared folder was not touched"     theirs "$(cat "$NA/Shared/keep.txt" 2>/dev/null)"
 check "nuke: the service was created again"         yes "$(grep -q 'compose .* up -d --force-recreate --no-deps webby' "$NODE/fake/calls" 2>/dev/null && echo yes || echo no)"
 check "nuke: the preview lists the reset"           1 "$(_node GET /containers/webby/reset | jq -r '.previous_resets | length' 2>/dev/null)"
+
+echo "A prune removes what is stopped and keeps what Traefik starts on demand"
+# the on-demand container is named in a Sablier middleware of a route file; before 4.0.12 every prune ended in
+# "PRUNE_KEPT: unbound variable" (the list of kept containers was made in a subshell and read outside it)
+mkdir -p "$NA/Traefik/custom_routes"
+printf 'http:\n  middlewares:\n    sleeper-sablier:\n      plugin:\n        sablier:\n          names: sleeper\n          sessionDuration: 30m\n' > "$NA/Traefik/custom_routes/sleeper.yml"
+: > "$NODE/fake/calls"
+PR=$(_node POST /maintenance/prune '{}')
+check "prune: it runs"                              "prune true" "$(jq -r '"\(.action) \(.success)"' <<< "$PR" 2>/dev/null)"
+check "prune: no shell error in the answer"         no "$(jq -r '.output' <<< "$PR" 2>/dev/null | grep -q 'unbound variable\|api-server.sh: line' && echo yes || echo no)"
+check "prune: the old container is removed"         yes "$(jq -r '.output' <<< "$PR" 2>/dev/null | grep -q 'Removed 1 stopped container(s): old-one' && grep -q '^rm -f old-one$' "$NODE/fake/calls" && echo yes || echo no)"
+check "prune: the on-demand one is kept, and said"  yes "$(jq -r '.output' <<< "$PR" 2>/dev/null | grep -q 'Kept on-demand container(s): sleeper' && ! grep -q 'sleeper' "$NODE/fake/calls" && echo yes || echo no)"
+: > "$NODE/fake/calls"
+DP=$(_node POST /maintenance/deep-prune '{"confirm":"CONFIRM"}')
+check "deep prune: it runs the same way"            "deep_prune true yes" "$(jq -r '"\(.action) \(.success)"' <<< "$DP" 2>/dev/null) $(grep -q '^rm -f old-one$' "$NODE/fake/calls" && echo yes || echo no)"
+check "deep prune: unconfirmed is refused"          400 "$(printf 'POST /maintenance/deep-prune HTTP/1.1\r\nHost: t\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}' | env PATH="$NODE/fake:$PATH" DOCKER_COMPOSE_CMD="docker compose" DCS_API_EFFECTIVE_AUTH=false DCS_API_EFFECTIVE_BIND=127.0.0.1 "$NODE/.scripts/api-server.sh" --handle-request 2>/dev/null | head -1 | awk '{print $2}')"
+rm -rf "${NA:?}/Traefik"
+
 # an absolute APP_DATA_DIR is one root for every stack: only what lies two levels down is a container's own
 sed -i '/^APP_DATA_DIR=/d' "$NODE/.env"; printf 'APP_DATA_DIR=%s\n' "$NODE/AD" >> "$NODE/.env"
 _rootof() { ( cd "$NODE" && set -a && . "$NODE/.env" && set +a && source "$NODE/.scripts/api-server.sh" >/dev/null 2>&1; RST_PROJ_DIR="$NODE/Stacks/demo"; RST_ROOTS=("$(_stack_appdata_root "$RST_PROJ_DIR")" "$RST_PROJ_DIR/App-Data"); _container_reset_root_of "$1" || echo none ); }

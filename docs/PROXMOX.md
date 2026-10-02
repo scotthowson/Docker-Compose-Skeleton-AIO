@@ -434,7 +434,10 @@ Some things go further than a merged list:
   VM as its DCS account over the hub's ssh key (`GET /fleet/members/{id}/terminal` says whether
   the hub can, `POST /fleet/members/{id}/terminal/exec` runs it), with the same command guard,
   rate limit, 60 s limit and audit log as the hub's own terminal; the prompt says where each
-  command ran. A VM you made yourself needs the hub's public key
+  command ran. From your own computer the hub is the jump host (`ssh -J you@hub dcs@<vm address>`),
+  once the VM holds your public key — a VM the hub builds holds the hub's key only; on the hub,
+  `cat ~/.ssh/authorized_keys | ssh -i ~/.Docker-Compose-Skeleton-AIO/.data/fleet-ssh/id_ed25519 dcs@<vm address> 'cat >> ~/.ssh/authorized_keys'`
+  gives a VM the keys the hub accepts. A VM you made yourself needs the hub's public key
   (`.data/fleet-ssh/id_ed25519.pub`) in its DCS account's `authorized_keys` first.
 - **Homarr and themes for a VM's apps.** A VM's container page offers **Add to Homarr** (the
   hub's Homarr gets the app at the host the hub's Traefik serves it on) and, for the apps
@@ -469,6 +472,41 @@ Some things go further than a merged list:
 
 Without Proxmox and without members nothing of this shows: the pages are as they were, and a
 DCS with no fleet never asks anyone else.
+
+### A folder of the Proxmox host inside a VM (media libraries)
+
+A VM's disk is for the system and the apps' own data. A media library that already sits on the
+Proxmox host — a ZFS dataset, a directory on a second drive — is shared into the VM instead of being
+copied onto its disk: Proxmox VE 8.4 and later hand a host folder to a VM with **virtiofs**, and
+the DCS images mount it as they are (their kernel has virtiofs; the Debian image's kernel has no
+USB-storage driver, so a USB drive is plugged into the host and shared the same way).
+
+1. **On Proxmox.** *Datacenter → Directory Mappings → Add*: a name (`media`), the node, the folder
+   on the host. Then the VM → *Hardware → Add → Virtiofs* with that mapping. The same from the
+   host's shell:
+   ```bash
+   pvesh create /cluster/mapping/dir --id media --map node=pve,path=/tank/media
+   qm set 105 --virtiofs0 dirid=media
+   ```
+   The share is there at the VM's next *start*: shut the VM down and start it (a reboot from
+   inside the VM keeps the old hardware).
+2. **In the VM** (the Terminal page with the VM chosen):
+   ```bash
+   sudo mkdir -p /mnt/media
+   echo 'media /mnt/media virtiofs defaults,nofail 0 0' | sudo tee -a /etc/fstab
+   sudo systemctl daemon-reload && sudo mount /mnt/media
+   ```
+   The first word of the line is the mapping's name. The folder is mounted before Docker starts
+   at every boot.
+3. **In the stack.** The app's volume names the folder in the VM: the Jellyfin template's *Media
+   path* (`MEDIA_PATH`) is mounted read-only at `/media` in the container; for a stack that
+   already runs, add or change the volume in the compose editor (`- /mnt/media:/media:ro`), and
+   restart the stack — a container that was started before the folder was mounted keeps seeing
+   the empty folder until it is started again. The library in the app is then `/media/...`.
+
+Files keep the owner and mode they have on the host, and the VM can write to the share unless the
+volume says `:ro`. Several VMs can use one mapping. A VM with a virtiofs share cannot be
+live-migrated or snapshotted with its RAM. Checked on Proxmox VE 9.2 with the DCS Debian 13 image.
 
 ### The whole thing, step by step
 
@@ -699,6 +737,7 @@ once; a full DCS without an admin yet saves the join for its wizard), `--join-to
 | *did not answer* | Wrong URL or port (the web UI's, `:8006`), a firewall in front of it, or certificate verification on with the self-signed certificate — switch it off, or install a real certificate on Proxmox. *HTTP 301* from a setup before 3.9.7: the address was `http://`; Proxmox wants `https://…:8006` (3.9.7 switches it by itself). |
 | Deploying a template into a VM stack: *Protecting a route needs Authelia* (before 3.9.8) | The hub owns Authelia for the VMs' routes (its Traefik serves them), so the choice is kept on the hub and the VM gets a plain deploy. Update the hub to 3.9.8. *Start on demand* is not offered for a stack in a VM: Sablier runs on the hub and wakes the hub's containers only. |
 | `Stacks/<name>/VM-App-Data` on the hub holds only `NOT-MOUNTED.txt` | The file says why: the VM is off or does not answer ssh (the mount comes back by itself when it does), the stack has made no App-Data yet (it is made when a container with a volume in it first starts), `sshfs` is not on the hub (`sudo apt install sshfs`, `sudo dnf install fuse-sshfs`; a hub whose DCS account has passwordless sudo installs it by itself), the VM's account does not take the hub's key (a VM you made yourself: put `.data/fleet-ssh/id_ed25519.pub` of the hub into its `authorized_keys`), or the hub's API runs as the systemd service without passwordless sudo (a mount it made would be invisible to your shell). **Mount** on the stack's page tries at once and answers with the reason. |
+| An app shows an empty library after a host folder was shared into its VM | The container was started before the folder was mounted in the VM, so it still sees the empty folder underneath: restart the stack. If the folder is empty in the VM too, the VM has not been *started* since the Virtiofs device was added (shut it down and start it), or the mapping's name in `/etc/fstab` is not the one in *Directory Mappings*. |
 | A file made in `VM-App-Data` cannot be written by the app | It belongs to root in the VM (the mount serves as root so every container's files can be read). Edit files in place — that keeps their owner — or `chown` the new file there to the user the container runs as. |
 | A build is refused: *A guest named 'x' already exists on Proxmox (qemu 103 on pve)* | Proxmox holds a VM (or container) named like the stack — often one built by an earlier hub that was deleted. The hub never builds a twin, and a refused request queues nothing. Remove or rename the old guest on Proxmox (or link it from the Proxmox page if it still belongs to this hub); the setup wizard marks such a stack "VM 103 exists" and builds the others. |
 | Setup stops on *Docker is not running* or *may not use Docker* | A fresh server: Docker installed but not started (Fedora does not start it), or your user outside the `docker` group. Setup offers both fixes and carries on; by hand: `sudo systemctl enable --now docker`, `sudo usermod -aG docker $USER`, log out and back in (or `newgrp docker`), then `./setup.sh` again. |
