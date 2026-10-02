@@ -4,7 +4,7 @@ Generated from the router in `.scripts/api-server.sh` by `.scripts/api-docs.sh` 
 Run `.scripts/api-docs.sh` after adding or changing a route; CI fails when this file is stale.
 
 The API listens on `API_BIND:API_PORT` (default `0.0.0.0:9876`) and answers JSON.
-Every endpoint below is `393` in total.
+Every endpoint below is `394` in total.
 
 ## Access levels
 
@@ -450,6 +450,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | POST | `/terminal/auth/verify` | admin | Verify a terminal session token |
 | POST | `/terminal/auth/logout` | admin | Invalidate a terminal session |
 | POST | `/terminal/web/theme` | admin | The web terminal's look: {theme: {background, foreground, cursor, selectionBackground, black … brightWhite} (colours as #hex), font_size: 10-28}; the terminal restarts with it, open tabs reconnect (admin) |
+| POST | `/terminal/web/embed` | admin | Let other pages show the web terminal in a frame (a card on a Homarr board): {origins: ["https://dash.example.com"]}, at most 4; an empty list takes the permission away. Authelia stays in front of it (admin) |
 
 ## Other
 

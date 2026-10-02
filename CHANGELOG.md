@@ -5,6 +5,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [4.0.16] - 2026-10-02
+
+### Added
+
+- **The web terminal as a card on another page.** A Homarr board (or any page of yours) can show the terminal in a frame, so a
+  shell is one glance away without leaving the board. Browsers refuse that unless the terminal's route allows it, and the proxy's
+  chain forbids framing for every route; *Settings > Web terminal > Show it inside another page* names the pages that may (at most
+  four, exact addresses, no wildcard), and only those. Authelia stays in front: the card shows the terminal to a browser that is
+  signed in and stays empty for one that is not. API: `POST /terminal/web/embed {origins: [...]}`; `GET /terminal/web` lists them.
+
 ## [4.0.15] - 2026-10-02
 
 ### Added

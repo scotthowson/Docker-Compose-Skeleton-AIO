@@ -2433,6 +2433,18 @@ check "web terminal: a look needs real colours"    400 "$(wt_request POST /termi
 check "web terminal: a quote cannot get into the file" 400 "$(wt_request POST /terminal/web/theme "{\"theme\":{\"background\":\"#000'\",\"foreground\":\"#fff\"}}" | status_of)"
 check "web terminal: a look is saved"              200 "$(wt_request POST /terminal/web/theme '{"theme":{"background":"#0a0705","foreground":"#f4ede4","cursor":"#ff7a1a","nonsense":"#123456"},"font_size":16}' | status_of)"
 check "web terminal: …with only the keys a terminal has" "THEME='{\"background\":\"#0a0705\",\"foreground\":\"#f4ede4\",\"cursor\":\"#ff7a1a\"}' FONT_SIZE='16'" "$(sed -n '1,2p' "$_WTD/options" 2>/dev/null | tr '\n' ' ' | sed 's/ $//')"
+# shown inside another page (a Homarr card): only the named pages may frame it, and Authelia stays in front
+check "web terminal: an origin is an address, nothing more" 400 "$(wt_request POST /terminal/web/embed '{"origins":["https://dash.smoke.test/\" x"]}' | status_of)"
+check "web terminal: no wildcard"                  400 "$(wt_request POST /terminal/web/embed '{"origins":["*"]}' | status_of)"
+check "web terminal: a page may show it"           200 "$(wt_request POST /terminal/web/embed '{"origins":["https://dash.smoke.test"]}' | status_of)"
+check "web terminal: its rule comes first, Authelia stays" yes "$(awk '/^      middlewares:/{f=1; next} f && /^        - /{n++; if (n == 1 && $2 == "\"terminal-embed\"") first=1; if ($2 == "\"authelia-forwardauth\"") auth=1; next} f{exit} END{print (first && auth) ? "yes" : "no"}' "$_ZZR/demo/terminal.yml")"
+check "web terminal: only that page may frame it"  1 "$(grep -c "contentSecurityPolicy: \"frame-ancestors 'self' https://dash.smoke.test\"" "$_ZZR/demo/terminal.yml")"
+check "web terminal: status names the page"        'https://dash.smoke.test true' "$(wt_request GET /terminal/web | body_of | jq -r '(.embed_origins | join(",")) + " \(.protected)"' 2>/dev/null)"
+wt_request POST /terminal/web/embed '{"origins":["https://dash.smoke.test"]}' >/dev/null
+check "web terminal: asked twice, written once"    1 "$(grep -c '^    terminal-embed:' "$_ZZR/demo/terminal.yml")"
+check "web terminal: the permission is taken away" 200 "$(wt_request POST /terminal/web/embed '{"origins":[]}' | status_of)"
+check "web terminal: …and the route is as it was"  0 "$(grep -c 'terminal-embed\|frame-ancestors' "$_ZZR/demo/terminal.yml")"
+check "web terminal: …still behind Authelia"       1 "$(grep -c '"authelia-forwardauth"' "$_ZZR/demo/terminal.yml")"
 check "web terminal: a second one is refused"      409 "$(wt_request POST /templates/web-terminal/deploy '{"target_stack":"demo2","auto_start":false}' | status_of)"
 check "web terminal: removed"                      200 "$(wt_request POST /templates/web-terminal/undeploy '{"target_stack":"demo","services":["terminal"],"remove_routes":true}' | status_of)"
 check "web terminal: its key no longer opens the server" 0 "$(grep -c 'dcs-web-terminal' "$WORK/wt-home/.ssh/authorized_keys")"
