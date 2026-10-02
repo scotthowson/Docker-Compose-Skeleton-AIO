@@ -14191,6 +14191,28 @@ _homarr_where() { local l; l=$(_homarr_locate) || return 1; printf '%s' "${l%%$'
 # the name of the VM Homarr runs in ("" on the hub / by URL)
 _homarr_where_name() { local w; w=$(_homarr_where) || return 1; case "$w" in hub|url) ;; *) _fleet_member "$w" | jq -r '.name // ""' 2>/dev/null ;; esac; }
 
+# _homarr_place_below ITEM_ID — Homarr puts a new tile on the first cell it believes free and does not count the boxes
+# (dynamic sections) of a board: on a board that is laid out, the tile lands on top of one and pushes the clock and
+# everything under it down. The tile goes below everything else instead, in every layout of the board. Needs python3
+# and Homarr's database on this server; without them the tile stays where Homarr put it.
+_HOMARR_PLACE_PY='
+import sqlite3, sys
+db = sqlite3.connect(sys.argv[1], timeout=10); item = sys.argv[2]
+for layout, section in db.execute("select layout_id, section_id from item_layout where item_id = ?", (item,)).fetchall():
+    a = db.execute("select coalesce(max(y_offset + height), 0) from item_layout where layout_id = ? and section_id = ? and item_id != ?", (layout, section, item)).fetchone()[0]
+    b = db.execute("select coalesce(max(y_offset + height), 0) from section_layout where layout_id = ? and parent_section_id = ?", (layout, section)).fetchone()[0]
+    db.execute("update item_layout set x_offset = 0, y_offset = ? where item_id = ? and layout_id = ?", (max(a, b), item, layout))
+db.commit()
+'
+_homarr_place_below() {
+    local item="$1" db=""
+    [[ "$item" =~ ^[A-Za-z0-9_-]{1,64}$ ]] || return 1
+    command -v python3 >/dev/null 2>&1 || return 1
+    for db in "$COMPOSE_DIR"/*/App-Data/Homarr/appdata/db/db.sqlite; do [[ -f "$db" ]] && break; db=""; done
+    [[ -n "$db" && -w "$db" ]] || return 1
+    python3 -c "$_HOMARR_PLACE_PY" "$db" "$item" >/dev/null 2>&1
+}
+
 # Put an app on Homarr. With an API key (secret HOMARR_API_KEY) the REST API of
 # Homarr 1.x creates the app and a tile on the home board; an app that already
 # has this URL is left alone. Without a key only the app library gets the entry
@@ -14243,6 +14265,10 @@ item=$(jq -nc --arg b "$board" --arg a "$app_id" '{boardId: $b, kind: "app", opt
 resp=$(curl -s --max-time 15 "${auth[@]}" -X POST -d "$item" "$H/api/boards/items" 2>/dev/null)
 item_id=$(printf '%s' "$resp" | jq -r '.itemId // empty' 2>/dev/null)
 if [[ -n "$item_id" ]]; then
+    # below everything else on the board (see _homarr_place_below)
+    if [[ -n "$HM_DB" && -w "$HM_DB" && -n "$HM_PLACE_PY" ]] && command -v python3 >/dev/null 2>&1; then
+        python3 -c "$HM_PLACE_PY" "$HM_DB" "$item_id" >/dev/null 2>&1 || log "'$HM_NAME': the tile stays where Homarr put it (its database could not be written)"
+    fi
     log "'$HM_NAME' registered on Homarr and placed on the home board (app $app_id, tile $item_id)"
 else
     log "'$HM_NAME' added to the app library ($app_id) but the tile failed: $(printf '%s' "$resp" | head -c 200)"
@@ -14250,7 +14276,7 @@ fi
 rm -f -- "$0"
 HOMARR_REST_EOF
         chmod +x "$_reg_script"
-        HM_BASE="$base" HM_KEY="$api_key" HM_NAME="$app_name" HM_DESC="$description" HM_ICON="$icon_url" HM_URL="$app_url" HM_LOG="$_hm_log" \
+        HM_BASE="$base" HM_KEY="$api_key" HM_NAME="$app_name" HM_DESC="$description" HM_ICON="$icon_url" HM_URL="$app_url" HM_LOG="$_hm_log" HM_DB="$db_path" HM_PLACE_PY="$_HOMARR_PLACE_PY" \
             nohup bash "$_reg_script" </dev/null >/dev/null 2>&1 &
         disown
         return 0
@@ -14361,7 +14387,8 @@ _homarr_register_now() {
         if [[ -n "$board" ]]; then
             item=$(jq -nc --arg b "$board" --arg a "$app_id" '{boardId: $b, kind: "app", options: {appId: $a, openInNewTab: true, showTitle: true, showDescriptionTooltip: false, pingEnabled: false}}')
             resp=$(curl -s --max-time 15 -H "ApiKey: $key" -H 'Content-Type: application/json' -X POST -d "$item" "$H/api/boards/items" 2>/dev/null)
-            [[ -n "$(jq -r '.itemId // empty' <<< "$resp" 2>/dev/null)" ]] && tile=true
+            local _hm_item; _hm_item=$(jq -r '.itemId // empty' <<< "$resp" 2>/dev/null)
+            if [[ -n "$_hm_item" ]]; then tile=true; _homarr_place_below "$_hm_item" || true; fi
         fi
         HM_OUT=$(jq -nc --arg id "$app_id" --argjson t "$tile" '{mode: "board", app_id: $id, tile: $t}')
         return 0
@@ -15424,6 +15451,33 @@ handle_template_deploy() {
                 fi
             fi
         done
+    fi
+
+    # A variable that holds the address people open the app at ({"fill": "public_url", "service": "<its service>", "port_var":
+    # "<its port variable>"} in template.json): left empty, it becomes the app's route (https://<subdomain>.<domain>) when
+    # this deploy gives the service one, else http://<this server>:<its port>. An app that builds its links, its sign-in
+    # callbacks and its shared pages from that address is right from the first start, without the address typed twice.
+    if [[ -f "$tdir/template.json" ]]; then
+        local _pu _pu_name _pu_svc _pu_port _pu_val _pu_dom="" _pu_sub _pu_url _pu_h
+        while IFS= read -r _pu; do
+            [[ -n "$_pu" ]] || continue
+            _pu_name=$(jq -r '.name' <<< "$_pu"); _pu_svc=$(jq -r '.service // ""' <<< "$_pu"); _pu_port=$(jq -r '.port_var // ""' <<< "$_pu")
+            _pu_val=$(printf '%s\n' "$vars" | sed -n "s/^${_pu_name}=//p" | head -n 1)
+            [[ -z "$_pu_val" ]] || continue
+            [[ -n "$_pu_dom" ]] || _pu_dom=$(_find_traefik_domain 2>/dev/null)
+            _pu_url=""
+            if [[ -n "$_pu_dom" && "$_pu_dom" != "example.com" && "$_pu_dom" =~ ^[A-Za-z0-9.-]+$ && -n "$_pu_svc" ]] \
+               && jq -e --arg s "$_pu_svc" '(.routes != false) and ((has("route_services") | not) or ((.route_services // []) | index($s) != null))' <<< "$body" >/dev/null 2>&1; then
+                _pu_sub=$(jq -r --arg s "$_pu_svc" '(.routes // {}) | if type == "object" then (.[$s] // "") else "" end' <<< "$body" 2>/dev/null | grep -m1 -oE 'Host\(`[^`]+`\)' | sed -E 's/Host\(`//; s/`\)//')
+                if [[ "$_pu_sub" =~ ^[A-Za-z0-9.-]+$ ]]; then _pu_url="https://$_pu_sub"; else _pu_url="https://${_pu_svc}.${_pu_dom}"; fi
+            fi
+            if [[ -z "$_pu_url" && -n "$_pu_port" ]]; then
+                _pu_h=$(_feed_detected_host 2>/dev/null); [[ -n "$_pu_h" ]] || _pu_h=localhost
+                _pu_url="http://${_pu_h}:$(printf '%s\n' "$vars" | sed -n "s/^${_pu_port}=//p" | head -n 1)"
+            fi
+            [[ -n "$_pu_url" ]] || continue
+            if grep -q "^${_pu_name}=" <<< "$vars"; then vars=$(printf '%s\n' "$vars" | sed "s|^${_pu_name}=.*|${_pu_name}=${_pu_url}|"); else vars+=$'\n'"${_pu_name}=${_pu_url}"; fi
+        done < <(jq -c '.variables[]? | select(.fill == "public_url" and .name != null)' "$tdir/template.json" 2>/dev/null)
     fi
 
     # --- Required variable validation ---

@@ -1,10 +1,10 @@
 {
   "name": "reactive-resume",
   "title": "Reactive Resume",
-  "description": "Free, privacy-first resume builder. Beautiful templates, real-time preview, PDF export, and zero tracking. Your data never leaves your server. The open-source alternative to resume.io.",
+  "description": "Free, privacy-first resume builder. Beautiful templates, a live preview, PDF export, a public link for every resume, and zero tracking. Your data never leaves your server.",
   "category": "tools",
   "target_stack": "web-applications",
-  "icon": "\ud83d\udcdd",
+  "icon": "📝",
   "tags": [
     "resume",
     "cv",
@@ -20,6 +20,89 @@
       "description": "Port to expose Reactive Resume on",
       "default": "3200",
       "required": false
+    },
+    {
+      "name": "RESUME_APP_URL",
+      "label": "Public address",
+      "description": "The address people open, like https://resume.example.com. Sign-in and every shared resume link are built from it. Leave empty and DCS uses this deploy's route, or this server's address and the port above",
+      "default": "",
+      "required": false,
+      "fill": "public_url",
+      "service": "reactive-resume",
+      "port_var": "PORT_REACTIVE_RESUME"
+    },
+    {
+      "name": "RESUME_DB_PASSWORD",
+      "label": "Database password",
+      "description": "Leave empty and DCS generates one on deploy",
+      "default": "",
+      "type": "password",
+      "required": false,
+      "generate": "hex64"
+    },
+    {
+      "name": "RESUME_AUTH_SECRET",
+      "label": "Session secret",
+      "description": "Signs the sign-in sessions. Leave empty and DCS generates one on deploy",
+      "default": "",
+      "type": "password",
+      "required": false,
+      "generate": "hex64"
+    },
+    {
+      "name": "RESUME_ENCRYPTION_SECRET",
+      "label": "Encryption secret",
+      "description": "Encrypts what the app stores for its AI helpers. Leave empty and DCS generates one on deploy",
+      "default": "",
+      "type": "password",
+      "required": false,
+      "generate": "hex64"
+    },
+    {
+      "name": "RESUME_DISABLE_SIGNUPS",
+      "label": "Close sign-ups",
+      "description": "Nobody new can make an account. Deploy with it off, make your own account, then turn it on and deploy again: your public resumes stay reachable",
+      "default": "false",
+      "type": "boolean",
+      "required": false
+    },
+    {
+      "name": "RESUME_SMTP_HOST",
+      "label": "Mail server (optional)",
+      "description": "For verification and password mails. Empty: those mails are printed in the container's log instead",
+      "default": "",
+      "required": false
+    },
+    {
+      "name": "RESUME_SMTP_PORT",
+      "label": "Mail port",
+      "description": "Usually 587",
+      "default": "587",
+      "required": false
+    },
+    {
+      "name": "RESUME_SMTP_USER",
+      "label": "Mail user",
+      "description": "The account at the mail server",
+      "default": "",
+      "required": false
+    },
+    {
+      "name": "RESUME_SMTP_PASS",
+      "label": "Mail password",
+      "description": "Its password or app password",
+      "default": "",
+      "type": "password",
+      "required": false
+    },
+    {
+      "name": "RESUME_SMTP_FROM",
+      "label": "Mail sender",
+      "description": "Like Resume <resume@example.com>",
+      "default": "",
+      "required": false
     }
-  ]
+  ],
+  "auth": "bypass",
+  "auth_note": "Not put behind Authelia: a resume you share must open for anyone with its link, and the app has its own accounts (the deploy sheet can still protect it)"
 }

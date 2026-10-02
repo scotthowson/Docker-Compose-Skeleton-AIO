@@ -5,6 +5,25 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **The Reactive Resume template deployed a version that no longer exists, with secrets anyone could read.** It asked for the old
+  image, a Chrome container and the secrets `access_secret_change_me` and friends, and told the app it lived at `127.0.0.1`, so a
+  shared resume link pointed nowhere. The template is the current release now (the app, PostgreSQL, Redis; pictures and exports on
+  this server): the database password, the session secret and the encryption secret are variables DCS generates and the deploy sheet
+  offers to keep in the secret store, sign-ups can be closed once your account exists, mail is optional, and it runs as the stack's
+  user. Its data lives in new folders (`Reactive-Resume/data`, `/postgres`, `/redis`): an install of the old template is not migrated.
+- **"Add to Homarr" pushed the board around.** Homarr puts a new tile on the first cell it believes free and does not count the boxes
+  of a laid-out board, so the tile landed on top of one and moved the clock and everything under it. DCS now puts the tile below
+  everything else, in every layout of the board.
+
+### Added
+
+- **A template can ask for its own public address.** A variable marked `"fill": "public_url"` (with the `service` it belongs to and
+  its `port_var`) that is left empty becomes the route this deploy gives the service (`https://<subdomain>.<domain>`), or
+  `http://<this server>:<port>` without one. Apps that build links and sign-in callbacks from that address (Reactive Resume is the
+  first to use it) are right from the first start.
+
 ## [4.0.13] - 2026-10-02
 
 ### Added

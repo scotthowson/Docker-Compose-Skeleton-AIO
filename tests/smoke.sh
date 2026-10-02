@@ -2168,6 +2168,8 @@ check "provision: repeat refused"       409 "$(auth_request POST /fleet/provisio
 check "provision: join code minted"     yes "$(auth_request GET /fleet/join-tokens | body_of | jq -e '.tokens[] | select(.stack == "smoke-photos")' >/dev/null 2>&1 && echo yes || echo no)"
 _JST=""; for _i in $(seq 1 150); do _JST=$(auth_request GET "/fleet/jobs/$JOB" | body_of | jq -r '.status' 2>/dev/null); [[ "$_JST" == "done" || "$_JST" == "failed" ]] && break; sleep 2; done
 check "provision: job finished"         "done" "$_JST"
+# a build that failed says where (in the run's log, where the reason would otherwise be lost with the work folder)
+[[ "$_JST" == "done" ]] || { echo "       the job: $(auth_request GET "/fleet/jobs/$JOB" | body_of | jq -c '{status, error, step, steps: [(.steps // [])[] | select((.state // .status // "") != "done")]}' 2>/dev/null | cut -c1-700)"; echo "       its log: $(auth_request GET "/fleet/jobs/$JOB" | body_of | jq -r '(.log // []) | if type == "array" then .[-6:] | join(" | ") else tostring[-500:] end' 2>/dev/null | cut -c1-900)"; }
 [[ "$_JST" == "done" ]] || { echo "  --- job log ---"; auth_request GET "/fleet/jobs/$JOB" | body_of | jq -r '.error, (.steps[] | "\(.id): \(.state) \(.detail)"), (.log[-25:][] | .text)' 2>/dev/null | sed 's/^/  /'; echo "  --- runner log ---"; tail -5 "$WORK/logs/fleet-jobs.log" 2>/dev/null | sed 's/^/  /'; }
 check "provision: every step done"      9 "$(auth_request GET "/fleet/jobs/$JOB" | body_of | jq -r '[.steps[] | select(.state == "done")] | length' 2>/dev/null)"
 check "provision: the chosen image"     ubuntu-24.04-server-cloudimg-amd64.qcow2 "$(auth_request GET "/fleet/jobs/$JOB" | body_of | jq -r '.image_file' 2>/dev/null)"

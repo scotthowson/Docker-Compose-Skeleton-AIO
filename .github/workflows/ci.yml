@@ -82,7 +82,10 @@ jobs:
     steps:
       - name: Install tools
         run: |
-          apt-get update -qq && apt-get install -y -qq jq socat curl git python3 ca-certificates procps ncat iproute2
+          # what a Debian 13 server that runs DCS has: the Docker CLI with Compose (the job container gets the runner's Docker socket) and the
+          # tools the API calls; without them the API stops at start-up and a third of the checks fail
+          apt-get update -qq && apt-get install -y -qq jq socat curl git python3 ca-certificates procps ncat iproute2 docker-cli docker-compose openssh-client rsync xz-utils zstd xxd file wget sudo unzip zip bc bsdextrautils
+          docker compose version
           jq --version
       - uses: actions/checkout@v7
 

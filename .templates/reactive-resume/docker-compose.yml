@@ -1,47 +1,71 @@
 services:
   reactive-resume:
     container_name: Reactive-Resume
-    image: amruthpillai/reactive-resume:latest
+    image: ghcr.io/reactive-resume/reactive-resume:latest
     restart: unless-stopped
+    # The image runs as a plain user and keeps uploads and generated files in /app/data:
+    # it runs as the stack's user so it can write the App-Data folder
+    user: "${PUID:-1000}:${PGID:-1000}"
     environment:
       - TZ=${TZ:-UTC}
       - PORT=3000
-      - NODE_ENV=production
-      - PUBLIC_URL=http://127.0.0.1:${PORT_REACTIVE_RESUME:-3200}
-      - STORAGE_URL=http://127.0.0.1:${PORT_REACTIVE_RESUME:-3200}/default
-      - DATABASE_URL=postgresql://resume:resume@reactive-resume-db:5432/resume
-      - ACCESS_TOKEN_SECRET=access_secret_change_me
-      - REFRESH_TOKEN_SECRET=refresh_secret_change_me
-      - CHROME_TOKEN=chrome_token_change_me
-      - CHROME_URL=ws://reactive-resume-chrome:3000
+      # The address people open: sign-in callbacks, shared resume links and picture URLs are built from it
+      - APP_URL=${RESUME_APP_URL}
+      - DATABASE_URL=postgresql://resume:${RESUME_DB_PASSWORD}@reactive-resume-db:5432/resume
+      - AUTH_SECRET=${RESUME_AUTH_SECRET}
+      - ENCRYPTION_SECRET=${RESUME_ENCRYPTION_SECRET}
+      - REDIS_URL=redis://reactive-resume-redis:6379
+      # Pictures and exports stay on this server (no S3 needed)
+      - STORAGE_BACKEND=local
+      - FLAG_DISABLE_SIGNUPS=${RESUME_DISABLE_SIGNUPS:-false}
+      # Mail is optional: without a host, verification and reset mails are printed in the container's log
+      - SMTP_HOST=${RESUME_SMTP_HOST:-}
+      - SMTP_PORT=${RESUME_SMTP_PORT:-587}
+      - SMTP_USER=${RESUME_SMTP_USER:-}
+      - SMTP_PASS=${RESUME_SMTP_PASS:-}
+      - SMTP_FROM=${RESUME_SMTP_FROM:-Reactive Resume <noreply@localhost>}
     ports:
       - "${PORT_REACTIVE_RESUME:-3200}:3000"
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Reactive-Resume/data:/app/data
     depends_on:
       reactive-resume-db:
         condition: service_healthy
-      reactive-resume-chrome:
-        condition: service_started
+      reactive-resume-redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then((r) => { if (!r.ok) process.exit(1); }).catch(() => process.exit(1));"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
   reactive-resume-db:
     container_name: Reactive-Resume-DB
-    image: postgres:16-alpine
+    image: postgres:17-alpine
     restart: unless-stopped
     environment:
       - POSTGRES_DB=resume
       - POSTGRES_USER=resume
-      - POSTGRES_PASSWORD=resume
+      - POSTGRES_PASSWORD=${RESUME_DB_PASSWORD}
     volumes:
-      - ${APP_DATA_DIR:-./App-Data}/Reactive-Resume/db:/var/lib/postgresql/data
+      - ${APP_DATA_DIR:-./App-Data}/Reactive-Resume/postgres:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U resume -d resume"]
       interval: 10s
       timeout: 5s
-      retries: 3
+      retries: 5
       start_period: 10s
-  reactive-resume-chrome:
-    container_name: Reactive-Resume-Chrome
-    image: ghcr.io/browserless/chromium:latest
+
+  reactive-resume-redis:
+    container_name: Reactive-Resume-Redis
+    image: redis:7-alpine
     restart: unless-stopped
-    environment:
-      - TIMEOUT=10000
-      - CONCURRENT=10
-      - TOKEN=chrome_token_change_me
+    command: redis-server --appendonly yes
+    volumes:
+      - ${APP_DATA_DIR:-./App-Data}/Reactive-Resume/redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
