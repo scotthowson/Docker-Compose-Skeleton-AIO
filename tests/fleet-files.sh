@@ -10,6 +10,8 @@
 # the hub's copy. The VM's App-Data is shown on the hub through a link to a mount: ssh, sshfs and the
 # unmount helper are stood in for (no FUSE, no second machine), so what is checked is everything
 # around the mount itself — when it is made, what the link points at, what a delete leaves alone.
+# A folder of the Proxmox host for a VM: tests/mock-proxmox.py is the Proxmox, and the VM's side (its
+# /etc/fstab, its mounts, what needs root) is a sandbox the in-VM script really runs in.
 #
 # Usage: tests/fleet-files.sh   (exit status 0 = all passed; needs socat, curl, jq, python3)
 # =============================================================================
@@ -55,9 +57,54 @@ install "$MEM" "$MP" "Media VM"
 FAKE="$W/fake"; VMDATA="$W/vm-data"; mkdir -p "$FAKE" "$HUB/.data/fleet-ssh"; : > "$FAKE/mountinfo"; printf 'not a real key\n' > "$HUB/.data/fleet-ssh/id_ed25519"
 cat > "$FAKE/ssh" <<'FAKESSH'
 #!/bin/bash
+d="$(dirname "$0")"; cmd="${@: -1}"
+if [[ "$cmd" == *" dcs-hostdir "* ]]; then
+    # the VM, for the folders of the Proxmox host: its virtiofs devices are what the stand-in Proxmox says VM 100 has
+    # live, and a VM that was started since the last look has mounted what its fstab names, as a boot does. The in-VM
+    # script itself runs for real, on files of the test's own, with stand-ins for what needs root (vmbin).
+    vm="$d/vm"; mkdir -p "$vm/sys"; touch "$vm/fstab" "$vm/mounts"
+    find "${vm:?}/sys" -mindepth 1 -delete 2>/dev/null
+    i=0; for t in $(jq -r '(.virtiofs["100"] // [])[]' "$d/pve-vfs.json" 2>/dev/null); do i=$((i + 1)); mkdir -p "$vm/sys/$i"; printf '%s\n' "$t" > "$vm/sys/$i/tag"; done
+    b=$(jq -r '.boots["100"] // 0' "$d/pve-vfs.json" 2>/dev/null)
+    if [[ "$b" != "$(cat "$vm/boots" 2>/dev/null)" ]]; then
+        printf '%s' "$b" > "$vm/boots"; : > "$vm/mounts"
+        while read -r tag mp fs opts _; do
+            [[ "$fs" == virtiofs && "$tag" != \#* ]] || continue
+            grep -qx -- "$tag" "$vm"/sys/*/tag 2>/dev/null && printf '%s %s virtiofs %s 0 0\n' "$tag" "$mp" "$([[ ",$opts," == *,ro,* ]] && echo ro || echo rw),relatime" >> "$vm/mounts"
+        done < "$vm/fstab"
+    fi
+    PATH="$d/vmbin:$PATH" DCS_HD_FSTAB="$vm/fstab" DCS_HD_MOUNTS="$vm/mounts" DCS_HD_SYS="$vm/sys" bash -c "$cmd"
+    exit
+fi
 # the last word is the command for the far side; what it finds of sftp-server and sudo depends on this machine, so both are pinned
-bash -c "${@: -1}" | sed -e 's#^sftp=.*#sftp=/usr/lib/openssh/sftp-server#' -e 's#^sudo=.*#sudo=#'
+bash -c "$cmd" | sed -e 's#^sftp=.*#sftp=/usr/lib/openssh/sftp-server#' -e 's#^sudo=.*#sudo=#'
 FAKESSH
+mkdir -p "$FAKE/vmbin" "$FAKE/vm"
+printf 'LABEL=dcs-root / ext4 defaults,noatime 0 1\n' > "$FAKE/vm/fstab"; : > "$FAKE/vm/mounts"
+cat > "$FAKE/vmbin/sudo" <<'X'
+#!/bin/bash
+[ "$1" = -n ] && shift
+[ "$1" = true ] && exit 0
+exec "$@"
+X
+cat > "$FAKE/vmbin/mount" <<'X'
+#!/bin/bash
+vm="$(dirname "$0")/../vm"
+if [ "$1" = -o ]; then o="${2#remount,}"; awk -v mp="$3" -v o="$o" '$2 == mp { $4 = o ",relatime" } { print }' "$vm/mounts" > "$vm/mounts.n" && mv "$vm/mounts.n" "$vm/mounts"; exit 0; fi
+line=$(awk -v mp="$1" '$1 !~ /^#/ && $2 == mp { print; exit }' "$DCS_HD_FSTAB")
+[ -n "$line" ] || { echo "mount: $1: can't find in /etc/fstab." >&2; exit 1; }
+set -- $line
+grep -qx -- "$1" "$vm"/sys/*/tag 2>/dev/null || { echo "mount: $2: wrong fs type, bad option, bad superblock on $1" >&2; exit 32; }
+o=rw; case ",$4," in *,ro,*) o=ro ;; esac
+echo "$1 $2 virtiofs $o,relatime 0 0" >> "$vm/mounts"
+X
+cat > "$FAKE/vmbin/umount" <<'X'
+#!/bin/bash
+vm="$(dirname "$0")/../vm"; mp="${@: -1}"
+awk -v mp="$mp" '$2 != mp' "$vm/mounts" > "$vm/mounts.n" && mv "$vm/mounts.n" "$vm/mounts"
+X
+for n in systemctl mkdir rmdir; do printf '#!/bin/sh\nexit 0\n' > "$FAKE/vmbin/$n"; done
+chmod +x "$FAKE/vmbin/"*
 cat > "$FAKE/sshfs" <<'FAKESSHFS'
 #!/bin/bash
 d="$(dirname "$0")"; mp="${@: -1}"; remote="${@: -2:1}"
@@ -298,6 +345,92 @@ mkdir -p "$VMDATA/ghost"; printf 'the VM'"'"'s\n' > "$VMDATA/ghost/library.db"; 
 _hublib _fleet_appdata_release ghost forget
 check "appdata: forgetting never removes below the mountpoint" "the VM's" "$(cat "$VMDATA/ghost/library.db" 2>/dev/null)"
 chmod 755 "$VMDATA/ghost" 2>/dev/null; rm -rf "${VMDATA:?}/ghost"
+
+echo "A folder of the Proxmox host inside a VM"
+# the Proxmox is tests/mock-proxmox.py (linked for this part only); the member is its VM 100
+PVP=$(free_port); PVH='Authorization: PVEAPIToken=dcs@pve!ff=ff-secret'
+MOCK_NO_MAPPING_FILE="$FAKE/no-mapping" MOCK_VFS_FILE="$FAKE/pve-vfs.json" python3 "$ROOT/tests/mock-proxmox.py" "$PVP" 'dcs@pve!ff' 'ff-secret' "$W/pve-state.json" >/dev/null 2>&1 &
+for _ in $(seq 1 60); do curl -s -m 1 -H "$PVH" "http://127.0.0.1:$PVP/api2/json/version" 2>/dev/null | grep -q version && break; sleep 0.2; done
+pve() { curl -s -m 10 -H "$PVH" "http://127.0.0.1:$PVP/api2/json$1"; }
+pve_post() { curl -s -m 10 -H "$PVH" -X POST "http://127.0.0.1:$PVP/api2/json$1" >/dev/null; }
+printf 'PROXMOX_URL=http://127.0.0.1:%s\nPROXMOX_TOKEN_ID="dcs@pve!ff"\nPROXMOX_TOKEN_SECRET=ff-secret\nPROXMOX_VERIFY_TLS=false\n' "$PVP" >> "$HUB/.env"
+_guest() { ( cd "$HUB" && set -a && . "$HUB/.env" && set +a && source "$HUB/.scripts/api-server.sh" >/dev/null 2>&1; _fleet_update --arg id "$MID" "$1" ); }
+_guest '.members = [.members[] | if .id == $id then .vmid = 100 | .node = "pve" | .type = "qemu" else . end]'
+wait_op() { local s; for _ in $(seq 1 360); do s=$(hub GET "/fleet/members/$MID/folders?op=1" | jq -r '.operation.state // ""' 2>/dev/null); [[ "$s" == running ]] || break; sleep 0.25; done; }
+op() { hub GET "/fleet/members/$MID/folders?op=1" | jq -r ".operation | $1" 2>/dev/null; }
+FJ=$(hub GET "/fleet/members/$MID/folders")
+check "folders: a VM of the fleet can be given one"    "true 100 pve running" "$(jq -r '"\(.supported) \(.vmid) \(.node) \(.vm_status)"' <<< "$FJ" 2>/dev/null)"
+check "folders: the token may map, and give"        "true true true" "$(jq -r '"\(.can.list) \(.can.create) \(.can.attach)"' <<< "$FJ" 2>/dev/null)"
+check "folders: starting points for a path"         yes "$(jq -e '(.suggestions | index("/var/lib/vz")) != null and (.suggestions | index("/tank")) != null' <<< "$FJ" >/dev/null 2>&1 && echo yes || echo no)"
+check "folders: none yet"                           "0 0" "$(jq -r '"\(.folders | length) \(.mappings | length)"' <<< "$FJ" 2>/dev/null)"
+check "folders: a viewer may not"                   401 "$(curl -s -m 10 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$HP/fleet/members/$MID/folders")"
+check "folders: unknown member"                     404 "$(hub_code GET /fleet/members/nobody/folders)"
+: > "$FAKE/no-mapping"
+FJ=$(hub GET "/fleet/members/$MID/folders")
+check "folders: a token without the mapping role is told what to give it" "false yes" "$(jq -r '.can.create' <<< "$FJ" 2>/dev/null) $(jq -r '.hint' <<< "$FJ" 2>/dev/null | grep -q 'PVEMappingAdmin on /mapping/dir.*--users dcs@pve ' && echo yes || echo no)"
+hub POST "/fleet/members/$MID/folders" '{"name":"media","path":"/srv/media"}' >/dev/null; wait_op
+check "folders: …and sharing ends with the same advice" "failed yes" "$(op .state) $(op .error | grep -q 'may not do this.*PVEMappingAdmin' && echo yes || echo no)"
+rm -f "$FAKE/no-mapping"
+check "folders: a name must be plain"               400 "$(hub_code POST "/fleet/members/$MID/folders" '{"name":"my media","path":"/srv/media"}')"
+check "folders: a mount point stays below /mnt, /srv, /media or /data" 400 "$(hub_code POST "/fleet/members/$MID/folders" '{"name":"media","path":"/srv/media","mount":"/etc/media"}')"
+check "folders: a path with a space is refused"     400 "$(hub_code POST "/fleet/members/$MID/folders" '{"name":"media","path":"/srv/my media"}')"
+hub POST "/fleet/members/$MID/folders" '{"name":"nope","path":"/nowhere/x"}' >/dev/null; wait_op
+check "folders: a folder the host does not have is said" "failed yes" "$(op .state) $(op .error | grep -q '/nowhere/x does not exist on the Proxmox host' && echo yes || echo no)"
+# the real thing: a new mapping, the device, the line in the VM's fstab, the VM's restart, mounted when it is back
+check "share: answers at once"                      202 "$(hub_code POST "/fleet/members/$MID/folders" '{"name":"media","path":"/srv/media"}')"
+wait_op
+check "share: every step is done"                   "done mapping:done attach:done prepare:done restart:done mount:done containers:done" "$(op '.state + " " + ([.steps[] | .id + ":" + .state] | join(" "))')"
+check "share: Proxmox has the mapping"              "media node=pve,path=/srv/media" "$(pve /cluster/mapping/dir | jq -r '.data[0] | "\(.id) \(.map[0])"' 2>/dev/null)"
+check "share: the VM has the device, and nothing waits" "dirid=media 0" "$(pve /nodes/pve/qemu/100/config | jq -r '.data.virtiofs0' 2>/dev/null) $(pve /nodes/pve/qemu/100/pending | jq -r '[.data[] | select(has("pending") or has("delete"))] | length' 2>/dev/null)"
+check "share: the VM was stopped and started for it" yes "$(op '.steps[] | select(.id == "restart") | .detail' | grep -q 'stopped and started' && echo yes || echo no)"
+check "share: the line is in the VM's fstab, under a note that says whose it is" "yes" "$(grep -A1 -x '# DCS: the folder "media" of the Proxmox host' "$FAKE/vm/fstab" | grep -qx 'media /mnt/media virtiofs defaults,nofail 0 0' && echo yes || echo no)"
+check "share: the VM's other fstab lines are as they were" yes "$(grep -qx 'LABEL=dcs-root / ext4 defaults,noatime 0 1' "$FAKE/vm/fstab" && echo yes || echo no)"
+check "share: mounted in the VM"                    1 "$(grep -c '^media /mnt/media virtiofs rw' "$FAKE/vm/mounts")"
+check "share: nobody uses it yet, and that is said" yes "$(op .note | grep -q 'No container uses /mnt/media yet' && echo yes || echo no)"
+FJ=$(hub GET "/fleet/members/$MID/folders")
+check "share: the list shows it"                    "media virtiofs0 /srv/media /mnt/media true true false false" "$(jq -r '.folders[0] | "\(.id) \(.slot) \(.host_path) \(.mount) \(.mounted) \(.in_fstab) \(.pending) \(.readonly)"' <<< "$FJ" 2>/dev/null)"
+check "share: audited"                              yes "$(grep -q 'fleet_folder_mounted' "$HUB/.data/audit.jsonl" 2>/dev/null && echo yes || echo no)"
+hub POST "/fleet/members/$MID/folders" '{"name":"media"}' >/dev/null; wait_op
+check "share: the same again changes nothing"       "done 1 1 not needed: the VM has the device" "$(op .state) $(grep -c '^media /mnt/media virtiofs' "$FAKE/vm/fstab") $(grep -c '^media /mnt/media' "$FAKE/vm/mounts") $(op '.steps[] | select(.id == "restart") | .detail')"
+hub POST "/fleet/members/$MID/folders" '{"name":"media","path":"/srv/other"}' >/dev/null; wait_op
+check "share: a name that is taken by another folder is said" "failed yes" "$(op .state) $(op .error | grep -q 'already has a mapping named media, for /srv/media' && echo yes || echo no)"
+# a container gets the folder: one volume more in the stack's compose file, saved and pushed like any save
+R=$(hub POST "/fleet/members/$MID/folders/media/use" '{"stack":"demo","service":"demo","target":"/media","subfolder":"Movies","start":false}')
+check "use: the volume is added"                    "true true /mnt/media/Movies /media true" "$(jq -r '"\(.success) \(.changed) \(.source) \(.target) \(.readonly)"' <<< "$R" 2>/dev/null)"
+check "use: …in the VM's compose file"              1 "$(grep -c '^      - /mnt/media/Movies:/media:ro$' "$MEM/Stacks/demo/docker-compose.yml")"
+check "use: …and in the hub's copy"                 1 "$(grep -c '^      - /mnt/media/Movies:/media:ro$' "$HUB/Stacks/demo/docker-compose.yml")"
+check "use: again is no change"                     "true false" "$(hub POST "/fleet/members/$MID/folders/media/use" '{"stack":"demo","service":"demo","target":"/media","subfolder":"Movies","start":false}' | jq -r '"\(.success) \(.changed)"' 2>/dev/null)"
+check "use: a service the stack does not have"      400 "$(hub_code POST "/fleet/members/$MID/folders/media/use" '{"stack":"demo","service":"nope","target":"/media","start":false}')"
+check "use: a stack of another server"              400 "$(hub_code POST "/fleet/members/$MID/folders/media/use" '{"stack":"core-infrastructure","service":"x","target":"/media","start":false}')"
+check "use: the list says who uses the folder"      "demo demo /mnt/media/Movies /media true" "$(hub GET "/fleet/members/$MID/folders" | jq -r '.folders[0].used_by[0] | "\(.stack) \(.service) \(.source) \(.target) \(.readonly)"' 2>/dev/null)"
+check "use: the list names each stack's services"     "demo" "$(hub GET "/fleet/members/$MID/folders" | jq -r '.services.demo | join(" ")' 2>/dev/null)"
+# read-only from now on: the line and the mount follow
+R=$(hub POST "/fleet/members/$MID/folders/media/mount" '{"readonly":true}')
+check "mount: read-only is taken"                   "true 1 1" "$(jq -r '.success' <<< "$R" 2>/dev/null) $(grep -c '^media /mnt/media virtiofs defaults,ro,nofail 0 0$' "$FAKE/vm/fstab") $(grep -c '^media /mnt/media virtiofs ro' "$FAKE/vm/mounts")"
+check "mount: the list says read-only"              true "$(hub GET "/fleet/members/$MID/folders" | jq -r '.folders[0].readonly' 2>/dev/null)"
+# taken away again: out of the VM's fstab, off the VM, and (asked for) off Proxmox
+check "remove: answers at once"                     202 "$(hub_code DELETE "/fleet/members/$MID/folders/media?mapping=true")"
+wait_op
+check "remove: every step is done"                  "done unmount:done detach:done restart:done mapping:done" "$(op '.state + " " + ([.steps[] | .id + ":" + .state] | join(" "))')"
+check "remove: the VM's fstab and mounts let go of it" "0 0" "$(grep -c 'media' "$FAKE/vm/fstab") $(grep -c 'media' "$FAKE/vm/mounts")"
+check "remove: the device and the mapping are gone" "null 0 0" "$(pve /nodes/pve/qemu/100/config | jq -r '.data.virtiofs0 // "null"' 2>/dev/null) $(pve /cluster/mapping/dir | jq -r '.data | length' 2>/dev/null) $(hub GET "/fleet/members/$MID/folders" | jq -r '.folders | length' 2>/dev/null)"
+# a VM that is off gets the device at once; its fstab line waits for Mount once it runs
+pve_post /nodes/pve/qemu/100/status/stop
+hub POST "/fleet/members/$MID/folders" '{"name":"films","path":"/tank/films","mount":"/srv/films"}' >/dev/null; wait_op
+check "off: the folder is given, the rest waits"    "done yes dirid=films" "$(op .state) $(op .note | grep -q 'It is off: start it, then press Mount' && echo yes || echo no) $(pve /nodes/pve/qemu/100/config | jq -r '.data.virtiofs0' 2>/dev/null)"
+pve_post /nodes/pve/qemu/100/status/start
+R=$(hub POST "/fleet/members/$MID/folders/films/mount")
+check "off: started, Mount puts it in place"        "true /srv/films 1" "$(jq -r '"\(.success) \(.mount)"' <<< "$R" 2>/dev/null) $(grep -c '^films /srv/films virtiofs rw' "$FAKE/vm/mounts")"
+# a VM that keeps running: the device waits for its next start, the fstab line is already there
+hub POST "/fleet/members/$MID/folders" '{"name":"music","path":"/tank/music","restart":false}' >/dev/null; wait_op
+check "later: nothing is restarted, and that is said" "done yes yes 1" "$(op .state) $(op .note | grep -q 'mounts by itself at its next start' && echo yes || echo no) $(hub GET "/fleet/members/$MID/folders" | jq -r '.restart_needed' 2>/dev/null | sed 's/true/yes/') $(grep -c '^music /mnt/music virtiofs' "$FAKE/vm/fstab")"
+check "later: the list says it waits"               "music true false" "$(hub GET "/fleet/members/$MID/folders" | jq -r '.folders[] | select(.id == "music") | "\(.id) \(.pending) \(.mounted)"' 2>/dev/null)"
+# a member the hub has not matched to a guest
+_guest '.members = [.members[] | if .id == $id then del(.vmid) | del(.node) else . end]'
+check "folders: a member without a guest is said"   "false yes" "$(hub GET "/fleet/members/$MID/folders" | jq -r '.supported' 2>/dev/null) $(hub GET "/fleet/members/$MID/folders" | jq -r '.reason' 2>/dev/null | grep -q 'not matched to a Proxmox guest' && echo yes || echo no)"
+check "folders: …and sharing is refused"            409 "$(hub_code POST "/fleet/members/$MID/folders" '{"name":"media","path":"/srv/media"}')"
+# Proxmox is unlinked again for what follows
+sed -i '/^PROXMOX_/d' "$HUB/.env"
 
 echo "A member that is off"
 (cd "$MEM" && "$MEM/.scripts/api-server.sh" --stop >/dev/null 2>&1)

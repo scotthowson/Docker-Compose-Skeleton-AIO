@@ -4,7 +4,7 @@ Generated from the router in `.scripts/api-server.sh` by `.scripts/api-docs.sh` 
 Run `.scripts/api-docs.sh` after adding or changing a route; CI fails when this file is stale.
 
 The API listens on `API_BIND:API_PORT` (default `0.0.0.0:9876`) and answers JSON.
-Every endpoint below is `381` in total.
+Every endpoint below is `386` in total.
 
 ## Access levels
 
@@ -482,6 +482,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | GET | `/fleet/feed` | user | This server's routes in Traefik feed form, for the hub to merge into its own feed (needs no feed token; the routes point at this host's published ports) |
 | GET | `/fleet/members/{id}/api/{path}` | user | Forward the call (GET, POST, PUT or DELETE) to that member with the hub's account; the caller's own role is checked against the inner path as if it were local (streams and auth are not forwarded) |
 | GET | `/fleet/members/{id}/terminal` | admin | Can the hub open a shell in this VM: its ssh key, the VM's address and a live test {available, member, member_name, vmid, host, user, reason} |
+| GET | `/fleet/members/{id}/folders` | user | The folders of the Proxmox host a VM of the fleet has (virtiofs): what Proxmox maps, what the VM is given, where the VM mounts it and which containers use it; whether the token may share folders (it needs the role PVEMappingAdmin on /mapping/dir) and the steps under way. ?op=1: the steps alone (for polling) |
 | GET | `/fleet/members/{id}` | user | One member, with a live check that it answers |
 | GET | `/themes` | user | The themes stored on this server (without their CSS) and the one every dashboard follows (active, "" = the default look) |
 | GET | `/themes/{name}` | user | One stored theme, the whole document (palette and CSS) |
@@ -511,6 +512,9 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | POST | `/fleet/members/{id}/sync` | admin | Pull the files of every stack a VM runs into the hub's Stacks/ folders; {direction: "push"} sends the hub's copies into the VM instead; {stacks: [names]} limits it. The answer lists what moved and what failed |
 | POST | `/fleet/members/{id}/terminal/exec` | admin | Run a shell command inside a VM over the hub's ssh key {terminal_token, command, cwd?}: the hub's own Terminal session unlocks it; the same command guard, rate limit, 60 s limit and audit log as the host terminal |
 | POST | `/fleet/members/{id}/api/{path}` | admin | Forward the call (GET, POST, PUT or DELETE) to that member with the hub's account; the caller's own role is checked against the inner path as if it were local (streams and auth are not forwarded) |
+| POST | `/fleet/members/{id}/folders` | admin | Share a folder of the Proxmox host with a VM {name, path?, mount?, readonly?, restart?}: the mapping on Proxmox (made from path when name is new), the virtiofs device on the VM, a restart of the VM when it runs (restart: false leaves that to you), the mount in the VM (default /mnt/<name>) and a restart of the stacks that already name the folder. Answers at once (202); GET …/folders?op=1 follows the steps |
+| POST | `/fleet/members/{id}/folders/*/mount` | admin | Mount a folder the VM was given, in the VM, now {mount?, readonly?}: the line in its /etc/fstab and the mount (after a VM that was off is started, or to change read-only); the stacks that name the folder are restarted |
+| POST | `/fleet/members/{id}/folders/*/use` | admin | Mount a folder the VM was given, in the VM, now {mount?, readonly?}: the line in its /etc/fstab and the mount (after a VM that was off is started, or to change read-only); the stacks that name the folder are restarted |
 | POST | `/power/sample` | admin | Read the UPS right now (also refreshes what GET /power shows) |
 | POST | `/sablier/repair` | admin | Recreate on-demand containers that a prune removed (created, not started, so Sablier can wake them) |
 | POST | `/themes` | admin | Store a theme: the document itself {schema: 1, name, title, mode, palette: {accent, accentSecondary, bg, surface, surfaceRaised, border, text, textMuted, success, warning, danger, info}, font, radius, css}; replaces a theme of the same name; CSS that loads or runs something is cut out and reported (stripped) |
@@ -524,6 +528,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | PUT | `/fleet/members/{id}` | admin | Change a member's name, address, account, the guest it is mapped to, or the stacks it answers for {name?, url?, username?, password?, vmid?, node?, type?, insecure?, stacks?: ["name", …]} (a placement makes the hub forward that stack's requests to this member; a stack the hub runs itself cannot be placed) |
 | DELETE | `/themes/{name}` | admin | Remove a stored theme (dashboards following it go back to the default look) |
 | DELETE | `/fleet/members/{id}/api/{path}` | admin | Forward the call (GET, POST, PUT or DELETE) to that member with the hub's account; the caller's own role is checked against the inner path as if it were local (streams and auth are not forwarded) |
+| DELETE | `/fleet/members/{id}/folders/*` | admin | Take a shared folder from a VM (?restart=false leaves the VM running: the device goes at its next start; ?mapping=true also removes the mapping from Proxmox): unmounted in the VM and out of its /etc/fstab, the device off the VM. Answers at once (202); nothing is deleted on the host |
 | DELETE | `/fleet/members/{id}` | admin | Forget a member (its dcs-hub account is removed there when it answers) |
 | DELETE | `/fleet/templates/{vmid}` | admin | Forget a DCS template and destroy the template VM on Proxmox |
 | DELETE | `/fleet/jobs/{id}` | admin | Forget a finished or failed job; ?destroy=true also destroys the VM a failed build (or a by-hand install that never joined) left behind |

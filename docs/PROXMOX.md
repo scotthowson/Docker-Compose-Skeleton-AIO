@@ -310,6 +310,8 @@ roles **PVEVMAdmin**, **PVEDatastoreAdmin** and **PVESDNUser** on `/` (Datacente
 Permissions → Add), or the privileges `VM.Allocate`, `VM.Config.*`, `Datastore.AllocateSpace`,
 `Datastore.AllocateTemplate`, `Datastore.Allocate` (to switch *import* on) and `SDN.Use`.
 `Sys.AccessNetwork` on the node (a custom role) lets Proxmox download the image itself.
+To share a folder of the host with a VM from the dashboard (*Host folders*), the role
+**PVEMappingAdmin** on `/mapping/dir`.
 `GET /proxmox/capabilities` and the wizard say what is missing. The hub itself needs `ssh` and
 `ssh-keygen`, a dir storage for the image (`local`), a bridge the VMs share with the hub, a
 free address range, and internet from the VMs (the install log says at once when there is
@@ -436,7 +438,7 @@ Some things go further than a merged list:
   rate limit, 60 s limit and audit log as the hub's own terminal; the prompt says where each
   command ran. From your own computer the hub is the jump host (`ssh -J you@hub dcs@<vm address>`),
   once the VM holds your public key — a VM the hub builds holds the hub's key only; on the hub,
-  `cat ~/.ssh/authorized_keys | ssh -i ~/.Docker-Compose-Skeleton-AIO/.data/fleet-ssh/id_ed25519 dcs@<vm address> 'cat >> ~/.ssh/authorized_keys'`
+  `cat ~/.ssh/authorized_keys | ssh -i ~/.Docker-Compose-Skeleton-AIO/.data/fleet-ssh/id_ed25519 -o StrictHostKeyChecking=accept-new dcs@<vm address> 'cat >> ~/.ssh/authorized_keys'`
   gives a VM the keys the hub accepts. A VM you made yourself needs the hub's public key
   (`.data/fleet-ssh/id_ed25519.pub`) in its DCS account's `authorized_keys` first.
 - **Homarr and themes for a VM's apps.** A VM's container page offers **Add to Homarr** (the
@@ -480,6 +482,48 @@ Proxmox host — a ZFS dataset, a directory on a second drive — is shared into
 copied onto its disk: Proxmox VE 8.4 and later hand a host folder to a VM with **virtiofs**, and
 the DCS images mount it as they are (their kernel has virtiofs; the Debian image's kernel has no
 USB-storage driver, so a USB drive is plugged into the host and shared the same way).
+
+**From the dashboard.** On the Proxmox page, a VM's card has a **Host folders** button (the
+folder with an arrow). The sheet lists the folders the VM has — the folder on the host, where the
+VM mounts it, the containers that use it — and **Share a folder of the host** does every step
+below for you:
+
+1. A name (`media`) and the folder on the Proxmox host (`/tank/media`; the host's storages are
+   offered as starting points), or a mapping Proxmox already has. Where the VM mounts it
+   (default `/mnt/<name>`), read-only or not.
+2. **Share and restart the VM**: the hub makes the mapping on Proxmox, adds the virtiofs device to
+   the VM, writes the line into the VM's `/etc/fstab`, has Proxmox stop and start the VM (a new
+   device only appears then — its containers are down for about a minute), mounts the folder and
+   restarts the stacks that already name it. The sheet shows each step as it happens. With the
+   restart box off, nothing stops: the folder mounts by itself the next time the VM is shut down
+   and started.
+3. **Use in a container**: pick the stack and the service, the path inside the container
+   (`/media`), optionally a subfolder (`Movies`) and read-only. The hub adds that one volume line
+   to the stack's compose file — saved like any edit in the compose editor, the version before
+   kept — and starts the stack again. A stack that already binds the folder (Jellyfin's *Media
+   path* set to `/mnt/media`) needs nothing: it is listed under the folder at once.
+
+**Remove** takes the folder from the VM (unmounted, out of its fstab, the device off the VM;
+optionally the mapping off Proxmox). Nothing is ever deleted on the host.
+
+The token needs one more role for this, **PVEMappingAdmin on `/mapping/dir`** (the sheet says so
+and shows the command when it is missing):
+
+```bash
+pveum acl modify /mapping/dir --users dcs@pve --roles PVEMappingAdmin
+```
+
+The folder must exist on the Proxmox host. A ZFS dataset is already a folder (`zfs list` shows
+its mountpoint, like `/tank/media`). A plain drive is mounted on the host first:
+
+```bash
+lsblk -f                                   # find the partition and its UUID
+mkdir -p /mnt/media
+echo 'UUID=<the uuid> /mnt/media ext4 defaults,nofail 0 2' >> /etc/fstab
+systemctl daemon-reload && mount /mnt/media
+```
+
+**By hand**, the same three steps:
 
 1. **On Proxmox.** *Datacenter → Directory Mappings → Add*: a name (`media`), the node, the folder
    on the host. Then the VM → *Hardware → Add → Virtiofs* with that mapping. The same from the
@@ -738,6 +782,9 @@ once; a full DCS without an admin yet saves the join for its wizard), `--join-to
 | Deploying a template into a VM stack: *Protecting a route needs Authelia* (before 3.9.8) | The hub owns Authelia for the VMs' routes (its Traefik serves them), so the choice is kept on the hub and the VM gets a plain deploy. Update the hub to 3.9.8. *Start on demand* is not offered for a stack in a VM: Sablier runs on the hub and wakes the hub's containers only. |
 | `Stacks/<name>/VM-App-Data` on the hub holds only `NOT-MOUNTED.txt` | The file says why: the VM is off or does not answer ssh (the mount comes back by itself when it does), the stack has made no App-Data yet (it is made when a container with a volume in it first starts), `sshfs` is not on the hub (`sudo apt install sshfs`, `sudo dnf install fuse-sshfs`; a hub whose DCS account has passwordless sudo installs it by itself), the VM's account does not take the hub's key (a VM you made yourself: put `.data/fleet-ssh/id_ed25519.pub` of the hub into its `authorized_keys`), or the hub's API runs as the systemd service without passwordless sudo (a mount it made would be invisible to your shell). **Mount** on the stack's page tries at once and answers with the reason. |
 | An app shows an empty library after a host folder was shared into its VM | The container was started before the folder was mounted in the VM, so it still sees the empty folder underneath: restart the stack. If the folder is empty in the VM too, the VM has not been *started* since the Virtiofs device was added (shut it down and start it), or the mapping's name in `/etc/fstab` is not the one in *Directory Mappings*. |
+| *Host folders* says the token lacks `Mapping.Modify` or `Mapping.Use` | The token needs the role PVEMappingAdmin on `/mapping/dir`: on the Proxmox host, `pveum acl modify /mapping/dir --users dcs@pve --roles PVEMappingAdmin` (your token's user), then open the sheet again. |
+| *Host folders*: "The folder … does not exist on the Proxmox host" | The path is looked up on the Proxmox host, not in the VM. `zfs list` (the MOUNTPOINT column) or `ls /mnt` on the host shows what is there; a plain drive is mounted on the host first. |
+| A shared folder says *waits for a VM restart* | A new device appears only after the VM is fully stopped and started (a reboot from inside the VM keeps the old hardware): *Shutdown*, then *Start*, on its card. |
 | A file made in `VM-App-Data` cannot be written by the app | It belongs to root in the VM (the mount serves as root so every container's files can be read). Edit files in place — that keeps their owner — or `chown` the new file there to the user the container runs as. |
 | A build is refused: *A guest named 'x' already exists on Proxmox (qemu 103 on pve)* | Proxmox holds a VM (or container) named like the stack — often one built by an earlier hub that was deleted. The hub never builds a twin, and a refused request queues nothing. Remove or rename the old guest on Proxmox (or link it from the Proxmox page if it still belongs to this hub); the setup wizard marks such a stack "VM 103 exists" and builds the others. |
 | Setup stops on *Docker is not running* or *may not use Docker* | A fresh server: Docker installed but not started (Fedora does not start it), or your user outside the `docker` group. Setup offers both fixes and carries on; by hand: `sudo systemctl enable --now docker`, `sudo usermod -aG docker $USER`, log out and back in (or `newgrp docker`), then `./setup.sh` again. |

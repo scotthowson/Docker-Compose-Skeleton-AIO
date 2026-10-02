@@ -976,7 +976,8 @@ cat > "$WORK/fakebin/apcaccess" <<'FAKE'
 printf 'APC      : 001,036,0872\nSTATUS   : ONBATT\nBCHARGE  : 42.0 Percent\nTIMELEFT : 23.0 Minutes\nLOADPCT  : 12.0 Percent\nLINEV    : 0.0 Volts\nMODEL    : Smoke UPS\n'
 FAKE
 chmod +x "$WORK/fakebin/docker" "$WORK/fakebin/apcaccess"
-check "prune spares on-demand containers" 'zz-stopped zz-other' "$(PATH="$WORK/fakebin:$PATH" _lib _prune_stopped_candidates | tr '\n' ' ' | sed 's/ $//')"
+# the candidates are left in two lists (PRUNE_RM, PRUNE_KEPT), read by the prune that called for them
+check "prune spares on-demand containers" 'zz-stopped zz-other | IT-Tools' "$(PATH="$WORK/fakebin:$PATH" _lib eval '_prune_stopped_candidates; echo "${PRUNE_RM[*]} | ${PRUNE_KEPT[*]}"')"
 check "missing on-demand container found" Ollama "$(PATH="$WORK/fakebin:$PATH" _lib _sablier_missing | tr '\n' ' ' | sed 's/ $//')"
 check "health lists missing on-demand"   array "$(auth_request GET /health | body_of | jq -r '.summary.on_demand_missing | type' 2>/dev/null)"
 check "sablier repair answers"          200 "$(auth_request POST /sablier/repair | status_of)"

@@ -5,6 +5,12 @@ on:
     branches: [main, 'release/**']
   pull_request:
 
+# bash with pipefail for every step: a suite piped into tee must fail the step when the suite fails
+# (the default shell has no pipefail, and "tests/smoke.sh | tee" then always passes)
+defaults:
+  run:
+    shell: bash
+
 jobs:
   lint-and-test:
     # both Ubuntu images: 24.04 is what "latest" was, 26.04 is what it becomes on October 19, 2026

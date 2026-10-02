@@ -5,7 +5,11 @@ container interfaces (for the fleet scan), POST status/{action}, and what the hu
 nextid, storages, download-url, qemu create/config/resize/destroy, task status, access/permissions.
 Checks the PVEAPIToken header. Usage: mock-pve.py PORT TOKEN_ID TOKEN_SECRET [statefile]
 MOCK_PVE_TLS=1: HTTPS with a self-signed certificate, and plain HTTP on the same port answered with
-a 301 to https (what pveproxy does on 8006). MOCK_PVE_PRIVS=none: a token without privileges."""
+a 301 to https (what pveproxy does on 8006). MOCK_PVE_PRIVS=none: a token without privileges.
+Folders of the host for VMs: /cluster/mapping/dir (a folder "exists" on the host when its path starts with /srv/ or
+/tank/), virtiofsN in a VM's config (pending while the VM runs, applied by a stop, a shutdown or a reboot), /pending.
+MOCK_NO_MAPPING_FILE: while that file exists the token has no Mapping privileges. MOCK_VFS_FILE: where the live
+virtiofs devices of every VM and its count of starts are written (what stands in for the VM reads them)."""
 import http.server, json, os, socket, ssl, subprocess, sys, tempfile, time, urllib.parse, pathlib
 
 PORT = int(sys.argv[1]); TOKEN = f"PVEAPIToken={sys.argv[2]}={sys.argv[3]}"
@@ -30,6 +34,20 @@ IMPORTS = {}        # storage -> [volid]
 CONFIGS = {}        # vmid -> dict of config keys the hub set
 NEXT_ID = [105]
 DENY_TAGS = {101}    # guests whose tags the token may not change
+# folders of the host for VMs: the mappings, and what waits for a VM's next start
+MAPPINGS = {}       # id -> {'id', 'map': [..], 'description'}
+PENDING = {}        # vmid -> {key: value} set while the VM runs
+PENDING_DEL = {}    # vmid -> set(keys) deleted while the VM runs
+BOOTS = {}          # vmid -> how often it was started
+MAP_PRIVS = ['Mapping.Audit', 'Mapping.Modify', 'Mapping.Use']
+def no_mapping(): return bool(os.environ.get('MOCK_NO_MAPPING_FILE')) and os.path.exists(os.environ['MOCK_NO_MAPPING_FILE'])
+def live_vfs(vmid): return [v.split('dirid=')[1].split(',')[0] for k, v in sorted(CONFIGS.get(vmid, {}).items()) if k.startswith('virtiofs')]
+def save_vfs():
+    f = os.environ.get('MOCK_VFS_FILE')
+    if f: pathlib.Path(f).write_text(json.dumps({'virtiofs': {str(k): live_vfs(k) for k in VMS}, 'boots': {str(k): BOOTS.get(k, 0) for k in VMS}}))
+def apply_pending(vmid):
+    CONFIGS.setdefault(vmid, {}).update(PENDING.pop(vmid, {}))
+    for k in PENDING_DEL.pop(vmid, set()): CONFIGS.get(vmid, {}).pop(k, None)
 TLS = os.environ.get('MOCK_PVE_TLS') == '1'
 PRIVS = [] if os.environ.get('MOCK_PVE_PRIVS') == 'none' else ['VM.Allocate', 'VM.Clone', 'VM.Config.Disk', 'VM.Config.CDROM', 'VM.Config.Network', 'VM.Config.Options', 'VM.Config.Cloudinit', 'VM.Config.Memory', 'VM.Config.CPU', 'VM.Config.HWType',
          'VM.PowerMgmt', 'VM.Audit', 'VM.Console', 'Datastore.AllocateSpace', 'Datastore.AllocateTemplate', 'Datastore.Audit', 'Datastore.Allocate', 'Sys.Audit', 'SDN.Use']
@@ -69,7 +87,9 @@ class H(http.server.BaseHTTPRequestHandler):
         if path == '/api2/json/cluster/resources': return self._send(200, {'data': [dict(v, id=f"{v['type']}/{v['vmid']}") for v in VMS.values()]})
         if path == '/api2/json/cluster/tasks': return self._send(200, {'data': TASKS[-30:]})
         if path == '/api2/json/cluster/nextid': return self._send(200, {'data': str(NEXT_ID[0])})
-        if path == '/api2/json/access/permissions': return self._send(200, {'data': {'/': {p: 1 for p in PRIVS}}})
+        if path == '/api2/json/access/permissions': return self._send(200, {'data': {q.get('path', ['/'])[0]: {p: 1 for p in PRIVS + ([] if no_mapping() or not PRIVS else MAP_PRIVS)}}})
+        if path == '/api2/json/cluster/mapping/dir': return self._send(200, {'data': [] if no_mapping() else list(MAPPINGS.values())})
+        if path == '/api2/json/storage': return self._send(200, {'data': [{'storage': 'local', 'type': 'dir', 'path': '/var/lib/vz', 'content': 'images,iso'}, {'storage': 'local-lvm', 'type': 'lvmthin', 'vgname': 'pve'}, {'storage': 'tank', 'type': 'zfspool', 'pool': 'tank'}]})
         if path == '/api2/json/nodes/pve/storage': return self._send(200, {'data': list(STORAGES.values())})
         if path.startswith('/api2/json/storage/'):
             st = STORAGES.get(path.split('/')[4]); return self._send(200, {'data': st}) if st else self._send(500, {'message': 'no such storage', 'data': None})
@@ -86,6 +106,15 @@ class H(http.server.BaseHTTPRequestHandler):
             if not vm: return self._send(500, {'message': f"Configuration file 'nodes/pve/{parts[5]}-server/{vmid}.conf' does not exist", 'data': None})
             if parts[7] == 'status' and parts[8:9] == ['current']:
                 return self._send(200, {'data': dict(vm, qmpstatus=vm['status'], cpus=vm['maxcpu'], netin=1234, netout=5678, diskread=0, diskwrite=0, agent=1, ha={'managed': 0})})
+            if parts[7] == 'pending':
+                cfg = dict(CONFIGS.get(vmid, {}), name=vm['name']); out = []
+                for k in sorted(set(cfg) | set(PENDING.get(vmid, {}))):
+                    e = {'key': k}
+                    if k in cfg: e['value'] = cfg[k]
+                    if k in PENDING.get(vmid, {}): e['pending'] = PENDING[vmid][k]
+                    if k in PENDING_DEL.get(vmid, set()): e['delete'] = 1
+                    out.append(e)
+                return self._send(200, {'data': out})
             if parts[7] == 'config':
                 cfg = {'name': vm['name'], 'cores': vm['maxcpu'], 'memory': vm['maxmem'] // 1048576, 'ostype': 'l26', 'onboot': 1, 'description': 'mock', 'net0': 'virtio=DE:AD:BE:EF:00:01,bridge=vmbr0', 'bootdisk': 'scsi0'}
                 if vm['type'] == 'qemu': cfg['smbios1'] = f"uuid={UUIDS.get(vmid, '00000000-0000-0000-0000-000000000000')}"
@@ -118,7 +147,23 @@ class H(http.server.BaseHTTPRequestHandler):
             if 'args' in f and os.environ.get('MOCK_DENY_ARGS_FILE') and os.path.exists(os.environ['MOCK_DENY_ARGS_FILE']): return self._send(403, {'message': "Permission check failed (only root can set 'args' config for non-root users)", 'data': None})
             if 'tags' in f and vmid in DENY_TAGS: return self._send(403, {'message': f'Permission check failed (/vms/{vmid}, VM.Config.Options)', 'data': None})
             if 'tags' in f: vm['tags'] = f['tags']
-            if parts[5] == 'qemu': CONFIGS.setdefault(vmid, {}).update({k: v for k, v in f.items() if k != 'tags'})
+            # a folder of the host: the token must be allowed to use the mapping, the mapping must exist; on a running VM the
+            # device waits for the next start
+            vf = {k: v for k, v in f.items() if k.startswith('virtiofs')}
+            if vf and no_mapping(): return self._send(403, {'message': f"Permission check failed (/mapping/dir/{list(vf.values())[0].split('dirid=')[1].split(',')[0]}, Mapping.Use)", 'data': None})
+            for v in vf.values():
+                if v.split('dirid=')[1].split(',')[0] not in MAPPINGS: return self._send(500, {'message': f"directory mapping '{v}' does not exist", 'data': None})
+            dele = [k for k in f.get('delete', '').split(',') if k]
+            if vm['status'] == 'running':
+                PENDING.setdefault(vmid, {}).update(vf)
+                for k in dele:
+                    if k in PENDING.get(vmid, {}): PENDING[vmid].pop(k)
+                    elif k in CONFIGS.get(vmid, {}): PENDING_DEL.setdefault(vmid, set()).add(k)
+            else:
+                CONFIGS.setdefault(vmid, {}).update(vf)
+                for k in dele: CONFIGS.get(vmid, {}).pop(k, None)
+            if parts[5] == 'qemu': CONFIGS.setdefault(vmid, {}).update({k: v for k, v in f.items() if k not in ('tags', 'delete') and not k.startswith('virtiofs')})
+            save_vfs()
             return self._send(200, {'data': None})
         if len(parts) >= 8 and parts[3] == 'nodes' and parts[5] == 'qemu':
             vmid = int(parts[6]); vm = VMS.get(vmid)
@@ -128,6 +173,10 @@ class H(http.server.BaseHTTPRequestHandler):
     def do_DELETE(self):
         if not self._auth(): return
         parts = urllib.parse.urlparse(self.path).path.split('/')
+        if len(parts) == 7 and parts[3:6] == ['cluster', 'mapping', 'dir']:
+            if no_mapping(): return self._send(403, {'message': 'Permission check failed (/mapping/dir, Mapping.Modify)', 'data': None})
+            if parts[6] not in MAPPINGS: return self._send(500, {'message': f"mapping '{parts[6]}' does not exist", 'data': None})
+            del MAPPINGS[parts[6]]; return self._send(200, {'data': None})
         if len(parts) >= 7 and parts[3] == 'nodes' and parts[5] == 'qemu' and parts[6].isdigit() and int(parts[6]) in VMS:
             vmid = int(parts[6]); del VMS[vmid]; CONFIGS.pop(vmid, None); save()
             return self._send(200, {'data': mk_upid('qmdestroy', vmid)})
@@ -135,6 +184,14 @@ class H(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         if not self._auth(): return
         parts = urllib.parse.urlparse(self.path).path.split('/')
+        if len(parts) == 6 and parts[3:6] == ['cluster', 'mapping', 'dir']:
+            f = form(self)
+            if no_mapping(): return self._send(403, {'message': 'Permission check failed (/mapping/dir, Mapping.Modify)', 'data': None})
+            if f.get('id') in MAPPINGS: return self._send(500, {'message': f"mapping '{f.get('id')}' already exists", 'data': None})
+            path = dict(kv.split('=', 1) for kv in f.get('map', '').split(',') if '=' in kv).get('path', '')
+            if not (path.startswith('/srv/') or path.startswith('/tank/')): return self._send(500, {'message': f'Path {path} does not exist\n', 'data': None})
+            MAPPINGS[f['id']] = {'id': f['id'], 'map': [f['map']], 'description': f.get('description', ''), 'digest': 'mock'}
+            return self._send(200, {'data': None})
         if len(parts) == 6 and parts[3] == 'nodes' and parts[5] == 'qemu':
             f = form(self); vmid = int(f.get('vmid', NEXT_ID[0])); NEXT_ID[0] = max(NEXT_ID[0], vmid + 1)
             if vmid in VMS: return self._send(500, {'message': f'VM {vmid} already exists', 'data': None})
@@ -161,14 +218,17 @@ class H(http.server.BaseHTTPRequestHandler):
         if len(parts) >= 9 and parts[3] == 'nodes' and parts[5] in ('qemu', 'lxc') and parts[7] == 'status':
             vmid = int(parts[6]); action = parts[8]; vm = VMS.get(vmid)
             if not vm: return self._send(500, {'message': 'no such vm', 'data': None})
-            if action in ('start', 'resume'): vm['status'] = 'running'; vm['uptime'] = 1
-            elif action in ('stop', 'shutdown'): vm['status'] = 'stopped'; vm['uptime'] = 0
+            if action in ('start', 'resume'):
+                if action == 'start' and vm['status'] != 'running': BOOTS[vmid] = BOOTS.get(vmid, 0) + 1
+                vm['status'] = 'running'; vm['uptime'] = 1
+            elif action in ('stop', 'shutdown'): vm['status'] = 'stopped'; vm['uptime'] = 0; apply_pending(vmid)
             elif action == 'suspend': vm['status'] = 'paused'
-            elif action in ('reboot', 'reset'): vm['status'] = 'running'
+            elif action == 'reboot': vm['status'] = 'running'; apply_pending(vmid); BOOTS[vmid] = BOOTS.get(vmid, 0) + 1   # Proxmox stops and starts the VM
+            elif action == 'reset': vm['status'] = 'running'
             else: return self._send(501, {'message': f'unknown action {action}', 'data': None})
             upid = f"UPID:pve:0000{len(TASKS)+1:04d}:00000001:{int(time.time()):08X}:qm{action}:{vmid}:root@pam!dcs:"
             TASKS.append({'upid': upid, 'node': 'pve', 'type': f'qm{action}', 'id': str(vmid), 'user': 'root@pam!dcs', 'status': 'OK', 'starttime': int(time.time()) + len(TASKS), 'endtime': int(time.time()) + len(TASKS) + 1})
-            save()
+            save(); save_vfs()
             return self._send(200, {'data': upid})
         self._send(501, {'message': 'not mocked', 'data': None})
 

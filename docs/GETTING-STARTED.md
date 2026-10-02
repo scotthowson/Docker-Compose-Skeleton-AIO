@@ -302,6 +302,13 @@ pveum aclmod / -user dcs@pve -role PVEDatastoreAdmin
 pveum aclmod / -user dcs@pve -role PVESDNUser
 ```
 
+And to hand a folder of the Proxmox host (a media library) to a VM from the dashboard —
+[Host folders](PROXMOX.md#a-folder-of-the-proxmox-host-inside-a-vm-media-libraries):
+
+```bash
+pveum acl modify /mapping/dir --users dcs@pve --roles PVEMappingAdmin
+```
+
 [Proxmox guide → token](PROXMOX.md#1-make-an-api-token-on-proxmox) covers the web UI way and every
 privilege. The Proxmox page says what the token may do (`GET /proxmox/capabilities`).
 

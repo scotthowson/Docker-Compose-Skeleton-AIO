@@ -5,6 +5,30 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [4.0.13] - 2026-10-02
+
+### Added
+
+- **Host folders: a folder of the Proxmox host inside a VM, from the dashboard.** A media library that sits on the host's own drives (a
+  ZFS dataset, a second disk) no longer has to be copied onto a VM's disk, or wired up by hand in three places. A VM's card on the
+  Proxmox page has a **Host folders** button: the sheet lists the folders the VM has (the folder on the host, where the VM mounts it,
+  which containers use it) and *Share a folder of the host* does every step - the directory mapping on Proxmox, the virtiofs device on
+  the VM, the line in the VM's `/etc/fstab`, the stop and start of the VM that makes a new device appear, the mount, and a restart of
+  the stacks that already name the folder - showing each step as it happens. *Use in a container* adds the one volume line to a service
+  of the VM's stack (saved like any edit in the compose editor, the version before kept) and starts the stack again; *Remove* takes
+  the folder from the VM, and nothing is ever deleted on the host. With the restart box off nothing stops: the folder mounts by itself
+  at the VM's next full start. Needs Proxmox VE 8.4 or later and one more role on the token, **PVEMappingAdmin on `/mapping/dir`** - the
+  sheet says so and shows the command when it is missing
+  ([Proxmox guide](docs/PROXMOX.md#a-folder-of-the-proxmox-host-inside-a-vm-media-libraries)). Checked end to end on Proxmox VE 9.2.
+  API: `GET/POST /fleet/members/{id}/folders`, `DELETE …/folders/{name}`, `POST …/folders/{name}/mount`, `POST …/folders/{name}/use`.
+
+### Fixed
+
+- **CI could not fail on a smoke check.** The workflow piped the smoke suite into `tee` under a shell without `pipefail`, so the step
+  passed whatever the suite said. One check had been stale since 4.0.12 (it read the prune's candidates the way they were handed over
+  before that fix) and nothing noticed. Every step runs under `bash -eo pipefail` now, and the check reads the two lists the prune
+  really uses.
+
 ## [4.0.12] - 2026-10-01
 
 ### Fixed
