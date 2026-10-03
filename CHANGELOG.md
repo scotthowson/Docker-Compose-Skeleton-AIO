@@ -5,6 +5,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [4.0.27] - 2026-10-03
+
+### Added
+
+- **Storage across every machine.** The Disk Analysis page now covers the whole setup: one bar with a segment per machine,
+  this server's drives, a card per Proxmox node with its physical disks (model, NVMe/SSD/HDD, SMART health, SSD life left),
+  its storage pools and ZFS pools, and the VMs' own disks. Totals count real capacity once (VM disks live in the pools;
+  a shared store counts once; a hub that is itself a Proxmox guest is left out of the total and says so).
+  `GET /storage/overview`; `GET /disks` adds `fstype` and exact byte sizes. [Proxmox](docs/PROXMOX.md#storage-across-every-machine)
+
 ## [4.0.26] - 2026-10-03
 
 ### Added

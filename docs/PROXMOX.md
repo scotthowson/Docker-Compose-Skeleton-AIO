@@ -545,6 +545,20 @@ API: `GET /fleet/provision/move-check?stack=NAME` (what would go with it: `movab
 `cpu_limits`, `memory_limits_mb`, `ports`, `devices`, `docker_socket`, `links_out`, `links_in`), and
 `{"move": true}` on a VM of `POST /fleet/provision`.
 
+### Storage across every machine
+
+With Proxmox linked, the **Disk Analysis** page shows all storage, not only this server's: one bar with a segment per
+machine, this server's drives, and a card per Proxmox node with its physical disks (model, NVMe/SSD/HDD, size, SMART
+health, the life left on an SSD, what the disk is used for), its storage pools (LVM-thin, directory, ZFS, NFS…, used
+of total) and its ZFS pools (health, fragmentation). The VMs of the fleet follow with their own disks.
+
+The totals count real capacity once: this server's drives and the Proxmox pools. A VM's disk lives in a pool, so it is
+shown but not added again; a storage every node shares (NFS, Ceph) counts once; and when this server is itself a guest of
+the linked Proxmox (recognised the way the hub's own VM is tagged), its drives are inside a node's pools and are left out
+of the total, which the page says. Listing the disks needs `Sys.Audit` on the node (the roles above have it), the pools
+`Datastore.Audit`. API: `GET /storage/overview` (sizes in bytes); `GET /disks` now also answers `fstype`, `total_bytes`,
+`used_bytes` and `avail_bytes`.
+
 ### Start on demand in a VM
 
 A container in a VM can start on demand like one on the hub: the first visit wakes it, and it goes back to sleep after

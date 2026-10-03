@@ -1462,6 +1462,14 @@ check "proxmox: templates dropped"      3 "$(auth_request GET /proxmox/vms | bod
 check "proxmox: running count"          2 "$(auth_request GET /proxmox/vms | body_of | jq -r '.running' 2>/dev/null)"
 check "proxmox: tags split"             media "$(auth_request GET /proxmox/vms | body_of | jq -r '.vms[0].tags[1]' 2>/dev/null)"
 check "proxmox: nodes"                  pve "$(auth_request GET /proxmox/nodes | body_of | jq -r '.nodes[0].node' 2>/dev/null)"
+# storage across every machine: the node's physical disks (model cleaned, a wear figure or none), pools and ZFS pools
+_SO=$(auth_request GET /storage/overview | body_of)
+check "storage: the node and its pools"       "pve 2 2" "$(jq -r '"\(.proxmox.nodes[0].node) \(.proxmox.nodes[0].storages | length) \(.totals.pools)"' <<< "$_SO" 2>/dev/null)"
+check "storage: a disk, its model and wear"   "Samsung SSD 990 PRO 2TB|97|PASSED" "$(jq -r '.proxmox.nodes[0].disks[0] | "\(.model)|\(.wearout)|\(.health)"' <<< "$_SO" 2>/dev/null)"
+check "storage: no wear figure is none"       null "$(jq -c '.proxmox.nodes[0].disks[1].wearout' <<< "$_SO" 2>/dev/null)"
+check "storage: a ZFS pool"                   "tank ONLINE" "$(jq -r '.proxmox.nodes[0].zfs[0] | "\(.name) \(.health)"' <<< "$_SO" 2>/dev/null)"
+check "storage: the pools are in the total"   yes "$([[ "$(jq -r '.totals.total' <<< "$_SO" 2>/dev/null)" -ge 1073741824000 ]] && echo yes || echo no)"
+check "storage: a viewer may look"            200 "$(viewer_request GET /storage/overview | status_of)"
 check "proxmox: http on 8006 made https" https://192.168.2.12:8006 "$(_lib _pve_norm_url 'http://192.168.2.12:8006/')"
 check "proxmox: http elsewhere kept"    http://pve.lan "$(_lib _pve_norm_url 'http://pve.lan/')"
 check "proxmox: browser address cleaned" https://pve.lan:8006 "$(_lib _pve_norm_url 'pve.lan:8006/#v1:0:18:4:::')"
@@ -2192,6 +2200,7 @@ check "disks: only /, so /system/metrics reports it"   '["/"]'        "$(_disks 
 check "disks: data disk, / stays out of /system/metrics" '["/mnt/data"]' "$(_disks data handle_system_metrics '.disks | map(.mount)')"
 check "disks: only /, so /disks reports it"            '[1,["/"]]'    "$(_disks root handle_disks '[.total, [.disks[].mount]]')"
 check "disks: data disk, / stays out of /disks"        '[1,["/mnt/data"]]' "$(_disks data handle_disks '[.total, [.disks[].mount]]')"
+check "storage: an older member's sizes in bytes" '{"device":"/dev/sda3","mount":"/","fstype":"","total":1610612736,"used":536870912,"avail":1099511627776}' "$(_lib eval 'jq -nc "$_storage_bytes_jq"" {device: \"/dev/sda3\", mount: \"/\", total: \"1.5G\", used: \"512M\", available: \"1T\"} | drive"')"
 for _u in "0 50" "599 50" "600 75" "3599 75" "3600 90" "86399 90" "86400 100" "9999999 100"; do
     set -- $_u; check "health score: uptime $1 s scores $2" "$2" "$(_lib _health_uptime_score "$1")"
 done

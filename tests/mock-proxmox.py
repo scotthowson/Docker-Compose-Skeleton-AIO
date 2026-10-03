@@ -91,6 +91,11 @@ class H(http.server.BaseHTTPRequestHandler):
         if path == '/api2/json/cluster/mapping/dir': return self._send(200, {'data': [] if no_mapping() else list(MAPPINGS.values())})
         if path == '/api2/json/storage': return self._send(200, {'data': [{'storage': 'local', 'type': 'dir', 'path': '/var/lib/vz', 'content': 'images,iso'}, {'storage': 'local-lvm', 'type': 'lvmthin', 'vgname': 'pve'}, {'storage': 'tank', 'type': 'zfspool', 'pool': 'tank'}]})
         if path == '/api2/json/nodes/pve/storage': return self._send(200, {'data': list(STORAGES.values())})
+        # the node's physical disks and ZFS pools (Disk Analysis: storage across every machine)
+        if path == '/api2/json/nodes/pve/disks/list': return self._send(200, {'data': [
+            {'devpath': '/dev/nvme0n1', 'model': 'Samsung_SSD_990_PRO_2TB', 'vendor': 'unknown', 'serial': 'S7DNNJ0X', 'size': 2000398934016, 'type': 'nvme', 'health': 'PASSED', 'wearout': 97, 'used': 'LVM', 'rpm': 0},
+            {'devpath': '/dev/sda', 'model': 'WDC_WD140EDGZ', 'vendor': 'ATA', 'serial': 'Y5J1', 'size': 14000519643136, 'type': 'hdd', 'health': 'PASSED', 'wearout': 'N/A', 'used': 'ZFS', 'rpm': 5400}]})
+        if path == '/api2/json/nodes/pve/disks/zfs': return self._send(200, {'data': [{'name': 'tank', 'size': 13950000000000, 'alloc': 6100000000000, 'free': 7850000000000, 'health': 'ONLINE', 'frag': 3}]})
         if path.startswith('/api2/json/storage/'):
             st = STORAGES.get(path.split('/')[4]); return self._send(200, {'data': st}) if st else self._send(500, {'message': 'no such storage', 'data': None})
         if path.startswith('/api2/json/nodes/pve/storage/') and path.endswith('/content'):
