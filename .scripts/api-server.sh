@@ -7494,7 +7494,7 @@ _backup_restore_run() {
         chk=$(_backup_listing_check "$inner") || { BR_ERROR="Refusing the part of $s: ${chk#refuse: }"; return 1; }
     done
 
-    ts=$(date +%Y%m%d-%H%M%S); pre="$BACKUP_PRE_RESTORE_DIR/$ts"
+    ts=$(date +%Y%m%d-%H%M%S); pre="$BACKUP_PRE_RESTORE_DIR/$ts"; local _pn=1; while [[ -e "$pre" ]]; do _pn=$((_pn + 1)); pre="$BACKUP_PRE_RESTORE_DIR/$ts-$_pn"; done
     (umask 077; mkdir -p -- "$pre/Stacks" "$pre/volumes") 2>/dev/null || { BR_ERROR="Cannot write $pre"; return 1; }
 
     # The stacks it touches stop (their data is replaced under them) and start again at the end
@@ -7589,7 +7589,7 @@ _backup_restore_legacy() {
     if ! lst=$(tar -tvzf "$archive" 2>/dev/null); then BR_ERROR="The archive cannot be read"; return 1; fi
     chk=$(_backup_listing_check "$lst") || { BR_ERROR="Refusing the archive: ${chk#refuse: }"; return 1; }
     mapfile -t bk_skip < <(sed -n 's/^skip: //p' <<< "$chk")
-    ts=$(date +%Y%m%d-%H%M%S); pre="$BACKUP_PRE_RESTORE_DIR/$ts"; (umask 077; mkdir -p -- "$pre") 2>/dev/null
+    ts=$(date +%Y%m%d-%H%M%S); pre="$BACKUP_PRE_RESTORE_DIR/$ts"; local _pn=1; while [[ -e "$pre" ]]; do _pn=$((_pn + 1)); pre="$BACKUP_PRE_RESTORE_DIR/$ts-$_pn"; done; (umask 077; mkdir -p -- "$pre") 2>/dev/null
     printf '%s\n' "${bk_skip[@]}" > "$pre/skip-links"
     (( ${#bk_skip[@]} )) && bk_exargs=(--anchored --no-wildcards --exclude-from="$pre/skip-links" --wildcards)
     top=$(tar -tzf "$archive" 2>/dev/null | sed -n 's#^\./\([^/]*\)/.*#\1#p' | sort -u)
@@ -32247,6 +32247,12 @@ handle_request() {
 start_server() {
     # Create log directory
     mkdir -p "$(dirname "$API_LOG_FILE")" 2>/dev/null
+    # a VM of a fleet keeps its backups beside the install (the hub's "Back up everything" asks every VM for one); a
+    # destination set by hand stays
+    if [[ -z "${BACKUP_DEST_DIR:-}" ]] && _fleet_is_member; then
+        local _bd; _bd="$(dirname "$BASE_DIR")/dcs-backups"
+        mkdir -p "$_bd" 2>/dev/null && chmod 700 "$_bd" 2>/dev/null && _api_env_write BACKUP_DEST_DIR "$_bd" && export BACKUP_DEST_DIR="$_bd"
+    fi
 
     # Color setup for terminal output
     local _A_RST="" _A_BOLD="" _A_DIM=""

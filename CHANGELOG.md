@@ -5,6 +5,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [4.0.28] - 2026-10-03
+
 ### Added
 
 - **More than one domain.** DNS & Routes → *Domains* adds more domains to the hub (one Cloudflare token for all): each gets
@@ -35,6 +37,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A VM of the fleet had nowhere to keep backups** (no `BACKUP_DEST_DIR`), so *Back up everything* failed on every VM:
+  a VM now takes `~/dcs-backups` beside its install the first time its API starts without one (a folder set by hand stays).
+- **Two restores in the same second shared the folder of what they set aside**, and the second skipped its stacks: each
+  restore now gets a folder of its own.
 - **The Cloudflare zone cache held one domain**, and some code read it as "the zone": with a second domain a record could
   land in the wrong zone. The primary domain keeps `.cf-zone-cache`, every other domain has its own file.
 - **CrowdSec banned people watching Jellyfin, at home and away.** Two causes, both fixed:
