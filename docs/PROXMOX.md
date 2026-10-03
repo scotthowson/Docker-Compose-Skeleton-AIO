@@ -614,6 +614,64 @@ For a fresh Proxmox host, this is the entire path — no terminal on the VMs, no
 6. Later: *New stack → In its own VM* adds one more; *Update all VMs* on the Updates page keeps
    them current; Discord or NTFY on the hub's Notifications page covers every VM.
 
+### Your own shell in a VM (ssh)
+
+A VM the hub built has no password at all: it has the user `dcs` (`FLEET_VM_USER`), passwordless `sudo`, and one way in,
+the hub's own key. That key was made once on the hub, in `~/.Docker-Compose-Skeleton-AIO/.data/fleet-ssh/id_ed25519`
+(the public half sits beside it). It is what lets you in from your own computer too.
+
+**1. Take the key to your computer** (once). From a machine that can already ssh to the hub:
+
+```bash
+scp howson@192.168.2.11:.Docker-Compose-Skeleton-AIO/.data/fleet-ssh/id_ed25519 ~/.ssh/dcs-fleet
+chmod 600 ~/.ssh/dcs-fleet
+```
+
+**2. Name the VMs in `~/.ssh/config`.** The address of a VM is on the Proxmox page (and in `GET /fleet/members`).
+One block per VM, named like its stack, so `ssh media-services` is all you type:
+
+```
+Host media-services
+    HostName 192.168.2.202
+    User dcs
+    IdentityFile ~/.ssh/dcs-fleet
+    IdentitiesOnly yes
+    IdentityAgent none
+```
+
+A VM on a network your computer cannot reach (the hub's lab, a second site) is reached *through the hub*:
+give the hub a block of its own and name it as the jump host.
+
+```
+Host dcs-hub
+    HostName hub.example.com
+    User howson
+    IdentityFile ~/.ssh/id_ed25519
+
+Host media-services
+    HostName 192.168.2.202
+    User dcs
+    IdentityFile ~/.ssh/dcs-fleet
+    IdentitiesOnly yes
+    IdentityAgent none
+    ProxyJump dcs-hub
+```
+
+`IdentitiesOnly yes` keeps ssh from offering every key in your agent first (a VM refuses after a few tries), and
+`IdentityAgent none` keeps it from asking an agent at all. Then `ssh media-services`, `scp file media-services:`, and
+`sudo` inside needs no password.
+
+**Treat the key like a root key**: it opens every VM the hub built, as a user with `sudo`. Keep it out of backups of your
+home folder that others read, and do not put it on a shared machine. To give another person a way in of their own, add
+*their* public key to the VM instead of handing out this one:
+
+```bash
+# from the hub (it holds the key that is allowed in)
+ssh -i ~/.Docker-Compose-Skeleton-AIO/.data/fleet-ssh/id_ed25519 dcs@192.168.2.202 'cat >> ~/.ssh/authorized_keys' < their-key.pub
+```
+
+A VM you made yourself has its own users and keys: see below.
+
 ### VMs you made yourself
 
 Any VM — one you installed from an ISO, a VM from before the hub, a machine that is not on
