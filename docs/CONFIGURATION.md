@@ -195,13 +195,27 @@ The rules themselves (which events, which targets) live on the Notifications pag
 | Key | Default | Meaning |
 |---|---|---|
 | `UPS_ENABLED` | `false` | Watch a UPS |
-| `UPS_SOURCE` | `auto` | NUT or apcupsd |
+| `UPS_SOURCE` | `auto` | `nut`, `apcupsd`, `pwrstat` (CyberPower PowerPanel) or `auto` (tries them in that order) |
+| `UPS_PWRSTAT_BIN` | *(found by itself)* | Where `pwrstat` is, when it is not in `/usr/bin` |
 | `UPS_NUT_HOST`, `UPS_NUT_PORT`, `UPS_NAME` | `127.0.0.1`, `3493`, `ups` | The NUT server and the UPS name on it (the `nut-upsd` template serves a USB UPS) |
 | `UPS_POLL_INTERVAL` | `15` | Seconds between reads |
 | `UPS_SHUTDOWN_CHARGE`, `UPS_SHUTDOWN_RUNTIME` | `20`, `300` | On battery, below this charge (%) or runtime (s) the stacks stop |
 | `UPS_ON_BATTERY_ACTION` | `stop-stacks` | What happens at the threshold |
 | `UPS_HOST_SHUTDOWN_CMD` | *(empty)* | A command to run after the stacks stopped, such as a sudo rule for `shutdown -h` |
 | `UPS_START_ON_POWER` | `false` | Start the stacks again when mains returns |
+
+**A CyberPower UPS (PowerPanel, `pwrstat`).** Set `UPS_SOURCE=pwrstat` (or leave `auto`: it finds `pwrstat` itself). The program
+belongs to root, so the server reads it through `sudo -n`; one line lets it, and only that command:
+
+```bash
+echo 'howson ALL=(root) NOPASSWD: /usr/bin/pwrstat -status' | sudo tee /etc/sudoers.d/dcs-pwrstat
+sudo chmod 440 /etc/sudoers.d/dcs-pwrstat
+```
+
+(`howson` is the user DCS runs as; until the line is there, the Power card says so and shows this command.) Charge, runtime,
+load in watts and percent, the input and output voltage, the last power event and the self-test result are read; a power
+failure is *on battery*, and *low* means the charge or runtime is under the two thresholds above. The Dashboard's Power card
+shows it, and a board that reads the [dashboard feed](DASHBOARDS.md) (`system.ups`) can draw it.
 
 ## Proxmox and the fleet
 

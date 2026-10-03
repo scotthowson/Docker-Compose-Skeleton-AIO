@@ -5,6 +5,22 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [4.0.22] - 2026-10-02
+
+### Added
+
+- **A CyberPower UPS (PowerPanel's `pwrstat`) is watched like a NUT or apcupsd one.** `UPS_SOURCE=pwrstat` (or `auto`, which finds it)
+  reads `pwrstat -status`: the charge, the minutes left, the load in watts and percent, the input and output voltage, the last
+  power event and the self-test result. A power failure is *on battery*; *low* means the charge or runtime is under the two stop
+  thresholds, at which the stacks stop cleanly as with any UPS. `pwrstat` belongs to root, so the server reads it through
+  `sudo -n`; until one line allows it, the Power card says so and shows it:
+  `echo 'howson ALL=(root) NOPASSWD: /usr/bin/pwrstat -status' | sudo tee /etc/sudoers.d/dcs-pwrstat && sudo chmod 440 /etc/sudoers.d/dcs-pwrstat`
+  (see [Configuration](docs/CONFIGURATION.md#power-ups)). The Power card shows the watts, the voltages, the last event and the
+  self-test; Config > Power has the new source.
+- **The UPS in the dashboard feed.** `GET /summary` and `/feed/summary` carry `system.ups` (the charge, the minutes left, the
+  load in watts, on battery or not) from what the watch last read, so a Homarr board can draw it beside the processor and
+  memory. `GET /summary` also names the last backup.
+
 ## [4.0.21] - 2026-10-02
 
 ### Added

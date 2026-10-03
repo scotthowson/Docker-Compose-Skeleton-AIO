@@ -1129,6 +1129,41 @@ if command -v socat >/dev/null 2>&1; then
     PU=$(UPS_SOURCE=nut UPS_NUT_HOST=127.0.0.1 UPS_NUT_PORT=$NUTP UPS_NAME=ups _lib _power_sample)
     check "power: NUT unreachable reported" false "$(printf '%s' "$PU" | jq -r '.ok')"
 fi
+# CyberPower's pwrstat (PowerPanel): the output of a CP1500PFCLCDa on mains, then in a blackout
+cat > "$WORK/fakebin/pwrstat" <<'PWEOF'
+#!/bin/bash
+case "${PW_MODE:-mains}" in
+  denied) echo "bash: pwrstat: Permission denied" >&2; exit 126 ;;
+  nodaemon) echo "The daemon service is not available." >&2; exit 1 ;;
+esac
+s="Normal"; by="Utility Power"; uv="122 V"; cap="80 %"; rt="153 min."; ld="0 Watt(0 %)"; ev="None"
+[[ "${PW_MODE:-mains}" == blackout ]] && { s="Power Failure"; by="Battery Power"; uv="0 V"; cap="63 %"; rt="97 min."; ld="180 Watt(18 %)"; ev="Blackout at 2026/10/02 22:01:11"; }
+[[ "${PW_MODE:-mains}" == dying ]] && { s="Power Failure"; by="Battery Power"; uv="0 V"; cap="9 %"; rt="4 min."; ld="180 Watt(18 %)"; ev="Blackout at 2026/10/02 22:01:11"; }
+printf '\nThe UPS information shows as following:\n\n\tProperties:\n\t\tModel Name................... CP1500PFCLCDa\n\t\tFirmware Number.............. CR01802H1711\n\t\tRating Voltage............... 120 V\n\t\tRating Power................. 1000 Watt(1500 VA)\n\n\tCurrent UPS status:\n\t\tState........................ %s\n\t\tPower Supply by.............. %s\n\t\tUtility Voltage.............. %s\n\t\tOutput Voltage............... 122 V\n\t\tBattery Capacity............. %s\n\t\tRemaining Runtime............ %s\n\t\tLoad......................... %s\n\t\tLine Interaction............. None\n\t\tTest Result.................. Unknown\n\t\tLast Power Event............. %s\n' "$s" "$by" "$uv" "$cap" "$rt" "$ld" "$ev"
+PWEOF
+chmod +x "$WORK/fakebin/pwrstat"
+_pws() { PW_MODE="$1" UPS_SOURCE=pwrstat UPS_PWRSTAT_BIN="$WORK/fakebin/pwrstat" _lib _power_sample; }
+PM=$(_pws mains)
+check "power: pwrstat on mains"         'pwrstat Normal false 80 9180 0 122' "$(jq -r '"\(.source) \(.status) \(.on_battery) \(.charge) \(.runtime_seconds) \(.load) \(.input_voltage)"' <<< "$PM")"
+check "power: pwrstat model and watts"  'CP1500PFCLCDa 0 1000 122' "$(jq -r '"\(.model) \(.load_watts) \(.rated_watts) \(.output_voltage)"' <<< "$PM")"
+check "power: pwrstat no event on mains" null "$(jq -r '.last_power_event' <<< "$PM")"
+PB=$(_pws blackout)
+check "power: pwrstat in a blackout"    'true false 63 5820 18 180' "$(jq -r '"\(.on_battery) \(.low_battery) \(.charge) \(.runtime_seconds) \(.load) \(.load_watts)"' <<< "$PB")"
+check "power: pwrstat names the event"  'Blackout at 2026/10/02 22:01:11' "$(jq -r '.last_power_event' <<< "$PB")"
+check "power: pwrstat low is the stop threshold" 'true' "$(jq -r '.low_battery' <<< "$(_pws dying)")"
+# a sudo that wants a password (the runner's own may be passwordless, or the job may run as root): refused, the server says what to add
+mkdir -p "$WORK/sudo-asks"; printf '#!/bin/bash\necho "sudo: a password is required" >&2\nexit 1\n' > "$WORK/sudo-asks/sudo"; chmod +x "$WORK/sudo-asks/sudo"
+if [[ "$(id -u)" -eq 0 ]]; then
+    check "power: pwrstat refused (as root there is no sudo to ask)" yes "$(jq -r '.error' <<< "$(_pws denied)" | grep -q 'ermission denied' && echo yes || echo no)"
+else
+    check "power: pwrstat refused says how to allow it" yes "$(PATH="$WORK/sudo-asks:$PATH" _pws denied | jq -r '.error' | grep -q 'NOPASSWD' && echo yes || echo no)"
+fi
+check "power: pwrstat without its daemon, as it says" yes "$(jq -r '.error' <<< "$(_pws nodaemon)" | grep -q 'daemon service is not available' && echo yes || echo no)"
+check "power: pwrstat not installed"    yes "$(UPS_SOURCE=pwrstat UPS_PWRSTAT_BIN=/nonexistent PATH=/usr/bin:/bin _lib _power_sample | jq -r '.error' | grep -q 'not installed' && echo yes || echo no)"
+# the dashboard feed carries the UPS the watch loop read last, and nothing when it is not watched
+printf '%s' "$PB" > "$WORK/.data/power.json"
+check "power: the feed has the UPS"     '63 97 180 true' "$(UPS_ENABLED=true _lib eval 'POWER_STATE_FILE="'"$WORK"'/.data/power.json"; handle_feed_summary' | sed -n '/^{/p' | jq -r '.system.ups | "\(.percent) \(.runtime_min) \(.load_watts) \(.on_battery)"' 2>/dev/null)"
+rm -f "$WORK/.data/power.json"
 check "GET /power when off"             false "$(auth_request GET /power | body_of | jq -r '.enabled')"
 check "traefik status: switch facts"    true "$(auth_request GET /traefik/status | body_of | jq -r 'has("authelia_middleware") and has("sablier") and has("authelia")')"
 check "deploy: on demand needs Sablier" 409 "$(auth_request POST /templates/demo-tpl/deploy '{"target_stack":"demo","on_demand_services":["demo"]}' | status_of)"

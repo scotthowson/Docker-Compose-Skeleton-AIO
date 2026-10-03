@@ -36,7 +36,7 @@ curl -s -H "X-API-Key: $DCS_KEY" http://my-server:9876/summary | jq .
 curl -s -X POST -H "X-API-Key: $DCS_KEY" http://my-server:9876/stacks/media-services/restart    # an operate key
 ```
 
-`GET /summary` is the server at a glance: the version, stacks up of total, containers running of total, and the machine
+`GET /summary` is the server at a glance (and the UPS when `UPS_ENABLED` is on: `system.ups` has the charge, the minutes left, the load in watts, and whether it is on battery): the version, stacks up of total, containers running of total, and the machine
 (processor, memory, disk, the NVIDIA card when there is one).
 
 ## Homarr custom widgets
