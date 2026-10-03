@@ -23032,7 +23032,7 @@ _fleet_routes_arrived() {
 # kept on the public address (DDNS). A VM can use any of them (its own, default the hub's); a hub stack picks one at
 # deploy time. An extra domain may not sit under the primary (x.howson.dev is a subdomain, not a domain).
 _domains_extra() {
-    local v p d; p=$(_find_traefik_domain 2>/dev/null)
+    local v p d; p=$(_fleet_domain 2>/dev/null)
     v=$(grep -m1 '^PROXY_DOMAINS_EXTRA=' "$BASE_DIR/.env" 2>/dev/null | cut -d= -f2- | tr -d "\"'" | tr ',' ' ' | tr '[:upper:]' '[:lower:]')
     for d in $v; do
         _domain_valid "$d" || continue
@@ -23040,7 +23040,7 @@ _domains_extra() {
         printf '%s\n' "$d"
     done | awk '!s[$0]++'
 }
-_domains_all() { local p; p=$(_find_traefik_domain 2>/dev/null); [[ -n "$p" && "$p" != example.com ]] && printf '%s\n' "$p"; _domains_extra; }
+_domains_all() { local p; p=$(_fleet_domain 2>/dev/null); [[ -n "$p" ]] && printf '%s\n' "$p"; _domains_extra; }
 _domain_managed() { [[ -n "$1" ]] && _domains_all | grep -qxF -- "$1"; }
 # _domain_of_host HOST — the managed domain a host name belongs to (the longest that matches), empty when none
 _domain_of_host() {
