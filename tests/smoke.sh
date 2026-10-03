@@ -476,6 +476,7 @@ check "chain: bouncer removed"              0 "$(grep -c 'crowdsec-bouncer' "$WO
 check "health reports sleeping"             true "$(auth_request GET /health | body_of | jq -r '.summary | has("sleeping")' 2>/dev/null)"
 check "health score counts sleeping apart"      true "$(auth_request GET /health/score | body_of | jq -r '.factors.stacks | has("sleeping")' 2>/dev/null)"
 check "stacks say whether they sleep"          true "$(auth_request GET /stacks | body_of | jq -r '.stacks[0] | has("sleeping")' 2>/dev/null)"
+check "stacks count their sleeping containers"  true "$(auth_request GET /stacks | body_of | jq -r '.stacks[0] | (.sleeping_containers | type == "number") and (.hub_only | type == "boolean")' 2>/dev/null)"
 check "sablier toggle: unknown container"   404 "$(auth_request POST /containers/nope-zz/sablier '{"enabled":true}' | status_of)"
 check "sablier toggle: viewer denied"       403 "$(viewer_request POST /containers/nope-zz/sablier '{"enabled":true}' | status_of)"
 check "sablier settings: unknown container" 404 "$(auth_request GET /containers/nope-zz/sablier | status_of)"
@@ -1348,6 +1349,16 @@ check "cooldown: containers default"     60 "$(_lib _notify_default_cooldown con
 check "cooldown: updates daily"          1440 "$(_lib _notify_default_cooldown update_available)"
 check "cooldown: deploys always"         0 "$(_lib _notify_default_cooldown deploy_complete)"
 check "cooldown: env override"           5 "$(NOTIFY_COOLDOWN_MINUTES=5 _lib _notify_default_cooldown container_stopped)"
+# the cooldown key is rule|event|vm|stack|container|…: a container that is fine again is forgotten (this host's only)
+_NSF="$WORK/notify-state-test.json"
+printf '{"r|container_stopped||st|keep|":1,"r|container_stopped||st|gone|":1,"r|container_stopped|vm1|st|gone|":1,"r|disk_warning||||/":1}' > "$_NSF"
+_lib eval "NOTIFY_STATE_FILE='$_NSF'; FLEET_RELAY_STATE_FILE='$WORK/none.json'; _notify_state_prune_containers keep"
+check "cooldown: a recovered container is forgotten" "r|container_stopped|vm1|st|gone| r|container_stopped||st|keep| r|disk_warning||||/" "$(jq -r 'keys | join(" ")' "$_NSF")"
+printf '{"container_stopped|st|keep|":1,"container_stopped|st|gone|":1}' > "$_NSF"
+_lib eval "NOTIFY_STATE_FILE='$WORK/none.json'; FLEET_RELAY_STATE_FILE='$_NSF'; _notify_state_prune_containers keep"
+check "relay: a recovered container goes again"   "container_stopped|st|keep|" "$(jq -r 'keys | join(" ")' "$_NSF")"
+command rm -f "$_NSF"
+check "relay: a member's context, never its host"  "container=c fingerprint=ab" "$(_lib _fleet_relay_args '{"context":{"fingerprint":"ab","hostname":"x","vm":"y","container":"c","relayed":"1"}}' | sort | tr '\n' ' ' | sed 's/ $//')"
 check "default wording: stopped"         "{container} stopped" "$(_lib eval '_notify_default_templates container_stopped; printf %s "$NT_TITLE"')"
 check "rule: cooldown stored"            15 "$(auth_request POST /notifications/rules '{"name":"cd","trigger":"container_stopped","cooldown_minutes":15}' | body_of | jq -r '.cooldown_minutes')"
 check "rule: cooldown optional"          null "$(auth_request POST /notifications/rules '{"name":"cd0","trigger":"container_stopped"}' | body_of | jq -r '.cooldown_minutes')"
@@ -1568,7 +1579,7 @@ check "relay: event accepted"           true "$(request POST /fleet/relay "{\"to
 check "relay: hub activity names the VM" yes "$(grep 'fleet_event' "$WORK/.data/audit.jsonl" 2>/dev/null | tail -1 | grep -q 'from VM media-vm' && echo yes || echo no)"
 check "relay: odd event name refused"   400 "$(request POST /fleet/relay "{\"token\":\"$_RT\",\"event\":\"Not Valid\"}" | status_of)"
 # a member's context is data: the keys the hub sets itself never come through, and the audit line stays short
-check "relay: reserved keys dropped"    "stack=demo" "$(_lib _fleet_relay_args '{"context":{"hostname":"evil","member":"x","relayed":"0","fingerprint":"f","timestamp":"t","stack":"demo"}}' | tr '\n' ' ' | sed 's/ $//')"
+check "relay: reserved keys dropped"    "fingerprint=f stack=demo" "$(_lib _fleet_relay_args '{"context":{"hostname":"evil","member":"x","relayed":"0","fingerprint":"f","timestamp":"t","stack":"demo"}}' | tr '\n' ' ' | sed 's/ $//')"
 request POST /fleet/relay "{\"token\":\"$_RT\",\"event\":\"stack_stopped\",\"context\":{\"stack\":\"$(printf 'x%.0s' $(seq 1 300))\"}}" >/dev/null
 check "relay: long values cut in the audit line" yes "$([[ $(tail -1 "$WORK/.data/audit.jsonl" | jq -r '.detail' 2>/dev/null | wc -c) -lt 200 ]] && echo yes || echo no)"
 # the hub's own hostname stays on a notification whatever a context says (the notifier is stubbed to write its fields)
@@ -2198,6 +2209,14 @@ check "move-check: a disk size that holds it"      yes "$([[ "$(jq -r '.suggeste
 check "move-check: no earlier VM"                  null "$(jq -r '.earlier_vm' <<< "$_MC" 2>/dev/null)"
 check "move-check: an unknown stack"               404 "$(auth_request GET '/fleet/provision/move-check?stack=zz-nope' | status_of)"
 check "move-check: a viewer may not"               403 "$(viewer_request GET '/fleet/provision/move-check?stack=zz-move' | status_of)"
+check "move-check: a read-only socket is no driver"   0 "$(jq -r '.docker_socket | length' <<< "$_MC" 2>/dev/null)"
+check "move-check: movable"                        true "$(jq -r '.movable' <<< "$_MC" 2>/dev/null)"
+# a cpus: limit above the VM's cores: Docker refuses the container, so the move asks for a VM that can hold it
+printf '    cpus: 3\n' >> "$WORK/Stacks/zz-move/docker-compose.yml"
+check "move-check: the cores a cpus: limit needs"  "3 m" "$(auth_request GET '/fleet/provision/move-check?stack=zz-move' | body_of | jq -r '"\(.min_cores) \(.cpu_limits[0].service)"' 2>/dev/null)"
+check "move: a VM with fewer cores is refused"     yes "$(auth_request POST /fleet/provision '{"node":"pve","storage":"local-lvm","gateway":"192.0.2.1","ip_start":"192.0.2.10","vms":[{"stack":"zz-move","move":true,"cores":2}]}' | body_of | jq -r '.message' | grep -q 'at least 3 cores' && echo yes || echo no)"
+check "move: the hub's own stacks never move"      "0 1" "$(_lib _fleet_hub_only core-infrastructure; a=$?; _lib _fleet_hub_only zz-move; echo "$a $?")"
+check "move: a hub-only stack is a blocker"        yes "$(_lib _fleet_move_blockers networking-security | grep -q 'part of the hub' && echo yes || echo no)"
 check "move: a move takes the stack's own name"    400 "$(auth_request POST /fleet/provision '{"node":"pve","storage":"local-lvm","gateway":"192.0.2.1","ip_start":"192.0.2.10","vms":[{"stack":"zz-move","source":"other","move":true}]}' | status_of)"
 check "move: a stack that is not there"            404 "$(auth_request POST /fleet/provision '{"node":"pve","storage":"local-lvm","gateway":"192.0.2.1","ip_start":"192.0.2.10","vms":[{"stack":"zz-nope","move":true}]}' | status_of)"
 _DS0=$(grep -m1 '^DOCKER_STACKS=' "$WORK/.env"); sed -i 's|^DOCKER_STACKS=.*|DOCKER_STACKS="demo zz-move demo2"|' "$WORK/.env"

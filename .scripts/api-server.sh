@@ -2428,6 +2428,8 @@ handle_system_info_internal() {
 handle_health() {
     local -a results=()
     local total=0 healthy=0 unhealthy=0 stopped=0 sleeping=0
+    # the first minutes after a boot the stacks are still being started: a container not up yet is not news
+    local _hw_boot=false; (( $(cut -d. -f1 /proc/uptime 2>/dev/null || echo 999999) <= ${HEALTH_WATCH_BOOT_GRACE:-300} )) && _hw_boot=true
     # Containers Sablier stops on purpose are idle, not down
     local -A _on_demand=()
     local _sn
@@ -2473,11 +2475,11 @@ handle_health() {
         elif [[ "$state" != "running" ]]; then
             stopped=$(( stopped + 1 ))
             _bad_names+=("$name"); _stopped_names+=("$name")
-            _fire_notifications "container_stopped" "container=$name" "status=stopped" "stack=$cstack" 2>/dev/null
+            [[ "$_hw_boot" == true ]] || _fire_notifications "container_stopped" "container=$name" "status=stopped" "stack=$cstack" 2>/dev/null
         elif [[ "$health" == "unhealthy" ]]; then
             unhealthy=$(( unhealthy + 1 ))
             _bad_names+=("$name"); _unhealthy_names+=("$name"); _bad_list+="${_bad_list:+, }$name"
-            _fire_notifications "container_unhealthy" "container=$name" "status=unhealthy" "stack=$cstack" 2>/dev/null
+            [[ "$_hw_boot" == true ]] || _fire_notifications "container_unhealthy" "container=$name" "status=unhealthy" "stack=$cstack" 2>/dev/null
         else
             healthy=$(( healthy + 1 ))
         fi
@@ -2485,7 +2487,7 @@ handle_health() {
         # Check restart threshold
         if [[ "${restart_count:-0}" -ge "$_restart_threshold" ]] 2>/dev/null; then
             _bad_names+=("$name"); _unhealthy_names+=("$name")
-            _fire_notifications "container_unhealthy" "container=$name" "status=restarting (${restart_count}x)" "stack=$cstack" 2>/dev/null
+            [[ "$_hw_boot" == true ]] || _fire_notifications "container_unhealthy" "container=$name" "status=restarting (${restart_count}x)" "stack=$cstack" 2>/dev/null
         fi
 
         results+=("{\"name\": \"$(_api_json_escape "$name")\", \"state\": \"$state\", \"health\": \"$health\", \"restart_count\": ${restart_count:-0}, \"on_demand\": $([[ -n "${_on_demand[$name]:-}" ]] && echo true || echo false)}")
@@ -2590,9 +2592,12 @@ handle_health_internal() {
 
 # GET /stacks — All stacks with running-container counts
 handle_stacks() {
-    local stacks _SAB_NAMES
+    local stacks _SAB_NAMES _down_od=""
     _SAB_NAMES=$(_sablier_names 2>/dev/null)
     read -ra stacks <<< "$(_api_get_stacks)"
+    # on-demand containers that are not running (Sablier wakes them on a request): "<project>" per container, one docker call
+    [[ -n "$_SAB_NAMES" ]] && _down_od=$(timeout 10 docker ps -a --filter status=created --filter status=exited --format '{{.Names}}	{{.Label "com.docker.compose.project"}}' 2>/dev/null \
+        | awk -F'\t' 'NR == FNR { od[$0] = 1; next } ($1 in od) && $2 != "" { print $2 }' <(printf '%s\n' "$_SAB_NAMES") - 2>/dev/null)
 
     local -a entries=()
     for stack in "${stacks[@]}"; do
@@ -2611,7 +2616,9 @@ handle_stacks() {
 
         local asleep=false
         [[ "$status" == stopped ]] && _stack_asleep "$stack" && asleep=true
-        entries+=("{\"name\": \"$stack\", \"status\": \"$status\", \"running_containers\": $count, \"sleeping\": $asleep, \"has_env\": $has_env, \"compose_file\": \"$(_api_json_escape "$compose_file")\"}")
+        local zc=0 ho=false; [[ -n "$_down_od" ]] && zc=$(grep -cxF -- "$stack" <<< "$_down_od"); [[ "$zc" =~ ^[0-9]+$ ]] || zc=0
+        _fleet_hub_only "$stack" && ho=true
+        entries+=("{\"name\": \"$stack\", \"status\": \"$status\", \"running_containers\": $count, \"sleeping\": $asleep, \"sleeping_containers\": $zc, \"hub_only\": $ho, \"has_env\": $has_env, \"compose_file\": \"$(_api_json_escape "$compose_file")\"}")
     done
 
     local json
@@ -5918,6 +5925,10 @@ _sablier_repair() {
         f=$(grep -l -E "^[[:space:]]*container_name:[[:space:]]*\"?${n}\"?[[:space:]]*$" "$COMPOSE_DIR"/*/docker-compose.yml 2>/dev/null | head -1)
         if [[ -z "$f" ]]; then SAB_FAILED+=("$n: no stack declares this container"); continue; fi
         stack=$(basename "$(dirname "$f")")
+        # a stack that runs in a VM: its folder here is the hub's mirror of it, never something to start containers from
+        if ! _fleet_stack_is_hub "$stack" 2>/dev/null && [[ -n "$(_fleet_member_for_stack "$stack" 2>/dev/null)" ]]; then
+            continue
+        fi
         svc=$(awk -v cn="$n" '/^  [A-Za-z0-9_.-]+:[[:space:]]*$/ { s=$1; sub(/:$/, "", s) } $0 ~ ("^[[:space:]]*container_name:[[:space:]]*\"?" cn "\"?[[:space:]]*$") { print s; exit }' "$f")
         if [[ -z "$svc" ]]; then SAB_FAILED+=("$n: service not found in $stack"); continue; fi
         env_file=""
@@ -11958,12 +11969,17 @@ _notify_default_cooldown() {
 # Forget the cooldown of container events whose container is fine again, so the
 # next problem notifies right away. Args: the names still stopped or unhealthy.
 _notify_state_prune_containers() {
-    [[ -s "$NOTIFY_STATE_FILE" ]] || return 0
+    [[ -s "$NOTIFY_STATE_FILE" || -s "$FLEET_RELAY_STATE_FILE" ]] || return 0
     local keep
     keep=$(printf '%s\n' "$@" | jq -R . | jq -s -c .)
-    _api_jq_update_file "$NOTIFY_STATE_FILE" --argjson keep "$keep" \
-        'with_entries(select(((.key | test("\\|container_(stopped|unhealthy)\\|")) | not) or ((.key | split("|")[3]) as $c | ($keep | index($c)) != null)))' >/dev/null 2>&1 || true
+    [[ -s "$NOTIFY_STATE_FILE" ]] && _api_jq_update_file "$NOTIFY_STATE_FILE" --argjson keep "$keep" \
+        'with_entries(select(((.key | test("\\|container_(stopped|unhealthy)\\|")) | not) or ((.key | split("|")) as $p | ($p[2] // "") != "" or (($p[4] // "") as $c | ($keep | index($c)) != null))))' >/dev/null 2>&1 || true
+    # a member: what it relayed for a container that is fine again is forgotten too, so its next failure reaches the hub at once
+    [[ -s "$FLEET_RELAY_STATE_FILE" ]] && _api_jq_update_file "$FLEET_RELAY_STATE_FILE" --argjson keep "$keep" \
+        'with_entries(select(((.key | test("^container_(stopped|unhealthy)\\|")) | not) or ((.key | split("|")[2] // "") as $c | ($keep | index($c)) != null)))' >/dev/null 2>&1 || true
+    return 0
 }
+FLEET_RELAY_STATE_FILE="${FLEET_RELAY_STATE_FILE:-$BASE_DIR/.data/relay-state.json}"
 
 # Containers DCS itself stopped, restarted, recreated or is deploying right now
 # (name → epoch, "stack:NAME" → epoch). The health monitor consults this so a
@@ -12061,11 +12077,21 @@ _images_older_than() {
 # per mounted filesystem, container CPU and memory (docker stats runs only when
 # a rule asks for it) and images older than 30 days. Thresholds come from the
 # Alerts settings; repeats are held back by the events' cooldowns.
+# _fleet_relays — true on a member whose events reach its hub (it holds the hub's relay token)
+_fleet_relays() { [[ -s "$FLEET_FILE" ]] && [[ "$(jq -r '.hub.relay_token // "" | length' "$FLEET_FILE" 2>/dev/null)" -ge 24 ]] 2>/dev/null; }
+# _health_watch_wanted — someone hears container events from here: a channel with a rule, or a hub this member relays to
+_health_watch_wanted() {
+    _fleet_relays && return 0
+    [[ -f "$NOTIFICATIONS_FILE" ]] && { _ntfy_endpoint >/dev/null 2>&1 || _discord_webhook >/dev/null 2>&1; } \
+        && jq -e '[.rules[]? | select(.enabled == true and (.trigger | test("^(container_|health_change|stack_)")))] | length > 0' "$NOTIFICATIONS_FILE" >/dev/null 2>&1
+}
 _alerts_evaluate() {
     local wanted=""
     if [[ -f "$NOTIFICATIONS_FILE" ]] && { _ntfy_endpoint >/dev/null 2>&1 || _discord_webhook >/dev/null 2>&1; }; then
         wanted=$(jq -r '[.rules[]? | select(.enabled == true) | .trigger] | unique | join(" ")' "$NOTIFICATIONS_FILE" 2>/dev/null) || wanted=""
     fi
+    # a member of a fleet has no channels of its own: what crosses a threshold here goes to the hub, whose rules decide
+    _fleet_relays && wanted+=" disk_warning container_high_cpu container_high_memory image_stale"
     local thr_disk thr_cpu thr_mem alerts_file="$BASE_DIR/.api-auth/alerts.json"
     thr_disk=$(jq -r '.thresholds.disk_warning // 85' "$alerts_file" 2>/dev/null); [[ "$thr_disk" =~ ^[0-9]+$ ]] || thr_disk=85
     thr_cpu=$(jq -r '.thresholds.cpu_warning // 80' "$alerts_file" 2>/dev/null); [[ "$thr_cpu" =~ ^[0-9]+$ ]] || thr_cpu=80
@@ -12132,6 +12158,20 @@ _fire_notifications() {
         if [[ ${#_rt} -ge 24 && -n "$_hu" ]]; then
             local _cj='{}' _a
             for _a in "$@"; do _cj=$(jq -c --arg k "${_a%%=*}" --arg v "${_a#*=}" '. + {($k): $v}' <<< "$_cj" 2>/dev/null) || _cj='{}'; done
+            # the same event for the same thing goes to the hub once per its cooldown (a health poll repeats every bad container
+            # each time; the hub would get them all, flood its activity and refuse the rest); a container that is fine again is
+            # forgotten by the health check, so its next failure goes at once
+            local _rk _rcd _rlast _rnow
+            _rcd=$(_notify_default_cooldown "$event"); _rnow=$(date +%s)
+            _rk="$event|$(jq -r '[.stack // "", .container // "", (.mount // "") + (.automation // "") + (.template // "") + (.fingerprint // "")] | join("|")' <<< "$_cj" 2>/dev/null)"
+            if (( _rcd > 0 )); then
+                _api_state_file "$FLEET_RELAY_STATE_FILE" '{}' object >/dev/null 2>&1 || true
+                _rlast=$(jq -r --arg k "$_rk" '.[$k] // 0' "$FLEET_RELAY_STATE_FILE" 2>/dev/null); [[ "$_rlast" =~ ^[0-9]+$ ]] || _rlast=0
+                if (( _rnow - _rlast < _rcd * 60 )); then _rt=""
+                else _api_jq_update_file "$FLEET_RELAY_STATE_FILE" --arg k "$_rk" --argjson n "$_rnow" '.[$k] = $n | with_entries(select(.value > ($n - 604800)))' >/dev/null 2>&1 || true; fi
+            fi
+        fi
+        if [[ ${#_rt} -ge 24 && -n "$_hu" ]]; then
             ( curl -sS -m 8 -o /dev/null -X POST "${_hu%/}/fleet/relay" -H 'Content-Type: application/json' \
                 --data-binary "$(jq -nc --arg t "$_rt" --arg e "$event" --argjson c "$_cj" '{token: $t, event: $e, context: $c}')" ) </dev/null >/dev/null 2>&1 &
         fi
@@ -12150,6 +12190,8 @@ _fire_notifications() {
     ctx[event]="$event"
     ctx[timestamp]=$(date '+%Y-%m-%d %H:%M:%S')
     ctx[hostname]=$(_hostname unknown)
+    # a VM's event (the hub's relay sets vm= itself, after the member's context): the VM is the host it happened on
+    [[ -n "${ctx[relayed]:-}" && -n "${ctx[vm]:-}" ]] && ctx[hostname]="${ctx[vm]}"
 
     # Read all enabled rules matching this event
     local rules_json
@@ -12180,7 +12222,10 @@ _fire_notifications() {
             continue
         fi
 
-        # Cooldown: the same event for the same target waits cd_min minutes
+        # Cooldown: the same event for the same target waits cd_min minutes. A VM's container that stopped or turned unhealthy
+        # comes once per failure already (the member relays it once and forgets it when the container is fine again), so a
+        # second failure after a recovery is news here too
+        [[ -n "${ctx[relayed]:-}" && ( "$event" == container_stopped || "$event" == container_unhealthy ) ]] && cd_min=0
         if (( cd_min > 0 )); then
             local key last
             key="${rule_id}|${event}|${ctx[vm]:-}|${ctx[stack]:-}|${ctx[container]:-}|${ctx[mount]:-}${ctx[automation]:-}${ctx[template]:-}${ctx[fingerprint]:-}"
@@ -20509,6 +20554,11 @@ handle_proxmox_vms() {
     _pve_call res GET /cluster/resources type=vm
     _pve_explain "$res" || { _api_error 502 "$PVE_ERR"; return; }
     vms=$(_pve_vm_transform <<< "$res")
+    # Proxmox knows no disk use of a VM without asking its guest: a member reports its own (the fleet snapshot the hub keeps)
+    local fs='{}'; [[ -s "$FLEET_SNAPSHOT" ]] && fs=$(jq -c '[.members[]? | select(.vmid != null and (.disk_pct | numbers)) | {key: (.vmid | tostring), value: .disk_pct}] | from_entries' "$FLEET_SNAPSHOT" 2>/dev/null)
+    [[ "$fs" == \{* ]] || fs='{}'
+    vms=$(jq -c --argjson d "$fs" 'map(if ((.disk // 0) == 0) and ($d[(.vmid | tostring)] != null) and ((.maxdisk // 0) > 0)
+        then .disk = ((.maxdisk * $d[(.vmid | tostring)] / 100) | floor) | .disk_from = "guest" else . end)' <<< "$vms" 2>/dev/null || printf '%s' "$vms")
     _api_success "$(jq -c '{total: length, running: (map(select(.status == "running")) | length), stopped: (map(select(.status == "stopped")) | length), vms: .}' <<< "$vms")"
 }
 
@@ -21129,6 +21179,8 @@ _fleet_call() {
         local _pg; _fleet_http _pg GET "$url/ping" "" "" 3 "$insecure"
         if [[ "$_FLEET_HTTP" != 200 ]]; then _FLEET_HTTP=0; _FLEET_ERR="$id is marked unreachable and does not answer /ping"; return 1; fi
         _fleet_update --arg id "$id" --argjson now "$(date +%s)" '.members = [(.members // [])[] | if .id == $id then .reachable = true | .last_seen = $now | .last_error = "" else . end]' >/dev/null 2>&1 || true
+        # the watcher sees it reachable already on its next round: the way back is said here, once
+        _fleet_member_back "$id" "$(jq -r '.name // ""' <<< "$m")" "$(jq -r '.url // ""' <<< "$m")" "$(jq -r '.vmid // ""' <<< "$m")"
     fi
     tok=$(cat "$FLEET_SESSION_DIR/$id.token" 2>/dev/null)
     if [[ -z "$tok" ]]; then _fleet_login "$id" || { _FLEET_HTTP=0; return 1; }; tok="$FLEET_TOKEN"; fi
@@ -21439,30 +21491,46 @@ _fleet_join_hub() {
 
 # Once a minute from the metrics loop: members that stop answering (or come
 # back) become fleet_member_down / fleet_member_up.
+# _fleet_member_back ID NAME URL VMID — a member that answers again: noted, announced (unless DCS started its VM a moment ago),
+# and what was put off while it was away is tried again
+_fleet_member_back() {
+    local id="$1" name="$2" url="$3" vmid="$4"
+    _audit_log "fleet_member_up" "member $name ($url) answers the hub again"
+    if [[ -z "$vmid" ]] || ! _container_intended "pve:$vmid"; then
+        _fire_notifications "fleet_member_up" "member=$name" "url=$url" "message=DCS on $name ($url) answers the hub again" 2>/dev/null
+    fi
+    # its stacks' App-Data is mounted again in this round: what was tried while it was away does not space that out
+    local _bs; for _bs in $(_fleet_member_stack_names "$id" 2>/dev/null); do rm -f "${FLEET_APPDATA_STATE_DIR:?}/${_bs:?}.retry" 2>/dev/null || true; done
+    return 0
+}
 _fleet_watch() {
     _fleet_has_members || return 0
     local now last; now=$(date +%s)
     last=$(stat -c %Y "$FLEET_WATCH_STAMP" 2>/dev/null || echo 0)
     (( now - last >= 55 )) || return 0
     touch "$FLEET_WATCH_STAMP" 2>/dev/null
-    local j id url ins was name res ver ok updates='{}'
+    local j id url ins was name vmid res ver ok updates='{}'
     j=$(_fleet_load)
-    while IFS=$'\t' read -r id url ins was name; do
+    while IFS=$'\t' read -r id url ins was name vmid; do
         [[ -n "$id" ]] || continue
         _fleet_http res GET "$url/ping" "" "" 5 "$ins"
         ver=""; [[ "$res" == \{* ]] && ver=$(jq -r '.version // ""' <<< "$res" 2>/dev/null)
         if [[ "$_FLEET_HTTP" == 200 ]]; then ok=true; else ok=false; fi
         updates=$(jq -c --arg id "$id" --argjson ok "$ok" --arg v "$ver" --argjson now "$now" '.[$id] = {reachable: $ok, version: $v, now: $now}' <<< "$updates")
         if [[ "$was" == "true" && "$ok" == "false" ]]; then
-            _audit_log "fleet_member_down" "member $name ($url) stopped answering the hub"
-            _fire_notifications "fleet_member_down" "member=$name" "url=$url" "message=DCS on $name ($url) stopped answering the hub" 2>/dev/null
+            if [[ -n "$vmid" ]] && _container_intended "pve:$vmid"; then
+                _audit_log "fleet_member_down" "member $name ($url) is shut down, as asked"
+            elif [[ -n "$vmid" && "$(jq -r --arg v "$vmid" '.[$v].status // ""' "$BASE_DIR/.data/proxmox-state.json" 2>/dev/null)" == "stopped" ]]; then
+                # its VM stopped: Proxmox's own event (proxmox_vm_stopped) said so already, one notification is enough
+                _audit_log "fleet_member_down" "member $name ($url) stopped answering the hub: its VM is stopped"
+            else
+                _audit_log "fleet_member_down" "member $name ($url) stopped answering the hub"
+                _fire_notifications "fleet_member_down" "member=$name" "url=$url" "message=DCS on $name ($url) stopped answering the hub" 2>/dev/null
+            fi
         elif [[ "$was" == "false" && "$ok" == "true" ]]; then
-            _audit_log "fleet_member_up" "member $name ($url) answers the hub again"
-            _fire_notifications "fleet_member_up" "member=$name" "url=$url" "message=DCS on $name ($url) answers the hub again" 2>/dev/null
-            # its stacks' App-Data is mounted again in this round: what was tried while it was away does not space that out
-            local _bs; for _bs in $(_fleet_member_stack_names "$id" 2>/dev/null); do rm -f "${FLEET_APPDATA_STATE_DIR:?}/${_bs:?}.retry" 2>/dev/null || true; done
+            _fleet_member_back "$id" "$name" "$url" "$vmid"
         fi
-    done < <(jq -r '.members[] | [.id, .url, ((.insecure // false) | tostring), ((.reachable != false) | tostring), .name] | @tsv' <<< "$j")
+    done < <(jq -r '.members[] | [.id, .url, ((.insecure // false) | tostring), ((.reachable != false) | tostring), .name, (.vmid // "" | tostring)] | @tsv' <<< "$j")
     _fleet_update --argjson u "$updates" '.members = [(.members // [])[] | . as $m | ($u[$m.id] // null) as $x
         | if $x == null then . else .reachable = $x.reachable | (if $x.reachable then .last_seen = $x.now | .last_error = "" | .version = (if $x.version != "" then $x.version else .version end) else .last_error = "no answer" end) end]' || true
         _fleet_overview_json >/dev/null 2>&1 || true
@@ -22646,7 +22714,7 @@ _fleet_relay_tokens_push() {
 _fleet_relay_args() {
     jq -r '(.context // {}) | if type == "object" then to_entries[] else empty end
         | select(.key | test("^[a-z_]{1,32}$"))
-        | select(.key as $k | (["event", "timestamp", "hostname", "fingerprint", "mount", "automation", "template", "vm", "vmid", "member", "relayed"] | index($k)) == null)
+        | select(.key as $k | (["event", "timestamp", "hostname", "vm", "vmid", "member", "relayed"] | index($k)) == null)
         | .key + "=" + ((.value | tostring) | .[0:400] | gsub("[\\n\\r]"; " "))' <<< "$1" 2>/dev/null | head -20
 }
 FLEET_RELAY_RATE="${FLEET_RELAY_RATE:-30}"
@@ -23172,7 +23240,8 @@ _fleet_overview_json() {
                     containers: $rows,
                     containers_running: ([$rows[] | select(((.state // .status // "") | tostring) | test("^running"))] | length),
                     containers_total: ($rows | length),
-                    images: (($dk.images | numbers) // 0), networks: (($dk.networks | numbers) // 0), volumes: (($dk.volumes | numbers) // 0)}' > "$tmp/$id.json" 2>/dev/null
+                    images: (($dk.images | numbers) // 0), networks: (($dk.networks | numbers) // 0), volumes: (($dk.volumes | numbers) // 0),
+                    disk_pct: (($ds.system.disk.percent // "") | tostring | sub("%$"; "") | tonumber? // null)}' > "$tmp/$id.json" 2>/dev/null
         ) &
     done
     _fleet_wait_children
@@ -24937,8 +25006,21 @@ _fleet_remote_containers_json() {
     _fleet_has_members || { printf '[]'; return 0; }
     local snap; snap=$(_fleet_snapshot); [[ "$snap" == \{* ]] || { printf '[]'; return 0; }
     # member_host: the VM's address, where its published ports are (a link to a port opens the VM, not the hub)
-    jq -c '[.members[] | . as $m | select(.reachable) | (($m.url // "") | capture("^https?://(?<h>\\[[^]]+\\]|[^:/]+)") .h // null) as $mh
-            | (.containers // [])[] | . + {member: $m.id, member_name: $m.name, vmid: $m.vmid, member_host: $mh}]' <<< "$snap"
+    local live; live=$(jq -c '[.members[] | . as $m | select(.reachable) | (($m.url // "") | capture("^https?://(?<h>\\[[^]]+\\]|[^:/]+)") .h // null) as $mh
+            | (.containers // [])[] | . + {member: $m.id, member_name: $m.name, vmid: $m.vmid, member_host: $mh}]' <<< "$snap" 2>/dev/null) || live='[]'
+    # a VM that does not answer keeps its containers in the list as last seen, marked unknown (the stacks do the same): a
+    # container that vanished from the page would look removed, not out of reach
+    local dir="$BASE_DIR/.data/fleet-last-containers" id f gone='[]'
+    mkdir -p "$dir" 2>/dev/null
+    for id in $(jq -r '[.[].member] | unique[]' <<< "$live" 2>/dev/null); do
+        [[ "$id" =~ ^[A-Za-z0-9_.-]+$ ]] || continue
+        jq -c --arg id "$id" '[.[] | select(.member == $id)]' <<< "$live" > "$dir/$id.json.tmp" 2>/dev/null && mv -f "$dir/$id.json.tmp" "$dir/$id.json"
+    done
+    for id in $(jq -r '.members[] | select(.reachable | not) | .id' <<< "$snap" 2>/dev/null); do
+        f="$dir/$id.json"; [[ "$id" =~ ^[A-Za-z0-9_.-]+$ && -s "$f" ]] || continue
+        gone=$(jq -c --slurpfile c "$f" '. + [$c[0][] | . + {state: "unknown", status: "the VM does not answer (as last seen)", health: "unknown", reachable: false}]' <<< "$gone" 2>/dev/null) || gone='[]'
+    done
+    jq -c --argjson g "$gone" '. + $g' <<< "$live"
 }
 
 # ── Proxmox: what the token may do, the storages, the next free VMID ──
@@ -25245,6 +25327,14 @@ handle_fleet_provision() {
         if [[ "$mv" == true ]]; then
             [[ "$src" == "$stack" ]] || { _api_error 400 "$stack: a move takes the stack under its own name (no source)"; return; }
             [[ -f "$COMPOSE_DIR/$stack/docker-compose.yml" ]] || { _api_error 404 "$stack: there is no such stack on this server to move"; return; }
+            local _blk; _blk=$(_fleet_move_blockers "$stack" | paste -sd';' | sed 's/;/; /g')
+            [[ -z "$_blk" ]] || { _api_error 409 "$stack cannot be moved without losing something: $_blk"; return; }
+            # a service with cpus: 4 cannot be created on a VM of 2 cores: Docker refuses it and compose starts nothing
+            local _need _top; _need=$(_fleet_move_facts "$stack" | jq -r '(.cpus // [])[0].cpus // 0 | ceil' 2>/dev/null); [[ "$_need" =~ ^[0-9]+$ ]] || _need=0
+            if [[ "$cores" =~ ^[0-9]+$ ]] && (( _need > cores )); then
+                _top=$(_fleet_move_facts "$stack" | jq -r '[(.cpus // [])[] | select(.cpus > '"$cores"') | "\(.service) (cpus: \(.cpus))"] | join(", ")' 2>/dev/null)
+                _api_error 409 "$stack needs a VM of at least $_need cores: ${_top:-a cpus: limit above $cores} — Docker refuses a container whose limit is above the machine's cores"; return
+            fi
         fi
         if [[ "$mv" != true ]] && _fleet_stack_is_hub "$stack"; then
             local _why="it is in this server's DOCKER_STACKS — take it out (Stacks page → order) and stop it first"
@@ -25416,6 +25506,114 @@ _fleet_stack_outside_paths() {
     fi
     return 0
 }
+# The stacks the hub itself needs (its dashboard and terminal, its proxy, sign-in, CrowdSec): they are never moved into a VM
+FLEET_HUB_ONLY_STACKS="${FLEET_HUB_ONLY_STACKS:-core-infrastructure networking-security}"
+_fleet_hub_only() { [[ " $FLEET_HUB_ONLY_STACKS " == *" $1 "* ]]; }
+# _fleet_stack_cfg_json STACK — the stack's compose file as Docker Compose resolves it (JSON), or nothing
+_fleet_stack_cfg_json() {
+    local dir="$COMPOSE_DIR/$1"; local -a args=(-f "$dir/docker-compose.yml"); [[ -f "$dir/.env" ]] && args+=(--env-file "$dir/.env")
+    ( cd "$dir" 2>/dev/null && timeout 20 $DOCKER_COMPOSE_CMD "${args[@]}" config --format json 2>/dev/null ) || true
+}
+# _fleet_move_blockers STACK — one line per reason the stack cannot be moved into a VM without losing something
+_fleet_move_blockers() {
+    local stack="$1" cfg
+    _fleet_hub_only "$stack" && printf '%s\n' "$stack is part of the hub itself (FLEET_HUB_ONLY_STACKS): the hub cannot run without it, so it is never moved"
+    cfg=$(_fleet_stack_cfg_json "$stack"); [[ "$cfg" == \{* ]] || return 0
+    jq -r '.services // {} | to_entries[] | select((.value.image // "") | test("nextcloud/all-in-one|nextcloud-releases/all-in-one"))
+           | "\(.key) (Nextcloud All-in-One) creates its own containers and data volumes outside the stack: they would not travel, and Nextcloud would start empty in the VM"' <<< "$cfg" 2>/dev/null
+    return 0
+}
+# _fleet_move_facts STACK — {devices, ports, socket}: what the VM must offer for the stack to run as it does here
+_fleet_move_facts() {
+    local cfg; cfg=$(_fleet_stack_cfg_json "$1"); [[ "$cfg" == \{* ]] || { printf '{"devices":[],"ports":[],"socket":[],"cpus":[],"memory_mb":0}'; return 0; }
+    jq -c '{devices: ([.services[]?.devices[]? | (.source // (tostring | split(":")[0]))] | unique),
+            ports: ([.services // {} | to_entries[] | .key as $s | (.value.ports // [])[] | select(.published != null) | {service: $s, port: (.published | tostring), protocol: (.protocol // "tcp")}] | unique),
+            socket: ([.services // {} | to_entries[] | select([(.value.volumes // [])[] | select(.type == "bind" and ((.source // "") | test("docker\\.sock$")) and (.read_only != true))] | length > 0) | .key]),
+            cpus: ([.services // {} | to_entries[] | {service: .key, cpus: ((.value.cpus // .value.deploy.resources.limits.cpus // 0) | tonumber? // 0)} | select(.cpus > 0)] | sort_by(-.cpus)),
+            memory_mb: ([.services[]? | ((.mem_limit // .deploy.resources.limits.memory // 0) | tonumber? // 0) / 1048576 | floor] | add // 0)}' <<< "$cfg" 2>/dev/null || printf '{"devices":[],"ports":[],"socket":[]}'
+}
+# _fleet_names_regex PROJECT [others] — the container and service names of PROJECT (or, with "others", of every other compose
+# project on this server) as one case-insensitive alternation, for finding addresses like http://sonarr:8989 in config files
+_fleet_names_regex() {
+    local proj="$1" mode="${2:-}"
+    timeout 15 docker ps -a --format '{{.Names}}	{{.Label "com.docker.compose.project"}}	{{.Label "com.docker.compose.service"}}' 2>/dev/null \
+        | awk -F'\t' -v p="$proj" -v m="$mode" '(m == "others" && $2 != p && $2 != "") || (m != "others" && $2 == p) { print tolower($1); if ($3 != "") print tolower($3) }' \
+        | grep -E '^[a-z0-9][a-z0-9_.-]{2,62}$' | sort -u | sed 's/[.]/\\./g' | paste -sd'|'
+}
+# _fleet_grep_links DIR NAMES_REGEX — "<file>\t<name>" for config files under DIR that reach one of NAMES by address
+# (http://name:port, "host": "name", host=name): read the way the move reads (a read-only helper container when needed)
+_fleet_grep_links() {
+    local dir="$1" names="$2" re z=""
+    [[ -d "$dir" && -n "$names" ]] || return 0
+    re="(://|\"host\"[[:space:]]*:[[:space:]]*\"|host=)($names)([:/\"]|$)"
+    local script='cd /src 2>/dev/null || exit 0; find . -type f -size -20480k \( -name "*.xml" -o -name "*.json" -o -name "*.yml" -o -name "*.yaml" -o -name "*.ini" -o -name "*.conf" -o -name "*.config" -o -name "*.toml" -o -name "*.env" -o -name "*.db" -o -name "*.sqlite" -o -name "*.sqlite3" \) 2>/dev/null | head -4000 | while IFS= read -r f; do grep -oiE "$1" "$f" 2>/dev/null | sed -E "s/^(:\/\/|\"host\"[[:space:]]*:[[:space:]]*\"|host=)//I; s/[:\/\"]$//" | tr "[:upper:]" "[:lower:]" | sort -u | head -5 | sed "s|^|${f#./}	|"; done | head -60'
+    _fleet_reader_pick
+    [[ "$(getenforce 2>/dev/null)" == "Enforcing" ]] && z=",z"
+    case "$FLEET_READER" in
+        docker:*) timeout 90 docker run --rm --network none -v "$dir:/src:ro$z" "${FLEET_READER#docker:}" sh -c "$script" sh "$re" 2>/dev/null ;;
+        sudo)     timeout 90 sudo -n sh -c "${script//\/src/$dir}" sh "$re" 2>/dev/null ;;
+        *)        timeout 90 sh -c "${script//\/src/$dir}" sh "$re" 2>/dev/null ;;
+    esac
+    return 0
+}
+# _fleet_move_links STACK — {out: [{file, name}], in: [{stack, file, name}]}: this stack's settings that reach other stacks'
+# containers by name, and other stacks' settings that reach this one's (after a move those names no longer resolve)
+_fleet_move_links() {
+    local stack="$1" others mine d o out='[]' in='[]' f n
+    command -v docker >/dev/null 2>&1 || { printf '{"out":[],"in":[]}'; return 0; }
+    others=$(_fleet_names_regex "$stack" others); mine=$(_fleet_names_regex "$stack")
+    while IFS= read -r d; do
+        [[ -n "$d" ]] || continue
+        while IFS=$'\t' read -r f n; do [[ -n "$f" && -n "$n" ]] && out=$(jq -c --arg f "$d/$f" --arg n "$n" '. + [{file: $f, name: $n}]' <<< "$out"); done < <(_fleet_grep_links "$COMPOSE_DIR/$stack/$d" "$others")
+    done < <(_fleet_stack_data_dirs "$stack")
+    if [[ -n "$mine" ]]; then
+        for o in "$COMPOSE_DIR"/*/; do
+            o="${o%/}"; o="${o##*/}"; [[ "$o" != "$stack" && -f "$COMPOSE_DIR/$o/docker-compose.yml" ]] || continue
+            while IFS= read -r d; do
+                [[ -n "$d" ]] || continue
+                while IFS=$'\t' read -r f n; do [[ -n "$f" && -n "$n" ]] && in=$(jq -c --arg s "$o" --arg f "$d/$f" --arg n "$n" '. + [{stack: $s, file: $f, name: $n}]' <<< "$in"); done < <(_fleet_grep_links "$COMPOSE_DIR/$o/$d" "$mine")
+            done < <(_fleet_stack_data_dirs "$o")
+        done
+    fi
+    jq -nc --argjson o "$out" --argjson i "$in" '{out: ($o | unique), in: ($i | unique)}'
+}
+# _fleet_move_vm_ready IP STACK — before the stack stops here: the VM must see every folder outside the stack that holds
+# something here (at the same path, not empty) and every device the stack uses. Sets FLEET_JOB_ERR and returns 1 if not.
+_fleet_move_vm_ready() {
+    local ip="$1" src="$2" p missing=() facts dev
+    while IFS= read -r p; do
+        [[ -n "$p" ]] || continue
+        if [[ -d "$p" ]]; then
+            [[ -n "$(ls -A "$p" 2>/dev/null | head -1)" ]] || continue          # an empty folder here: Docker makes it there too
+            _fleet_ssh "$ip" "test -d $(printf '%q' "$p") && test -n \"\$(ls -A $(printf '%q' "$p") 2>/dev/null | head -1)\"" </dev/null >/dev/null 2>&1 || missing+=("$p")
+        elif [[ -e "$p" ]]; then
+            _fleet_ssh "$ip" "test -e $(printf '%q' "$p")" </dev/null >/dev/null 2>&1 || missing+=("$p")
+        fi
+    done < <(_fleet_stack_outside_paths "$src")
+    facts=$(_fleet_move_facts "$src")
+    while IFS= read -r dev; do
+        [[ -n "$dev" ]] || continue
+        _fleet_ssh "$ip" "test -e $(printf '%q' "$dev")" </dev/null >/dev/null 2>&1 || missing+=("device $dev")
+    done < <(jq -r '.devices[]?' <<< "$facts" 2>/dev/null)
+    # Docker refuses a container whose cpus: limit is above the machine's cores ("range of CPUs is from 0.01 to 2.00"), and
+    # compose then starts none of the stack: the VM needs at least as many cores as the largest limit
+    local need have top
+    need=$(jq -r '(.cpus // [])[0].cpus // 0 | ceil' <<< "$facts" 2>/dev/null); [[ "$need" =~ ^[0-9]+$ ]] || need=0
+    if (( need > 0 )); then
+        have=$(_fleet_ssh "$ip" "nproc" </dev/null 2>/dev/null | tr -dc '0-9'); [[ "$have" =~ ^[0-9]+$ ]] || have=0
+        if (( have > 0 && have < need )); then
+            top=$(jq -r '[(.cpus // [])[] | select(.cpus > '"$have"') | "\(.service) (cpus: \(.cpus))"] | join(", ")' <<< "$facts" 2>/dev/null)
+            FLEET_JOB_ERR="the VM has $have core(s) and $src asks for more: ${top:-a cpus: limit above $have} — Docker refuses such a container, so give the VM $need cores (Resize on the VM, Proxmox page), then Retry. Nothing was stopped or copied: $src keeps running on the hub"
+            return 1
+        fi
+    fi
+    if (( ${#missing[@]} > 0 )); then
+        FLEET_JOB_ERR="the VM does not have what $src uses outside its own folder: ${missing[*]} — give the VM these folders at the same paths (Host folders on the Proxmox page, or a network share) and the device (PCI passthrough), then Retry. Nothing was stopped or copied: $src keeps running on the hub"
+        return 1
+    fi
+    return 0
+}
+
 # GET /fleet/provision/move-check?stack=NAME — What moving a stack of this server into a VM would take with it: the size of its folders and named volumes, the disk a VM needs for them, its routes, and the folders outside the stack that do not travel (admin)
 handle_fleet_move_check() {
     if ! _api_check_admin; then _api_error 403 "Admin access required"; return; fi
@@ -25447,9 +25645,16 @@ handle_fleet_move_check() {
     [[ -n "$rd" && -d "$rd/$stack" ]] && nroutes=$(find "$rd/$stack" -maxdepth 1 -type f -name '*.yml' 2>/dev/null | wc -l)
     out=$(_fleet_stack_outside_paths "$stack" | jq -Rsc 'split("\n") | map(select(length > 0))' 2>/dev/null) || out='[]'; [[ "$out" == \[* ]] || out='[]'
     up=$(_api_stack_status "$stack" 2>/dev/null | cut -d: -f2); [[ "$up" =~ ^[0-9]+$ ]] || up=0
+    local blockers facts links
+    blockers=$(_fleet_move_blockers "$stack" | jq -Rsc 'split("\n") | map(select(length > 0))' 2>/dev/null) || blockers='[]'; [[ "$blockers" == \[* ]] || blockers='[]'
+    facts=$(_fleet_move_facts "$stack"); [[ "$facts" == \{* ]] || facts='{"devices":[],"ports":[],"socket":[],"cpus":[],"memory_mb":0}'
+    links=$(_fleet_move_links "$stack"); [[ "$links" == \{* ]] || links='{"out":[],"in":[]}'
     # the VM's disk: its system and Docker's images (10 GB), the data, and a fifth of room on top
     _api_success "$(jq -nc --arg s "$stack" --argjson kb "$kb" --argjson files "$nfiles" --argjson dirs "$dirs" --argjson vols "$vols" --argjson routes "$nroutes" --argjson out "$out" --argjson up "$up" --arg reader "${FLEET_READER%%:*}" --arg earlier "$earlier" \
+        --argjson blockers "$blockers" --argjson facts "$facts" --argjson links "$links" \
         '{stack: $s, containers_up: $up, earlier_vm: (if $earlier == "" then null else $earlier end), data_kb: $kb, files: $files, folders: $dirs, volumes: $vols, routes: $routes, outside_paths: $out,
+          movable: ($blockers | length == 0), blockers: $blockers, devices: $facts.devices, ports: $facts.ports, docker_socket: $facts.socket, links_out: $links.out, links_in: $links.in,
+          cpu_limits: ($facts.cpus // []), min_cores: ([2, (($facts.cpus // [])[0].cpus // 0 | ceil)] | max), memory_limits_mb: ($facts.memory_mb // 0),
           suggested_disk_gb: ([32, (10 + ($kb * 1.2 / 1048576) | ceil)] | max), reads_as: $reader,
           note: (if ($out | length) > 0 then "These folders are not part of the stack and stay on this server: the VM needs them given to it (a host folder of the Proxmox host, or a network share), at the same path." else "" end)}')"
 }
@@ -25488,14 +25693,38 @@ _fleet_move_data() {
     # its routes travel with it: the VM offers them to the hub's proxy from now on (same address, new target)
     rd=$(_find_traefik_routes_dir 2>/dev/null) || rd=""
     if [[ -n "$rd" && -d "$rd/$src" ]] && compgen -G "$rd/$src/*.yml" >/dev/null; then
+        # containers that start on demand here: Sablier is the hub's and cannot wake a container in a VM, so the VM's copy of
+        # the routes goes without that step and they run all the time there (the hub's own files stay as they are: a fallback
+        # finds them unchanged)
+        local _rt _od _n _f _mw
+        _rt=$(mktemp -d) || _rt=""
+        [[ -n "$_rt" ]] && command cp -f "$rd/$src"/*.yml "$_rt/" 2>/dev/null
+        _od=$(_fleet_stack_on_demand "$src")
+        if [[ -n "$_rt" && -n "$_od" ]]; then
+            while IFS= read -r _n; do
+                [[ -n "$_n" ]] || continue
+                while IFS=$'\t' read -r _f _mw _; do
+                    [[ -n "$_mw" ]] || continue
+                    for _f in "$_rt"/*.yml; do _sablier_block_remove "$_f" "$_mw"; done
+                done < <(_sablier_blocks_for "$_n")
+            done <<< "$_od"
+            _job_log "$id" "$(paste -sd',' <<< "$_od" | sed 's/,/, /g') start on demand on the hub: Sablier runs on the hub and cannot wake a container in a VM, so in the VM they run all the time"
+        fi
         # shellcheck disable=SC2088
-        if (cd "$rd/$src" && tar -cf - ./*.yml 2>/dev/null) | _fleet_ssh "$ip" "mkdir -p ~/.Docker-Compose-Skeleton-AIO/.data/routes/$stack && tar -xf - -C ~/.Docker-Compose-Skeleton-AIO/.data/routes/$stack" 2>/dev/null; then
+        if (cd "${_rt:-$rd/$src}" && tar -cf - ./*.yml 2>/dev/null) | _fleet_ssh "$ip" "mkdir -p ~/.Docker-Compose-Skeleton-AIO/.data/routes/$stack && tar -xf - -C ~/.Docker-Compose-Skeleton-AIO/.data/routes/$stack" 2>/dev/null; then
             _job_log "$id" "its $(find "$rd/$src" -maxdepth 1 -name '*.yml' | wc -l) route file(s) are in the VM: the same addresses will reach it there"
+            [[ -n "$_rt" ]] && rm -rf "$_rt"
         else
+            [[ -n "$_rt" ]] && rm -rf "$_rt"
             _job_log "$id" "! its route files could not be copied into the VM: the addresses get default routes there (rebuild or edit them on the Routes page)"
         fi
     fi
     return 0
+}
+# _fleet_stack_on_demand STACK — the names of the stack's containers that Sablier starts on demand on this server, one per line
+_fleet_stack_on_demand() {
+    local names; names=$(_sablier_names 2>/dev/null | sort -u); [[ -n "$names" ]] || return 0
+    timeout 15 docker ps -a --filter "label=com.docker.compose.project=$1" --format '{{.Names}}' 2>/dev/null | sort -u | grep -xF -f <(printf '%s\n' "$names") || true
 }
 # after a move: the hub's route files of the stack are set aside (not deleted), so the hub's proxy takes the VM's routes
 _fleet_move_retire_routes() {
@@ -25503,6 +25732,18 @@ _fleet_move_retire_routes() {
     rd=$(_find_traefik_routes_dir 2>/dev/null) || rd=""
     [[ -n "$rd" && -d "$rd/$src" ]] || return 0
     keep="$BASE_DIR/.data/moved-routes/$src-$(date +%Y%m%d-%H%M%S)"
+    # its on-demand containers run in the VM now: a Sablier block for them elsewhere among the hub's routes (a <name>-sablier.yml)
+    # goes too — a copy is kept — or the hub would keep waking, and recreating, containers it no longer has
+    local _n _f _mw _kept=""
+    while IFS= read -r _n; do
+        [[ -n "$_n" ]] || continue
+        while IFS=$'\t' read -r _f _mw _; do
+            [[ -n "$_f" && -n "$_mw" && "$_f" != "$rd/$src/"* ]] || continue
+            mkdir -p "$keep-sablier" 2>/dev/null && command cp -f "$_f" "$keep-sablier/" 2>/dev/null
+            _sablier_block_remove "$_f" "$_mw"; _kept+=" $_n"
+        done < <(_sablier_blocks_for "$_n")
+    done < <(_fleet_stack_on_demand "$src")
+    [[ -n "$_kept" ]] && _job_log "$id" "the hub's on-demand settings for$_kept are set aside in ${keep#"$BASE_DIR/"}-sablier"
     mkdir -p "$(dirname "$keep")" 2>/dev/null && command mv "$rd/$src" "$keep" 2>/dev/null && { touch "$rd/.reload" 2>/dev/null || true; _job_log "$id" "the hub's own route files of $src are set aside in ${keep#"$BASE_DIR/"} (the VM's routes take over)"; }
     return 0
 }
@@ -25979,6 +26220,11 @@ _fleet_job_run() {
         else _job_log "$id" "! $src could not be started again on the hub: start it from the Stacks page (its data is untouched)"; fi
         mv_stopped=false
     }
+    if [[ "$mv_job" == true && "$hub_has_file" == true ]]; then
+        _job_log "$id" "checking that the VM has everything $src uses outside its own folder (media folders, downloads, devices)"
+        _fleet_move_vm_ready "$ip" "$src" || { _job_fail "$id" stack "$FLEET_JOB_ERR"; return 1; }
+        _job_log "$id" "✓ the VM sees every folder and device $src uses outside its own folder"
+    fi
     if [[ "$mv_job" == true && "$hub_has_file" == true && "$hub_up" -gt 0 ]]; then
         _job_log "$id" "stopping $src on the hub so its data is at rest ($hub_up container(s))"
         if $DOCKER_COMPOSE_CMD "${_mvc[@]}" stop >/dev/null 2>&1; then mv_stopped=true
@@ -26012,17 +26258,39 @@ _fleet_job_run() {
             # a move is only done when the stack really runs in the VM: as many containers up there as ran here (an image
             # the VM cannot pull, a port that is taken there: the answer to "start" alone does not say)
             if [[ "$_started" == true && "$mv_job" == true && "$hub_up" -gt 0 ]]; then
-                local _vr=0 _vt=0 _vres=""
-                while (( _vt < 120 )); do
+                local _vr=0 _vt=0 _vres="" _act="" _aerr=""
+                while (( _vt < 300 )); do
                     if _fleet_call _vres "$mid" GET "/stacks/$stack" "" 20; then _vr=$(jq -r '.running_containers // 0' <<< "$_vres" 2>/dev/null); [[ "$_vr" =~ ^[0-9]+$ ]] || _vr=0; fi
                     (( _vr >= hub_up )) && break
+                    # the start runs in the background there: once it has finished with an error, waiting longer changes
+                    # nothing — its own error line (an image it cannot pull, a port taken, a limit above the VM's cores) says why
+                    if _fleet_call _act "$mid" GET "/stacks/$stack/activity" "" 20 \
+                        && [[ "$(jq -r '"\(.active)|\(.success)"' <<< "$_act" 2>/dev/null)" == "false|false" ]]; then
+                        _aerr=$(jq -r '.error // ""' <<< "$_act" 2>/dev/null | head -c 400); break
+                    fi
                     sleep 5; _vt=$((_vt + 5))
                 done
                 if (( _vr < hub_up )); then
                     _started=false; _start_why="$_vr of the $hub_up container(s) that ran on the hub came up in the VM"
+                    [[ -n "$_aerr" ]] && { _start_why+="; Docker there said: $_aerr"; _job_log "$id" "! the VM's start failed: $_aerr"; }
                     _fleet_call _vres "$mid" POST "/stacks/$stack/stop" '{}' 120 || true     # never two copies running
                 else
-                    _job_log "$id" "✓ $_vr container(s) are up in the VM, as many as ran on the hub"
+                    _job_log "$id" "✓ $_vr container(s) are up in the VM, as many as ran on the hub; watching them settle for a minute"
+                    # up is not enough: a container that restarts in a loop, exits again or reports unhealthy means the app is
+                    # not working there (a database it cannot open, a folder it cannot write) — that is not a move either
+                    local _st=0 _bad="" _det=""
+                    while (( _st < 60 )); do
+                        sleep 10; _st=$((_st + 10))
+                        if _fleet_call _det "$mid" GET "/stacks/$stack" "" 20; then
+                            _bad=$(jq -r '[(.containers // [])[] | select((.state // "") == "restarting" or (.state // "") == "exited" or (.state // "") == "dead" or (.health // "") == "unhealthy") | "\(.name) (\(if (.health // "") == "unhealthy" then "unhealthy" else .state end))"] | join(", ")' <<< "$_det" 2>/dev/null)
+                        fi
+                    done
+                    if [[ -n "$_bad" ]]; then
+                        _started=false; _start_why="after a minute in the VM: $_bad"
+                        _fleet_call _vres "$mid" POST "/stacks/$stack/stop" '{}' 120 || true
+                    else
+                        _job_log "$id" "✓ after a minute every container still runs and none reports unhealthy"
+                    fi
                 fi
             fi
             if [[ "$_started" == true ]]; then
@@ -26225,6 +26493,12 @@ handle_feed_summary() {
         rows=$(timeout 10 docker ps -a --format '{{.State}}\t{{.Label "com.docker.compose.project"}}' 2>/dev/null \
             | jq -Rsc '[split("\n")[] | select(length > 0) | split("\t") | {state: .[0], stack: (.[1] // "")}]' 2>/dev/null)
         [[ "$rows" == \[* ]] || rows='[]'
+    fi
+    # a hub: the stacks and containers its VMs run count too (the fleet as a whole, from the snapshot the hub keeps anyway)
+    if _fleet_has_members 2>/dev/null; then
+        local _fs _fr; _fs=$(_fleet_snapshot 2>/dev/null)
+        _fr=$(jq -c '[.members[]? | select(.reachable) | (.containers // [])[] | {state: (.state // ""), stack: (.stack // "")}]' <<< "$_fs" 2>/dev/null) || _fr='[]'
+        [[ "$_fr" == \[* ]] && rows=$(jq -c --argjson f "$_fr" '. + $f' <<< "$rows" 2>/dev/null || printf '%s' "$rows")
     fi
     # the machine: how busy the processor is (two readings of /proc/stat a quarter of a second apart), the memory in use, and the
     # NVIDIA card when the host has one - what a board draws as three small meters
@@ -27762,7 +28036,8 @@ handle_health_score_fleet() {
     local own merged
     own=$(_api_success() { printf '%s' "$1"; }; handle_health_score); [[ "$own" == \{* ]] || own='{"score": 0, "grade": "F", "factors": {"stacks": {"score": 0, "weight": 0.4, "healthy": 0, "unhealthy": 0, "total": 0}, "resources": {"score": 0, "weight": 0.3, "cpu_pct": 0, "mem_pct": 0}, "images": {"score": 0, "weight": 0.15, "total": 0, "stale": 0}, "uptime": {"score": 0, "weight": 0.15, "seconds": 0}}, "stacks": []}'
     merged=$(_fleet_merge_get /health/score stacks)
-    _api_success "$(jq -c --argjson m "$merged" --arg n "${SERVER_NAME:-this server}" '
+    local pv; pv=$(cat "$BASE_DIR/.data/proxmox-state.json" 2>/dev/null); [[ "$pv" == \{* ]] || pv='{}'
+    _api_success "$(jq -c --argjson m "$merged" --argjson pv "$pv" --arg n "${SERVER_NAME:-this server}" '
         . as $own
         | ([{id: null, name: $n, vmid: null, reachable: true, error: "", score: $own.score, grade: $own.grade, factors: $own.factors, docker: ($own.docker // null)}]
            + ($m.members | map({id, name, vmid, reachable, error, score: ((.data.score | numbers) // null), grade: ((.data.grade | strings) // null), factors: (.data.factors | if type == "object" then . else null end), docker: (.data.docker | if type == "object" then . else null end)}))) as $members
@@ -27771,10 +28046,19 @@ handle_health_score_fleet() {
         | ($live | map((.factors.images | objects | .total | numbers) // 0) | add // 0) as $it | ($live | map((.factors.images | objects | .stale | numbers) // 0) | add // 0) as $is
         | (if $ct > 0 then (($ch / $ct) * 100 | floor) else 100 end) as $cs
         | (if $it > 0 then ((1 - ($is / $it)) * 100 | floor) else 100 end) as $ims
-        | (($cs * 0.4) + ($own.factors.resources.score * 0.3) + ($ims * 0.15) + ($own.factors.uptime.score * 0.15) | floor) as $raw
+        # the busiest machine sets resources and the shortest uptime sets uptime: a VM at its limit is a problem of the fleet too
+        | ([$live[] | (.factors.resources | objects | .score | numbers)] | min // $own.factors.resources.score) as $rs
+        | ([$live[] | (.factors.uptime | objects | .score | numbers)] | min // $own.factors.uptime.score) as $us
+        | (($cs * 0.4) + ($rs * 0.3) + ($ims * 0.15) + ($us * 0.15) | floor) as $raw0
+        # a VM that runs but whose DCS does not answer costs 10 points (at most 30): its stacks cannot be counted, so the
+        # score must not look better without them; a VM that is shut down is a choice and costs nothing
+        | ([$members[] | select(.id != null and (.reachable | not) and (($pv[(.vmid // "" | tostring)].status // "running") != "stopped"))] | length) as $lost
+        | ([$raw0 - ([$lost * 10, 30] | min), 0] | max) as $raw
         | ([$members[] | select(.reachable and (.docker.reachable == false))] | length) as $dockerdown
         | (if $dockerdown > 0 and $raw > 39 then 39 else $raw end) as $total
         | $own
+        | .factors.resources.score = $rs | .factors.uptime.score = $us
+        | .factors.fleet = {members: ($members | length), unreachable: $lost}
         | .factors.stacks = {score: $cs, weight: 0.4, healthy: $ch, unhealthy: $cu, sleeping: $cz, total: $ct}
         | .factors.images = {score: $ims, weight: 0.15, total: $it, stale: $is}
         | .score = $total
@@ -28121,6 +28405,8 @@ _stack_activity_begin() {
     mkdir -p "$STACK_ACTIVITY_DIR" 2>/dev/null
     local id
     id="${stack}-$(date +%s)"
+    # the output of the action before stays readable (a stop right after a failed start would otherwise erase the reason)
+    [[ -s "$STACK_ACTIVITY_DIR/$stack.log" ]] && command cp -f "$STACK_ACTIVITY_DIR/$stack.log" "$STACK_ACTIVITY_DIR/$stack.prev.log" 2>/dev/null
     : > "$STACK_ACTIVITY_DIR/$stack.log"
     jq -nc --arg id "$id" --arg s "$stack" --arg a "$action" --arg t "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" --argjson x "$_extra_json" \
         '{id: $id, stack: $s, action: $a, started_at: $t, finished_at: null, success: null, pid: null} + $x' \
@@ -28221,13 +28507,13 @@ _stack_run_detached() {
                 ;;
             stop)
                 _plugin_hooks_now "pre-stop" "$base_ctx"
-                $DOCKER_COMPOSE_CMD "${args[@]}" "${prog[@]}" down --remove-orphans --timeout 15 >>"$logf" 2>&1 && ok=true || ok=false
+                _compose_with_secrets "$compose_file" "$env_file" "${prog[@]}" down --remove-orphans --timeout 15 >>"$logf" 2>&1 && ok=true || ok=false
                 _plugin_hooks_now "post-stop" "$(_hook_ctx "$stack" "{\"action\":\"stop\"}" "$ok")"
                 _fire_notifications "stack_down" "stack=$stack" "status=stopped"
                 ;;
             restart)
                 _plugin_hooks_now "pre-stop" "$base_ctx"
-                $DOCKER_COMPOSE_CMD "${args[@]}" "${prog[@]}" down --remove-orphans --timeout 15 >>"$logf" 2>&1 && ok=true || ok=false
+                _compose_with_secrets "$compose_file" "$env_file" "${prog[@]}" down --remove-orphans --timeout 15 >>"$logf" 2>&1 && ok=true || ok=false
                 _plugin_hooks_now "post-stop" "$(_hook_ctx "$stack" "{\"action\":\"restart\"}" "$ok")"
                 _plugin_hooks_now "pre-start" "$base_ctx"
                 _compose_with_secrets "$compose_file" "$env_file" "${prog[@]}" up -d --remove-orphans >>"$logf" 2>&1 && ok=true || ok=false
@@ -29105,22 +29391,30 @@ handle_config_schema() {
 # One member's /stream, re-emitted to this client with the VM named on every docker event (the member's own metrics
 # and heartbeats stay out: this client's metrics are the hub's). Dies with the client: the next printf fails.
 _fleet_stream_member() {
-    local id="$1" m url tok insecure name vmid line ev="" data
+    local id="$1" metrics="${2:-false}" parent="${3:-}" m url tok insecure name vmid line ev="" data wait=5
     m=$(_fleet_member "$id"); [[ -n "$m" ]] || return 0
     url=$(jq -r .url <<< "$m"); insecure=$(jq -r '.insecure // false' <<< "$m"); name=$(jq -r '.name // .id' <<< "$m"); vmid=$(jq -r '.vmid // ""' <<< "$m")
-    tok=$(cat "$FLEET_SESSION_DIR/$id.token" 2>/dev/null)
-    if [[ -z "$tok" ]]; then _fleet_login "$id" >/dev/null 2>&1 || return 0; tok="$FLEET_TOKEN"; fi
     local -a k=(); [[ "$insecure" == "true" ]] && k=(-k)
-    curl -sN "${k[@]}" "$url/stream?token=$tok" 2>/dev/null | while IFS= read -r line; do
-        case "$line" in
-            "event: "*) ev="${line#event: }" ;;
-            "data: "*)
-                if [[ "$ev" == "docker-event" ]]; then
-                    data=$(jq -c --arg id "$id" --arg n "$name" --arg v "$vmid" '. + {member: $id, member_name: $n, vmid: (($v | tonumber?) // null)}' <<< "${line#data: }" 2>/dev/null) || continue
-                    printf 'event: docker-event\ndata: %s\n\n' "$data" 2>/dev/null || exit 0
-                fi ;;
-            "") ev="" ;;
-        esac
+    # the VM's stream ends when it reboots or the session expires: a fresh login and it goes on, for as long as the client listens
+    while :; do
+        [[ -n "$parent" ]] && ! kill -0 "$parent" 2>/dev/null && return 0
+        tok=$(cat "$FLEET_SESSION_DIR/$id.token" 2>/dev/null)
+        if [[ -z "$tok" ]] && _fleet_login "$id" >/dev/null 2>&1; then tok="$FLEET_TOKEN"; fi
+        if [[ -n "$tok" ]]; then
+            curl -sN "${k[@]}" "$url/stream?token=$tok" 2>/dev/null | while IFS= read -r line; do
+                case "$line" in
+                    "event: "*) ev="${line#event: }" ;;
+                    "data: "*)
+                        if [[ "$ev" == "docker-event" || ( "$ev" == "metrics" && "$metrics" == true ) ]]; then
+                            data=$(jq -c --arg id "$id" --arg n "$name" --arg v "$vmid" '. + {member: $id, member_name: $n, vmid: (($v | tonumber?) // null)}' <<< "${line#data: }" 2>/dev/null) || continue
+                            printf 'event: %s\ndata: %s\n\n' "$ev" "$data" 2>/dev/null || exit 0
+                        fi ;;
+                    "") ev="" ;;
+                esac
+            done
+            rm -f "$FLEET_SESSION_DIR/$id.token" 2>/dev/null
+        fi
+        sleep "$wait"; (( wait < 60 )) && wait=$(( wait * 2 ))
     done
 }
 # GET /stream — SSE endpoint: docker events + periodic metrics (on a hub ?fleet=1 adds every VM's docker events, ?member=id one VM's instead; each carries member, member_name, vmid)
@@ -29165,7 +29459,8 @@ handle_sse_stream() {
     fi
     for id in $_sp_ids; do
         [[ "$id" =~ ^[a-z0-9-]{1,40}$ ]] || continue
-        _fleet_stream_member "$id" &
+        # one VM asked for: its own load and container counts too, not the hub's
+        _fleet_stream_member "$id" "$([[ -n "${QUERY_PARAMS[member]:-}" ]] && echo true || echo false)" "$BASHPID" &
         _sp_pids+=("$!")
     done
 
@@ -29201,8 +29496,11 @@ handle_sse_stream() {
         local ts
         ts=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
 
-        printf "event: metrics\ndata: {\"ts\":\"%s\",\"cpu_pct\":%s,\"mem_pct\":%s,\"containers_running\":%d,\"containers_total\":%d}\n\n" \
-            "$ts" "$cpu_pct" "$mem_pct" "$running" "$total" 2>/dev/null || break
+        # (one VM's stream carries that VM's own metrics, forwarded as they come)
+        if [[ -z "${QUERY_PARAMS[member]:-}" ]] || ! _fleet_has_members; then
+            printf "event: metrics\ndata: {\"ts\":\"%s\",\"cpu_pct\":%s,\"mem_pct\":%s,\"containers_running\":%d,\"containers_total\":%d}\n\n" \
+                "$ts" "$cpu_pct" "$mem_pct" "$running" "$total" 2>/dev/null || break
+        fi
 
         # Heartbeat comment to keep connection alive
         printf ": heartbeat %d\n\n" "$iteration" 2>/dev/null || break
@@ -30873,8 +31171,13 @@ start_server() {
         _dcs_metrics_loop() {
             # sleep runs as a job so SIGTERM ends the loop immediately
             trap 'kill "${_sleep_pid:-}" 2>/dev/null; exit 0' TERM INT
+            local _m_env_stamp; _m_env_stamp=$(mktemp 2>/dev/null) || _m_env_stamp=""
             while true; do
                 local ts ep l1 l5 l15 nc cp mt ma mu mp dp
+                # a channel, a threshold or a rule saved since the last tick counts from this one (the workers read .env per request)
+                if [[ -n "$_m_env_stamp" && "$BASE_DIR/.env" -nt "$_m_env_stamp" ]]; then
+                    _api_load_env_file "$BASE_DIR/.env"; touch "$_m_env_stamp" 2>/dev/null
+                fi
                 ts=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
                 ep=$(date +%s)
                 read -r l1 l5 l15 _ _ < /proc/loadavg 2>/dev/null || { l1=0; l5=0; l15=0; }
@@ -30894,6 +31197,12 @@ start_server() {
                 echo "{\"ts\":\"$ts\",\"epoch\":$ep,\"cpu_pct\":$cp,\"load1\":$l1,\"load5\":$l5,\"load15\":$l15,\"mem_used_mb\":$mu,\"mem_total_mb\":$mt,\"mem_pct\":$mp,\"disk_pct\":$dp}" >> "$_m_file"
                 # Disk, CPU, memory and stale-image rules are checked here
                 _alerts_evaluate >/dev/null 2>&1 || true
+                # containers that stopped or turn unhealthy are noticed here, not only while a dashboard polls /health: the
+                # health check fires (or, on a member, relays) the container events itself, each once per its cooldown
+                # (not in the first minutes after a boot: the stacks are still being started then, nothing is down yet)
+                if (( $(cut -d. -f1 /proc/uptime 2>/dev/null || echo 999999) > ${HEALTH_WATCH_BOOT_GRACE:-300} )) && _health_watch_wanted; then
+                    ( unset 'QUERY_PARAMS[fleet]' 2>/dev/null; _api_success() { :; }; _api_error() { :; }; _api_response() { :; }; handle_health ) </dev/null >/dev/null 2>&1 || true
+                fi
                 # Proxmox VMs that stopped or started on their own
                 _pve_watch >/dev/null 2>&1 || true
                 # the fleet's tick (members down or back, relay tokens, the domain, the routes for every Traefik) runs in the

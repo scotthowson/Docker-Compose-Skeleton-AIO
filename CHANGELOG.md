@@ -5,7 +5,53 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-## [4.0.24] - 2026-10-03
+## [4.0.25] - 2026-10-03
+
+### Added
+
+- **Moving a stack into a VM checks first, then keeps everything.** Before the hub stops anything it checks that the VM has
+  the stack's outside folders, its devices and enough cores for its `cpus:` limits (a container with `cpus: 4` cannot be
+  created on a VM of 2 cores, and Compose then starts none of the stack); when it does not, the job says what is missing and
+  the stack keeps running. `GET /fleet/provision/move-check` now answers `movable`, `blockers`, `min_cores`, `cpu_limits`,
+  `memory_limits_mb`, `ports`, `devices`, `docker_socket`, `links_out` and `links_in`; the move sheet sizes the VM from them,
+  shows what changes in a VM (ports on the VM's address, the Docker socket, settings that reach other stacks by name) and
+  refuses a VM too small for the stack. After the containers are up, the move watches them for a minute (a restart loop,
+  an exit or *unhealthy* sends it back to the hub). Verified in the lab with Sonarr: same API key, same database, a
+  named volume's first-start stamp and every owner kept. [Proxmox](docs/PROXMOX.md#moving-a-stack-of-the-hub-into-a-vm-with-its-data)
+- **The hub's own stacks stay on the hub.** `core-infrastructure` and `networking-security` (`FLEET_HUB_ONLY_STACKS`) have no
+  *To a VM* button and cannot be moved; neither can a stack with Nextcloud All-in-One.
+- **Stack cards count what sleeps**: *4 running · 2 sleeping*. `GET /stacks` answers `sleeping_containers` and `hub_only`.
+- **A VM's own numbers.** `GET /stream?member=<id>` carries the VM's processor, memory and containers (it carried the
+  hub's) and follows the VM through a reboot or an expired session; the Proxmox page shows a VM's disk use (Proxmox has
+  none without asking the guest: the VM reports its own); the dashboard feed for Homarr counts the VMs' stacks and
+  containers; a VM that does not answer keeps its containers in the list as last seen, marked unknown.
+
+### Fixed
+
+- **A move that failed to start in the VM said nothing about why.** The job now carries Docker's own error line from the VM
+  and stops waiting as soon as the start has failed; the output of the action before a stack's last one is kept
+  (`.data/stack-actions/<stack>.prev.log`), so the fallback's stop no longer erases it.
+- **Containers that start on demand broke a move.** Sablier runs on the hub and cannot wake a container in a VM: in the VM
+  they now run all the time (the VM's copy of the routes goes without the Sablier step), and after the move the hub sets
+  its own Sablier blocks for them aside, so it no longer recreates them from the stack's folder. Sablier's repair skips a
+  stack that runs in a VM.
+- **A stopped container was announced again on every health poll.** The cooldown key gained the VM part in 4.0.x and the
+  check that forgets recovered containers read the wrong part of it, so every poll reset the cooldown.
+- **Container events fired only while a dashboard was open.** Every DCS now checks its containers once a minute itself (not
+  in the first five minutes after a boot, while its stacks start); a VM sends each failure to the hub once, and again
+  after the container was fine in between.
+- **Channels and thresholds saved after the API started were ignored by the background loop** (member down/up, Proxmox VM
+  events, disk, CPU, memory, stale images): it reads `.env` again when it changed.
+- **A VM's disk, CPU, memory and stale-image warnings never reached the hub**; a member now sends them and the hub's rules
+  decide. Relayed events name the VM as their host, and their `fingerprint` and `mount` travel (a new set of images is news).
+- **"Member answers again" was usually lost**, and a VM that DCS shut down was announced as *stopped answering*. A VM
+  whose VM stopped by itself is announced once (by Proxmox's event), not twice.
+- **The fleet's health score got better when a VM was lost** and ignored the VMs' load: the busiest machine now sets the
+  resources factor, the shortest uptime the uptime factor, and a VM that runs but whose DCS does not answer costs 10
+  points (at most 30; a shut-down VM costs nothing). `factors.fleet` says how many.
+- **Stopping a stack warned about unset secrets** (`SECRETS_DB_PASSWORD is not set`): the stop now reads them like the start.
+
+## [4.0.24] - 2026-10-03 (not tagged: released with 4.0.25)
 
 ### Added
 

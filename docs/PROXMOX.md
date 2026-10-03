@@ -460,9 +460,16 @@ Some things go further than a merged list:
   it when it joined (`POST /fleet/relay`). The hub notes it on the Activity page as
   `fleet_event` and fires its own notification rules with the VM named — a Discord embed or an
   NTFY push from the hub reads *VM media-services · Container stopped* and carries the VM as a
-  field. The VMs need no Discord or NTFY settings of their own; the hub's rules and channels
-  cover the whole server. Members that joined before this get a token from the hub within a
-  minute.
+  field, with the VM as the host it happened on. The VMs need no Discord or NTFY settings of their
+  own; the hub's rules and channels cover the whole server. Members that joined before this get a
+  token from the hub within a minute.
+  Every DCS checks its containers once a minute by itself (not only while a dashboard is open), so a
+  container that stops in a VM reaches the hub within about a minute. A VM sends each failure once:
+  a container that is fine again is forgotten, and its next failure goes at once. A VM also sends its
+  disk, processor and memory warnings and stale images (its own thresholds), and the hub's rules
+  decide. The first five minutes after a boot are quiet (the stacks are still starting). A VM that
+  DCS shuts down or starts is not announced as lost or back; one whose VM stopped by itself is
+  announced once by Proxmox's own event.
 - **A snapshot of everything.** *Create snapshot* on Everywhere (`POST /snapshots/create?fleet=1`)
   takes one snapshot on the hub and one on every VM at the same moment; each DCS keeps its own
   archive (a VM's files stay in the VM), the list shows them together, and a restore goes to the
@@ -482,19 +489,46 @@ starting over. On the Stacks page every stack *on the hub* has a **To a VM** but
 opens says what goes with it, and *Move it* does the whole thing:
 
 1. The VM is built and joins the hub while the stack keeps running on the hub.
+   Before anything is stopped, the hub checks that the VM has what the stack needs outside its own folder (the
+   folders at the same paths, the devices) and enough cores for its `cpus:` limits; when it does not, the job
+   says what is missing and the stack keeps running on the hub.
 2. The stack is stopped on the hub (not removed), so its data is at rest.
 3. Its configuration goes over, then its folders (`App-Data`, `data`) and its named volumes, with every
    owner and permission as it is - a database's files stay the database's. Every copy is counted on both
    sides; a count that differs stops the move.
 4. Its route files travel with it, so the same addresses reach it in the VM (the hub's own route files
    for it are set aside in `.data/moved-routes/`, never deleted).
-5. It starts in the VM, and the move waits until as many containers are up there as ran on the hub.
-   Only then the hub lets go: the stack leaves `DOCKER_STACKS`, the hub's containers of it are removed.
+5. It starts in the VM, and the move waits until as many containers are up there as ran on the hub, then
+   watches them for a minute: a container that restarts in a loop, exits or reports unhealthy is not a move
+   either. Only then the hub lets go: the stack leaves `DOCKER_STACKS`, the hub's containers of it are removed.
+   When the VM's start fails, the job carries Docker's own error line (an image it cannot pull, a port that is
+   taken, a limit above the VM's cores) and stops waiting at once.
 
 **Nothing is lost.** The hub's copy of the data stays where it was, as the copy to fall back on; remove it
 yourself once you trust the VM. If anything fails before the stack runs in the VM - the copy stops
 part-way, the VM cannot pull an image, a port is taken there - the stack is started on the hub again and
 the job says why. *Retry* picks the move up where it stopped (the VM it built is reused).
+
+Verified in the lab with Sonarr: after the move the same API key opened the same database (a tag made on the
+hub was there), a named volume kept its first-start timestamp, and every file kept owner `1000:1000`.
+
+**Stacks that stay on the hub.** `core-infrastructure` and `networking-security` carry the hub itself (its
+proxy, sign-in and firewall): they have no *To a VM* button and the API refuses to move them
+(`FLEET_HUB_ONLY_STACKS` lists them). A stack with Nextcloud All-in-One is refused too - it creates its own
+containers and volumes outside the stack, which would not travel.
+
+**Cores.** Docker refuses a container whose `cpus:` limit is above the machine's cores (*range of CPUs is from
+0.01 to 2.00*), and Compose then starts none of the stack. The sheet sets the VM's cores to the largest limit
+and memory to the stack's memory limits plus 1 GB; a request with fewer cores is refused with the service named.
+
+**Start on demand.** Sablier runs on the hub and cannot wake a container in a VM. Containers of the stack that
+start on demand on the hub run all the time in the VM: the VM's copy of the routes goes without the Sablier
+step, and after the move the hub sets its own Sablier blocks for them aside (`.data/moved-routes/<stack>-…-sablier`).
+
+**Good to know** (shown in the sheet, nothing stops the move): ports the stack publishes open on the VM's
+address; services that use the Docker socket see the VM's containers; settings that reach other stacks by
+container name (`http://sonarr:8989` in an app's config, found in its config files), and other stacks that
+reach this one, need the new address afterwards.
 
 What does not travel: **folders outside the stack**, such as a media library on another drive
 (`/mnt/media:/media`). The sheet lists them; give the VM the same path first - a [folder of the Proxmox
@@ -507,8 +541,9 @@ read-only container (`alpine:3`, pulled once), else as its own user - and then a
 the move before anything was stopped. The VM's disk must hold the data: the sheet suggests a size, and
 the request is refused when the disk is too small.
 
-API: `GET /fleet/provision/move-check?stack=NAME` (what would go with it), and `{"move": true}` on a VM
-of `POST /fleet/provision`.
+API: `GET /fleet/provision/move-check?stack=NAME` (what would go with it: `movable`, `blockers`, `min_cores`,
+`cpu_limits`, `memory_limits_mb`, `ports`, `devices`, `docker_socket`, `links_out`, `links_in`), and
+`{"move": true}` on a VM of `POST /fleet/provision`.
 
 ### Two machines: the hub here, Proxmox there
 
@@ -824,8 +859,8 @@ A member is another machine, so the hub treats everything it sends as data:
   but never becomes a placement.
 - **Events**: `POST /fleet/relay` takes 30 events a minute per member (429 beyond). The context a
   member sends cannot pose as the hub (`hostname`, `timestamp`, `event`, `vm`, `vmid`, `member`
-  are the hub's own), cannot steer a notification's cooldown (only `stack` and `container` take
-  part), and is cut to 120 characters in the activity line. A relayed event is never relayed
+  are the hub's own) and is cut to 120 characters in the activity line; a member sends the same
+  event for the same thing once per its cooldown (`.data/relay-state.json` on the member). A relayed event is never relayed
   again, and a server refuses to join one of its own members as hub (or to take its own hub as a
   member), so two hubs cannot bounce events between them.
 - **Answers**: the hub reads at most 8 MB from a member, gives up on a connection after 2 s, probes
