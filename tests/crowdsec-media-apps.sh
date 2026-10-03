@@ -42,16 +42,40 @@ check() {
 
 # -- the parser file, from DCS's own code: the same function that keeps it up to date on a server
 echo "The parser file"
+# a hub as the routers are found on one: a route file renamed by hand (watch-router -> http://jellyfin:8096) and a member of the fleet (media-services)
+mkdir -p "$WORK/hub/Stacks/networking-security/App-Data/Traefik/custom_routes/media-services" "$WORK/hub/.data"
+: > "$WORK/hub/Stacks/networking-security/docker-compose.yml"
+cat > "$WORK/hub/Stacks/networking-security/App-Data/Traefik/custom_routes/media-services/jellyfin.yml" <<'YML'
+http:
+  routers:
+    watch-router:
+      entryPoints:
+        - "websecure"
+      rule: "Host(`watch.example.test`)"
+      service: "watch"
+      tls: {}
+  services:
+    watch:
+      loadBalancer:
+        servers:
+          - url: "http://jellyfin:8096"
+YML
+printf '{"hub": null, "members": [{"id": "media-services", "name": "media-services"}]}\n' > "$WORK/hub/.data/fleet.json"
 (
     set --
     # shellcheck source=/dev/null
     source "$ROOT/.scripts/api-server.sh" >/dev/null 2>&1
     set +e
+    # shellcheck disable=SC2034  # (both are read by the functions of the API server sourced above)
+    { COMPOSE_DIR="$WORK/hub/Stacks"; FLEET_FILE="$WORK/hub/.data/fleet.json"; }
+    unset APP_DATA_DIR
     export CROWDSEC_MEDIA_APPS=jellyfin
     _crowdsec_media_apps_sync "$WORK/cfg"
 )
 PARSER="$WORK/cfg/parsers/s02-enrich/dcs-media-apps.yaml"
 check "the file is written" yes "$([[ -s "$PARSER" ]] && echo yes || echo no)"
+check "…it names the routers found: the renamed route's and the VM's" "'jellyfin', 'jellyfin-router', 'media-services-jellyfin-dcs', 'watch-router'" \
+    "$(sed -n "s/^.*traefik_router_name, '@')\[0\]) in \[\(.*\)\])\{0,1\}$/\1/p" "$PARSER" | sed 's/\]$//' | sort -u | head -n 1)"
 [[ -s "$PARSER" ]] || { echo "0 passed, 1 failed"; exit 1; }
 cp "$PARSER" "$WORK/lab/dcs-media-apps.yaml"
 
@@ -70,19 +94,22 @@ def hexid():
     return ''.join(random.choice('0123456789abcdef') for _ in range(32))
 
 
-def line(t, method, path, status, backend='jellyfin:8096', host='watch.example.test', ua=UA):
-    """one access log line; backend None is a request no router took (Traefik answers itself: no ServiceAddr)"""
+def line(t, method, path, status, backend='jellyfin:8096', host='watch.example.test', ua=UA, router='app-router@file', served=True):
+    """one access log line; backend None is a request no router took (Traefik answers itself: no ServiceAddr). served False is a request the router
+    took and a middleware refused before the backend (the CrowdSec bouncer, a geoblock): RouterName and nothing of the service, as Traefik logs it"""
     ts = t.strftime('%Y-%m-%dT%H:%M:%SZ')
     row = {'ClientAddr': '172.71.0.1:4000', 'ClientHost': IP, 'ClientPort': '4000', 'ClientUsername': '-', 'DownstreamContentSize': 1234, 'DownstreamStatus': status,
            'Duration': 5000000, 'OriginContentSize': 1234, 'OriginDuration': 4000000, 'OriginStatus': status, 'RequestAddr': host, 'RequestHost': host,
            'RequestMethod': method, 'RequestPath': path, 'RequestProtocol': 'HTTP/2.0', 'RequestScheme': 'https', 'StartLocal': ts, 'StartUTC': ts,
            'entryPointName': 'websecure', 'level': 'info', 'msg': '', 'request_User-Agent': ua, 'time': ts}
-    if backend:
-        row.update({'RouterName': 'app-router@file', 'ServiceAddr': backend, 'ServiceName': 'app@file', 'ServiceURL': 'http://' + backend})
+    if backend and served:
+        row.update({'RouterName': router, 'ServiceAddr': backend, 'ServiceName': 'app@file', 'ServiceURL': 'http://' + backend})
+    elif backend:
+        row.update({'RouterName': router, 'OriginStatus': 0, 'OriginContentSize': 0, 'OriginDuration': 0})
     return json.dumps(row)
 
 
-def browse(start, backend='jellyfin:8096', host='watch.example.test', query=True):
+def browse(start, backend='jellyfin:8096', host='watch.example.test', query=True, router='app-router@file'):
     """a page load and some scrolling: the web client's API calls, sixty posters and backdrops, twenty items without a logo (answered 404).
     The client adds the size it wants to every image address, and Traefik logs the path with its query."""
     out, t = [], start
@@ -91,31 +118,51 @@ def browse(start, backend='jellyfin:8096', host='watch.example.test', query=True
             '/JellyfinEnhanced/public-config', '/JellyfinEnhanced/version', '/JavaScriptInjector/public.js', '/Plugins/AchievementBadges/public-config', '/ActorPlus/status',
             '/PluginPages/User', '/MediaBar/WebConfig', '/HomeScreen/Meta']
     for p in boot:
-        out.append(line(t, 'GET', p, 200, backend, host))
+        out.append(line(t, 'GET', p, 200, backend, host, router=router))
     t += timedelta(seconds=1)
     api = ['/Users/%s' % uid, '/Users/%s/Views' % uid, '/UserViews', '/DisplayPreferences/usersettings', '/Sessions', '/Users/%s/Items' % uid, '/Shows/NextUp', '/Items/Resume',
            '/Items/Latest', '/Plugins/AchievementBadges/users/%s/preferences' % uid, '/Plugins/AchievementBadges/users/%s/equipped' % uid, '/Plugins/AchievementBadges/users/%s/cosmetics' % uid,
            '/Plugins/StarTrack/MyRatings', '/JellyfinEnhanced/user-settings/%s/settings.json' % uid, '/JellyfinEnhanced/private-config', '/CustomTabs/Config', '/System/Info', '/socket']
     for p in api:
-        out.append(line(t, 'GET', p, 200, backend, host))
+        out.append(line(t, 'GET', p, 200, backend, host, router=router))
     for i, it in enumerate(items):          # posters and backdrops: a different address each, answered
         q = '?fillHeight=446&fillWidth=297&quality=96&tag=%s' % it[::-1] if query else ''
         out.append(line(t + timedelta(milliseconds=i * 40), 'GET', '/Items/%s/Images/%s%s' % (it, random.choice(['Primary', 'Backdrop/0', 'Logo', 'Thumb']), q),
-                        random.choice([200, 200, 200, 304]), backend, host))
+                        random.choice([200, 200, 200, 304]), backend, host, router=router))
     for i in range(20):                     # a few things without artwork: answered 404 (not probing)
         q = '?fillHeight=200&fillWidth=300&quality=96' if query else ''
-        out.append(line(t + timedelta(seconds=1, milliseconds=i * 30), 'GET', '/Items/%s/Images/Logo%s' % (hexid(), q), 404, backend, host))
+        out.append(line(t + timedelta(seconds=1, milliseconds=i * 30), 'GET', '/Items/%s/Images/Logo%s' % (hexid(), q), 404, backend, host, router=router))
     return out
 
 
-def scan(start, n=60, backend='jellyfin:8096'):
+def scan(start, n=60, backend='jellyfin:8096', router='app-router@file'):
     """a scanner: well-known paths, then random ones; everything answered 404 (two of them try to leave the web root)"""
     paths = ['/wp-login.php', '/.env', '/admin', '/phpmyadmin/', '/.git/config', '/actuator/env', '/cgi-bin/luci', '/server-status', '/vendor/phpunit/phpunit/src/Util/PHP/eval-stdin.php',
              '/config.php', '/backup.zip', '/xmlrpc.php', '/administrator/', '/.aws/credentials', '/id_rsa', '/etc/passwd', '/web/../../etc/passwd', '/Users/../../etc/shadow']
     out = []
     for i in range(n):
         p = paths[i % len(paths)] if i < len(paths) * 2 else '/%s' % hexid()[:10] + random.choice(['.php', '.bak', '/', '.sql'])
-        out.append(line(start + timedelta(milliseconds=i * 150), 'GET', p, 404, backend, ua='python-requests/2.31'))
+        out.append(line(start + timedelta(milliseconds=i * 150), 'GET', p, 404, backend, ua='python-requests/2.31', router=router))
+    return out
+
+
+# what a page of the web client asks of a user who is not an administrator: admin-only plugin and server settings, refused by the app itself (403)
+ADMIN_ONLY = ['/Plugins', '/PluginUpdateNotifier/summary', '/System/Configuration', '/System/Logs', '/ScheduledTasks', '/Devices', '/Library/VirtualFolders',
+              '/Plugins/AchievementBadges/admin/ui-features', '/Plugins/AchievementBadges/admin/settings', '/JellyfinEnhanced/admin/config', '/Packages',
+              '/Repositories', '/System/Configuration/network', '/Auth/Keys', '/Startup/Configuration', '/Notifications/Services', '/Environment/Drives',
+              '/System/ActivityLog/Entries', '/Users', '/LiveTv/TunerHosts/Types']
+
+
+def missing_media(start, backend='jellyfin:8096', router='app-router@file'):
+    """what a client asks that is not there, answered 404 by the app: users and people without a picture, songs without lyrics, subtitles and trickplay
+    strips not made yet (forty different addresses within two seconds)"""
+    out = []
+    for i in range(40):
+        it, it2 = hexid(), hexid()
+        p = ['/Users/%s/Images/Primary?tag=%s&quality=90' % (it, it2), '/Items/%s/Images/Primary?fillHeight=300' % it, '/Persons/Jane%%20Doe%d/Images/Primary' % i,
+             '/Audio/%s/Lyrics' % it, '/Videos/%s/%s/Subtitles/%d/0/Stream.vtt' % (it, it2, i % 4), '/Videos/%s/Trickplay/320/tiles.m3u8' % it,
+             '/jellyfin/Items/%s/Images/Logo' % it, '/Artists/Some%%20Band%d/Images/Backdrop/0' % i][i % 8]
+        out.append(line(start + timedelta(milliseconds=i * 50), 'GET', p, 404, backend, router=router))
     return out
 
 
@@ -144,6 +191,25 @@ SCENARIOS = {
     'badua-answered': lambda: [line(ms(i, 300), 'GET', '/', 200, ua=BAD_UA) for i in range(6)],
     'badua-refused':  lambda: [line(ms(i, 300), 'GET', '/%s' % hexid()[:8], 404, ua=BAD_UA) for i in range(6)],
     'mixed':          lambda: browse(T0) + scan(T0 + timedelta(seconds=4)),
+    # the backend known by its router: a VM of the fleet (the hub reaches it at the VM's address), Docker labels, a route renamed by hand
+    'vm-browse':      lambda: browse(T0, backend='192.168.1.202:8096', router='media-services-jellyfin-dcs@file'),
+    'labels-browse':  lambda: browse(T0, backend='172.18.0.9:8096', router='jellyfin@docker'),
+    'renamed-browse': lambda: browse(T0, backend='172.18.0.9:8096', router='watch-router@file'),
+    'vm-other':       lambda: browse(T0, backend='192.168.1.202:3000', host='other.example.test', router='media-services-whoami-dcs@file'),
+    'vm-scan':        lambda: scan(T0, backend='192.168.1.202:8096', router='media-services-jellyfin-dcs@file'),
+    # what the app refuses itself, and what the proxy refuses before it
+    'missing-media':  lambda: missing_media(T0),
+    'vm-missing':     lambda: missing_media(T0, backend='192.168.1.202:8096', router='media-services-jellyfin-dcs@file'),
+    'app403':         lambda: [line(ms(i, 100), 'GET', ADMIN_ONLY[i % len(ADMIN_ONLY)], 403) for i in range(20)],
+    'app403-post':    lambda: [line(ms(i, 100), 'POST', ADMIN_ONLY[i % len(ADMIN_ONLY)], 403) for i in range(20)],
+    'app403-other':   lambda: [line(ms(i, 100), 'GET', ADMIN_ONLY[i % len(ADMIN_ONLY)], 403, backend='whoami:80', host='other.example.test') for i in range(20)],
+    'bounced':        lambda: [line(ms(i, 300), random.choice(['GET', 'POST']), p, 403, router='media-services-jellyfin-dcs@file', served=False)
+                               for i, p in enumerate(['/Sessions/Playing/Progress', '/Users/%s/Items' % hexid(), '/Plugins/AchievementBadges/admin/ui-features', '/socket',
+                                                      '/Sessions', '/SyncPlay/List', '/ActorPlus/status', '/web/config.json', '/Plugins/StarTrack/PublicConfig',
+                                                      '/Items/%s/Images/Logo' % hexid(), '/Plugins/AchievementBadges/users/%s/friends' % hexid(), '/HomeScreen/Meta',
+                                                      '/JellyfinEnhanced/private-config', '/Branding/Configuration', '/System/Info/Public', '/QuickConnect/Enabled'])],
+    'bounced-other':  lambda: [line(ms(i, 300), 'GET', '/%s/admin/%d' % (hexid()[:6], i), 403, backend='whoami:80', host='other.example.test', router='other-router@file', served=False)
+                               for i in range(16)],
 }
 
 for name, make in SCENARIOS.items():
@@ -208,6 +274,8 @@ declare -A EXPECT=(
     [browse]=cleared [browse-plain]=cleared [browse-caps]=cleared [artwork404]=cleared [crawl-answered]=cleared
     [other]=same [scan]=same [unrouted]=same [post404]=same [bruteforce]=same [expired]=same [traversal]=same [badua-refused]=same [mixed]=same
     [badua-answered]=cleared
+    [vm-browse]=cleared [labels-browse]=cleared [renamed-browse]=cleared [vm-other]=same [vm-scan]=same
+    [missing-media]=cleared [vm-missing]=cleared [app403]=cleared [app403-post]=same [app403-other]=same [bounced]=cleared [bounced-other]=same
 )
 declare -A ABOUT=(
     [browse]="a page load of the web client, image addresses with ?size=..."
@@ -225,9 +293,22 @@ declare -A ABOUT=(
     [badua-refused]="a known scanner's user agent on requests the app refuses"
     [mixed]="a page load and a scan from the same address"
     [badua-answered]="a known scanner's user agent on answered requests only (accepted: an answered request is seen by no scenario)"
+    [vm-browse]="the page load through the hub to Jellyfin in a VM (the log has the VM's address; the router is <member>-jellyfin-dcs)"
+    [labels-browse]="the page load to a container routed by Docker labels (router jellyfin@docker, the container's address)"
+    [renamed-browse]="the page load through a route renamed by hand (watch-router, whose service is http://jellyfin:8096)"
+    [vm-other]="the page load to another app of the same VM"
+    [vm-scan]="a scanner on Jellyfin in a VM: 404 on well-known and random paths"
+    [missing-media]="40 missing pictures, lyrics, subtitles and trickplay strips (404) in two seconds"
+    [vm-missing]="the same, to Jellyfin in a VM"
+    [app403]="a user who is not an administrator: 20 admin-only addresses the app refuses (403)"
+    [app403-post]="the same as POST requests (counted: only GET and HEAD are a page reading)"
+    [app403-other]="the same 403s from a backend that is not listed"
+    [bounced]="a banned client that keeps polling: the bouncer's 403s on the media app's router"
+    [bounced-other]="the bouncer's 403s on another router"
 )
 echo "Stock CrowdSec against CrowdSec with the file"
-for name in browse browse-plain browse-caps artwork404 crawl-answered other scan unrouted post404 bruteforce expired traversal badua-refused mixed badua-answered; do
+for name in browse browse-plain browse-caps artwork404 crawl-answered other scan unrouted post404 bruteforce expired traversal badua-refused mixed badua-answered \
+            vm-browse labels-browse renamed-browse vm-other vm-scan missing-media vm-missing app403 app403-post app403-other bounced bounced-other; do
     s="${STOCK[$name]:-}"; t="${TUNED[$name]:-}"; want="${EXPECT[$name]}"
     if [[ -z "${STOCK[$name]+x}" || -z "${TUNED[$name]+x}" ]]; then check "$name: replayed" yes no; continue; fi
     case "$want" in

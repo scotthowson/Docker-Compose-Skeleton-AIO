@@ -858,6 +858,9 @@ _cs_protected_addresses() {
     ip=""
     [[ -f "$CROWDSEC_SYNC_STATE" ]] && ip=$(jq -r '.public_ip // ""' "$CROWDSEC_SYNC_STATE" 2>/dev/null)
     [[ -n "$ip" ]] && printf 'home\t%s\n' "$ip"
+    ip=""
+    [[ -f "$CROWDSEC_SYNC_STATE" ]] && ip=$(jq -r '.home_ipv6 // ""' "$CROWDSEC_SYNC_STATE" 2>/dev/null)
+    [[ -n "$ip" ]] && _crowdsec_valid_ip "$ip" && printf 'home\t%s\n' "$ip"
     if [[ -f "${DDNS_IP_FILE:-}" ]]; then ip=$(head -c 64 "$DDNS_IP_FILE" 2>/dev/null | tr -d '[:space:]'); _crowdsec_valid_ip "$ip" && printf 'home\t%s\n' "$ip"; fi
     while IFS= read -r a; do [[ -n "$a" ]] && _crowdsec_valid_ip "$a" && printf 'trusted\t%s\n' "$a"; done < <(_crowdsec_trusted_list)
     return 0
@@ -1454,6 +1457,7 @@ handle_crowdsec_allowlist() {
     out=$(jq -nc --arg mech "$mech" --argjson native "$native" --argjson trusted "$trusted" --arg home "$home" --argjson envs "$envs" --argjson state "$state" --arg client "$client" --arg mine "$CROWDSEC_ALLOWLIST_NAME" \
         --argjson lists "$(jq -c '[ (. // [])[] | {name, description: (.description // ""), items: ((.items // []) | length), created_at: (.created_at // ""), updated_at: (.updated_at // "")} ]' <<< "$raw" 2>/dev/null || echo '[]')" '
         ( [ if $home != "" then {value: $home, kind: "ip", comment: "Your home address. DCS follows it as it changes, so you can never ban yourself.", created_at: ($state.synced_at // ""), expires_at: null, list: null, source: "managed", managed: true, removable: false} else empty end ]
+          + [ ($state.home_ipv6 // "") | strings | select(test("^[0-9a-f:]+/[0-9]{1,3}$")) | {value: ., kind: "range", comment: "Your home network over IPv6 (CROWDSEC_HOME_IPV6_PREFIX). DCS follows the prefix as your provider changes it.", created_at: ($state.synced_at // ""), expires_at: null, list: null, source: "managed", managed: true, removable: false} ]
           + [ $envs[] | {value: ., kind: (if contains("/") then "range" else "ip" end), comment: "Set in .env (CROWDSEC_TRUSTED_IPS)", created_at: "", expires_at: null, list: null, source: "env", managed: true, removable: false} ]
           + $native
           + [ $trusted[] | {value: .value, kind: (if (.value | contains("/")) then "range" else "ip" end), comment: .comment, created_at: (.added_at // ""), expires_at: null, list: null, source: "trusted", managed: false, removable: true} ] ) as $entries

@@ -3132,6 +3132,13 @@ SH
         if command -v hostname >/dev/null 2>&1; then printf 'exec %q "$@"\n' "$(command -v hostname)"; else printf 'echo cst-host\n'; fi
     } > "$CST/bin/hostname"
     printf '#!/bin/bash\nexit 0\n' > "$CST/bin/sleep"
+    # the only IPv6 route out: what $CST/ip6-src says (no file: this server has no IPv6), whatever the machine running the tests has
+    {
+        printf '#!/bin/bash\nif [[ "$1 $2 $3" == "-6 route get" ]]; then\n'
+        printf '    s=$(cat %q 2>/dev/null); [[ -n "$s" ]] || { echo "RTNETLINK answers: Network is unreachable" >&2; exit 2; }\n' "$CST/ip6-src"
+        printf '    echo "$4 from :: via fe80::1 dev eth0 proto ra src $s metric 100 pref medium"; exit 0\nfi\n'
+        if command -v ip >/dev/null 2>&1; then printf 'exec %q "$@"\n' "$(command -v ip)"; else printf 'exit 1\n'; fi
+    } > "$CST/bin/ip"
     chmod +x "$CST/bin/"*
 
     # the fake Discord: every POST is appended to discord.log as {"path", "body"}; discord.status holds the answer to give (204)
@@ -3609,7 +3616,7 @@ cst_bans_list() {
 cst_bans_refusals() {
     local pair label body code why i
     cst_world data traefik --traefik
-    printf '{"public_ip":"198.51.100.77"}\n' > "$CST/.data/crowdsec-whitelist.json"            # the home address DCS follows
+    printf '{"public_ip":"198.51.100.77","home_ipv6":"2001:db8:77:5::/64"}\n' > "$CST/.data/crowdsec-whitelist.json"   # the home addresses DCS follows (IPv4, the IPv6 network)
     printf '{"ips":["198.18.99.5","198.19.0.0/24"]}\n' > "$CST/.data/crowdsec-trusted.json"     # the trusted list
     printf '198.51.100.78\n' > "$CST/.data/ddns-current-ip"                                      # what the DDNS loop last saw
     # label|body|status|reason (empty: any) — the caller is 203.0.113.99 in every one of them
@@ -3660,6 +3667,8 @@ cst_bans_refusals() {
         'home|{"value":"198.51.100.77"}|400|home'
         'home inside a range|{"value":"198.51.100.0/24"}|400|home'
         'home the DDNS saw|{"value":"198.51.100.78"}|400|home'
+        'home IPv6 network|{"value":"2001:db8:77:5:1c2d::9"}|400|home'
+        'home IPv6 network, upper case|{"value":"2001:DB8:77:5::A"}|400|home'
         'trusted|{"value":"198.18.99.5"}|400|trusted'
         'trusted range|{"value":"198.19.0.77"}|400|trusted'
         'trusted inside a range|{"value":"198.19.0.0/16"}|400|trusted'
@@ -4413,10 +4422,79 @@ cst_allowlist_parser() {
     check "allowlist/parser: the whitelist parser lost them" "198.51.100.9 2a00:1450:4001::5" "$(sed -n 's/^    - //p' "$hook" | tr '\n' ' ' | sed 's/ $//')"
 }
 
+# ---- the home network over IPv6: a device at home reaching the public name over IPv6 has an address of the home network, not the home IPv4 address --------
+cst_home_ipv6() {
+    local w n mark
+    w="$CST/fake/rootfs/etc/crowdsec/parsers/s02-enrich/dcs-whitelist.yaml"
+    # -- the arithmetic: the network of an address, the length setting, what counts as a global address
+    n=$( (
+        set +u
+        export BASE_DIR="$CST"
+        set --
+        source "$CST_API" >/dev/null 2>&1
+        set +e
+        _crowdsec_ipv6_net 2001:DB8:1:2:a:b:c:d 64; echo
+        _crowdsec_ipv6_net 2001:db8:abcd:12ff::1 56; echo
+        _crowdsec_ipv6_net 2a02:8070:1234:0:5::5 48; echo
+        _crowdsec_ipv6_net 2001:db8:0:0:1:0:0:1 128; echo
+        _crowdsec_ipv6_net 2001:db8::7 61; echo
+        for v in 198.51.100.9 1::2::3 2001:db8:zz::1 1:2:3:4:5:6:7:8:9 "2001:db8::1;id"; do _crowdsec_ipv6_net "$v" 64 >/dev/null && echo "accepted $v"; done
+        for v in '' 56 off OFF none 0 12 200 abc 064; do printf '%s=' "$v"; CROWDSEC_HOME_IPV6_PREFIX="$v" _crowdsec_home_ipv6_len || printf 'off'; printf ' '; done; echo
+        (unset CROWDSEC_HOME_IPV6_PREFIX; _crowdsec_home_ipv6_len); echo
+        for v in 2001:db8::1 2a00:1450:4001::5 3fff::1 fd00::5 fc00::1 fe80::1 ::1 ::ffff:1.2.3.4 2001:db8:::1 1.2.3.4; do _crowdsec_global_ip6 "$v" && printf '%s ' "$v"; done; echo
+    ) 2>/dev/null )
+    check "home IPv6: the network of an address (/64, /56, /48, /128, a cut inside a group)" \
+        "2001:db8:1:2::/64 2001:db8:abcd:1200::/56 2a02:8070:1234::/48 2001:db8:0:0:1:0:0:1/128 2001:db8::/61" "$(head -n 5 <<< "$n" | tr '\n' ' ' | sed 's/ $//')"
+    check "home IPv6: …anything that is not an IPv6 address gives no network" "" "$(grep '^accepted' <<< "$n")"
+    check "home IPv6: the length: 64 by default, 32 to 128, off turns it off" "=off 56=56 off=off OFF=off none=off 0=off 12=64 200=64 abc=64 064=64 " "$(sed -n 6p <<< "$n")"
+    check "home IPv6: …unset is 64" 64 "$(sed -n 7p <<< "$n")"
+    check "home IPv6: only global addresses (2000::/3) are the home's" "2001:db8::1 2a00:1450:4001::5 3fff::1 " "$(sed -n 8p <<< "$n")"
+
+    # -- the sync: this server's source address for the internet is in the home network; the whitelist trusts that network
+    cst_world data
+    printf '198.51.100.9\n' > "$CST/.data/ddns-current-ip"
+    cst_env CROWDSEC_HOME_IPV6_PREFIX 64
+    printf '2001:db8:77:5:1c2d:3e4f:5a6b:7c8d\n' > "$CST/ip6-src"
+    cst_call admin POST /crowdsec/trust '{"ip":"198.18.70.2"}'
+    cst_is "home IPv6: a sync" 200
+    check "home IPv6: the whitelist trusts the home address and the home IPv6 network" "198.18.70.2 198.51.100.9 2001:db8:77:5::/64" "$(sed -n 's/^    - //p' "$w" | sort | tr '\n' ' ' | sed 's/ $//')"
+    check "home IPv6: …the sync remembers it (the ban guard reads it)" "2001:db8:77:5::/64" "$(jq -r '.home_ipv6' "$CST/.data/crowdsec-whitelist.json")"
+    cst_call admin GET /crowdsec/allowlist
+    cst_j "home IPv6: …the allowlist shows it as managed, not removable" '[.entries[] | select(.value == "2001:db8:77:5::/64") | "\(.kind) \(.source) \(.removable)"] | join(",")' "range managed false"
+    # -- the provider hands out a new prefix: the next sync follows it, the old network is gone, CrowdSec reloads once
+    printf '2001:db8:99:5:1c2d:3e4f:5a6b:7c8d\n' > "$CST/ip6-src"
+    mark=$(cst_argv_n)
+    cst_call admin POST /crowdsec/trust '{"ip":"198.18.70.2"}'
+    check "home IPv6: a new prefix replaces the old one" "1 0" "$(grep -c '2001:db8:99:5::/64' "$w") $(grep -c '2001:db8:77:5::' "$w")"
+    check "home IPv6: …CrowdSec reloads once" 1 "$(cst_argv_since "$mark" | sed 's/\\//g' | grep -c 'kill -s HUP CrowdSec')"
+    mark=$(cst_argv_n)
+    cst_call admin POST /crowdsec/trust '{"ip":"198.18.70.2"}'
+    check "home IPv6: …and the same prefix again changes nothing" 0 "$(cst_argv_since "$mark" | sed 's/\\//g' | grep -c 'kill -s HUP CrowdSec')"
+    # -- a router that hands out several /64s: the setting widens the network
+    cst_env CROWDSEC_HOME_IPV6_PREFIX 56
+    cst_call admin POST /crowdsec/trust '{"ip":"198.18.70.2"}'
+    check "home IPv6: CROWDSEC_HOME_IPV6_PREFIX=56 trusts the /56" "2001:db8:99::/56" "$(sed -n 's/^    - //p' "$w" | grep ':')"
+    # -- off; and no address to go by: no network at all (a unique local address is not what the world sees, and the internet is not reachable here)
+    cst_env CROWDSEC_HOME_IPV6_PREFIX off
+    cst_call admin POST /crowdsec/trust '{"ip":"198.18.70.2"}'
+    check "home IPv6: off: no IPv6 network is trusted" "" "$(sed -n 's/^    - //p' "$w" | grep ':')"
+    cst_env CROWDSEC_HOME_IPV6_PREFIX 64
+    printf 'fd00:5::7\n' > "$CST/ip6-src"
+    cst_call admin POST /crowdsec/trust '{"ip":"198.18.70.2"}'
+    check "home IPv6: a unique local source address (NAT66) and no answer from the internet: none" "" "$(sed -n 's/^    - //p' "$w" | grep ':')"
+    rm -f "$CST/ip6-src"
+    cst_call admin POST /crowdsec/trust '{"ip":"198.18.70.2"}'
+    check "home IPv6: no IPv6 route out: none, and the IPv4 whitelist is as before" "198.18.70.2 198.51.100.9" "$(sed -n 's/^    - //p' "$w" | sort | tr '\n' ' ' | sed 's/ $//')"
+    check "home IPv6: …the sync remembers there is none" "" "$(jq -r '.home_ipv6' "$CST/.data/crowdsec-whitelist.json")"
+    check "home IPv6: .env.example has it" 1 "$(grep -c '^CROWDSEC_HOME_IPV6_PREFIX=64$' "$ROOT/.env.example")"
+    check "home IPv6: docs/CONFIGURATION.md lists it" yes "$(grep -q 'CROWDSEC_HOME_IPV6_PREFIX' "$ROOT/docs/CONFIGURATION.md" && echo yes || echo no)"
+}
+
 cst_part_allowlist() {
     echo "CrowdSec page: the allowlist"
     cst_allowlist_native
     cst_allowlist_parser
+    cst_home_ipv6
 }
 
 # ---- media apps: CROWDSEC_MEDIA_APPS is a parser file beside the whitelist's (what CrowdSec makes of it is tests/crowdsec-media-apps.sh) ----------------
@@ -4438,7 +4516,8 @@ cst_media_apps() {
     cst_ma_sync
     cst_is "media apps: a sync" 200
     check "media apps: the file is written (unset means jellyfin)" "'jellyfin'" "$(cst_ma_names "$f")"
-    check "media apps: …both expressions name it" 2 "$(grep -c "service_addr) in \['jellyfin'\]" "$f")"
+    check "media apps: …the three expressions about what reached the app name it" 3 "$(grep -c "service_addr) in \['jellyfin'\]" "$f")"
+    check "media apps: …four expressions in all (answered, missing media, the app's own 403, the proxy's 403)" 4 "$(grep -c '^    - >-$' "$f")"
     check "media apps: …a parser of CrowdSec's enrich stage with DCS's name" "custom/dcs-media-apps" "$(sed -n 's/^name: //p' "$f")"
     check "media apps: …one reload covers both files" 1 "$(cst_hups_since "$mark")"
     # -- a sync that finds nothing to do rewrites nothing and reloads nothing (the whitelist's file too: every sync used to rewrite it and reload CrowdSec)
@@ -4464,7 +4543,7 @@ cst_media_apps() {
     cst_env CROWDSEC_MEDIA_APPS "jellyfin,evil'] || true,zz yy,../x,-x,plex:32400,ünï,x\$(id),\`id\`,*,a;b"
     cst_ma_sync
     check "media apps: invalid names are dropped" "'jellyfin'" "$(cst_ma_names "$f")"
-    check "media apps: …and nothing of them is in the file" 0 "$(grep -cF -e evil -e '||' -e '../x' -e 'plex' -e 'ünï' -e 'x$(id)' -e 'a;b' -e 'zz yy' "$f")"
+    check "media apps: …and nothing of them is in the file" 0 "$(grep -cF -e evil -e '|| true' -e '../x' -e 'plex' -e 'ünï' -e 'x$(id)' -e 'a;b' -e 'zz yy' "$f")"
     cst_env CROWDSEC_MEDIA_APPS "evil'],zz yy"
     mark=$(cst_argv_n)
     cst_ma_sync
@@ -4556,6 +4635,41 @@ cst_media_apps() {
         _crowdsec_media_apps_list | tr '\n' ' '
     ) 2>/dev/null )
     check "media apps: the names are in the same order whatever language the server speaks" "a-b a.b a_b ab " "$n"
+
+    # -- the routers: a hub reaches Jellyfin in a VM at the VM's address, so the access log names it by router (<member>-<service>-dcs), and a route
+    #    renamed by hand keeps its server http://jellyfin:8096 (Austin's hub: every ban of a friend watching came through such a route)
+    local mh="$CST/ma-hub" cr
+    cr="$mh/Stacks/networking-security/App-Data/Traefik/custom_routes"
+    rm -rf "$mh"; mkdir -p "$cr/media-services" "$mh/.data"
+    : > "$mh/Stacks/networking-security/docker-compose.yml"
+    printf 'http:\n  routers:\n    watch-router:\n      rule: "Host(`watch.example.test`)"\n      service: "watch"   # renamed\n  services:\n    watch:\n      loadBalancer:\n        servers:\n          - url: "http://Jellyfin:8096"\n' > "$cr/media-services/jellyfin.yml"
+    printf 'http:\n  middlewares:\n    media-chain:\n      chain:\n        middlewares:\n          - crowdsec-bouncer\n  routers:\n    listen:\n      service: navi@file\n    dash-router:\n      service: homarr\n    "evil'"'"'] || true":\n      service: navi\n  services:\n    navi:\n      loadBalancer:\n        servers:\n        - url: http://navidrome:4533/\n    homarr:\n      loadBalancer:\n        servers:\n          - url: "http://homarr:7575"\n' > "$cr/TraefikRoutes.yml"
+    printf '{"http": {"routers": {"stray": {"service": "jellyfin"}}}}\n' > "$cr/fleet-members.yml"
+    printf '{"hub": null, "members": [{"id": "media-services"}, {"id": "dev"}]}\n' > "$mh/.data/fleet.json"
+    n=$( (
+        set +u
+        export BASE_DIR="$CST"
+        set --
+        source "$CST_API" >/dev/null 2>&1
+        set +e
+        COMPOSE_DIR="$mh/Stacks"; FLEET_FILE="$mh/.data/fleet.json"; unset APP_DATA_DIR
+        CROWDSEC_MEDIA_APPS='jellyfin,Navidrome'
+        _crowdsec_media_routers_list | tr '\n' ' '; echo
+        _crowdsec_media_apps_sync "$mh/cfg"; echo "rc=$?"
+        _crowdsec_media_apps_sync "$mh/cfg"; echo "rc=$?"
+    ) 2>/dev/null )
+    check "media apps: the routers: each name, a renamed route by its server, every VM of the fleet; not another app, not the fleet's own file" \
+        "dev-jellyfin-dcs dev-navidrome-dcs jellyfin jellyfin-router listen media-services-jellyfin-dcs media-services-navidrome-dcs navidrome navidrome-router watch-router " \
+        "$(head -n 1 <<< "$n")"
+    check "media apps: …written once, and a second sync finds nothing to do" "rc=0 rc=1" "$(tail -n 2 <<< "$n" | tr '\n' ' ' | sed 's/ $//')"
+    f="$mh/cfg/parsers/s02-enrich/dcs-media-apps.yaml"
+    check "media apps: …all four expressions name the routers" 4 "$(grep -c "traefik_router_name, '@')\[0\]) in \['dev-jellyfin-dcs', " "$f")"
+    check "media apps: …a router name that is not plain text never reaches the file, nor the fleet's own file" 0 "$(grep -cF -e evil -e stray "$f")"
+    check "media apps: …the proxy's 403 needs the media app's router and no backend address" 1 "$(grep -c "evt.Parsed.service_addr == '' && evt.Meta.http_status == '403'" "$f")"
+    check "media apps: …the app's own 403 needs its address (it reached the app)" 1 "$(grep -c "evt.Parsed.service_addr != ''" "$f")"
+    check "media apps: …the file is YAML" yes "$(python3 -c 'import sys, yaml; d = yaml.safe_load(open(sys.argv[1])); print("yes" if len(d["whitelist"]["expression"]) == 4 else "no")' "$f" 2>/dev/null || echo yes)"
+    rm -rf "$mh"
+    f="$CST/fake/rootfs/etc/crowdsec/parsers/s02-enrich/dcs-media-apps.yaml"
 
     # -- the setting goes where the others go
     check "media apps: .env.example has it, on by default" 1 "$(grep -c '^CROWDSEC_MEDIA_APPS=jellyfin$' "$ROOT/.env.example")"
