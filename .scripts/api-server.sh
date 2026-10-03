@@ -2243,6 +2243,22 @@ _api_stack_status() {
     fi
 }
 
+# _stack_asleep STACK — a stopped stack whose every container is one Sablier stops on purpose: it is asleep, not down. The caller
+# may read the on-demand names once for a whole list (a local _SAB_NAMES); alone, the function reads them itself.
+_stack_asleep() {
+    local stack="$1" id n any=false names
+    if [[ -v _SAB_NAMES ]]; then names="$_SAB_NAMES"; else names=$(_sablier_names 2>/dev/null); fi
+    [[ -n "$names" ]] || return 1
+    local -a args=(-f "$COMPOSE_DIR/$stack/docker-compose.yml")
+    [[ -f "$COMPOSE_DIR/$stack/.env" ]] && args+=(--env-file "$COMPOSE_DIR/$stack/.env")
+    while IFS= read -r id; do
+        [[ -n "$id" ]] || continue
+        n=$(timeout 5 docker inspect -f '{{.Name}}' "$id" 2>/dev/null); n="${n#/}"; any=true
+        grep -qxF -- "$n" <<< "$names" || return 1
+    done < <($DOCKER_COMPOSE_CMD "${args[@]}" ps -a -q 2>/dev/null)
+    [[ "$any" == true ]]
+}
+
 # Get container details as JSON array entry
 _api_container_json() {
     local container_id="$1"
@@ -2574,7 +2590,8 @@ handle_health_internal() {
 
 # GET /stacks — All stacks with running-container counts
 handle_stacks() {
-    local stacks
+    local stacks _SAB_NAMES
+    _SAB_NAMES=$(_sablier_names 2>/dev/null)
     read -ra stacks <<< "$(_api_get_stacks)"
 
     local -a entries=()
@@ -2592,7 +2609,9 @@ handle_stacks() {
         local service_count
         service_count=$(grep -c '^\s\+[a-zA-Z]' "$compose_file" 2>/dev/null) || service_count=0
 
-        entries+=("{\"name\": \"$stack\", \"status\": \"$status\", \"running_containers\": $count, \"has_env\": $has_env, \"compose_file\": \"$(_api_json_escape "$compose_file")\"}")
+        local asleep=false
+        [[ "$status" == stopped ]] && _stack_asleep "$stack" && asleep=true
+        entries+=("{\"name\": \"$stack\", \"status\": \"$status\", \"running_containers\": $count, \"sleeping\": $asleep, \"has_env\": $has_env, \"compose_file\": \"$(_api_json_escape "$compose_file")\"}")
     done
 
     local json
@@ -2664,7 +2683,8 @@ handle_stack_detail() {
     images_json=$(printf '%s,' "${image_entries[@]}")
     images_json="[${images_json%,}]"
 
-    _api_success "{\"name\": \"$stack\", \"status\": \"$status\", \"running_containers\": $count, \"has_env\": $([[ -f "$env_file" ]] && echo true || echo false), \"services\": $services_json, \"containers\": $containers_json, \"images\": $images_json}"
+    local asleep=false; [[ "$status" == stopped ]] && _stack_asleep "$stack" && asleep=true
+    _api_success "{\"name\": \"$stack\", \"status\": \"$status\", \"running_containers\": $count, \"sleeping\": $asleep, \"has_env\": $([[ -f "$env_file" ]] && echo true || echo false), \"services\": $services_json, \"containers\": $containers_json, \"images\": $images_json}"
 }
 
 # GET /stacks/{stack}/containers — Containers of one stack
@@ -20528,9 +20548,108 @@ handle_proxmox_vm_detail() {
                     net0: ($f.net0 // ""), bootdisk: ($f.bootdisk // ""), hostname: ($f.hostname // "")}}')"
 }
 
+# What the hub runs inside a VM after its disk grew: the partition of / takes the new room, then the filesystem (ext4, xfs or
+# btrfs). growpart says NOCHANGE (exit 1) when there is nothing to take, which is not an error.
+_VM_GROW_ROOT_SCRIPT='set -u
+PATH="$PATH:/usr/local/sbin:/usr/sbin:/sbin"
+src=$(findmnt -no SOURCE / 2>/dev/null); fs=$(findmnt -no FSTYPE / 2>/dev/null); src="${src%%\[*}"
+case "$src" in /dev/mapper/*|/dev/dm-*) echo "the root filesystem sits on LVM ($src): grow it with lvextend -r by hand"; exit 3 ;; esac
+pk=$(lsblk -no PKNAME "$src" 2>/dev/null | head -1); part=$(cat "/sys/class/block/${src##*/}/partition" 2>/dev/null)
+if [ -n "$pk" ] && [ -n "$part" ]; then
+    if command -v growpart >/dev/null 2>&1; then sudo -n growpart "/dev/$pk" "$part" >/dev/null 2>&1; rc=$?; [ $rc -le 1 ] || { echo "growpart failed (exit $rc)"; exit 4; }
+    elif command -v sfdisk >/dev/null 2>&1 && command -v partx >/dev/null 2>&1; then
+        # what growpart does, with util-linux alone: the GPT backup header moves to the new end, the partition takes the room,
+        # the kernel learns the new size of the partition in use
+        sudo -n sfdisk --relocate gpt-bak-std "/dev/$pk" >/dev/null 2>&1 || true
+        echo ", +" | sudo -n sfdisk --no-reread --no-tell-kernel -N "$part" "/dev/$pk" >/dev/null 2>&1 || { echo "sfdisk could not grow partition $part"; exit 4; }
+        sudo -n partx -u -n "$part" "/dev/$pk" >/dev/null 2>&1 || { echo "the kernel did not take the new partition size (a reboot does)"; exit 4; }
+    else echo "neither growpart nor sfdisk is installed: the next boot grows it through cloud-init"; exit 5; fi
+fi
+case "$fs" in
+    ext2|ext3|ext4) sudo -n resize2fs "$src" >/dev/null 2>&1 || { echo "resize2fs failed"; exit 6; } ;;
+    xfs) sudo -n xfs_growfs / >/dev/null 2>&1 || { echo "xfs_growfs failed"; exit 6; } ;;
+    btrfs) sudo -n btrfs filesystem resize max / >/dev/null 2>&1 || { echo "btrfs resize failed"; exit 6; } ;;
+    *) echo "the root filesystem is $fs: grow it by hand"; exit 7 ;;
+esac
+df -B1 --output=size,avail / | tail -1'
+# _pve_vm_resize NODE TYPE VMID BODY — more disk ({disk_add_gb}), cores ({cores}), memory ({memory_mb}) for a VM or container, and
+# {restart: true} reboots it so cores and memory apply. A VM of the fleet gets its filesystem grown at once over the hub's ssh key.
+_pve_vm_resize() {
+    local node="$1" type="$2" vmid="$3" body="$4" add cores mem restart cfg res disk="" msgs=() grown="" ip=""
+    [[ "$body" == \{* ]] || { _api_error 400 "A JSON body is required: {disk_add_gb?, cores?, memory_mb?, restart?}"; return; }
+    add=$(jq -r '.disk_add_gb // 0 | tostring' <<< "$body"); cores=$(jq -r '.cores // "" | tostring' <<< "$body"); mem=$(jq -r '.memory_mb // "" | tostring' <<< "$body")
+    restart=$(jq -r 'if .restart == true then "true" else "false" end' <<< "$body")
+    [[ "$add" =~ ^[0-9]{1,4}$ ]] && (( add <= 4096 )) || { _api_error 400 "disk_add_gb: a whole number of GB to add, 0 to 4096"; return; }
+    [[ -z "$cores" || ( "$cores" =~ ^[0-9]{1,3}$ && cores -ge 1 && cores -le 128 ) ]] || { _api_error 400 "cores: 1 to 128"; return; }
+    [[ -z "$mem" || ( "$mem" =~ ^[0-9]{3,7}$ && mem -ge 512 && mem -le 1048576 ) ]] || { _api_error 400 "memory_mb: 512 to 1048576"; return; }
+    (( add > 0 )) || [[ -n "$cores" || -n "$mem" ]] || { _api_error 400 "Nothing to change: give disk_add_gb, cores or memory_mb"; return; }
+    _pve_call cfg GET "/nodes/$node/$type/$vmid/config"; _pve_explain "$cfg" || { _api_error 502 "$PVE_ERR"; return; }
+    if (( add > 0 )); then
+        if [[ "$type" == lxc ]]; then disk=rootfs
+        else
+            # the boot disk: the first disk of the boot order that is not a CD drive, else bootdisk, else scsi0
+            local d
+            for d in $(jq -r '(.data.boot // "") | capture("order=(?<o>[^,]+)").o // "" | split(";")[]' <<< "$cfg" 2>/dev/null) $(jq -r '.data.bootdisk // empty' <<< "$cfg") scsi0 virtio0 sata0; do
+                [[ "$d" =~ ^(scsi|virtio|sata|ide)[0-9]+$ ]] || continue
+                local v; v=$(jq -r --arg d "$d" '.data[$d] // ""' <<< "$cfg")
+                [[ -n "$v" && "$v" != *media=cdrom* ]] && { disk="$d"; break; }
+            done
+        fi
+        [[ -n "$disk" ]] || { _api_error 409 "The VM's boot disk could not be found in its configuration"; return; }
+        PVE_TIMEOUT=120 _pve_call res PUT "/nodes/$node/$type/$vmid/resize" "disk=$disk" "size=+${add}G"
+        _pve_explain "$res" || { _api_error 502 "The disk was not grown: $PVE_ERR"; return; }
+        msgs+=("$disk +${add} GB")
+        # the filesystem inside: a container's grows with its volume; a VM of the fleet is grown now over ssh
+        if [[ "$type" == qemu ]]; then
+            ip=$(jq -r --argjson v "$vmid" '[(.members // [])[] | select(.vmid == $v)] | .[0].url // ""' "$FLEET_FILE" 2>/dev/null | sed -E 's#^https?://\[?([^]/:]+).*#\1#')
+            if [[ -n "$ip" ]] && [[ "$(jq -r --argjson v "$vmid" '[(.members // [])[] | select(.vmid == $v)] | .[0].reachable // false' "$FLEET_FILE" 2>/dev/null)" == true ]]; then
+                local out rc=0
+                out=$(_fleet_ssh "$ip" "bash -c \"\$(printf %s $(printf '%s' "$_VM_GROW_ROOT_SCRIPT" | base64 -w0) | base64 -d)\"" </dev/null 2>&1) || rc=$?
+                out=$(printf '%s' "$out" | tr -d '\r' | tail -n 1)
+                if (( rc == 0 )) && [[ "$out" =~ ^[[:space:]]*([0-9]+)[[:space:]]+([0-9]+) ]]; then
+                    grown="the filesystem now holds $(( BASH_REMATCH[1] / 1073741824 )) GB ($(( BASH_REMATCH[2] / 1073741824 )) GB free)"
+                else
+                    grown="the filesystem inside was not grown yet: ${out:-no answer over ssh}"
+                fi
+            else
+                grown="a reboot of the VM grows the filesystem inside (cloud-init), or growpart and resize2fs by hand"
+            fi
+        fi
+    fi
+    if [[ -n "$cores" || -n "$mem" ]]; then
+        local -a kv=()
+        [[ -n "$cores" ]] && kv+=("cores=$cores") && msgs+=("$cores cores")
+        if [[ -n "$mem" ]]; then
+            kv+=("memory=$mem"); msgs+=("$mem MB of memory")
+            # a balloon keeps its share of the new size (three quarters or more stay with the guest)
+            local bal; bal=$(jq -r '.data.balloon // 0 | tostring' <<< "$cfg"); [[ "$type" == qemu && "$bal" =~ ^[1-9][0-9]*$ ]] && kv+=("balloon=$(_vm_balloon_floor "$mem")")
+        fi
+        PVE_TIMEOUT=30 _pve_call res PUT "/nodes/$node/$type/$vmid/config" "${kv[@]}"
+        _pve_explain "$res" || { _api_error 502 "$( ((add > 0)) && echo "The disk grew, but ")the cores and memory were not changed: $PVE_ERR"; return; }
+    fi
+    local applied="" status
+    status=$(jq -r '.data.status // ""' <<< "$(_pve_call_echo GET "/nodes/$node/$type/$vmid/status/current")" 2>/dev/null)
+    if [[ -n "$cores" || -n "$mem" ]]; then
+        if [[ "$restart" == true && "$status" == running ]]; then
+            _container_mark_intended "pve:$vmid"
+            PVE_TIMEOUT=60 _pve_call res POST "/nodes/$node/$type/$vmid/status/reboot" timeout=180
+            _pve_explain "$res" && applied="the VM reboots to take the new cores and memory" || applied="the reboot was refused ($PVE_ERR): reboot it to apply the cores and memory"
+        elif [[ "$status" == running ]]; then applied="the cores and memory apply at the next reboot"
+        fi
+    fi
+    local text="Resized VM $vmid: ${msgs[*]}"; text="${text// /, }"; text="Resized VM $vmid: $(IFS=';'; printf '%s' "${msgs[*]}" | sed 's/;/, /g')"
+    _audit_log "proxmox_vm_resize" "$text by ${AUTH_USERNAME:-unknown}${grown:+ — $grown}"
+    _api_cache_clear
+    _api_success "$(jq -nc --argjson id "$vmid" --arg t "$text" --arg g "$grown" --arg a "$applied" --arg d "$disk" \
+        '{success: true, action: "resize", vmid: $id, disk: (if $d == "" then null else $d end), filesystem: $g, applied: $a,
+          message: ([$t, $g, $a] | map(select(. != "")) | join(" · "))}')"
+}
+# _pve_call_echo METHOD PATH — the body alone (for a one-line jq)
+_pve_call_echo() { local _b; _pve_call _b "$@"; printf '%s' "$_b"; }
+
 # POST /proxmox/vms/:node/:type/:vmid/:action — Power action on a VM or container: start, shutdown, stop, reboot, reset (VMs only), balloon (VMs only: a memory balloon whose floor keeps the guest three quarters of its memory, so Proxmox reports the guest's real usage and can take a little back; reboot afterwards), suspend, resume — audited and sent to the webhooks
 handle_proxmox_vm_action() {
-    local node="$1" type="$2" vmid="$3" action="$4" res name label upid
+    local node="$1" type="$2" vmid="$3" action="$4" body="${5:-}" res name label upid
     _pve_configured || { _api_error 503 "$_PVE_NOT_CONFIGURED"; return; }
     case "$action" in
         start|shutdown|stop|reboot|suspend|resume) ;;
@@ -20549,7 +20668,8 @@ handle_proxmox_vm_action() {
             _api_cache_clear
             _api_success "$(jq -nc --argjson id "$vmid" --argjson b "$bal" --argjson m "$mem" '{success: true, action: "balloon", vmid: $id, balloon: $b, memory: $m, message: ("Balloon set to " + ($b|tostring) + " MB of " + ($m|tostring) + " MB — reboot the VM for Proxmox to show its real memory use")}')"
             return ;;
-        *) _api_error 400 "Unknown action: $action (start, shutdown, stop, reboot, reset, suspend, resume, balloon)"; return ;;
+        resize) _pve_vm_resize "$node" "$type" "$vmid" "$body"; return ;;
+        *) _api_error 400 "Unknown action: $action (start, shutdown, stop, reboot, reset, suspend, resume, balloon, resize)"; return ;;
     esac
     local cur
     _pve_call cur GET "/nodes/$node/$type/$vmid/status/current"
@@ -27514,12 +27634,16 @@ handle_health_score() {
     now=$(date +%s)
 
     # ── Factor 1: Stack/container health (40% weight) — one docker call ──
-    local total_containers=0 healthy_count=0 unhealthy_count=0 _hs_ps _hs_rc=0 docker_down=false
+    local total_containers=0 healthy_count=0 unhealthy_count=0 sleeping_count=0 _hs_ps _hs_rc=0 docker_down=false _hs_name
+    # containers Sablier stops on purpose are asleep, not down: they are counted apart and stay out of the score
+    local -A _hs_od=()
+    while IFS= read -r _hs_name; do [[ -n "$_hs_name" ]] && _hs_od["$_hs_name"]=1; done < <(_sablier_names 2>/dev/null)
     # "docker ps" failing is a Docker that does not answer, not an empty list: every container is down
-    _hs_ps=$(timeout 10 docker ps -a --format '{{.State}}\t{{.Status}}' 2>/dev/null) || _hs_rc=$?
+    _hs_ps=$(timeout 10 docker ps -a --format '{{.Names}}\t{{.State}}\t{{.Status}}' 2>/dev/null) || _hs_rc=$?
     (( _hs_rc != 0 )) && docker_down=true
-    while IFS=$'\t' read -r state status; do
+    while IFS=$'\t' read -r _hs_name state status; do
         [[ -z "$state" ]] && continue
+        if [[ "$state" != "running" && -n "${_hs_od[$_hs_name]:-}" ]]; then sleeping_count=$((sleeping_count + 1)); continue; fi
         total_containers=$((total_containers + 1))
         if [[ "$state" == "running" ]]; then
             if [[ "$status" == *"(unhealthy)"* ]]; then
@@ -27629,7 +27753,7 @@ handle_health_score() {
         tail -n 2016 "$HEALTH_SCORE_HISTORY_FILE" > "${HEALTH_SCORE_HISTORY_FILE}.tmp" 2>/dev/null && mv -f "${HEALTH_SCORE_HISTORY_FILE}.tmp" "$HEALTH_SCORE_HISTORY_FILE"
     fi
 
-    _api_success "{\"score\": $total_score, \"grade\": \"$grade\", \"factors\": {\"stacks\": {\"score\": $stack_score, \"weight\": 0.4, \"healthy\": $healthy_count, \"unhealthy\": $unhealthy_count, \"total\": $total_containers}, \"resources\": {\"score\": $resource_score, \"weight\": 0.3, \"cpu_pct\": $cpu_pct, \"mem_pct\": $mem_pct}, \"images\": {\"score\": $image_score, \"weight\": 0.15, \"total\": $total_images, \"stale\": $stale_images}, \"uptime\": {\"score\": $uptime_score, \"weight\": 0.15, \"seconds\": $uptime_seconds}}, \"docker\": {\"reachable\": $([[ "$docker_down" == "true" ]] && echo false || echo true)}, \"timestamp\": \"$(date -u '+%Y-%m-%dT%H:%M:%SZ')\"}"
+    _api_success "{\"score\": $total_score, \"grade\": \"$grade\", \"factors\": {\"stacks\": {\"score\": $stack_score, \"weight\": 0.4, \"healthy\": $healthy_count, \"unhealthy\": $unhealthy_count, \"sleeping\": $sleeping_count, \"total\": $total_containers}, \"resources\": {\"score\": $resource_score, \"weight\": 0.3, \"cpu_pct\": $cpu_pct, \"mem_pct\": $mem_pct}, \"images\": {\"score\": $image_score, \"weight\": 0.15, \"total\": $total_images, \"stale\": $stale_images}, \"uptime\": {\"score\": $uptime_score, \"weight\": 0.15, \"seconds\": $uptime_seconds}}, \"docker\": {\"reachable\": $([[ "$docker_down" == "true" ]] && echo false || echo true)}, \"timestamp\": \"$(date -u '+%Y-%m-%dT%H:%M:%SZ')\"}"
 }
 
 # GET /health/score?fleet=1 on a hub: the members' scores folded in — containers and images add up across the fleet, the score is
@@ -27643,7 +27767,7 @@ handle_health_score_fleet() {
         | ([{id: null, name: $n, vmid: null, reachable: true, error: "", score: $own.score, grade: $own.grade, factors: $own.factors, docker: ($own.docker // null)}]
            + ($m.members | map({id, name, vmid, reachable, error, score: ((.data.score | numbers) // null), grade: ((.data.grade | strings) // null), factors: (.data.factors | if type == "object" then . else null end), docker: (.data.docker | if type == "object" then . else null end)}))) as $members
         | ([$members[] | select(.reachable and .factors != null)]) as $live
-        | ($live | map((.factors.stacks | objects | .total | numbers) // 0) | add // 0) as $ct | ($live | map((.factors.stacks | objects | .healthy | numbers) // 0) | add // 0) as $ch | ($live | map((.factors.stacks | objects | .unhealthy | numbers) // 0) | add // 0) as $cu
+        | ($live | map((.factors.stacks | objects | .total | numbers) // 0) | add // 0) as $ct | ($live | map((.factors.stacks | objects | .healthy | numbers) // 0) | add // 0) as $ch | ($live | map((.factors.stacks | objects | .unhealthy | numbers) // 0) | add // 0) as $cu | ($live | map((.factors.stacks | objects | .sleeping | numbers) // 0) | add // 0) as $cz
         | ($live | map((.factors.images | objects | .total | numbers) // 0) | add // 0) as $it | ($live | map((.factors.images | objects | .stale | numbers) // 0) | add // 0) as $is
         | (if $ct > 0 then (($ch / $ct) * 100 | floor) else 100 end) as $cs
         | (if $it > 0 then ((1 - ($is / $it)) * 100 | floor) else 100 end) as $ims
@@ -27651,7 +27775,7 @@ handle_health_score_fleet() {
         | ([$members[] | select(.reachable and (.docker.reachable == false))] | length) as $dockerdown
         | (if $dockerdown > 0 and $raw > 39 then 39 else $raw end) as $total
         | $own
-        | .factors.stacks = {score: $cs, weight: 0.4, healthy: $ch, unhealthy: $cu, total: $ct}
+        | .factors.stacks = {score: $cs, weight: 0.4, healthy: $ch, unhealthy: $cu, sleeping: $cz, total: $ct}
         | .factors.images = {score: $ims, weight: 0.15, total: $it, stale: $is}
         | .score = $total
         | .grade = (if $total >= 90 then "A" elif $total >= 80 then "B" elif $total >= 70 then "C" elif $total >= 60 then "D" else "F" end)
@@ -29756,7 +29880,7 @@ handle_request() {
                 local _pv="${path#/proxmox/vms/}" _pv_node _pv_type _pv_id _pv_action
                 _pv_node="${_pv%%/*}"; _pv="${_pv#*/}"; _pv_type="${_pv%%/*}"; _pv="${_pv#*/}"; _pv_id="${_pv%%/*}"; _pv_action="${_pv#*/}"
                 _pve_validate_ref "$_pv_node" "$_pv_type" "$_pv_id" || return
-                handle_proxmox_vm_action "$_pv_node" "$_pv_type" "$_pv_id" "$_pv_action"; return ;;
+                handle_proxmox_vm_action "$_pv_node" "$_pv_type" "$_pv_id" "$_pv_action" "$request_body"; return ;;
             /traefik/feed/token)  handle_traefik_feed_token; return ;;
             /fleet/members)       handle_fleet_member_add "$request_body"; return ;;
             /fleet/join-tokens)   handle_fleet_join_token_create "$request_body"; return ;;

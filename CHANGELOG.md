@@ -17,6 +17,17 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the VM. The Proxmox page's VM menu has **Relink to the hub**, and the Updates page offers it on a failed VM's line.
   [Proxmox](docs/PROXMOX.md#taking-a-vm-back-when-the-hub-lost-its-password).
 
+- **Resize a VM.** The VM details sheet has a *Size* panel: more disk, cores and memory. `POST
+  /proxmox/vms/<node>/<type>/<vmid>/resize` grows the boot disk through Proxmox and, for a VM of the fleet, the filesystem
+  inside at once over the hub's ssh key (growpart, or sfdisk and partx when growpart is not installed); cores and memory apply
+  at the next reboot, or at once with `restart: true`. Verified on a lab VM: 12 to 15 GB with its stack running.
+- **The Trends page saves its charts as a picture** (PNG at twice the screen's resolution).
+- **Sleeping is not down.** Containers Sablier stops on purpose no longer count against the health score: `GET /health/score`
+  leaves them out of `factors.stacks.total` and reports them as `sleeping` (summed across the fleet). A stopped stack whose every
+  container is one of those answers `sleeping: true` in `GET /stacks` and `GET /stacks/{name}` (its `status` stays `stopped`).
+  The dashboard shows *Sleeping (6)* in the health distribution, a *Sleeping* badge on such a stack, and *Start all* leaves them
+  asleep.
+
 ### Changed
 
 - **A working Proxmox link makes a hub before the first VM exists.** The Stacks page's *New stack* menu (*In its own VM* / *On the

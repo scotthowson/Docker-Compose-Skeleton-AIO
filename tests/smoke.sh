@@ -474,6 +474,8 @@ check "chain: existing entry kept"          1 "$(grep -c '"https-redirect"' "$WO
 _lib _traefik_chain_set crowdsec-bouncer remove
 check "chain: bouncer removed"              0 "$(grep -c 'crowdsec-bouncer' "$WORK/Stacks/zz-proxy/App-Data/Traefik/custom_routes/core-infrastructure/traefik.yml")"
 check "health reports sleeping"             true "$(auth_request GET /health | body_of | jq -r '.summary | has("sleeping")' 2>/dev/null)"
+check "health score counts sleeping apart"      true "$(auth_request GET /health/score | body_of | jq -r '.factors.stacks | has("sleeping")' 2>/dev/null)"
+check "stacks say whether they sleep"          true "$(auth_request GET /stacks | body_of | jq -r '.stacks[0] | has("sleeping")' 2>/dev/null)"
 check "sablier toggle: unknown container"   404 "$(auth_request POST /containers/nope-zz/sablier '{"enabled":true}' | status_of)"
 check "sablier toggle: viewer denied"       403 "$(viewer_request POST /containers/nope-zz/sablier '{"enabled":true}' | status_of)"
 check "sablier settings: unknown container" 404 "$(auth_request GET /containers/nope-zz/sablier | status_of)"
@@ -1490,6 +1492,10 @@ check "wizard: a machine Proxmox does not know still completes" "true false" "$(
 _envdel FLEET_IDENTITY_UUID; _pve_put 100 'tags=docker;media'
 check "proxmox: reset is qemu-only"     400 "$(auth_request POST /proxmox/vms/pve/lxc/200/reset '{}' | status_of)"
 check "proxmox: balloon is qemu-only"   400 "$(auth_request POST /proxmox/vms/pve/lxc/200/balloon '{}' | status_of)"
+check "proxmox: resize needs a change"  400 "$(auth_request POST /proxmox/vms/pve/qemu/100/resize '{}' | status_of)"
+check "proxmox: resize checks the disk"  400 "$(auth_request POST /proxmox/vms/pve/qemu/100/resize '{"disk_add_gb":-5}' | status_of)"
+check "proxmox: resize checks the cores" 400 "$(auth_request POST /proxmox/vms/pve/qemu/100/resize '{"cores":999}' | status_of)"
+check "proxmox: resize, viewer denied"   403 "$(viewer_request POST /proxmox/vms/pve/qemu/100/resize '{"cores":2}' | status_of)"
 _BL=$(auth_request POST /proxmox/vms/pve/qemu/100/balloon '{}')
 check "proxmox: balloon set"            200 "$(printf '%s' "$_BL" | status_of)"
 check "proxmox: balloon keeps three quarters" '7680 8192' "$(printf '%s' "$_BL" | body_of | jq -r '"\(.balloon) \(.memory)"' 2>/dev/null)"

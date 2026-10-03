@@ -688,6 +688,17 @@ key), `GET /ssh/keys/<id>/config`, `DELETE /ssh/keys/<id>`; see the [API referen
 
 A VM you made yourself has its own users and keys: see below.
 
+### Giving a VM more room (resize)
+
+The VM's details (its name on the Proxmox page) have a **Size** panel: *Resize* adds disk in GB, and sets cores and memory.
+A disk only grows. For a VM the hub manages, the filesystem inside grows at once over the hub's ssh key (growpart, or
+sfdisk and partx from util-linux, then resize2fs, xfs_growfs or btrfs; an LVM root is left to you), so the stack keeps
+running and sees the room immediately. Other guests grow theirs at the next boot. Cores and memory are written to the VM's
+configuration and apply at the next reboot; tick *Reboot now* to apply them at once. A memory balloon keeps its share of
+the new size. From a script: `POST /proxmox/vms/<node>/<qemu|lxc>/<vmid>/resize` with `{"disk_add_gb": 20, "cores": 4,
+"memory_mb": 8192, "restart": false}` (any of them). The token needs `VM.Config.Disk`, `VM.Config.CPU` and
+`VM.Config.Memory` (PVEVMAdmin has them).
+
 ### Taking a VM back when the hub lost its password
 
 The hub logs in to each VM as the account `dcs-hub`, with a password kept in the secret store as `FLEET_MEMBER_<NAME>_PASSWORD`.
