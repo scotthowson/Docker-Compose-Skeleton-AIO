@@ -7357,7 +7357,7 @@ handle_config_update() {
         # Image Updates
         [AGGRESSIVE_IMAGE_PRUNE]=1 [UPDATE_NOTIFICATION]=1
         # Notifications
-        [NTFY_URL]=1 [NTFY_TOPIC]=1 [NTFY_PRIORITY]=1 [NTFY_TOKEN]=1 [DISCORD_WEBHOOK_URL]=1 [DISCORD_WEBHOOK_NAME]=1 [DISCORD_WEBHOOK_AVATAR]=1 [NOTIFY_COOLDOWN_MINUTES]=1 [UPDATE_ON_BOOT]=1 [UPDATE_CHANNEL]=1 [CROWDSEC_TRUSTED_IPS]=1 [CROWDSEC_MEDIA_APPS]=1
+        [NTFY_URL]=1 [NTFY_TOPIC]=1 [NTFY_PRIORITY]=1 [NTFY_TOKEN]=1 [DISCORD_WEBHOOK_URL]=1 [DISCORD_WEBHOOK_NAME]=1 [DISCORD_WEBHOOK_AVATAR]=1 [NOTIFY_COOLDOWN_MINUTES]=1 [UPDATE_ON_BOOT]=1 [UPDATE_CHANNEL]=1 [CROWDSEC_TRUSTED_IPS]=1 [CROWDSEC_MEDIA_APPS]=1 [CROWDSEC_HOME_IPV6_PREFIX]=1
         [UPDATE_AUTO_ROLLBACK]=1 [UPDATE_HEALTH_GRACE]=1 [UPDATE_ROLLBACK_DROP]=1
         # Power (UPS)
         [UPS_ENABLED]=1 [UPS_SOURCE]=1 [UPS_NUT_HOST]=1 [UPS_NUT_PORT]=1 [UPS_NAME]=1 [UPS_POLL_INTERVAL]=1
@@ -20264,6 +20264,70 @@ _crowdsec_public_ip() {
     _crowdsec_valid_ip "$ip" && printf '%s' "$ip"
 }
 
+# The home address over IPv6. Behind a home router every device has its own global IPv6 address in the network the provider delegates
+# (no NAT), so a phone or a laptop at home that reaches the public name over IPv6 (Cloudflare answers over IPv6 even for a name with only
+# an A record, and passes the visitor's real address on) is not the home IPv4 address CrowdSec trusts: it was judged like a stranger, and
+# the provider changes the prefix now and then. What is trusted is the home NETWORK: this server's own global address, cut to
+# CROWDSEC_HOME_IPV6_PREFIX bits (default 64, the network of the LAN; 56 or 48 when the router hands out several /64s; off turns it off).
+_crowdsec_home_ipv6_len() {
+    local n="${CROWDSEC_HOME_IPV6_PREFIX-64}"
+    case "${n,,}" in ''|off|false|no|none|0) return 1 ;; esac
+    if [[ ! "$n" =~ ^[0-9]{1,3}$ ]] || (( 10#$n < 32 || 10#$n > 128 )); then n=64; fi
+    printf '%s' "$(( 10#$n ))"
+}
+# a global unicast IPv6 address (2000::/3), in a form CrowdSec reads
+_crowdsec_global_ip6() { [[ "${1,,}" =~ ^[23][0-9a-f]{3}:[0-9a-f:]{1,35}$ && "$1" != *:::* ]]; }
+# The global IPv6 address this server goes out with (nothing when it has no IPv6 route out). The kernel's source address for the internet is
+# what the world sees; only when that is not a global address (NAT66, a ULA) is the internet asked, and never without a route to ask over.
+_crowdsec_public_ip6() {
+    local a u
+    a=$(ip -6 route get 2606:4700:4700::1111 2>/dev/null | sed -n 's/.* src \([0-9A-Fa-f:]*\).*/\1/p' | head -n 1) || a=""
+    [[ -n "$a" ]] || return 1
+    if ! _crowdsec_global_ip6 "$a"; then
+        a=""
+        for u in ${CROWDSEC_IP6_URLS:-https://api6.ipify.org https://ipv6.icanhazip.com}; do
+            a=$(curl -6 -s --max-time 5 "$u" 2>/dev/null | tr -d '[:space:]') || a=""
+            _crowdsec_global_ip6 "$a" && break
+            a=""
+        done
+    fi
+    [[ -n "$a" ]] || return 1
+    printf '%s' "${a,,}"
+}
+# _crowdsec_ipv6_net ADDRESS BITS — the network of an IPv6 address, as CIDR (2001:db8:1:2::/64); 1 when ADDRESS is not an IPv6 address
+_crowdsec_ipv6_net() {
+    local a="${1,,}" len="$2" head tail i n v out
+    local -a hg=() tg=() g=()
+    [[ "$a" =~ ^[0-9a-f:]{2,39}$ && "$a" != *::*::* && "$len" =~ ^[0-9]{1,3}$ ]] && (( len <= 128 )) || return 1
+    if [[ "$a" == *::* ]]; then head="${a%%::*}"; tail="${a#*::}"; else head="$a"; tail=""; fi
+    [[ -z "$head" ]] || IFS=: read -ra hg <<< "$head"
+    [[ -z "$tail" ]] || IFS=: read -ra tg <<< "$tail"
+    if [[ "$a" == *::* ]]; then
+        (( ${#hg[@]} + ${#tg[@]} <= 7 )) || return 1
+        g=("${hg[@]}"); for (( i = ${#hg[@]} + ${#tg[@]}; i < 8; i++ )); do g+=(0); done; g+=("${tg[@]}")
+    else
+        (( ${#hg[@]} == 8 )) || return 1; g=("${hg[@]}")
+    fi
+    for (( i = 0; i < 8; i++ )); do
+        [[ "${g[i]}" =~ ^[0-9a-f]{1,4}$ ]] || return 1
+        n=$(( len - i * 16 ))
+        if (( n >= 16 )); then v=$(( 16#${g[i]} )); elif (( n <= 0 )); then v=0; else v=$(( 16#${g[i]} & (0xffff << (16 - n)) & 0xffff )); fi
+        g[i]=$(printf '%x' "$v")
+    done
+    n=8; while (( n > 0 )) && [[ "${g[n-1]}" == 0 ]]; do n=$(( n - 1 )); done
+    (( n > 0 )) || return 1
+    out=$(IFS=:; printf '%s' "${g[*]:0:n}")
+    (( n < 8 )) && out+="::"
+    printf '%s/%s' "$out" "$len"
+}
+# The home IPv6 network to trust, as CIDR (nothing when it is off or this server has no IPv6)
+_crowdsec_home_ipv6_net() {
+    local len a
+    len=$(_crowdsec_home_ipv6_len) || return 1
+    a=$(_crowdsec_public_ip6) || return 1
+    _crowdsec_ipv6_net "$a" "$len"
+}
+
 _crowdsec_trusted_list() {
     [[ -f "$CROWDSEC_TRUSTED_FILE" ]] && jq -r '.ips[]? // empty' "$CROWDSEC_TRUSTED_FILE" 2>/dev/null
     local extra
@@ -20285,38 +20349,112 @@ _crowdsec_media_apps_list() {
     done | LC_ALL=C sort -u      # (the order must not depend on the language of whoever runs the sync: two orders would rewrite the file for ever)
 }
 
+# The Traefik routers (without their @provider) that lead to those backends, one per line, lower case, once, in one order for every language. The access
+# log names the backend by its address, and that address is the container's name only when this server's Traefik reaches the container by name: a route
+# into a VM of the fleet reaches it at the VM's address (the hub's access log says 192.168.1.202, not jellyfin), a route made by Docker labels at the
+# container's address. The router is in every line of the log, also when Traefik refused the request itself. They are: each name and name-router (DCS's
+# own route files and the usual Docker labels), every router of this server's route files whose service's server is one of the backends by name (a route
+# renamed to watch-router still leads to http://jellyfin:8096), and for each member of the fleet <member>-<name>-dcs (a VM's route file is named after
+# its service, and the hub's merged feed prefixes the member: _feed_build and _fleet_feed_sanitize).
+_crowdsec_media_routers_list() {
+    local LC_ALL=C a id dir
+    local -a apps=()
+    mapfile -t apps < <(_crowdsec_media_apps_list)
+    (( ${#apps[@]} > 0 )) || return 0
+    {
+        for a in "${apps[@]}"; do printf '%s\n%s-router\n' "$a" "$a"; done
+        dir=$(_find_traefik_routes_dir 2>/dev/null) || dir=""
+        if [[ -n "$dir" && -d "$dir" ]]; then
+            # (a small reader of the routers: and services: blocks of Traefik's YAML: router -> its service, service -> the hosts of its servers)
+            find "$dir" -maxdepth 3 \( -name '*.yml' -o -name '*.yaml' \) -type f ! -name "${FLEET_ROUTES_FILE_NAME:-fleet-members.yml}" -print0 2>/dev/null \
+                | xargs -0 -r awk -v apps="${apps[*]}" '
+                    BEGIN { n = split(apps, l, " "); for (i = 1; i <= n; i++) isapp[l[i]] = 1 }
+                    FNR == 1 { sec = ""; base = -1; child = -1; cur = "" }
+                    {
+                        line = $0; sub(/\r$/, "", line); sub(/[ \t]+#.*$/, "", line)
+                        if (line ~ /^[ \t]*(#|$)/) next
+                        match(line, /^ */); ind = RLENGTH; t = substr(line, ind + 1)
+                        if (sec != "" && ind <= base) sec = ""
+                        if (t ~ /^routers:[ \t]*$/) { sec = "r"; base = ind; child = -1; cur = ""; next }
+                        if (t ~ /^services:[ \t]*$/) { sec = "s"; base = ind; child = -1; cur = ""; next }
+                        if (sec == "") next
+                        if (child < 0) child = ind
+                        if (ind <= child) { cur = t; sub(/:.*$/, "", cur); gsub(/["\047 ]/, "", cur); cur = tolower(cur); next }
+                        if (cur == "") next
+                        if (sec == "r" && t ~ /^service:/) { v = t; sub(/^service:/, "", v); gsub(/["\047 \t]/, "", v); sub(/@.*$/, "", v); svc[cur] = tolower(v) }
+                        if (sec == "s" && t ~ /^(-[ \t]*)?url:/) {
+                            v = t; sub(/^(-[ \t]*)?url:/, "", v); gsub(/["\047 \t]/, "", v); sub(/^[A-Za-z][A-Za-z0-9+.-]*:\/\//, "", v)
+                            sub(/[\/?#].*$/, "", v); sub(/:[0-9]*$/, "", v)
+                            if (tolower(v) in isapp) media[cur] = 1
+                        }
+                    }
+                    END { for (r in svc) if (svc[r] in media) print r }' 2>/dev/null || true
+        fi
+        if _fleet_has_members; then
+            while IFS= read -r id; do
+                for a in "${apps[@]}"; do printf '%s-%s-dcs\n' "$id" "$a"; done
+            done < <(jq -r '.members[]?.id // empty | strings' "$FLEET_FILE" 2>/dev/null)
+        fi
+    } | tr 'A-Z' 'a-z' | grep -E '^[a-z0-9][a-z0-9_.-]{0,252}$' | LC_ALL=C sort -u
+}
+
 # The parser file for those backends, on stdout (nothing when no backend is named). One page of a media app makes dozens of API and artwork requests in
 # a second, and some of them are answered 404 (an item without a logo): CrowdSec's generic HTTP scenarios read that as a crawl and as probing, and ban
-# the person watching. What the app ANSWERED (2xx/3xx to a GET or HEAD) is the app working, whoever asks, and missing artwork is not probing. What a
-# scanner earns stays counted: a 404/403/400 (except that artwork), a 401, any other method, every other backend, and any path that leaves the web root.
+# the person watching. What the app ANSWERED (2xx/3xx to a GET or HEAD) is the app working, whoever asks; missing pictures, lyrics, subtitles and
+# trickplay strips are not probing; a 403 the app gives itself is a signed-in user asking for what the account may not see (an anonymous scanner gets 401
+# or 404 from these apps); and a 403 of the proxy before the app (the bouncer, to a client that keeps polling once banned) is not a second attack. What a
+# scanner earns stays counted: a 404/400 (except that media), a 401, a 403 to any other method, every other backend, and any path that leaves the web
+# root. The backend is the app by its address in the access log (Traefik reaches the container by name) or by the router that took the request
+# (_crowdsec_media_routers_list: a VM of the fleet, Docker labels, a renamed route).
 _crowdsec_media_apps_yaml() {
-    local a list="" yaml
+    local a list="" routers="" yaml
     while IFS= read -r a; do list+="${list:+, }'$a'"; done < <(_crowdsec_media_apps_list)
     [[ -n "$list" ]] || return 0
+    while IFS= read -r a; do routers+="${routers:+, }'$a'"; done < <(_crowdsec_media_routers_list)
     IFS= read -r -d '' yaml <<'YAML' || true
 name: custom/dcs-media-apps
-description: "Media apps answering their own web client: what these backends answered to a GET/HEAD (and missing artwork) is not read as a crawl or as probing"
-# Managed by DCS — change the backends with CROWDSEC_MEDIA_APPS in .env, not here.
+description: "Media apps answering their own web client: what these backends answered to a GET/HEAD, missing media, their own 403s and the proxy's 403s to a banned client are not read as a crawl or as probing"
+# Managed by DCS — change the backends with CROWDSEC_MEDIA_APPS in .env, not here (the routers are found by DCS: route files, the fleet's VMs).
 whitelist:
   reason: "normal media-app client traffic (DCS)"
   expression:
     # 1. A page of the app makes dozens of API and artwork requests in a second: to the crawler scenario that looks like a crawl. A request the app ANSWERED
-    #    (2xx / 3xx) is the app working; what a scanner earns is a 404 / 403 / 400 (still counted) or a path that tries to leave the web root (never whitelisted).
+    #    (2xx / 3xx) is the app working; what a scanner earns is a 404 / 400 (still counted) or a path that tries to leave the web root (never whitelisted).
     - >-
       evt.Meta.service == 'http' && evt.Meta.log_type == 'http_access-log'
-      && Lower(evt.Parsed.service_addr) in [@APPS@]
+      && (Lower(evt.Parsed.service_addr) in [@APPS@]
+      || Lower(Split(evt.Parsed.traefik_router_name, '@')[0]) in [@ROUTERS@])
       && evt.Parsed.verb in ['GET', 'HEAD']
       && evt.Meta.http_status matches '^[23][0-9][0-9]$'
       && !(evt.Meta.http_path contains '..') && !(Lower(evt.Meta.http_path) matches '%2e|%00|%5c|%252')
-    # 2. An item without a logo or a backdrop answers 404 to the client that asked for it: missing artwork is not probing. (Traefik logs the path with its
-    #    query, and the web client adds the size it wants to every image address: ?fillHeight=446&quality=96.)
+    # 2. An item, a person or a user without a picture, a song without lyrics, a subtitle or a trickplay strip not made yet: the app answers 404 to the client
+    #    that asked, and missing media is not probing. (Traefik logs the path with its query; an optional first segment is a base URL such as /jellyfin.)
     - >-
       evt.Meta.service == 'http' && evt.Meta.log_type == 'http_access-log'
-      && Lower(evt.Parsed.service_addr) in [@APPS@]
+      && (Lower(evt.Parsed.service_addr) in [@APPS@]
+      || Lower(Split(evt.Parsed.traefik_router_name, '@')[0]) in [@ROUTERS@])
       && evt.Parsed.verb in ['GET', 'HEAD'] && evt.Meta.http_status == '404'
-      && evt.Meta.http_path matches '^/Items/[0-9a-fA-F]{32}/Images/[A-Za-z]+(/[0-9]+)?([?].*)?$'
+      && !(evt.Meta.http_path contains '..') && !(Lower(evt.Meta.http_path) matches '%2e|%00|%5c|%252')
+      && Lower(evt.Meta.http_path) matches '^(/[a-z0-9_-]+)?/((items|users|persons|studios|genres|musicgenres|artists)/[^/?]+/images/[a-z]+(/[0-9]+)?|audio/[0-9a-f]{32}/lyrics|videos/[0-9a-f-]{32,36}/[0-9a-f-]{32,36}/subtitles/[0-9]+/([0-9]+/)?stream[.][a-z0-9]+|videos/[0-9a-f]{32}/trickplay/[0-9]+/[a-z0-9_.-]+)([?].*)?$'
+    # 3. The app itself answered 403 (the request reached it: the log has its address): a signed-in user asking for what the account may not see. A page of the
+    #    web client asks a user who is not an administrator for admin-only plugin and server settings; an anonymous scanner gets 401 or 404 from these apps.
+    - >-
+      evt.Meta.service == 'http' && evt.Meta.log_type == 'http_access-log'
+      && evt.Parsed.service_addr != ''
+      && (Lower(evt.Parsed.service_addr) in [@APPS@]
+      || Lower(Split(evt.Parsed.traefik_router_name, '@')[0]) in [@ROUTERS@])
+      && evt.Parsed.verb in ['GET', 'HEAD'] && evt.Meta.http_status == '403'
+      && !(evt.Meta.http_path contains '..') && !(Lower(evt.Meta.http_path) matches '%2e|%00|%5c|%252')
+    # 4. The proxy refused the request before the app saw it (no backend address in the log: the CrowdSec bouncer, a geoblock). A banned client keeps polling
+    #    and every refusal is a 403: counting them banned the person a second time, on top of the ban that refused them. The ban itself stays.
+    - >-
+      evt.Meta.service == 'http' && evt.Meta.log_type == 'http_access-log'
+      && evt.Parsed.service_addr == '' && evt.Meta.http_status == '403'
+      && Lower(Split(evt.Parsed.traefik_router_name, '@')[0]) in [@ROUTERS@]
+      && !(evt.Meta.http_path contains '..') && !(Lower(evt.Meta.http_path) matches '%2e|%00|%5c|%252')
 YAML
-    printf '%s' "${yaml//@APPS@/$list}"
+    yaml="${yaml//@APPS@/$list}"
+    printf '%s' "${yaml//@ROUTERS@/$routers}"
 }
 
 # Make parsers/s02-enrich/dcs-media-apps.yaml in the CrowdSec configuration directory $1 say what CROWDSEC_MEDIA_APPS says (no file when it names no backend).
@@ -20344,16 +20482,18 @@ _crowdsec_whitelist_sync() {
     [[ -n "$dir" && -d "$dir" ]] || return 1
 
     local -a ips=() cidrs=()
-    local public_ip a
+    local public_ip home6="" a
     public_ip=$(_crowdsec_public_ip) || public_ip=""
+    # the home network over IPv6 (its prefix follows the provider's delegation: every sync looks again). The setting is read from .env, as below
+    home6=$(_api_load_env_file "$BASE_DIR/.env"; _crowdsec_home_ipv6_net) || home6=""
     while IFS= read -r a; do
         [[ -z "$a" ]] || _crowdsec_valid_ip "$a" || continue
         [[ -z "$a" ]] && continue
         if [[ "$a" == */* ]]; then cidrs+=("$a"); else ips+=("$a"); fi
-    done < <({ [[ -n "$public_ip" ]] && echo "$public_ip"; _crowdsec_trusted_list; } | sort -u)
+    done < <({ [[ -n "$public_ip" ]] && echo "$public_ip"; [[ -n "$home6" ]] && echo "$home6"; _crowdsec_trusted_list; } | sort -u)
 
     local content="name: custom/dcs-whitelist"$'\n'
-    content+="description: \"Addresses trusted by DCS: the home public IP (kept current by DDNS) and admin additions\""$'\n'
+    content+="description: \"Addresses trusted by DCS: the home public IP and IPv6 network (kept current) and admin additions\""$'\n'
     content+="# Managed by DCS — edit the trusted list from the UI or the API, not here."$'\n'
     content+="whitelist:"$'\n'"  reason: \"trusted by DCS\""$'\n'
     if [[ ${#ips[@]} -gt 0 ]]; then content+="  ip:"$'\n'; for a in "${ips[@]}"; do content+="    - $a"$'\n'; done; fi
@@ -20374,9 +20514,9 @@ _crowdsec_whitelist_sync() {
     CROWDSEC_MEDIA_APPS="$apps" _crowdsec_media_apps_sync "$dir" && changed=true
     [[ "$changed" == true ]] && { docker kill -s HUP "$container" >/dev/null 2>&1 || true; }
     mkdir -p "$(dirname "$CROWDSEC_SYNC_STATE")" 2>/dev/null
-    jq -n --arg ts "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" --arg pub "$public_ip" --arg file "$target" --argjson changed "$changed" \
+    jq -n --arg ts "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" --arg pub "$public_ip" --arg h6 "$home6" --arg file "$target" --argjson changed "$changed" \
         --argjson ips "$(printf '%s\n' "${ips[@]}" "${cidrs[@]}" | grep -v '^$' | jq -R . | jq -s .)" \
-        '{synced_at: $ts, public_ip: $pub, file: $file, addresses: $ips, reloaded: $changed}' > "$CROWDSEC_SYNC_STATE" 2>/dev/null
+        '{synced_at: $ts, public_ip: $pub, home_ipv6: $h6, file: $file, addresses: $ips, reloaded: $changed}' > "$CROWDSEC_SYNC_STATE" 2>/dev/null
     # the Traefik bouncer plugin trusts the home address too, when the CrowdSec page manages its settings
     if [[ -s "$BASE_DIR/.data/crowdsec/plugin.json" ]]; then _crowdsec_cfg_lib; _cs_plugin_sync_home >/dev/null 2>&1 || true; fi
     return 0
@@ -21948,6 +22088,8 @@ _fleet_routes_write_local() {
     printf '%s\n' "$body" > "$f.tmp.$$" 2>/dev/null && mv -f "$f.tmp.$$" "$f" && _audit_log "fleet_routes" "$n member route(s) written for the local Traefik ($FLEET_ROUTES_FILE_NAME)"
     _fleet_routes_arrived "$new_keys" "$merged"
     _fleet_routes_departed "$old_r" "$merged"
+    # a VM's media app is known to CrowdSec by its router here (CROWDSEC_MEDIA_APPS): a new member's routes reach the parser file now, not at the next check
+    [[ -n "$new_keys" ]] && { _crowdsec_whitelist_sync >/dev/null 2>&1 || true; }
     return 0
 }
 # _fleet_routes_departed OLD MERGED — the DNS records of hosts no member's route answers for any more (the hub made them when

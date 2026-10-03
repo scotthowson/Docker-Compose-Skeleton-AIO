@@ -118,6 +118,25 @@ Your home public address is kept in the list automatically (*managed*, not remov
 connecting from and whether it is covered, with one click to add it. Entries can be an address or a network; a network wider than a /16 asks
 for confirmation.
 
+### The home network over IPv6
+
+At home, every phone and laptop has its own global IPv6 address (no NAT), so a visit to your public name over IPv6 does not come from the home
+IPv4 address. With Cloudflare in front, that happens even for a name that only has an A record: Cloudflare answers over IPv6 and passes the
+visitor's real address on. Only the IPv4 address used to be trusted, so such a visit was judged like a stranger's, and a long Jellyfin evening at
+home could get you banned.
+
+DCS now trusts the home **network** over IPv6 as well: the server's own global IPv6 address (the source address the kernel uses for the internet,
+which is what the world sees) cut to **`CROWDSEC_HOME_IPV6_PREFIX`** bits, default `64` (the network of your LAN). It goes into the same whitelist
+file as the home IPv4 address (`parsers/s02-enrich/dcs-whitelist.yaml`, a `cidr` entry such as `2001:db8:77:5::/64`), and the ban guard refuses a
+manual ban inside it. Providers change the delegated prefix now and then: every check (every ten minutes, with each dynamic DNS round, and after
+every allowlist change) looks again, replaces the old network and reloads CrowdSec only when it changed.
+
+* Your router hands out several /64s (a /56 from the provider, one /64 per VLAN or guest network): set `56` (or `48`).
+* `off` turns it off; the IPv4 home address is kept as before.
+* The server has no IPv6 (IPv6 switched off in the VM, no route out): nothing is added. When its source address is a unique local one (`fd…`, NAT66),
+  DCS asks the internet over IPv6 which address it is seen with, and adds nothing when nothing answers.
+* `docker exec CrowdSec cat /etc/crowdsec/parsers/s02-enrich/dcs-whitelist.yaml` shows the network; `.data/crowdsec-whitelist.json` keeps it as `home_ipv6`.
+
 ## 6. Discord alerts
 
 Every option of the Discord message is on the **Discord** tab. Nothing is hard-coded: the shipped message is only the default.
@@ -195,24 +214,41 @@ One page of Jellyfin's web client makes dozens of API and artwork requests in a 
 when the setting is empty, and CrowdSec reloads (a reload, not a restart) only when it changed. DCS looks every ten minutes, with the check that keeps your home address allowed, and
 reads the setting from `.env` each time.
 
+**Which requests are the app's.** Traefik's access log names the backend by its address, and that address is the container's name only when this server's Traefik reaches the
+container by name (`http://jellyfin:8096`). On a hub, a route into a VM of the fleet reaches the app at the VM's address (`192.168.1.202:8096`), and a route made by Docker labels at
+the container's address, so matching the address alone missed them: a friend watching Jellyfin in a VM through the hub was judged like a scanner. DCS therefore also matches the
+**router** that took the request, which is in every line of the log. The routers are found by DCS each time it writes the file:
+
+* each name and *name*`-router` (the routes DCS writes, the usual Docker labels such as `jellyfin@docker`);
+* every router of this server's route files whose service's server is one of the names (a route renamed to `watch-router` whose server is still `http://jellyfin:8096`);
+* for every member of the fleet, `<member>-<name>-dcs`: a VM's route file is named after its service, and the hub's `fleet-members.yml` prefixes the member. When a new VM's
+  routes arrive, the hub rewrites the file right away.
+
 For a listed backend CrowdSec stops counting:
 
-* a `GET` or `HEAD` the app **answered** (2xx or 3xx), unless its address, query included, contains `..`, `%2e`, `%00`, `%5c` or `%252`: a path that tries to leave the web root is never ignored;
-* a `GET` or `HEAD` answered 404 on an item's picture (`/Items/<id>/Images/<type>`, with or without the `?fillHeight=…` the web client adds): missing artwork is not probing.
+* a `GET` or `HEAD` the app **answered** (2xx or 3xx), unless its address, query included, contains `..`, `%2e`, `%00`, `%5c` or `%252`: a path that tries to leave the web root is never ignored
+  (the same holds for the three rules below);
+* a `GET` or `HEAD` answered 404 for **missing media**: the picture of an item, a person, a studio, a genre, an artist or a user (`/Items/<id>/Images/<type>`, `/Users/<id>/Images/Primary` …,
+  with or without the `?fillHeight=…` the client adds), a song's lyrics (`/Audio/<id>/Lyrics`), a subtitle stream, a trickplay strip; an optional base URL such as `/jellyfin` in front;
+* a `GET` or `HEAD` the **app itself refused with 403** (the request reached it: the log has the backend's address). That is a signed-in user asking for what the account may not see: a page of
+  Jellyfin's web client asks a user who is not an administrator for admin-only plugin and server settings (`/Plugins`, `/PluginUpdateNotifier/summary`, `…/admin/…`), which
+  `http-probing` and `http-admin-interface-probing` took for probing. An anonymous scanner gets 401 or 404 from these apps;
+* a **403 of the proxy itself** on the app's router (no backend address in the log: the CrowdSec bouncer, a geoblock). A client that is banned keeps polling, and every refusal is a 403:
+  counting them banned the person a second time (with escalation, for longer). The ban that refused them stays.
 
 What it deliberately does **not** do: everything else is judged exactly as before.
 
-* **404, 403, 400 and 401 answers still count** (missing pictures apart). A scanner asks for things that are not there, so it is banned as before; a login brute force (`POST`, 401) and a session
-  that expired and is refused a hundred times in a row are counted too.
-* **Other methods** (`POST`, `PUT`, `DELETE` …) and **every other backend**, routed by Traefik or not, are untouched. The match is on the backend Traefik routed the request to (`ServiceAddr`
-  in its access log), not on anything the visitor sends.
+* **404, 400 and 401 answers still count** (missing media apart), and so does a 403 to any other method. A scanner asks for things that are not there, so it is banned as before; a login brute
+  force (`POST`, 401) and a session that expired and is refused a hundred times in a row are counted too.
+* **Other methods** (`POST`, `PUT`, `DELETE` …) and **every other backend**, routed by Traefik or not, are untouched. The match is on the backend Traefik routed the request to (its address
+  or its router in the access log), not on anything the visitor sends.
 * **Path traversal** keeps its scenarios (the first bullet above).
 
 One consequence to know: a request the file ignores reaches *no* scenario, not only the two generic ones. A client that only asks for what the app serves is not banned for how much it asks,
 nor for its user agent; the moment it asks for something the app refuses, which is what scanning is, it is counted like everyone else.
 
 **Another media app.** Add the host of its service in Traefik's route (the part of `http://plex:32400` before the colon): `CROWDSEC_MEDIA_APPS=jellyfin,plex`. Names are letters, digits, `-`, `_`
-and `.`, in any case; anything else is ignored. The rule for missing pictures knows Jellyfin's picture addresses only, so for another app the first rule alone applies.
+and `.`, in any case; anything else is ignored. The rule for missing media knows Jellyfin's (and Emby's) addresses only; the other three rules apply to every listed app.
 **Turn it off** with `CROWDSEC_MEDIA_APPS=` (empty): the file goes at the next check.
 
 **Is it working?** `docker exec CrowdSec cscli parsers list` shows `custom/dcs-media-apps`, and `docker exec CrowdSec cscli metrics show whitelists` counts what it ignored (the *Whitelisted*
@@ -296,7 +332,8 @@ Viewers may `GET` and may draw the Discord preview (it only renders, it never se
 | Bans exist but nothing is blocked | Overview → Protection: is the bouncer pulling? A bouncer that has never pulled means no request has gone through the middleware yet, or the middleware is not in the chain your services use |
 | *Log lines: 0 read* | CrowdSec reads Traefik's access log from the shared logs folder; check Traefik writes it (`accessLog` in `traefik.yml`) and that the volume is mounted |
 | You banned yourself | Dashboard → *Protection* card → **Unban me**, or lift the ban from the list; the guard normally prevents it |
-| Somebody was banned just for using Jellyfin (or another media app) behind Traefik | The alert says `http-crawl-non_statics` or `http-probing`: [media apps](#media-apps-a-web-client-is-not-a-crawler); `CROWDSEC_MEDIA_APPS` must name the app's service host |
+| Somebody was banned just for using Jellyfin (or another media app) behind Traefik | The alert says `http-crawl-non_statics`, `http-probing` or `http-admin-interface-probing`: [media apps](#media-apps-a-web-client-is-not-a-crawler); `CROWDSEC_MEDIA_APPS` must name the app's service host, and a route written by hand must lead to it by name or be called *name*`-router` |
+| You were banned at home, on your own server | Your device went out over IPv6: [the home network over IPv6](#the-home-network-over-ipv6) (the server needs IPv6 itself to know the home prefix; `56` when the router hands out several /64s) |
 | Discord stays silent | Discord tab: status card (*wired*, *plugin active*, *working*), **Send test message**, recent delivery errors; the webhook must be a `https://discord.com/api/webhooks/…` URL |
 | A settings change failed | the page says which step; the previous file is put back automatically, so CrowdSec is never left on a bad file |
 | CrowdSec restarts in a loop | Show the log: almost always a configuration error in a file that was edited by hand |

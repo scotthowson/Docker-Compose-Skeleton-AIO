@@ -124,7 +124,8 @@ deploy real services. On a hub, a stack that runs in a VM is never started on th
 | `DDNS_SUBDOMAINS` | `@` | Records to update (`@` is the domain itself, `*` the wildcard) |
 | `DASHBOARD_PUBLIC_URL` | *(empty)* | Where notification links point; defaults to `https://ui.<PROXY_DOMAIN>` |
 | `CROWDSEC_TRUSTED_IPS` | *(empty)* | Addresses CrowdSec must never ban, beside your public address |
-| `CROWDSEC_MEDIA_APPS` | `jellyfin` | Media apps whose web client CrowdSec must not take for a crawler: comma separated Traefik service hosts (the container name in the route's URL). Empty turns it off. [Details](CROWDSEC.md#media-apps-a-web-client-is-not-a-crawler) |
+| `CROWDSEC_MEDIA_APPS` | `jellyfin` | Media apps whose web client CrowdSec must not take for a crawler: comma separated Traefik service hosts (the container name in the route's URL). Their routers are found by DCS (a VM of the fleet, a renamed route, Docker labels). Empty turns it off. [Details](CROWDSEC.md#media-apps-a-web-client-is-not-a-crawler) |
+| `CROWDSEC_HOME_IPV6_PREFIX` | `64` | The home network over IPv6 is trusted like the home IPv4 address: this server's global IPv6 address cut to this many bits (32-128; 56 or 48 when the router hands out several /64s), following the provider's prefix. `off` turns it off. [Details](CROWDSEC.md#the-home-network-over-ipv6) |
 
 **The Traefik template's add-ons** are switches of its deploy (the wizard's Traefik step, the deploy
 sheet). The deploy writes them to the proxy stack's `.env`, where a later deploy that does not mention

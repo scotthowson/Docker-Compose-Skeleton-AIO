@@ -5,6 +5,28 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **CrowdSec banned people watching Jellyfin, at home and away.** Two causes, both fixed:
+  - *At home, over IPv6.* DCS trusted the home public IPv4 address only. A phone or a laptop at home has its own global IPv6 address, and with
+    Cloudflare in front a visit to the public name goes over IPv6 even for a name with only an A record: the owner's own evening of Jellyfin was
+    judged like a stranger's. The whitelist now trusts the home **network** over IPv6 too: this server's global source address cut to
+    `CROWDSEC_HOME_IPV6_PREFIX` bits (new, default `64`; `56`/`48` for routers that hand out several /64s; `off`). It follows the provider's
+    prefix (every check looks again, the old network goes, CrowdSec reloads only on a change), the ban guard refuses a manual ban inside it, and
+    a server without IPv6 adds nothing. [The home network over IPv6](docs/CROWDSEC.md#the-home-network-over-ipv6)
+  - *Away, through the hub.* `CROWDSEC_MEDIA_APPS` matched the backend by the address in Traefik's access log, which is the container's name only
+    when Traefik reaches it by name: Jellyfin in a VM of the fleet is reached at the VM's address (`192.168.1.202:8096`), and Docker labels use the
+    container's address, so none of the tuning applied and a page load tripped `http-probing`. The parser file now also matches the **router**
+    that took the request: *name*, *name*`-router`, every router of the hub's route files whose server is the app by name (a route renamed to
+    `watch-router`), and `<member>-<name>-dcs` for each VM (the hub rewrites the file as soon as a new VM's routes arrive). Three more rules:
+    missing media answered 404 (pictures of items, people and users, lyrics, subtitles, trickplay; base URL allowed), a 403 the **app itself**
+    gives to a `GET`/`HEAD` (a non-admin user's page asks for admin-only plugin and server settings, which also tripped
+    `http-admin-interface-probing`), and the **proxy's own 403** on the app's router (a banned client keeps polling, and the bouncer's
+    refusals were counted as probing: a second ban on top of the first). 404/400/401, a 403 to other methods, path traversal, scanners
+    and every other backend are judged as before. `tests/crowdsec-media-apps.sh` replays 29 scenarios through CrowdSec 1.8.1 (12 new: VM, labels,
+    renamed route, missing media, the app's and the proxy's 403s, scanners through a VM).
+    [Media apps](docs/CROWDSEC.md#media-apps-a-web-client-is-not-a-crawler)
+
 ## [4.0.27] - 2026-10-03
 
 ### Added
