@@ -164,6 +164,101 @@ check "snapshot name validated"         400 "$(auth_request GET '/snapshots/evil
 check "image ref validated"             400 "$(auth_request POST '/images/--help/update' | status_of)"
 check "compose rollback id validated"   400 "$(auth_request POST '/stacks/demo/compose/rollback' '{"version_id":"../../x"}' | status_of)"
 
+echo "Backups and snapshots"
+# A throwaway install of its own: the backup engine reads, moves and restores whole stack folders. The reader is the
+# server's own user (no sudo, no helper image) and nothing is paused, so no Docker is needed.
+BKW="$WORK-bk"; rm -rf "$BKW"
+mkdir -p "$BKW/.scripts" "$BKW/.lib" "$BKW/.config" "$BKW/Stacks/demo/App-Data/db" "$BKW/Stacks/demo/config" "$BKW/Stacks/other" "$BKW/.data/schedules" "$BKW/.data/cache" "$BKW/.api-auth" "$BKW/.secrets" "$BKW/.templates/mine" "$BKW/outside"
+cp "$ROOT/.scripts/api-server.sh" "$BKW/.scripts/"; cp -r "$ROOT/.lib/." "$BKW/.lib/"; cp -r "$ROOT/.config/." "$BKW/.config/"; cp "$ROOT/VERSION" "$BKW/"
+printf 'BACKUP_DEST_DIR=%s\nBACKUP_PAUSE=false\nBACKUP_RETENTION_COUNT=2\nMETRICS_ENABLED=false\n' "$BKW/backups" > "$BKW/.env"
+printf 'services:\n  demo:\n    image: alpine:3\n' > "$BKW/Stacks/demo/docker-compose.yml"; echo 'A=1' > "$BKW/Stacks/demo/.env"
+echo 'listen: 80' > "$BKW/Stacks/demo/config/app.yml"; chmod 640 "$BKW/Stacks/demo/config/app.yml"
+echo 'row1' > "$BKW/Stacks/demo/App-Data/db/data.db"; ln -s db/data.db "$BKW/Stacks/demo/App-Data/current"
+echo 'the VM' > "$BKW/outside/vm-file"; ln -s "$BKW/outside" "$BKW/Stacks/demo/VM-App-Data"
+printf 'services:\n  o:\n    image: alpine:3\n' > "$BKW/Stacks/other/docker-compose.yml"
+echo '{"members":[]}' > "$BKW/.data/fleet.json"; echo '[]' > "$BKW/.data/schedules/schedules.json"; echo junk > "$BKW/.data/cache/x"
+echo '{"users":[]}' > "$BKW/.api-auth/users.json"; echo tok > "$BKW/.api-auth/tokens.json"; echo '{"x":1}' > "$BKW/.api-auth/invites.json"
+echo enc > "$BKW/.secrets/A.enc"; echo key > "$BKW/.secrets/.master-key"; echo '{}' > "$BKW/.templates/mine/template.json"
+# shellcheck disable=SC2034,SC2209  # FLEET_READER and AUTH_ROLE are read by the functions it calls
+_bk() { local -a _c=("$@"); ( set --; source "$BKW/.scripts/api-server.sh" >/dev/null 2>&1; set +e; FLEET_READER=plain; AUTH_ROLE=admin; "${_c[@]}" ) 2>/dev/null; }
+_bkb() { _backup_build "$1" "${2:-}"; printf '%s|%s' "${BK_ERROR:-ok}" "$BK_RESULT"; }
+BKA="$BKW/backups/Docker-Compose-Backup-2026-01-01_000000.tar.gz"
+BKR=$(_bk _bkb Docker-Compose-Backup-2026-01-01_000000.tar.gz)
+check "backup: made, checked and complete"            "ok true true" "$(printf '%s' "${BKR%%|*}"; jq -r '" \(.verified) \(.complete)"' <<< "${BKR#*|}" 2>/dev/null)"
+check "backup: its .sha256 matches"                   yes "$( (cd "$BKW/backups" && sha256sum -c --status ./*.sha256) && echo yes || echo no)"
+check "backup: private"                               "600 600" "$(stat -c %a "$BKA" "$BKA.sha256" | tr '\n' ' ' | sed 's/ $//')"
+check "backup: the manifest comes first"              ./.dcs-backup/manifest.json "$(tar -tzf "$BKA" | head -1)"
+check "backup: a part per stack, the whole folder"    "demo other" "$(tar -xzOf "$BKA" ./.dcs-backup/manifest.json | jq -r '[.parts[] | select(.kind == "stack") | .name] | join(" ")')"
+check "backup: App-Data and the config are in it"     yes "$(tar -xzOf "$BKA" ./.dcs-backup/stacks/demo.tar | tar -tf - | grep -qx './App-Data/db/data.db' && tar -xzOf "$BKA" ./.dcs-backup/stacks/demo.tar | tar -tf - | grep -qx './config/app.yml' && echo yes || echo no)"
+check "backup: the link to a VM's App-Data is not followed, not kept" 0 "$(tar -xzOf "$BKA" ./.dcs-backup/stacks/demo.tar | tar -tf - | grep -c 'VM-App-Data\|vm-file')"
+check "backup: an inner link is kept as a link"       db/data.db "$(tar -xzOf "$BKA" ./.dcs-backup/stacks/demo.tar | tar -tvf - | sed -n 's#.*\./App-Data/current -> ##p')"
+check "backup: the install's state is in it"          "./.env ./.data/fleet.json ./.data/schedules/schedules.json ./.secrets/A.enc ./.api-auth/users.json" \
+    "$(for f in ./.env ./.data/fleet.json ./.data/schedules/schedules.json ./.secrets/A.enc ./.api-auth/users.json; do tar -tzf "$BKA" | grep -qx "$f" && printf '%s ' "$f"; done | sed 's/ $//')"
+check "backup: never the key, sessions, invites or caches" 0 "$(tar -tzf "$BKA" | grep -cE '\.master-key|tokens\.json|invites\.json|\.data/cache')"
+check "backup: no staging left, nothing in /tmp"      0 "$(find "$BKW/backups" -mindepth 1 \( -name '*staging*' -o -name '*partial*' \) | wc -l)"
+check "backup: listed as checked, full"               "true full true" "$(_bk handle_backup_list | body_of | jq -r '.backups[0] | "\(.verified) \(.kind) \(.complete)"')"
+check "backup: verify says whole"                     "true 2" "$(_bk handle_backup_verify '{"filename":"Docker-Compose-Backup-2026-01-01_000000.tar.gz"}' | body_of | jq -r '"\(.ok) \(.format)"')"
+# a file the reader cannot read: the backup says so (it used to be left out without a word)
+if [[ "$(id -u)" != 0 ]]; then
+    echo 'secret' > "$BKW/Stacks/other/locked.db"; chmod 000 "$BKW/Stacks/other/locked.db"
+    BKR=$(_bk _bkb Docker-Compose-Backup-2026-01-01_000001.tar.gz)
+    check "backup: an unreadable file makes it incomplete, named" "false yes" "$(jq -r '.complete' <<< "${BKR#*|}") $(jq -r '.warnings | join(" ")' <<< "${BKR#*|}" | grep -q 'locked.db' && echo yes || echo no)"
+    rm -f "$BKW/Stacks/other/locked.db" "$BKW"/backups/*000001*
+fi
+BKR=$(_bk _bkb Docker-Compose-Backup-2026-01-01_000002-other.tar.gz other)
+check "backup: one stack holds that stack alone"      "stack other" "$(tar -xzOf "$BKW/backups/Docker-Compose-Backup-2026-01-01_000002-other.tar.gz" ./.dcs-backup/manifest.json | jq -r '"\(.kind) \([.parts[].name] | join(","))"')"
+check "backup: …and no install state"                 0 "$(tar -tzf "$BKW/backups/Docker-Compose-Backup-2026-01-01_000002-other.tar.gz" | grep -c '^\./\.env$')"
+
+# restore: changed, lost and added files go back to the backup's state; the folder as it was is kept; the root is not consulted
+echo 'row2' >> "$BKW/Stacks/demo/App-Data/db/data.db"; echo 'stray' > "$BKW/Stacks/demo/App-Data/db/data.db-wal"
+echo 'B=2' > "$BKW/Stacks/demo/.env"; rm -f "$BKW/Stacks/demo/config/app.yml"; echo '{"users":["x"]}' > "$BKW/.api-auth/users.json"
+_bkr() { _backup_restore_run "$1" "${2:-}"; printf '%s|%s' "${BR_ERROR:-ok}" "$BR_RESULT"; }
+BKR=$(_bk _bkr "$BKA")
+check "restore: done"                                 "ok demo,other true" "$(printf '%s' "${BKR%%|*}") $(jq -r '"\(.stacks | join(",")) \(.install)"' <<< "${BKR#*|}")"
+check "restore: the data as it was"                   row1 "$(tr -d '\n' < "$BKW/Stacks/demo/App-Data/db/data.db")"
+check "restore: a database's -wal written later is gone" no "$([[ -e "$BKW/Stacks/demo/App-Data/db/data.db-wal" ]] && echo yes || echo no)"
+check "restore: .env, config and accounts as they were" 'A=1 listen: 80 {"users":[]}' "$(cat "$BKW/Stacks/demo/.env") $(cat "$BKW/Stacks/demo/config/app.yml") $(cat "$BKW/.api-auth/users.json")"
+check "restore: the link to the VM's App-Data is back" "$BKW/outside" "$(readlink "$BKW/Stacks/demo/VM-App-Data")"
+check "restore: sessions and the key stay"            "tok key" "$(cat "$BKW/.api-auth/tokens.json") $(cat "$BKW/.secrets/.master-key")"
+check "restore: the folder before is kept"            "row1 row2" "$(cat "$BKW/.data/pre-restore/"*/Stacks/demo/App-Data/db/data.db | tr '\n' ' ' | sed 's/ $//')"
+check "restore: a stack not in the backup is refused" "nope is not in this backup" "$(_bk _bkr "$BKA" nope | cut -d'|' -f1)"
+check "restore: one stack"                            "ok other false" "$(_bk _bkr "$BKA" other | { IFS='|' read -r e r; printf '%s %s' "$e" "$(jq -r '"\(.stacks | join(",")) \(.install)"' <<< "$r")"; })"
+
+# the checks before anything is unpacked
+_bkl() { _backup_listing_check "$(printf -- "$1")"; echo "rc=$?"; }
+check "listing: a file under a link is refused"       "rc=1" "$(_bk _bkl 'lrwxrwxrwx u/g 0 2026-01-01 00:00 ./a -> /etc\n-rw-r--r-- u/g 3 2026-01-01 00:00 ./a/cron.d/x\n' | tail -1)"
+check "listing: .. is refused"                        "rc=1" "$(_bk _bkl '-rw-r--r-- u/g 3 2026-01-01 00:00 ./x/../../evil\n' | tail -1)"
+check "listing: a hard link out is refused"           "rc=1" "$(_bk _bkl 'hrw-r--r-- u/g 0 2026-01-01 00:00 ./h link to ../../etc/shadow\n' | tail -1)"
+check "listing: links out are left out, not refused"  "rc=0 skip: ./x/VM-App-Data skip: ./x/up" "$(_bk _bkl 'lrwxrwxrwx u/g 0 2026-01-01 00:00 ./x/VM-App-Data -> /home/dcs/v\nlrwxrwxrwx u/g 0 2026-01-01 00:00 ./x/in -> ../y\nlrwxrwxrwx u/g 0 2026-01-01 00:00 ./x/up -> ../../y\n' | LC_ALL=C sort | tr '\n' ' ' | sed 's/ $//')"
+# a damaged archive is caught before a restore
+cp "$BKA" "$BKW/backups/Docker-Compose-Backup-2026-01-01_000003.tar.gz"; cp "$BKA.sha256" "$BKW/backups/Docker-Compose-Backup-2026-01-01_000003.tar.gz.sha256"
+printf 'XXXX' | dd of="$BKW/backups/Docker-Compose-Backup-2026-01-01_000003.tar.gz" bs=1 seek=2000 conv=notrunc 2>/dev/null
+check "verify: a damaged archive is not whole"        false "$(_bk handle_backup_verify '{"filename":"Docker-Compose-Backup-2026-01-01_000003.tar.gz"}' | body_of | jq -r '.ok')"
+check "restore: a damaged archive is refused"         400 "$(_bk handle_backup_restore '{"filename":"Docker-Compose-Backup-2026-01-01_000003.tar.gz","confirm":"RESTORE"}' | status_of)"
+# retention: BACKUP_RETENTION_COUNT of each kind (2 here), the stacks' own never push the full ones out
+mkdir -p "$BKW/r"; for _i in 1 2 3; do for _k in "" "-demo"; do _f="$BKW/r/Docker-Compose-Backup-2026-02-0${_i}_000000$_k.tar.gz"; : > "$_f"; : > "$_f.sha256"; touch -d "2026-02-0$_i" "$_f"; done; done
+( set --; source "$BKW/.scripts/api-server.sh" >/dev/null 2>&1; BACKUP_DEST_DIR="$BKW/r" _backup_retention ) 2>/dev/null
+check "retention: two of each kind, sidecars with them" "02-demo 02 03-demo 03 / 4" "$(cd "$BKW/r" && LC_ALL=C; printf '%s\n' *.tar.gz | sed -E 's/Docker-Compose-Backup-2026-02-([0-9]+)_000000(-demo)?\.tar\.gz/\1\2/' | tr '\n' ' ')/ $(compgen -G "$BKW/r/*.sha256" | wc -l)"
+
+# snapshots: a stack's other configuration files travel, App-Data never; a restore works (GNU tar refused the
+# --no-absolute-names it was called with) and keeps the state before as a snapshot of its own
+_bks() { _snapshot_take "$1"; printf '%s|%s' "${SNAP_ERROR:-ok}" "$SNAP_FILE"; }
+echo '{"old": true}' > "$BKW/.config/schema.json"     # the snapshot holds an older shipped file; then the code is updated
+BKS=$(_bk _bks smoke)
+cp "$ROOT/.config/schema.json" "$BKW/.config/schema.json"
+BKSF="${BKS#*|}"
+check "snapshot: made, private"                       "ok 600" "${BKS%%|*} $(stat -c %a "$BKW/.snapshots/$BKSF" 2>/dev/null)"
+check "snapshot: a stack's config file is in it"      yes "$(tar -tzf "$BKW/.snapshots/$BKSF" | grep -qx './stacks/demo/config/app.yml' && echo yes || echo no)"
+check "snapshot: no App-Data, no link"                0 "$(tar -tzvf "$BKW/.snapshots/$BKSF" | grep -c 'App-Data\|^l')"
+check "snapshot: the schedules are in it"             yes "$(tar -tzf "$BKW/.snapshots/$BKSF" | grep -qx './data/schedules.json' && echo yes || echo no)"
+echo 'listen: 8080' > "$BKW/Stacks/demo/config/app.yml"; sleep 1
+check "snapshot: restore works"                       200 "$(_bk handle_snapshot_restore "$BKSF" '{"confirm":"RESTORE"}' | status_of)"
+check "snapshot: …the file is back"                   'listen: 80' "$(cat "$BKW/Stacks/demo/config/app.yml")"
+check "snapshot: …with its mode, not the umask's"     640 "$(stat -c %a "$BKW/Stacks/demo/config/app.yml")"
+check "snapshot: …the state before is a snapshot"     2 "$(ls "$BKW/.snapshots"/dcs-snapshot-*.tar.gz | wc -l)"
+check "snapshot: …the shipped settings are the code's" "$(md5sum < "$ROOT/.config/schema.json")" "$(md5sum < "$BKW/.config/schema.json")"
+rm -rf "$BKW"
+
 echo "Client IP handling"
 LOG="$WORK/logs/api-server.log"
 : > "$LOG"

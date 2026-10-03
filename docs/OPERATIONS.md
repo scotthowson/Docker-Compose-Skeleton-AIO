@@ -54,7 +54,7 @@ Work with a stack by hand through `./compose.sh`, not a bare `docker compose`: o
 | `logs-viewer.sh` | An interactive log viewer |
 | `image-tracker.sh` | Image age and staleness |
 | `docker-network-info.sh` | A map of the Docker networks |
-| `backup-server.sh` | An rsync backup of the server |
+| `backup-server.sh` | The Backup page's backup, in the foreground (`[stack]` for one stack) |
 | `proxy-reconcile.sh` | Probes every Traefik route and restarts Traefik once when none answer |
 
 Each one prints its options with `--help`.
@@ -146,25 +146,83 @@ Framework files you edited by hand are never replaced unattended: the Updates pa
 
 | Kind | What it holds | Where |
 |---|---|---|
-| **Backup** | The whole install with the stacks' app data, or one stack's folder | Backup page; set `BACKUP_DEST_DIR` first; `BACKUP_RETENTION_COUNT` kept |
-| **Snapshot** | The configuration: compose files, `.env` files, templates | Snapshots page; download or restore any one |
+| **Backup** | Everything a server runs on: every stack's folder (compose, `.env`, App-Data, data) with its named volumes, and the install's own state | Backup page; set `BACKUP_DEST_DIR` first; `BACKUP_RETENTION_COUNT` kept of each kind |
+| **Snapshot** | The configuration: every stack's compose, `.env` and config files, the root `.env`, accounts and rules, templates, Traefik's routes, the schedules | Snapshots page; download or restore any one |
 | **Rollback snapshot** | A stack's files, taken before a change | Per stack, `ROLLBACK_MAX_SNAPSHOTS` kept |
 | **Recovery bundle** | Everything needed to rebuild the install, encrypted | See [below](#the-recovery-bundle) |
 
-Backups run in the background, can be scheduled (action `backup`) and can be cancelled. A restore asks
-for a confirmation first. A backup leaves out the version history of the code, logs, session tokens,
-rate-limit state and the secret store's key (`.secrets/.master-key`), and only its owner may read it.
-Keep the key somewhere else, or use the recovery bundle, which carries it encrypted.
+**What a backup holds and leaves out** *(4.0.28)*
+
+| In it | Left out |
+|---|---|
+| Each stack's whole folder: `docker-compose.yml`, `.env`, config files, `App-Data`, `data`, files of every owner (a database's, root's) with owners and modes as numbers | The link to a VM's App-Data on a hub (`Stacks/<name>/VM-App-Data`, an sshfs mount): that data is the VM's, in the VM's own backup |
+| Each named volume of a stack (`com.docker.compose.project` label) | Volumes a compose file declares `external`, and folders outside the stack (a media library): back those up where they live |
+| `.env`, accounts and their layouts, notification rules, automations | Sessions, invite codes, rate limits, logs, caches, metrics |
+| `.secrets/*.enc` | The secret store's key, `.secrets/.master-key`: keep it elsewhere, or use the recovery bundle, which carries it encrypted |
+| `.data`: the fleet (`fleet.json`, the hub's ssh key to its VMs), schedules, CrowdSec, the intended state | `.data/cache`, `.data/metrics`, sessions to the VMs, `.data/recovery`, `.data/pre-restore` |
+| `.config`, `.templates`, `.plugins`, `.compose-history`, `.snapshots`, `VERSION` | The DCS code itself (reinstall it; the manifest names the version) and `.git` |
+
+- **Readable whatever the owner.** The stack folders and volumes are read as root, with passwordless sudo, or through a
+  small read-only helper container (`alpine`), whichever the server has (*Config → Backup* shows which as `reads_as`).
+  A file nothing can read is **named** in the result and the backup is marked incomplete (status `error`, notification
+  `backup_failed`): nothing is left out without a word.
+- **A database is copied as it was at one instant.** The stack's running containers are paused (`docker pause`) while its
+  folder and volumes are read, then resumed: SQLite (Sonarr, Radarr…), Postgres and MySQL find the copy the way a power cut
+  would leave them, which they recover from. A paused stack does not answer while it is read: seconds for most, longer for
+  a large library. `BACKUP_PAUSE_EXCEPT="adguard plex"` reads those stacks while they run; `BACKUP_PAUSE=false` never
+  pauses. A cancelled backup, or one the API's restart cut short, resumes them.
+- **Checked.** The archive is written aside, read back to the end (gzip and tar), every part its manifest names is in it,
+  and only then it takes its name, with a `.sha256` beside it. *Verify* (`POST /backups/verify`) checks one again later; a
+  restore refuses an archive that fails it.
+- **Room.** Nothing is staged in `/tmp`. The parts are written next to the archive, so the destination needs about twice
+  the data free while a backup runs; the backup says so before it starts when it does not.
+- **No rsync needed** (the DCS VM images have none: before 4.0.28 a backup there finished "done" with an empty archive).
+
+**Restoring** asks for a confirmation and runs in the background (*GET /backups/status*):
+
+1. The archive is checked, and every part listed: an entry with `..`, an absolute name, a hard link out, or a file under a
+   link is refused before anything is touched. Links that point outside are left out of the install's files.
+2. The stacks it restores are stopped (`docker stop`, `BACKUP_RESTORE_STOP_TIMEOUT` seconds, 20).
+3. Each stack's folder as it is now is **set aside** in `.data/pre-restore/<time>/` (a rename, nothing is copied), then the
+   archive's copy takes its place, owners and modes as they were. A database's `-wal` written after the backup cannot
+   be replayed over the restored database: the folder is the backup's, file for file. The link to a VM's App-Data goes back.
+4. Each volume as it is now is saved to the same folder, emptied, and filled from the archive.
+5. A full backup also brings back the install's state (`.env`, accounts, secrets, `.data`, settings): sessions and the
+   secret store's key stay as they are, the settings files DCS ships stay the code's, templates already here stay.
+   Restart the API afterwards so it reads the restored `.env` (the result says so).
+6. The containers start again.
+
+`{"stack": "sonarr"}` restores that stack alone (from a full backup or its own). The newest two sets in
+`.data/pre-restore` are kept (`BACKUP_PRE_RESTORE_KEEP`). A backup made before 4.0.28 (no manifest) is unpacked over the
+install as before, minus links that point outside.
+
+By hand, on any machine: `tar -xzOf Docker-Compose-Backup-….tar.gz ./.dcs-backup/manifest.json` lists the parts, and
+`tar -xzOf Docker-Compose-Backup-….tar.gz ./.dcs-backup/stacks/<stack>.tar | sudo tar --numeric-owner -xpf - -C Stacks/<stack>`
+puts one stack's folder back.
+
+**Snapshots** are light and quick: the configuration only, no App-Data. A restore takes a snapshot of the current state
+first (*before restoring …*), puts every stack's files back (a stack that runs in a VM gets them in the VM too; it uses
+them at its next start), with the routes, the schedules, notification rules and templates. It never restores the root
+`.env` (it lands in `.env.restored`), accounts or secrets. *(Before 4.0.28 every snapshot restore failed: the tar option
+it used does not exist.)*
+
+**On a hub**, *Back up everything* starts a backup on the hub and on every VM (each VM needs its own `BACKUP_DEST_DIR`),
+and *Create snapshot* on *Everywhere* (`POST /snapshots/create?fleet=1`) takes one snapshot on the hub and one on every
+VM; a VM that does not answer is named in the result, the others still get theirs. The hub's backup holds the VM stacks'
+files and the hub's own copy of their old App-Data, never the live data in the VMs: that is each VM's own backup.
 
 **On Proxmox**, back up the VM (or container) as well. Proxmox's own backups cover the disk DCS and the
-app data live on; with the QEMU guest agent the file system is frozen for a consistent copy. On a hub,
-*Back up everything* covers the hub and every VM, and one snapshot can cover them all.
+app data live on; with the QEMU guest agent the file system is frozen for a consistent copy.
+
+`.scripts/backup-server.sh [stack]` makes the same backup in the foreground (the scheduler's `backup` action makes it too).
 
 ## The recovery bundle
 
 One encrypted file (AES-256) that rebuilds the install on another machine: the root `.env`, the secret
 store with its key, accounts, notification rules and dashboard layouts, schedules, every stack's files,
-Traefik's and Authelia's data, templates and plugins. App data of the stacks you choose can go along.
+Traefik's and Authelia's data, templates and plugins. App data of the stacks you choose can go along (read like a
+backup reads it, so a database's files are in it; they come back owned by DCS's user). It needs no rsync *(before
+4.0.28 it refused to run without it, which the DCS VM images do not have)*.
 
 1. Store a passphrase as the secret `RECOVERY_PASSPHRASE` (the Backup page asks for it).
 2. Optional: set `RECOVERY_REMOTE` to an rsync target or a mounted drive for an off-box copy.
