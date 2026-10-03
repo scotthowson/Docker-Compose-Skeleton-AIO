@@ -123,8 +123,31 @@ deploy real services. On a hub, a stack that runs in a VM is never started on th
 | `DDNS_INTERVAL` | `300` | Seconds between checks |
 | `DDNS_SUBDOMAINS` | `@` | Records to update (`@` is the domain itself, `*` the wildcard) |
 | `DASHBOARD_PUBLIC_URL` | *(empty)* | Where notification links point; defaults to `https://ui.<PROXY_DOMAIN>` |
+| `PROXY_DOMAINS_EXTRA` | *(empty)* | More domains this server answers for, space separated (DNS & Routes → Domains writes it). [More than one domain](#more-than-one-domain) |
+| `PROXMOX_DOMAIN` | *(empty)* | The domain new VMs answer under; empty = this server's own (`PROXY_DOMAIN`) |
 | `CROWDSEC_TRUSTED_IPS` | *(empty)* | Addresses CrowdSec must never ban, beside your public address |
 | `CROWDSEC_MEDIA_APPS` | `jellyfin` | Media apps whose web client CrowdSec must not take for a crawler: comma separated Traefik service hosts (the container name in the route's URL). Empty turns it off. [Details](CROWDSEC.md#media-apps-a-web-client-is-not-a-crawler) |
+
+### More than one domain
+
+The hub's own stacks answer under `PROXY_DOMAIN`. Add more domains on **DNS & Routes → Domains** (or `POST /domains
+{domain}`): the one Cloudflare token covers them all when they are on its account. Each domain then gets:
+
+- a wildcard certificate: an entry in the `domains` list of Traefik's `websecure` entrypoint (`*.<domain>`);
+- a sign-in: an Authelia cookie for it (`auth.<domain>`), the access rules the primary domain has repeated for it, and
+  the sign-in route answering `auth.<domain>` too. A session does not cross domains, so moving between apps on
+  different domains asks to sign in once on each;
+- its apex record on the public address, kept there by DDNS with the primary's (same IP: Traefik tells the apps apart
+  by name).
+
+Traefik and Authelia restart a moment after the change (their static configuration is read at start). A copy of each
+file is kept beside it (`.bak-<time>`). Taking a domain off undoes exactly that; its DNS records stay in Cloudflare.
+
+**Who answers under which domain.** A VM answers under one domain: the default for new VMs (`PROXMOX_DOMAIN`, the
+hub's own when empty; the Domains card sets it), the one chosen when it is built or a stack is moved into it, or the
+one chosen later on the VM (Proxmox page → the VM → Domain). Changing it moves the VM's routes at once
+(`sonarr.howson.dev` becomes `sonarr.howson.lol`) and makes their DNS records; `POST /fleet/members/{id}/domain`. A
+stack deployed on the hub can pick a domain on the deploy sheet; a stack deployed into a VM answers under the VM's.
 
 **The Traefik template's add-ons** are switches of its deploy (the wizard's Traefik step, the deploy
 sheet). The deploy writes them to the proxy stack's `.env`, where a later deploy that does not mention

@@ -5,6 +5,21 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **More than one domain.** DNS & Routes → *Domains* adds more domains to the hub (one Cloudflare token for all): each gets
+  its wildcard certificate (Traefik), its sign-in (an Authelia cookie, the same access rules, `auth.<domain>`) and its
+  apex record kept on the public address by DDNS. A VM answers under one of them (default: the hub's own, or the default
+  for new VMs set on the card); the build and move sheets ask, and the VM's details change it later, moving its routes
+  and DNS records at once. A stack deployed on the hub picks one on the deploy sheet. `GET/POST /domains`,
+  `DELETE /domains/{domain}`, `POST /domains/vm-default`, `POST /fleet/members/{id}/domain`.
+  [Configuration](docs/CONFIGURATION.md#more-than-one-domain)
+
+### Fixed
+
+- **The Cloudflare zone cache held one domain**, and some code read it as "the zone": with a second domain a record could
+  land in the wrong zone. The primary domain keeps `.cf-zone-cache`, every other domain has its own file.
+
 ## [4.0.27] - 2026-10-03
 
 ### Added

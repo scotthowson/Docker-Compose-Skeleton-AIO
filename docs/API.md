@@ -4,7 +4,7 @@ Generated from the router in `.scripts/api-server.sh` by `.scripts/api-docs.sh` 
 Run `.scripts/api-docs.sh` after adding or changing a route; CI fails when this file is stale.
 
 The API listens on `API_BIND:API_PORT` (default `0.0.0.0:9876`) and answers JSON.
-Every endpoint below is `406` in total.
+Every endpoint below is `411` in total.
 
 ## Access levels
 
@@ -465,6 +465,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | GET | `/fleet/bundle` | public | The hub's own DCS code as a tar.gz for a VM being bootstrapped (needs ?token= — a valid join code, or the bundle code an update round minted for the member it names); never includes data, accounts, secrets, stacks or logs |
 | GET | `/fleet/bootstrap` | public | The node installer for any Debian, Ubuntu, Fedora or Arch machine (needs ?token=, a valid join code; &stack= names the one stack the node carries): a shell script that installs Docker and the tools, fetches this hub's code, sets DCS up as a node and joins — run as a user with sudo: curl -fsSL '…' \| bash |
 | GET | `/storage/overview` | user | Storage overview |
+| GET | `/domains` | user | This server's domains: the primary one (the hub's stacks), the others, the default domain for new VMs, which VMs use which, and whether each has its certificate and sign-in |
 | GET | `/summary` | user | The server at a glance for whoever is signed in or holds an API key: the same answer as /feed/summary (version, stacks, containers, the machine's load and disk) |
 | GET | `/power` | user | UPS status: mains or battery, charge, runtime, load, and whether the watch loop runs |
 | GET | `/recovery` | admin | Recovery bundles on this box and how they are made (destination, off-box copy, retention, passphrase set?) |
@@ -522,6 +523,9 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | POST | `/fleet/hub/relay-token` | admin | The hub hands this member the token its events travel with {token} (admin: the hub's own account) |
 | POST | `/fleet/routes` | admin | The hub hands this DCS the other servers' routes for the Traefik that runs here {http: {routers, services}}; written as custom_routes/fleet-members.yml (admin: the hub's own account); 409 without a Traefik here |
 | POST | `/fleet/hub/domain` | admin | The hub hands this member the fleet's proxy domain {domain, force}: written as PROXY_DOMAIN when this DCS has none yet (or the example.com placeholder), so the routes it writes for its stacks carry the fleet's domain; a domain of its own (a Traefik here) is kept unless force is true |
+| POST | `/domains` | admin | Add a domain {domain}: one Cloudflare token covers it; it gets its wildcard certificate, its sign-in (auth.<domain>) and its apex record (admin) |
+| POST | `/domains/vm-default` | admin | The domain new VMs get {domain} ("" = this server's own) (admin) |
+| POST | `/fleet/members/{id}/domain` | admin | The VM answers under another of the hub's domains {domain} ("" = the hub's own): its routes move to it at once (admin) |
 | POST | `/fleet/docker-engine/update` | admin | Bring the Docker Engine up to date on members {members: ["id", …] or "all"} (each VM the hub built has passwordless sudo, so no password travels); the answer says what each member started |
 | POST | `/fleet/jobs/{id}/retry` | admin | Run a failed VM job again from the step that failed |
 | POST | `/fleet/members/{id}/relink` | admin | Take a VM back after its password was lost (a deleted FLEET_MEMBER_*_PASSWORD secret, a changed dcs-hub account): the hub lifts its own lock-out on the VM, joins the VM again over ssh with a fresh join code, and keeps the new password; the VM's stacks, placement and settings stay as they were {} (admin session; answers manual_command when the hub's ssh key does not open the VM) |
@@ -548,6 +552,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | DELETE | `/feed/token` | admin | Switch the dashboard feed off: the token is removed and both addresses answer 401 (admin) |
 | DELETE | `/fleet/members/{id}/api/{path}` | admin | Forward the call (GET, POST, PUT or DELETE) to that member with the hub's account; the caller's own role is checked against the inner path as if it were local (streams and auth are not forwarded) |
 | DELETE | `/fleet/members/{id}/folders/*` | admin | Take a shared folder from a VM (?restart=false leaves the VM running: the device goes at its next start; ?mapping=true also removes the mapping from Proxmox): unmounted in the VM and out of its /etc/fstab, the device off the VM. Answers at once (202); nothing is deleted on the host |
+| DELETE | `/domains/*` | admin | Take a domain off this server: no VM may still use it (admin) |
 | DELETE | `/fleet/members/{id}` | admin | Forget a member (its dcs-hub account is removed there when it answers) |
 | DELETE | `/fleet/templates/{vmid}` | admin | Forget a DCS template and destroy the template VM on Proxmox |
 | DELETE | `/fleet/jobs/{id}` | admin | Forget a finished or failed job; ?destroy=true also destroys the VM a failed build (or a by-hand install that never joined) left behind |

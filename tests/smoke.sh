@@ -1470,6 +1470,12 @@ check "storage: no wear figure is none"       null "$(jq -c '.proxmox.nodes[0].d
 check "storage: a ZFS pool"                   "tank ONLINE" "$(jq -r '.proxmox.nodes[0].zfs[0] | "\(.name) \(.health)"' <<< "$_SO" 2>/dev/null)"
 check "storage: the pools are in the total"   yes "$([[ "$(jq -r '.totals.total' <<< "$_SO" 2>/dev/null)" -ge 1073741824000 ]] && echo yes || echo no)"
 check "storage: a viewer may look"            200 "$(viewer_request GET /storage/overview | status_of)"
+check "domains: listed"                      true "$(auth_request GET /domains | body_of | jq -r 'has("domains") and has("vm_default")' 2>/dev/null)"
+check "domains: a bad name refused"          400 "$(auth_request POST /domains '{"domain":"not a domain"}' | status_of)"
+check "domains: a viewer may not add"        403 "$(viewer_request POST /domains '{"domain":"other.test"}' | status_of)"
+check "domains: unknown one cannot go"       404 "$(auth_request DELETE /domains/nothere.test | status_of)"
+check "domains: a VM default must be known"  400 "$(auth_request POST /domains/vm-default '{"domain":"nothere.test"}' | status_of)"
+check "domains: a deploy names a known one"  400 "$(auth_request POST /templates/demo-tpl/deploy '{"target_stack":"demo","domain":"nothere.test"}' | status_of)"
 check "proxmox: http on 8006 made https" https://192.168.2.12:8006 "$(_lib _pve_norm_url 'http://192.168.2.12:8006/')"
 check "proxmox: http elsewhere kept"    http://pve.lan "$(_lib _pve_norm_url 'http://pve.lan/')"
 check "proxmox: browser address cleaned" https://pve.lan:8006 "$(_lib _pve_norm_url 'pve.lan:8006/#v1:0:18:4:::')"
@@ -2886,7 +2892,41 @@ curl -s -m 2 -X POST "http://127.0.0.1:$_CFP/ip?set=203.0.113.9" >/dev/null
 _cf env DDNS_ENABLED=true DDNS_SUBDOMAINS='@,home' DDNS_ONCE=true DDNS_INTERVAL=1 TRAEFIK_DOMAIN=smoke.test bash -c "cd '$WORK' && source '$API' >/dev/null 2>&1; _ddns_update_loop" >/dev/null 2>&1
 check "ddns: address change followed"        203.0.113.9 "$(jq -r '[.records["zone-smoke.test"][]? | select(.type == "A" and .name == "home.smoke.test")][0].content' "$_CFS" 2>/dev/null)"
 check "ddns: one A record per name"          1 "$(jq -r '[.records["zone-smoke.test"][]? | select(.type == "A" and .name == "smoke.test")] | length' "$_CFS" 2>/dev/null)"
+# more than one domain: each one's apex follows the public address, in its own zone
+_ENV0=$(cat "$WORK/.env"); _envset PROXY_DOMAIN smoke.test; _envset PROXY_DOMAINS_EXTRA '"other.test smoke.test sub.smoke.test bad_domain other.test"'
+check "domains: the others, cleaned"         "other.test" "$(_lib _domains_extra | paste -sd' ')"
+check "domains: all of them, primary first"  "smoke.test other.test" "$(_lib _domains_all | paste -sd' ')"
+check "domains: a host's domain"             other.test "$(_lib _domain_of_host app.other.test)"
+check "domains: a deeper host's domain"      smoke.test "$(_lib _domain_of_host x.app.smoke.test)"
+check "domains: a host of none"              "" "$(_lib _domain_of_host app.nope.test)"
+rm -f "$WORK/.api-auth/.cf-zone-cache"* "$WORK/.data/ddns-current-ip"
+_cf env DDNS_ENABLED=true DDNS_SUBDOMAINS='@' DDNS_ONCE=true DDNS_INTERVAL=1 TRAEFIK_DOMAIN=smoke.test bash -c "cd '$WORK' && source '$API' >/dev/null 2>&1; _ddns_update_loop" >/dev/null 2>&1
+check "ddns: every domain's apex"            2 "$(jq -r '[.records["zone-smoke.test"][]?, .records["zone-other.test"][]? | select(.type == "A" and (.name == "smoke.test" or .name == "other.test") and .content == "203.0.113.9")] | length' "$_CFS" 2>/dev/null)"
+check "ddns: the other domain in its own zone" 1 "$(jq -r '[.records["zone-other.test"][]? | select(.type == "A" and .name == "other.test")] | length' "$_CFS" 2>/dev/null)"
+check "zone cache: the primary keeps its file" smoke.test "$(sed -n 1p "$WORK/.api-auth/.cf-zone-cache" 2>/dev/null)"
+check "zone cache: another domain has its own" zone-other.test "$(sed -n 2p "$WORK/.api-auth/.cf-zone-cache.other.test" 2>/dev/null)"
+printf '%s\n' "$_ENV0" > "$WORK/.env"
 kill "$_CFPID" 2>/dev/null; wait "$_CFPID" 2>/dev/null || true
+
+# the proxy's domains: wildcard certificates (Traefik), sign-in (Authelia: cookie, rules, its route); added and taken out again
+_DMD="$WORK/dom-fixture"; mkdir -p "$_DMD/base"
+printf 'entryPoints:\n  websecure:\n    address: ":443"\n    http:\n      tls:\n        certResolver: letsencrypt\n        domains:\n          - main: smoke.test\n            sans:\n              - "*.smoke.test"\n\n  traefik:\n    address: ":8080"\n' > "$_DMD/traefik.yml"
+printf 'access_control:\n  default_policy: deny\n  rules:\n    - domain:\n        - "auth.smoke.test"\n      policy: bypass\n    - domain:\n        - "*.smoke.test"\n      policy: one_factor\nsession:\n  name: authelia_session\n  cookies:\n    - domain: smoke.test\n      authelia_url: "https://auth.smoke.test"\n  redis:\n    host: r\n' > "$_DMD/configuration.yml"
+printf 'http:\n  routers:\n    authelia:\n      rule: "Host(`auth.smoke.test`)"\n      service: authelia\n' > "$_DMD/authelia.yml"
+command cp "$_DMD/traefik.yml" "$_DMD/traefik.orig"; command cp "$_DMD/configuration.yml" "$_DMD/configuration.orig"; command cp "$_DMD/authelia.yml" "$_DMD/authelia.orig"
+_dsync() { printf 'PROXY_DOMAINS_EXTRA="%s"\n' "$1" > "$_DMD/base/.env"; _lib eval "BASE_DIR='$_DMD/base'; _find_traefik_domain() { echo smoke.test; }; _traefik_domains_sync '$_DMD/traefik.yml'; _authelia_domains_sync '$_DMD/configuration.yml' '$_DMD/authelia.yml' '${2:-}'; echo \"\$TRAEFIK_DOMAINS_CHANGED \$AUTHELIA_DOMAINS_CHANGED\""; }
+check "domains: added, both configs change"  "true true" "$(_dsync other.test)"
+check "domains: a certificate for each"      "smoke.test other.test" "$(python3 -c "import yaml,sys; print(' '.join(d['main'] for d in yaml.safe_load(open(sys.argv[1]))['entryPoints']['websecure']['http']['tls']['domains']))" "$_DMD/traefik.yml" 2>/dev/null)"
+check "domains: a sign-in cookie for each"   "smoke.test other.test" "$(python3 -c "import yaml,sys; print(' '.join(c['domain'] for c in yaml.safe_load(open(sys.argv[1]))['session']['cookies']))" "$_DMD/configuration.yml" 2>/dev/null)"
+check "domains: the rules cover each"        "auth.smoke.test auth.other.test|*.smoke.test *.other.test" "$(python3 -c "import yaml,sys; print('|'.join(' '.join(r['domain']) for r in yaml.safe_load(open(sys.argv[1]))['access_control']['rules']))" "$_DMD/configuration.yml" 2>/dev/null)"
+check "domains: the sign-in route answers both" 'rule: "Host(`auth.smoke.test`) || Host(`auth.other.test`)"' "$(grep -o 'rule: .*' "$_DMD/authelia.yml")"
+check "domains: a second run changes nothing" "false false" "$(_dsync other.test)"
+check "domains: taken out again"             "true true" "$(_dsync "" other.test)"
+check "domains: the files as they were"      "same same same" "$(for f in traefik configuration authelia; do cmp -s "$_DMD/$f.yml" "$_DMD/$f.orig" && printf 'same ' || printf 'differs '; done | sed 's/ $//')"
+# a VM's routes answer under the domain chosen for it (the subdomain stays)
+_RHD="$WORK/rehost"; mkdir -p "$_RHD/x"; printf 'http:\n  routers:\n    a:\n      rule: "Host(`sonarr.smoke.test`)"\n    b:\n      rule: "Host(`api.other.test`) && PathPrefix(`/v1`)"\n    c:\n      rule: "Host(`keep.elsewhere.org`)"\n' > "$_RHD/x/r.yml"
+check "rehost: files changed"                1 "$(_lib eval "_find_traefik_routes_dir() { echo '$_RHD'; }; _routes_rehost new.test 'smoke.test other.test'")"
+check "rehost: hosts moved, others left"     'sonarr.new.test api.new.test keep.elsewhere.org' "$(grep -oE 'Host\(`[^`]+`\)' "$_RHD/x/r.yml" | sed -E 's/Host\(`(.*)`\)/\1/' | paste -sd' ')"
 
 echo "Setup checks (what setup.sh looks at before it changes anything)"
 _sc() { ( set +eu; source "$ROOT/.lib/setup-checks.sh"; "$@" ); }
