@@ -5,6 +5,20 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [4.0.23] - 2026-10-03
+
+### Added
+
+- **SSH into a VM with a key of your own, from the dashboard.** A VM the hub builds has no password, only the hub's key, and
+  handing that key around was the only way in. `POST /ssh/keys` now makes a fresh ed25519 key for one person after they type
+  their dashboard password again, puts its public half (tagged `dcs-ssh:<id>`) on the VMs they chose and, if they ask, on the
+  hub's user, and returns the private half **once**: the hub keeps only the public half and a fingerprint. The answer carries a
+  ready `ssh` config (`Host <stack>`, `User dcs`, `IdentityFile`, `IdentitiesOnly`, `IdentityAgent none`, and
+  `ProxyJump dcs-hub` through the hub or direct). `GET /ssh/access` lists the VMs, the hub and the keys, `GET /ssh/keys/<id>/config`
+  gives the config again as the VMs are now, `POST /ssh/keys/<id>/vms` puts a key on more VMs and `DELETE /ssh/keys/<id>` takes
+  it off every VM. Admin sessions only: viewers, the bot role and API keys are refused. Documented in
+  [Proxmox](docs/PROXMOX.md#your-own-shell-in-a-vm-ssh).
+
 ## [4.0.22] - 2026-10-02
 
 ### Added

@@ -4,7 +4,7 @@ Generated from the router in `.scripts/api-server.sh` by `.scripts/api-docs.sh` 
 Run `.scripts/api-docs.sh` after adding or changing a route; CI fails when this file is stale.
 
 The API listens on `API_BIND:API_PORT` (default `0.0.0.0:9876`) and answers JSON.
-Every endpoint below is `399` in total.
+Every endpoint below is `404` in total.
 
 ## Access levels
 
@@ -482,6 +482,8 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | GET | `/fleet/join-tokens` | admin | The join codes that are still valid (admin), each with node_command: the one line that installs DCS as a node of this hub on any VM and joins it |
 | GET | `/fleet/provision/defaults` | admin | Suggested values for creating VMs: node and its size, storages, bridge, an address range next to the hub, the cloud image, the admin name, the guests Proxmox already has (a stack cannot get a VM named like one), the stacks that already run on this server (they stay on it) and whether the hub's firewalld keeps the API port closed (admin) |
 | GET | `/fleet/provision/move-check` | admin | What moving a stack of this server into a VM would take with it: the size of its folders and named volumes, the disk a VM needs for them, its routes, and the folders outside the stack that do not travel (admin) |
+| GET | `/ssh/access` | admin | What the ssh sheet needs: the VMs (name, address, whether they answer), the hub (address, user, port) and the keys made so far (admin, not with an API key) |
+| GET | `/ssh/keys/*/config` | admin | The ssh config for a key, as the VMs are now (?via=hub\|direct, ?hub_host=address of the hub as you reach it) (admin) |
 | GET | `/fleet/jobs` | admin | VMs being created (and the ones that finished or failed), newest first |
 | GET | `/fleet/templates` | admin | The DCS templates the hub baked (VMs cloned from one build in about half a minute) |
 | GET | `/fleet/versions` | admin | The hub's DCS version next to every member's, asked live; behind = members on another version, plus the last update round and whether one is queued for after the hub's restart |
@@ -500,6 +502,8 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | GET | `/recovery/*/download` | admin | Download a recovery bundle |
 | POST | `/fleet/join` | public | A member registers itself with a join code {token, name, url, username, password, identity?, vmid?, node?, type?}: the hub logs in to it, matches it to a guest and keeps it (no session; rate-limited like a login) |
 | POST | `/fleet/relay` | public | A member's event for the hub {token, event, context}: the hub notes it in its activity (fleet_event) and fires its own notification rules with the VM named; public, the relay token says who; at most 30 events a minute per member (429 beyond) |
+| POST | `/ssh/keys` | admin | Make a key of your own and put its public half on the VMs you tick {name, members: [member ids], hub_access?, password}: the private half is in the answer once, and only after your dashboard password was typed again (admin, not with an API key) |
+| POST | `/ssh/keys/*/vms` | admin | Put an existing key on more VMs {members: [ids]}: the private half is not needed, the hub holds the public one (admin) |
 | POST | `/proxmox/test` | admin | Try a Proxmox connection with the given url, token_id, token_secret and verify_tls without saving them |
 | POST | `/proxmox/vms/{node}/{type}/{vmid}/{action}` | admin | Power action on a VM or container: start, shutdown, stop, reboot, reset (VMs only), balloon (VMs only: a memory balloon whose floor keeps the guest three quarters of its memory, so Proxmox reports the guest's real usage and can take a little back; reboot afterwards), suspend, resume — audited and sent to the webhooks |
 | POST | `/fleet/members` | admin | Add a member by address and an account on it {url, username, password, name?, vmid?, node?, type?, insecure?}; the hub logs in, learns who it is and matches it to a guest |
@@ -547,4 +551,5 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | DELETE | `/fleet/jobs/{id}` | admin | Forget a finished or failed job; ?destroy=true also destroys the VM a failed build (or a by-hand install that never joined) left behind |
 | DELETE | `/fleet/join-tokens/{token}` | admin | Revoke a join code |
 | DELETE | `/fleet/hub` | admin | Leave the hub: forget it and remove its dcs-hub account here (the hub drops this member when it next fails to answer, or when removed there) |
+| DELETE | `/ssh/keys/*` | admin | Take a key away: its line is removed from every VM (and the hub) it was put on (admin) |
 

@@ -2126,6 +2126,9 @@ case "$*" in
   *"tar -xzf -"*)
     # the stack moving in: the VM's install dir is the stand-in's clone
     cmd="${*//\~\/.Docker-Compose-Skeleton-AIO/$SHIM_DIR}"; bash -c "$cmd" ;;
+  *authorized_keys*)
+    # a key put on a VM, or taken off: the stand-in VM's home is a folder of its own
+    mkdir -p "$SHIM_DIR/home"; cmd="${*//\~\//$SHIM_DIR/home/}"; bash -c "$cmd" ;;
   *) echo "stand-in: unknown command: $*" >&2; exit 1 ;;
 esac
 SHIM
@@ -2271,6 +2274,31 @@ check "provision: VM has the compose"   yes "$(auth_request GET /stacks/smoke-ph
 _stk=""; for _i in $(seq 1 30); do _stk=$(auth_request GET /stacks/smoke-photos | body_of | jq -r '.status' 2>/dev/null | cut -d: -f1); [[ "$_stk" == running ]] && break; sleep 1; done
 check "provision: stack running in VM"  running "$_stk"
 check "provision: the stack's secret travelled" yes "$(auth_request GET /fleet/members/smoke-photos/api/secrets | body_of | jq -e '[.secrets[] | if type == "object" then .key else . end] | index("SMOKE_TRAVEL") != null' >/dev/null 2>&1 && echo yes || echo no)"
+# ssh into the VMs with a key of your own: made after the password, put on the VMs ticked, never kept, taken away again
+_SSHH="$VMWORK/home/.ssh/authorized_keys"
+check "ssh: the sheet lists the VMs and the hub"       'smoke-photos 22 dcs' "$(auth_request GET /ssh/access | body_of | jq -r '"\(.vms[0].name) \(.hub.port) \(.vm_user)"' 2>/dev/null)"
+check "ssh: a viewer sees nothing"                     403 "$(viewer_request GET /ssh/access | status_of)"
+check "ssh: a name is needed"                          400 "$(auth_request POST /ssh/keys '{"name":"","members":["smoke-photos"],"password":"x"}' | status_of)"
+check "ssh: a VM is needed"                            400 "$(auth_request POST /ssh/keys '{"name":"laptop","members":[],"password":"x"}' | status_of)"
+check "ssh: the password is needed"                    400 "$(auth_request POST /ssh/keys '{"name":"laptop","members":["smoke-photos"]}' | status_of)"
+check "ssh: a wrong password gets no key"              401 "$(auth_request POST /ssh/keys '{"name":"laptop","members":["smoke-photos"],"password":"not-it-at-all"}' | status_of)"
+check "ssh: …and nothing was put on the VM"            no "$([[ -s "$_SSHH" ]] && echo yes || echo no)"
+check "ssh: a VM that does not exist"                  404 "$(auth_request POST /ssh/keys '{"name":"laptop","members":["nope"],"password":"correct horse battery"}' | status_of)"
+_SK=$(auth_request POST /ssh/keys '{"name":"laptop","members":["smoke-photos"],"password":"correct horse battery","via":"hub","hub_host":"hub.example.test"}' | body_of)
+_SKID=$(jq -r '.id // empty' <<< "$_SK" 2>/dev/null)
+check "ssh: made, with the private half"               yes "$([[ "$(jq -r '.private_key' <<< "$_SK" 2>/dev/null)" == "-----BEGIN OPENSSH PRIVATE KEY-----"* ]] && echo yes || echo no)"
+check "ssh: the public half is on the VM"              1 "$(grep -c "dcs-ssh:$_SKID\$" "$_SSHH" 2>/dev/null)"
+check "ssh: the VM took it"                            true "$(jq -r '.results[0].ok' <<< "$_SK" 2>/dev/null)"
+_SKC=$(jq -r '.config' <<< "$_SK" 2>/dev/null)
+check "ssh: the config names the VM and jumps through the hub" yes "$({ grep -q '^Host smoke-photos$' <<< "$_SKC" && grep -q 'ProxyJump dcs-hub' <<< "$_SKC" && grep -q 'HostName hub.example.test' <<< "$_SKC"; } && echo yes || echo no)"
+check "ssh: the config names the key's file"           yes "$(jq -r '.config' <<< "$_SK" 2>/dev/null | grep -q 'IdentityFile ~/.ssh/dcs-laptop$' && echo yes || echo no)"
+check "ssh: the hub keeps no private half"             0 "$(grep -rlE 'BEGIN OPENSSH PRIVATE KEY' "$WORK/.data/ssh-keys.json" 2>/dev/null | wc -l)"
+check "ssh: the list shows it without the keys"        'laptop false' "$(auth_request GET /ssh/access | body_of | jq -r '.keys[0] | "\(.name) \(has("public") or has("private_key"))"' 2>/dev/null)"
+check "ssh: the same name twice"                       409 "$(auth_request POST /ssh/keys '{"name":"laptop","members":["smoke-photos"],"password":"correct horse battery"}' | status_of)"
+check "ssh: the config again, direct"                  0 "$(auth_request GET "/ssh/keys/$_SKID/config?via=direct" | body_of | jq -r '.config' 2>/dev/null | grep -c 'ProxyJump')"
+check "ssh: a key id is checked"                       400 "$(auth_request DELETE '/ssh/keys/../../x' | status_of)"
+check "ssh: removed"                                   200 "$(auth_request DELETE "/ssh/keys/$_SKID" | status_of)"
+check "ssh: …and gone from the VM"                     0 "$(grep -c "dcs-ssh:$_SKID" "$_SSHH" 2>/dev/null)"
 check "provision: secret copy logged"   yes "$(auth_request GET "/fleet/jobs/$JOB" | body_of | jq -r '.log[].text' 2>/dev/null | grep -q 'secret(s) the stack uses copied' && echo yes || echo no)"
 # the hub's own start.sh never starts a folder that lives in a VM, whatever DOCKER_STACKS says
 # shellcheck disable=SC2034  # COMPOSE_DIR is read by the function pulled out of run.sh
@@ -2528,6 +2556,7 @@ check "api keys: operate may do what a bot may"     yes "$([[ "$(key_request "Au
 check "api keys: operate is no admin"               403 "$(key_request "Authorization: Bearer $_AKOK" POST /auth/users '{"username":"x","password":"long-enough-1","role":"admin"}' | status_of)"
 check "api keys: operate makes no keys"             403 "$(key_request "Authorization: Bearer $_AKOK" POST /auth/keys '{"name":"more","role":"operate"}' | status_of)"
 check "api keys: operate opens no terminal"         403 "$(key_request "Authorization: Bearer $_AKOK" GET /terminal/web | status_of)"
+check "ssh: an API key cannot reach it"                403 "$(key_request "X-API-Key: $_AKOK" GET /ssh/access | status_of)"
 check "api keys: the audit log names the key"       yes "$(grep -q 'API_KEY_CREATED.*Home Assistant' "$WORK/.api-auth/auth-audit.log" 2>/dev/null && echo yes || echo no)"
 jq --arg id "$_AKOID" 'map(if .id == $id then .expires_at = 1 else . end)' "$WORK/.api-auth/api-keys.json" > "$WORK/.api-auth/api-keys.json.t" && command mv -f "$WORK/.api-auth/api-keys.json.t" "$WORK/.api-auth/api-keys.json"
 check "api keys: an expired key"                    401 "$(key_request "Authorization: Bearer $_AKOK" GET /stacks | status_of)"

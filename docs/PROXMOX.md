@@ -670,6 +670,22 @@ home folder that others read, and do not put it on a shared machine. To give ano
 ssh -i ~/.Docker-Compose-Skeleton-AIO/.data/fleet-ssh/id_ed25519 dcs@192.168.2.202 'cat >> ~/.ssh/authorized_keys' < their-key.pub
 ```
 
+**The easy way: a key of your own, from the dashboard.** The Proxmox page has an **SSH** button (and one on every VM card).
+Tick the VMs, name the key (`howson-laptop`), type your dashboard password again, and the hub makes a fresh key for *you*:
+its public half goes onto the VMs you ticked, the private half is shown **once** and downloaded with a ready ssh config.
+The hub keeps no copy of the private half; removing the key in the same sheet takes it off every VM at once, so a lost
+laptop costs one click, and the hub's own key is never handed out.
+
+1. **Download the key** and **the ssh config** (two buttons on the last screen).
+2. Paste the two lines shown there into a terminal on your computer: they move both files into `~/.ssh` and put one
+   `Include` line at the top of `~/.ssh/config`.
+3. `ssh media-services`. Every VM is named like its stack, and the route goes through the hub (`ProxyJump dcs-hub`), so it
+   works from anywhere you can reach the hub even when the VMs sit on a private network. Untick *Connect through the hub*
+   for direct blocks, or tick *Let this key into the hub too* so one key serves the whole way.
+
+The same from a script: `POST /ssh/keys` with `{"name","members","password","via","hub_host"}` (admin session, not an API
+key), `GET /ssh/keys/<id>/config`, `DELETE /ssh/keys/<id>`; see the [API reference](API.md).
+
 A VM you made yourself has its own users and keys: see below.
 
 ### VMs you made yourself
