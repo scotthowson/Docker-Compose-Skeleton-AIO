@@ -14,6 +14,24 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and DNS records at once. A stack deployed on the hub picks one on the deploy sheet. `GET/POST /domains`,
   `DELETE /domains/{domain}`, `POST /domains/vm-default`, `POST /fleet/members/{id}/domain`.
   [Configuration](docs/CONFIGURATION.md#more-than-one-domain)
+- `POST /backups/verify {filename}`: checks a backup without restoring it. `POST /backups/restore` takes `{stack}` to restore
+  one stack (and its volumes) from any backup. `GET /backups` rows say `verified`, `kind`, `stack` and `complete`;
+  `GET /backups/config` says how this server reads other users' files (`reads_as`) and whether it pauses (`pause`).
+  `BACKUP_PAUSE`, `BACKUP_PAUSE_EXCEPT`, `BACKUP_RESTORE_STOP_TIMEOUT`, `BACKUP_PRE_RESTORE_KEEP`.
+
+### Changed
+
+- **What a backup is** (format 2): one tar.gz with `./.dcs-backup/manifest.json` first (every part with its files, bytes and
+  sha256, the warnings), the install's own state (`.env`, accounts, `.secrets/*.enc`, `.data`, `.config`, templates,
+  plugins, compose history, snapshots), `./.dcs-backup/stacks/<stack>.tar` per stack folder and
+  `./.dcs-backup/volumes/<volume>.tar` per named volume, owners as numbers. It is read back to the end and gets a `.sha256`
+  before it takes its name. No code, no sessions, no invite codes, no caches, never `.secrets/.master-key`. A one-stack
+  backup is named `Docker-Compose-Backup-<time>-<stack>.tar.gz`, and retention keeps `BACKUP_RETENTION_COUNT` of each kind,
+  so hourly backups of one stack never push the full ones out. `.scripts/backup-server.sh [stack]` makes the same backup.
+  [Operations](docs/OPERATIONS.md#backups-and-snapshots)
+- **A snapshot carries every file of a stack's configuration** (not only `docker-compose.yml` and `.env`), Traefik's route
+  files and the schedules. A snapshot restore takes a snapshot of the state before, and pushes the restored files of a
+  stack that runs in a VM into the VM (`pushed_to_vm`, `push_failed`).
 
 ### Fixed
 
@@ -38,6 +56,36 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     and every other backend are judged as before. `tests/crowdsec-media-apps.sh` replays 29 scenarios through CrowdSec 1.8.1 (12 new: VM, labels,
     renamed route, missing media, the app's and the proxy's 403s, scanners through a VM).
     [Media apps](docs/CROWDSEC.md#media-apps-a-web-client-is-not-a-crawler)
+- **A backup on a server without rsync was an empty archive that said "done".** The DCS VM images (hub and node) have no
+  rsync: the Backup page, the scheduled `backup` and *Back up everything* each wrote a 106-byte archive holding one empty
+  folder, reported it as finished and sent `backup_complete`. Backups no longer use rsync (seen in the lab on the hub and a VM).
+- **Every restore failed.** Backup restore and snapshot restore called `tar --no-absolute-names`, an option GNU tar does not
+  have: a snapshot restore answered 500 *Failed to extract snapshot*, a backup restore ended *Restore failed*, every time.
+- **A backup left out what the server's own user could not read**, without a word: a database's files (Postgres, MariaDB,
+  root-owned files in App-Data) were skipped by `rsync … 2>/dev/null || true`. Stack folders and volumes are now read as
+  root, with sudo, or through a read-only helper container, the way a move into a VM reads them; a file nothing can read is
+  named and the backup is marked incomplete (`backup_failed`).
+- **Named volumes were not backed up at all.** Every named volume of a stack is now in its backup and comes back with it.
+- **A database was copied while it was being written.** A stack's running containers are paused while its folder and
+  volumes are read (`BACKUP_PAUSE`), so SQLite, Postgres and MySQL are copied as they were at one instant.
+- **A restore went over the live data with the stacks running**, kept nothing of what it replaced, and left newer files in
+  place (a SQLite `-wal` written after the backup would have been replayed over the restored database). A restore now stops
+  the stacks it restores, sets each folder aside in `.data/pre-restore/` (a rename), puts the archive's copy in its place
+  with its owners, refills the volumes, and starts the containers again.
+- **A backup with a link in it could never be restored** (every archive from a hub with a VM stack: `VM-App-Data`). Links
+  are allowed when nothing is written through them; links that point outside are left out of the install's files.
+- **A one-stack backup held its folder at the archive's root**, where a restore would have put it next to the install
+  instead of in `Stacks/<stack>`; an older archive of that shape now goes back to `Stacks/<stack>`.
+- **The hub's own state was not in a backup**: `.data` was left out whole (the fleet and the hub's ssh key to its VMs,
+  schedules, CrowdSec, the intended state). The scheduled backup also carried the secret store's key next to the
+  encrypted secrets, which the Backup page's backup leaves out; both are the same backup now, and neither carries it.
+- **A backup was staged in `/tmp`**, a tmpfs of a few GB on the DCS images, and no room was checked. It is staged next to the
+  archive, and a backup that would not fit says so before it starts.
+- **A snapshot that could not be written was reported as made** (the `tar` result was not checked), and a second snapshot in
+  the same second replaced the first. A snapshot restore put files back with the API's umask (600) instead of their modes.
+- **A snapshot restore put an older `settings.cfg` / `schema.json` under newer code**; the files DCS ships stay the code's.
+- **The recovery bundle refused to run without rsync** (so on every DCS image) and staged in `/tmp`; it now uses tar, stages
+  next to the bundles, and reads the App-Data it carries like a backup does.
 
 ## [4.0.27] - 2026-10-03
 

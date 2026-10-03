@@ -439,17 +439,22 @@
         "BACKUP_SOURCE_DIR": {
           "type": "string",
           "default": "",
-          "description": "Source directory for backups"
+          "description": "An extra folder a full backup carries (the install is always in it)"
         },
         "BACKUP_DEST_DIR": {
           "type": "string",
           "default": "",
           "description": "Destination directory for backup archives"
         },
+        "BACKUP_PAUSE": {
+          "type": "boolean",
+          "default": true,
+          "description": "Pause a stack's containers while its data is read, for a consistent copy of its databases"
+        },
         "BACKUP_RETENTION_COUNT": {
           "type": "integer",
-          "default": 7,
-          "description": "Number of backup archives to keep",
+          "default": 6,
+          "description": "Number of backup archives to keep of each kind (full, and each stack's own)",
           "minimum": 1,
           "maximum": 100
         }

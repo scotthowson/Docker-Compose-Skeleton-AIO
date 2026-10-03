@@ -206,8 +206,13 @@ The rules themselves (which events, which targets) live on the Notifications pag
 
 | Key | Default | Meaning |
 |---|---|---|
-| `BACKUP_SOURCE_DIR`, `BACKUP_DEST_DIR` | *(empty)* | What the Backup page backs up, and where to |
-| `BACKUP_RETENTION_COUNT` | `6` | Backups kept |
+| `BACKUP_DEST_DIR` | *(empty)* | Where backups go (each with a `.sha256`); nothing is backed up until it is set |
+| `BACKUP_SOURCE_DIR` | *(empty)* | An extra folder a full backup carries (`.dcs-backup/source.tar`); the install is always in it |
+| `BACKUP_RETENTION_COUNT` | `6` | Backups kept of each kind: the full ones, and each stack's own |
+| `BACKUP_PAUSE` | `true` | Pause a stack's running containers while its folder and volumes are read (a consistent copy of a database) |
+| `BACKUP_PAUSE_EXCEPT` | *(empty)* | Stacks never paused (space-separated): the LAN's DNS, a media server with a huge library |
+| `BACKUP_RESTORE_STOP_TIMEOUT` | `20` | Seconds a container has to stop before a restore replaces its data |
+| `BACKUP_PRE_RESTORE_KEEP` | `2` | Sets of "the data before a restore" kept in `.data/pre-restore` |
 | `RECOVERY_DEST_DIR` | *(empty)* | Where recovery bundles go: `BACKUP_DEST_DIR/recovery`, then `.data/recovery` |
 | `RECOVERY_REMOTE` | *(empty)* | An off-box copy: an rsync target (`user@nas:/backups/dcs`) or a mounted path |
 | `RECOVERY_RETENTION_COUNT` | `10` | Bundles kept |

@@ -4,7 +4,7 @@ Generated from the router in `.scripts/api-server.sh` by `.scripts/api-docs.sh` 
 Run `.scripts/api-docs.sh` after adding or changing a route; CI fails when this file is stale.
 
 The API listens on `API_BIND:API_PORT` (default `0.0.0.0:9876`) and answers JSON.
-Every endpoint below is `411` in total.
+Every endpoint below is `412` in total.
 
 ## Access levels
 
@@ -348,7 +348,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | GET | `/maintenance/orphans` | user | Containers, volumes and networks no stack references; ?fleet=1 on a hub lists every VM's too, each row tagged member, member_name, vmid |
 | GET | `/maintenance/disk` | user | Per-stack App-Data sizes, Docker disk usage and volume sizes; ?fleet=1 on a hub merges every VM's (stacks tagged, docker's table added up per type) |
 | GET | `/backups` | admin | Fleet merged |
-| GET | `/backups/status` | admin | Progress of the running backup or the last result |
+| GET | `/backups/status` | admin | Progress of the running backup or restore, or the last result (with what was missing, if anything) |
 | GET | `/backups/config` | admin | Backup source, destination and retention |
 | GET | `/snapshots` | admin | Fleet merged |
 | GET | `/rollback/{stack}/snapshots/{snapshot}` | user | Content of a rollback snapshot |
@@ -359,11 +359,12 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | POST | `/maintenance/image-prune` | admin | Prune unused images |
 | POST | `/maintenance/deep-prune` | admin | Prune everything unused, volumes included (confirmation required) |
 | POST | `/maintenance/log-rotate` | admin | Rotate and archive the framework log |
-| POST | `/backups/trigger` | admin | Start a backup in the background (optionally one stack) |
-| POST | `/backups/cancel` | admin | Kill a running backup |
-| POST | `/backups/restore` | admin | Restore a backup archive (confirmation required) |
-| POST | `/snapshots/create` | admin | # POST /snapshots/create?fleet=1 on a hub: one snapshot here and one on every member at the same moment (each DCS keeps its own, listed together by GET /snapshots?fleet=1); the answer says what each DCS did |
-| POST | `/snapshots/{snapshot}/restore` | admin | Restore a snapshot (confirmation required, policy-scanned) |
+| POST | `/backups/trigger` | admin | Start a backup in the background: every stack with its App-Data and named volumes and the install's own state, or one stack ({stack}); checked, with a .sha256 |
+| POST | `/backups/cancel` | admin | Kill a running backup (its paused containers are resumed, its partial files removed) |
+| POST | `/backups/verify` | admin | Check a backup without restoring it: its .sha256, gzip and tar read it to the end, every part its manifest names is in it {filename} |
+| POST | `/backups/restore` | admin | Restore a backup (confirmation required): the stacks it holds are stopped, set aside in .data/pre-restore, restored with their volumes and owners, and started again; {stack} restores that stack alone |
+| POST | `/snapshots/create` | admin | A configuration snapshot (every stack's configuration files, .env files, accounts and rules, templates, encrypted secrets, routes, schedules; no App-Data); ?fleet=1 on a hub takes one here and one on every member at the same moment (each DCS keeps its own, listed together by GET /snapshots?fleet=1), the answer says what each DCS did |
+| POST | `/snapshots/{snapshot}/restore` | admin | Restore a snapshot (confirmation required, policy-scanned): a snapshot of the current state is taken first; the stacks' files go back (and into the VM of a stack that runs in one), with routes, schedules, templates and settings |
 | POST | `/rollback/{stack}/restore` | admin | Restore a stack from a rollback snapshot (policy-scanned) |
 | DELETE | `/snapshots/{snapshot}` | admin | Delete a snapshot |
 
