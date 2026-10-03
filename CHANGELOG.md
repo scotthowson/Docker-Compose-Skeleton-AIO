@@ -5,6 +5,33 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [4.0.26] - 2026-10-03
+
+### Added
+
+- **Start on demand in a VM.** A container in a VM now really sleeps and wakes: the VM runs its own Sablier (made by DCS
+  the first time one of its containers starts on demand), tells the hub which routes start on demand, and the hub's
+  Traefik asks the VM's Sablier on those routes (last in the chain, after sign-in). A sleeping container's route stays
+  served. Sablier has no login, so its port answers the hub alone (a `DOCKER-USER` firewall rule, marked `dcs-sablier`),
+  and it fails closed: without the rule it does not run, and after a reboot it starts only once the rule is back. The
+  container sheet's *Start on demand* and the deploy sheet's switch work for VM stacks; a move keeps on-demand containers
+  on demand and puts them to sleep in the VM. Verified in the lab end to end, the reboot path included.
+  [Proxmox](docs/PROXMOX.md#start-on-demand-in-a-vm)
+
+### Fixed
+
+- **A stack's page left its sleeping containers out** (it listed running containers only). `GET /stacks/{name}` lists every
+  container with `on_demand` and `sleeping`, and answers `sleeping_containers`; the page shows *sleeping · on demand* and
+  *running · on demand* like the Containers page, and *4 running · 1 sleeping* in its header.
+- **A VM's container said "on demand" but never slept** (the hub dropped the VM's Sablier step and the VM had no Sablier).
+- **An on-demand container started any other way never went back to sleep.** Sablier stops a container only when a session
+  for it ends, and sessions came from visits alone: one started by the boot, *Start*, an image update or a move ran for ever
+  (BentoPDF up for 8 hours without a visit). Every DCS now tells its Sablier about each such container once per start, with
+  that container's own idle time, so it sleeps unless someone uses it (`.data/sablier-tracked.json`). Note: a browser tab
+  left open on an app keeps it awake on purpose (its page polls the app, and that is use).
+- **A VM built at an address an earlier VM had** left the hub with the old host key (a warning on every ssh): it is
+  forgotten when the VM is built and when a member joins.
+
 ## [4.0.25] - 2026-10-03
 
 ### Added

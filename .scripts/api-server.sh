@@ -2670,11 +2670,16 @@ handle_stack_detail() {
     while IFS= read -r cid; do
         [[ -z "$cid" ]] && continue
         container_entries+=("$(_api_container_json "$cid")")
-    done < <($DOCKER_COMPOSE_CMD "${compose_args[@]}" ps -q 2>/dev/null)
+    done < <($DOCKER_COMPOSE_CMD "${compose_args[@]}" ps -a -q 2>/dev/null)
 
     local containers_json
     containers_json=$(printf '%s,' "${container_entries[@]}")
     containers_json="[${containers_json%,}]"
+    # every container of the stack, a sleeping one too (Sablier stopped it on purpose): each says whether it starts on demand
+    local _sabn; _sabn=$(_sablier_names 2>/dev/null)
+    containers_json=$(jq -c --arg n "$_sabn" '($n | split("\n") | map(select(. != ""))) as $od
+        | map(. + {on_demand: (((.name // "") | ltrimstr("/")) as $x | ($od | index($x)) != null)})
+        | map(. + {sleeping: (.on_demand and ((.state // "") | ascii_downcase) != "running")})' <<< "$containers_json" 2>/dev/null || printf '%s' "$containers_json")
 
     # Get images used
     local -a image_entries=()
@@ -2691,7 +2696,8 @@ handle_stack_detail() {
     images_json="[${images_json%,}]"
 
     local asleep=false; [[ "$status" == stopped ]] && _stack_asleep "$stack" && asleep=true
-    _api_success "{\"name\": \"$stack\", \"status\": \"$status\", \"running_containers\": $count, \"sleeping\": $asleep, \"has_env\": $([[ -f "$env_file" ]] && echo true || echo false), \"services\": $services_json, \"containers\": $containers_json, \"images\": $images_json}"
+    local _zc; _zc=$(jq -r '[.[] | select(.sleeping == true)] | length' <<< "$containers_json" 2>/dev/null); [[ "$_zc" =~ ^[0-9]+$ ]] || _zc=0
+    _api_success "{\"name\": \"$stack\", \"status\": \"$status\", \"running_containers\": $count, \"sleeping\": $asleep, \"sleeping_containers\": $_zc, \"has_env\": $([[ -f "$env_file" ]] && echo true || echo false), \"services\": $services_json, \"containers\": $containers_json, \"images\": $images_json}"
 }
 
 # GET /stacks/{stack}/containers — Containers of one stack
@@ -5945,6 +5951,8 @@ _sablier_repair() {
 # POST /sablier/repair — Recreate on-demand containers that a prune removed (created, not started, so Sablier can wake them)
 handle_sablier_repair() {
     if ! _api_check_admin; then _api_error 403 "Admin access required"; return; fi
+    # a VM: its own Sablier first (the hub's proxy asks it for the containers that start on demand here)
+    _fleet_is_member && [[ -n "$(_sablier_names 2>/dev/null)" ]] && _member_sablier_ensure >/dev/null 2>&1
     _sablier_repair
     _api_success "{\"success\": $([[ ${#SAB_FAILED[@]} -eq 0 ]] && echo true || echo false), \"recreated\": $(_upd_json_list ${SAB_REPAIRED[@]+"${SAB_REPAIRED[@]}"}), \"failed\": $(_upd_json_list ${SAB_FAILED[@]+"${SAB_FAILED[@]}"}), \"message\": \"$(_api_json_escape "$([[ ${#SAB_REPAIRED[@]} -gt 0 ]] && printf 'Recreated %s' "${SAB_REPAIRED[*]}" || printf 'Nothing to recreate')${SAB_FAILED[*]:+; failed: ${SAB_FAILED[*]}}")\"}"
 }
@@ -13399,6 +13407,63 @@ _sablier_forget() {
 # Sanitised middleware name for a container
 _sablier_mw_name() { local n="${1,,}"; n="${n//[^a-z0-9]/}"; printf '%s-sablier' "$n"; }
 
+# A VM of a fleet runs its own Sablier: the hub's Traefik serves the VM's routes and asks this one (over the LAN, on the
+# published port FLEET_SABLIER_PORT) to start a container on the first request and stop it when idle - the hub's own
+# Sablier cannot reach the VM's Docker. Made only on a member, the first time one of its containers starts on demand.
+FLEET_SABLIER_PORT="${FLEET_SABLIER_PORT:-10000}"
+FLEET_SABLIER_IMAGE="${FLEET_SABLIER_IMAGE:-acouvreur/sablier:1.6.1}"
+# Sablier has no login: whoever reaches it can start, and through a short session stop, any container of the VM. Its port
+# answers the hub alone - a firewall rule (DOCKER-USER, marked dcs-sablier) drops every other source - and it fails closed:
+# without that rule Sablier is not started (it does not start by itself at boot either; this starts it once the rule is back).
+_member_sablier_guard() {
+    local hub hip line num
+    hub=$(jq -r '.hub.url // ""' "$FLEET_FILE" 2>/dev/null); hub="${hub#*://}"; hub="${hub%%/*}"; hub="${hub%:*}"
+    [[ -n "$hub" ]] || return 1
+    if [[ "$hub" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then hip="$hub"; else hip=$(getent ahostsv4 "$hub" 2>/dev/null | awk 'NR == 1 { print $1 }'); fi
+    [[ "$hip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+    local -a ipt=(sudo -n iptables); [[ $EUID -eq 0 ]] && ipt=(iptables)
+    "${ipt[@]}" -L DOCKER-USER -n >/dev/null 2>&1 || return 1
+    # a rule for an older hub address goes (it would shut the hub out)
+    while IFS= read -r line; do
+        num="${line%% *}"; [[ "$num" =~ ^[0-9]+$ ]] || continue
+        [[ "$line" == *"!$hip "* || "$line" == *"! $hip "* ]] && continue
+        "${ipt[@]}" -D DOCKER-USER "$num" >/dev/null 2>&1
+    done < <("${ipt[@]}" -L DOCKER-USER -n --line-numbers 2>/dev/null | grep 'dcs-sablier' | sort -rn)
+    local -a rule=(-p tcp -m conntrack --ctorigdstport "$FLEET_SABLIER_PORT" --ctdir ORIGINAL ! -s "$hip" -m comment --comment dcs-sablier -j DROP)
+    "${ipt[@]}" -C DOCKER-USER "${rule[@]}" >/dev/null 2>&1 || "${ipt[@]}" -I DOCKER-USER "${rule[@]}" >/dev/null 2>&1 || return 1
+    "${ipt[@]}" -C DOCKER-USER "${rule[@]}" >/dev/null 2>&1
+}
+_member_sablier_ensure() {
+    _fleet_is_member || return 1
+    if ! _member_sablier_guard; then
+        # no rule, no Sablier on the network: one that runs is stopped
+        [[ "$(docker inspect -f '{{.State.Running}}' Sablier 2>/dev/null)" == true ]] && [[ "$(docker inspect -f '{{index .Config.Labels "dcs.role"}}' Sablier 2>/dev/null)" == fleet-sablier ]] \
+            && docker stop Sablier >/dev/null 2>&1
+        return 1
+    fi
+    if docker inspect Sablier >/dev/null 2>&1; then
+        [[ "$(docker inspect -f '{{.State.Running}}' Sablier 2>/dev/null)" == true ]] || docker start Sablier >/dev/null 2>&1
+        return 0
+    fi
+    local data="$BASE_DIR/.data/sablier" z=""
+    mkdir -p "$data" 2>/dev/null
+    [[ "$(getenforce 2>/dev/null)" == "Enforcing" ]] && z=":z"
+    docker run -d --name Sablier --restart no --label dcs.role=fleet-sablier \
+        -p "0.0.0.0:${FLEET_SABLIER_PORT}:10000" -e "TZ=${TZ:-UTC}" \
+        -v /var/run/docker.sock:/var/run/docker.sock$z -v "$data:/etc/sablier/data$z" \
+        --health-cmd 'wget -q --spider http://127.0.0.1:10000/health || exit 1' --health-interval 30s --health-retries 3 \
+        "$FLEET_SABLIER_IMAGE" start --provider.name=docker --storage.file=/etc/sablier/data/state.json \
+        --sessions.default-duration=30m --strategy.dynamic.default-theme=ghost >/dev/null 2>&1 || return 1
+    _audit_log "SABLIER_DEPLOYED" "Sablier runs in this VM (port ${FLEET_SABLIER_PORT}): the hub's proxy starts its on-demand containers through it" 2>/dev/null || true
+    return 0
+}
+# _member_sablier_port — the host port this VM's Sablier answers on (empty when there is none the hub can reach)
+_member_sablier_port() {
+    [[ "$(docker inspect -f '{{.State.Running}}' Sablier 2>/dev/null)" == true ]] || return 0
+    docker inspect -f '{{range $p, $b := .NetworkSettings.Ports}}{{if eq $p "10000/tcp"}}{{range $b}}{{.HostIp}} {{.HostPort}}{{"\n"}}{{end}}{{end}}{{end}}' Sablier 2>/dev/null \
+        | awk '$1 != "127.0.0.1" && $1 != "::1" && $2 ~ /^[0-9]+$/ { print $2; exit }'
+}
+
 # Route files whose service points at this container (http://Name:port)
 _sablier_route_files() {
     local name="$1" dir; dir=$(_find_traefik_routes_dir) || return 0
@@ -13442,6 +13507,46 @@ _sablier_block_read() {
         /^[ \t]*displayName:/ { d=val($0) }
         /^[ \t]*showDetails:/ { sh=val($0) }
         END { print s "\037" t "\037" d "\037" sh }' "$1" 2>/dev/null
+}
+
+# Sablier stops a container only when a session for it ends, and a session starts only with a visit through the proxy. A
+# container that starts on demand but was started some other way - the boot, a stack start, an image update, a move - would
+# run for ever. Each one that runs is announced to Sablier once per start, with its own idle time: it sleeps after that
+# time unless someone uses it (a visit extends the session as always). Runs from the metrics loop, here and in every VM.
+SABLIER_TRACK_FILE="${SABLIER_TRACK_FILE:-$BASE_DIR/.data/sablier-tracked.json}"
+_sablier_track_running() {
+    local names; names=$(_sablier_names 2>/dev/null | sort -u); [[ -n "$names" ]] || return 0
+    [[ "$(docker inspect -f '{{.State.Running}}' Sablier 2>/dev/null)" == true ]] || return 0
+    _api_state_file "$SABLIER_TRACK_FILE" '{}' object >/dev/null 2>&1 || true
+    local tracked n st started bl bf bm vs _x upd='{}'
+    tracked=$(jq -c 'if type == "object" then . else {} end' "$SABLIER_TRACK_FILE" 2>/dev/null) || tracked='{}'
+    while IFS= read -r n; do
+        [[ "$n" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$ ]] || continue
+        st=$(docker inspect -f '{{.State.Running}} {{.State.StartedAt}}' "$n" 2>/dev/null) || continue
+        [[ "${st%% *}" == true ]] || continue
+        started="${st#* }"
+        [[ "$(jq -r --arg n "$n" '.[$n] // ""' <<< "$tracked")" == "$started" ]] && continue
+        vs=""; bl=$(_sablier_blocks_for "$n" | head -1); bf="${bl%%$'\t'*}"; bm="${bl#*$'\t'}"; bm="${bm%%$'\t'*}"
+        [[ -n "$bf" && -n "$bm" ]] && IFS=$'\037' read -r vs _x < <(_sablier_block_read "$bf" "$bm")
+        [[ "$vs" =~ ^[0-9]+[smh]$ ]] || vs="30m"
+        timeout 15 docker exec Sablier wget -q -O /dev/null -T 10 "http://127.0.0.1:10000/api/strategies/blocking?names=$n&session_duration=$vs&timeout=5s" >/dev/null 2>&1 || true
+        upd=$(jq -c --arg n "$n" --arg s "$started" '.[$n] = $s' <<< "$upd")
+    done <<< "$names"
+    [[ "$upd" == '{}' ]] && return 0
+    _api_jq_update_file "$SABLIER_TRACK_FILE" --argjson u "$upd" --arg names "$names" \
+        '(. + $u) | with_entries(select(.key as $k | ($names | split("\n") | index($k)) != null))' >/dev/null 2>&1 || true
+}
+
+# _sablier_block_names FILE MIDDLEWARE — the containers the block wakes, comma-separated
+_sablier_block_names() {
+    awk -v mw="$2" '
+        function indent(l) { match(l, /^[ \t]*/); return RLENGTH }
+        inmw && indent($0) <= mwind && $0 !~ /^[ \t]*$/ { inmw=0 }
+        !inmw { line=$0; sub(/^[ \t]*/, "", line); sub(/[ \t]+$/, "", line); if (line == mw ":") { inmw=1; mwind=indent($0) } next }
+        /^[ \t]*names:[ \t]*/ { v=$0; sub(/^[ \t]*names:[ \t]*/, "", v); gsub(/["\x27\[\] ]/, "", v); if (v != "") { out=v; inlist=0 } else inlist=1; next }
+        inlist && /^[ \t]*-[ \t]*/ { v=$0; sub(/^[ \t]*-[ \t]*/, "", v); gsub(/["\x27 ]/, "", v); if (v != "") out = out (out == "" ? "" : ",") v; next }
+        inlist { inlist=0 }
+        END { print out }' "$1" 2>/dev/null
 }
 
 # _sablier_block_remove FILE MIDDLEWARE — drop the middleware from every router's list in the
@@ -13520,6 +13625,8 @@ handle_container_sablier() {
     local mw_file="$stack_dir/$mw.yml" sab_restarted=false f _bl _bf _bm _bn
     # a change that cannot be made leaves the current settings exactly as they are
     if [[ "$enabled" == "true" ]]; then
+        # a VM of a fleet makes its own (the hub's proxy asks it); elsewhere the Sablier template comes first
+        _fleet_is_member && _member_sablier_ensure
         docker inspect Sablier >/dev/null 2>&1 || { _api_error 409 "Deploy the Sablier template first (it stops idle containers and starts them on the first request)"; return; }
     fi
     # Whatever Sablier block already wakes this container alone (a template deploy writes one into
@@ -15891,6 +15998,7 @@ handle_template_deploy() {
     TRAEFIK_ADDONS_JSON=null
     while IFS= read -r _s; do [[ -n "$_s" && "$_s" =~ $_svc_name_re ]] && _od_services+=("$_s"); done < <(printf '%s' "$body" | jq -r '.on_demand_services // [] | .[]' 2>/dev/null)
     while IFS= read -r _s; do [[ -n "$_s" && "$_s" =~ $_svc_name_re ]] && _auth_services+=("$_s"); done < <(printf '%s' "$body" | jq -r '.authelia_services // [] | .[]' 2>/dev/null)
+    [[ ${#_od_services[@]} -gt 0 ]] && _fleet_is_member && _member_sablier_ensure
     if [[ ${#_od_services[@]} -gt 0 ]] && ! docker inspect Sablier >/dev/null 2>&1; then
         _api_error 409 "Start on demand needs Sablier: deploy the Sablier template first, then deploy this one"
         return
@@ -20860,9 +20968,11 @@ _feed_build() {
     local dir host ep mws tls resolver
     dir=$(_find_traefik_routes_dir); host=$(_feed_target_host)
     ep="${TRAEFIK_FEED_ENTRYPOINT:-websecure}"; mws="${TRAEFIK_FEED_MIDDLEWARES:-}"; tls="${TRAEFIK_FEED_TLS:-true}"; resolver="${TRAEFIK_FEED_CERT_RESOLVER:-}"
-    local routers='{}' services='{}' feed_skip='[]'
+    local routers='{}' services='{}' feed_skip='[]' ondemand='{}' sab_names="" sab_port=""
     FEED_SKIPPED='[]'
     if [[ -z "$dir" || ! -d "$dir" ]]; then printf '{"http":{"routers":{},"services":{}}}'; return 0; fi
+    # a VM: the containers that start on demand here, and the port its own Sablier answers on (the hub's proxy asks it)
+    if _fleet_is_member; then sab_names=$(_sablier_names 2>/dev/null); [[ -n "$sab_names" ]] && sab_port=$(_member_sablier_port); fi
     # published ports of every running container: name/containerport → hostip:hostport
     local -A pubmap=()
     local n ports p hp cp hip hpo
@@ -20891,6 +21001,11 @@ _feed_build() {
         [[ "$uport" == "$uhost" ]] && { uport=80; [[ "$scheme" == "https" ]] && uport=443; }
         if docker inspect --type container "$uhost" >/dev/null 2>&1; then
             pub="${pubmap[$uhost/$uport]:-}"
+            # asleep (an on-demand container that is not running): its port as it will be published once Sablier starts it
+            if [[ -z "$pub" && -n "$sab_names" ]] && grep -qxF -- "$uhost" <<< "$sab_names"; then
+                pub=$(docker inspect -f '{{range $p, $b := .HostConfig.PortBindings}}{{$p}} {{range $b}}{{.HostIp}} {{.HostPort}}{{end}}{{"\n"}}{{end}}' "$uhost" 2>/dev/null \
+                    | awk -v cp="$uport" '{ split($1, a, "/") } a[1] == cp && $NF ~ /^[0-9]+$/ { ip = (NF >= 3 ? $2 : ""); if (ip == "" || ip == "::") ip = "0.0.0.0"; print ip ":" $NF; exit }')
+            fi
             if [[ -z "$pub" ]]; then
                 feed_skip=$(jq -c --arg s "$id" --arg r "container $uhost does not publish port $uport (add a ports: mapping so the other machine can reach it)" '. + [{service: $s, reason: $r}]' <<< "$feed_skip"); continue
             fi
@@ -20904,9 +21019,21 @@ _feed_build() {
                 + (if $mws != "" then {middlewares: ($mws | split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(. != "")))} else {} end)
                 + (if $tls == "true" then {tls: (if $res != "" then {certResolver: $res} else {} end)} else {} end))' <<< "$routers")
         services=$(jq -c --arg id "$id" --arg url "$url" '.[$id + "-dcs"] = {loadBalancer: {servers: [{url: $url}]}}' <<< "$services")
+        # a route to a container that starts on demand here: what the hub's proxy needs to ask this VM's Sablier
+        if [[ -n "$sab_port" ]] && grep -qxF -- "$uhost" <<< "$sab_names"; then
+            local _bl _bf _bm _bnames _vs _vt _vd _vsh
+            _bl=$(_sablier_blocks_for "$uhost" | head -1); _bf="${_bl%%$'\t'*}"; _bm="${_bl#*$'\t'}"; _bm="${_bm%%$'\t'*}"
+            if [[ -n "$_bf" && -n "$_bm" ]]; then
+                _bnames=$(_sablier_block_names "$_bf" "$_bm"); [[ -n "$_bnames" ]] || _bnames="$uhost"
+                IFS=$'\037' read -r _vs _vt _vd _vsh < <(_sablier_block_read "$_bf" "$_bm")
+                ondemand=$(jq -c --arg k "$id-dcs" --arg n "$_bnames" --arg s "$_vs" --arg t "$_vt" --arg d "$_vd" --arg sh "$_vsh" \
+                    '.[$k] = {names: ($n | split(",") | map(select(. != ""))), session: $s, theme: $t, display_name: $d, show_details: ($sh != "false")}' <<< "$ondemand")
+            fi
+        fi
     done < <(find "$dir" \( -name '*.yml' -o -name '*.yaml' \) -type f 2>/dev/null | sort)
     FEED_SKIPPED="$feed_skip"
-    jq -nc --argjson r "$routers" --argjson s "$services" '{http: {routers: $r, services: $s}}'
+    jq -nc --argjson r "$routers" --argjson s "$services" --argjson od "$ondemand" --arg sp "$sab_port" \
+        '{http: {routers: $r, services: $s}} + (if ($od | length) > 0 then {dcs_on_demand: $od, dcs_sablier_port: ($sp | tonumber? // null)} else {} end)'
 }
 
 # GET /traefik/dynamic — Dynamic configuration for a Traefik on another machine (its HTTP provider); needs ?token= or a Bearer token equal to TRAEFIK_FEED_TOKEN
@@ -21574,7 +21701,19 @@ _fleet_feed_sanitize() {
         def skip($k; $why): {service: $k, member: $id, reason: $why};
         def urlhost: (capture("^https?://(?<h>[^/:]+):(?<p>[0-9]{1,5})$") // null) | if . == null then "" else (.h | ascii_downcase) end;
         ((.http | if type == "object" then .services else null end) // {}) as $svc
-        | [ ((.http | if type == "object" then .routers else null end) // {}) | if type == "object" then to_entries[] else empty end | .key as $k | .value as $r
+        # a route to a container the VM starts on demand: its own Sablier (published on the VM) is asked by the hub
+        | ((.dcs_on_demand // {}) | if type == "object" then . else {} end) as $odm
+        | ((.dcs_sablier_port | numbers | select(. > 0 and . < 65536 and . == floor)) // null) as $sport
+        | def od($k): ($odm[$k] // null) as $o
+            | if $sport == null or ($o | type) != "object" or (($o.names // null) | type) != "array"
+                 or ($o.names | length) == 0 or ($o.names | length) > 20
+                 or ($o.names | all(type == "string" and test("^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$")) | not) then null
+              else {names: $o.names, port: $sport,
+                    session: (if ($o.session | type) == "string" and ($o.session | test("^[0-9]{1,4}[smh]$")) then $o.session else "30m" end),
+                    theme: (if ($o.theme | type) == "string" and ($o.theme | test("^[a-z0-9-]{1,32}$")) then $o.theme else "ghost" end),
+                    display_name: (if ($o.display_name | type) == "string" then ($o.display_name | gsub("[^A-Za-z0-9 ._()-]"; "") | .[0:64]) else "" end),
+                    show_details: ($o.show_details != false)} end;
+        [ ((.http | if type == "object" then .routers else null end) // {}) | if type == "object" then to_entries[] else empty end | .key as $k | .value as $r
             | if ($k | name | not) then skip($k; "router name is not [a-z0-9-]{1,64}")
               elif ($r | type) != "object" then skip($k; "router is not an object")
               elif (($r.rule // "") | type) != "string" then skip($k; "rule missing")
@@ -21593,7 +21732,7 @@ _fleet_feed_sanitize() {
                                          + (([ ($r.entryPoints // [])[]? | strings | select(test("^[a-z0-9-]+$")) ]) as $ep | if ($ep | length) > 0 then {entryPoints: $ep} else {} end)
                                          + (([ ($r.middlewares // [])[]? | strings | select(test("^[a-z0-9-]+(@[a-z]+)?$")) ]) as $mw | if ($mw | length) > 0 then {middlewares: $mw} else {} end)
                                          + (if ($r.tls | type) == "object" then {tls: (if (($r.tls.certResolver // "") | type) == "string" and (($r.tls.certResolver // "") | test("^[a-z0-9-]+$")) then {certResolver: $r.tls.certResolver} else {} end)} else {} end)),
-                                service: {loadBalancer: {servers: ($urls | map({url: .}))}}}
+                                service: {loadBalancer: {servers: ($urls | map({url: .}))}}, od: od($k)}
                           end
                       end
                   end
@@ -21607,7 +21746,7 @@ FLEET_FEED_SKIPPED_FILE="${FLEET_FEED_SKIPPED_FILE:-$BASE_DIR/.data/fleet-feed-s
 # hostname two members offer goes to the first in fleet.json order — the later one is renamed <sub>-<member-id>.<domain>. What
 # was dropped or renamed, and why, is FLEET_FEED_SKIPPED (kept in .data/fleet-feed-skipped.json for the feed status).
 _fleet_merge_feeds() {
-    local body="$1" j tmp id extra hub order
+    local body="$1" j tmp id extra hub order pk; pk=$(_sablier_plugin_key 2>/dev/null); [[ "$pk" =~ ^[A-Za-z0-9_-]+$ ]] || pk=sablier
     FLEET_FEED_SKIPPED='[]'
     _fleet_has_members || { printf '%s' "$body"; return 0; }
     j=$(_fleet_load); hub=$(_fleet_hub_hosts_json); [[ "$hub" == \[* ]] || hub='[]'
@@ -21623,20 +21762,28 @@ _fleet_merge_feeds() {
         ) &
     done
     _fleet_wait_children
-    extra=$(jq -sc --argjson hub "$hub" --argjson order "$order" '
+    extra=$(jq -sc --argjson hub "$hub" --argjson order "$order" --arg pk "$pk" --argjson hosts "$(jq -c '[.members[] | {key: .id, value: ((.url // "") | capture("^https?://(?<h>[^/:]+)").h // "")}] | from_entries' <<< "$j")" '
         def newhost($h; $id): ($h | split(".")) as $l | ($l[0] + "-" + $id) + "." + ($l[1:] | join("."));
+        # the route of a container the VM starts on demand gets a Sablier step that asks the VM own Sablier (it goes last in the
+        # router list: the visitor is checked before the container is woken)
+        def withod($r; $mid): if ($r.od // null) == null or (($hosts[$mid] // "") == "") then . else
+            ($r.key + "-sablier") as $mn
+            | .middlewares[$mn] = {plugin: {($pk): {names: ($r.od.names | join(",")), sablierUrl: ("http://" + $hosts[$mid] + ":" + ($r.od.port | tostring)),
+                  sessionDuration: $r.od.session, dynamic: {displayName: (if $r.od.display_name != "" then $r.od.display_name else $r.od.names[0] end),
+                  theme: $r.od.theme, showDetails: $r.od.show_details, refreshFrequency: "5s"}}}}
+            | .routers[$r.key].middlewares = (((.routers[$r.key].middlewares // []) - [$mn]) + [$mn]) end;
         sort_by(. as $x | ($order | index($x.member)) // 999)
-        | reduce .[] as $m ({routers: {}, services: {}, skipped: [], claimed: {}};
+        | reduce .[] as $m ({routers: {}, services: {}, middlewares: {}, skipped: [], claimed: {}};
             .skipped += ($m.skipped // [])
             | reduce ($m.routes // [])[] as $r (.;
                 if (.claimed[$r.host] // "") == "" then
-                    .routers[$r.key] = $r.router | .services[$r.service_key] = $r.service | .claimed[$r.host] = $m.member
+                    .routers[$r.key] = $r.router | .services[$r.service_key] = $r.service | .claimed[$r.host] = $m.member | withod($r; $m.member)
                 else
                     (newhost($r.host; $m.member)) as $nh | .claimed[$r.host] as $first
                     | if ($hub | index($nh)) != null or (.claimed[$nh] // "") != "" then
                         .skipped += [{service: $r.name, member: $m.member, reason: ("host " + $r.host + " is taken by " + $first + ", and so is " + $nh)}]
                       else
-                        .routers[$r.key] = ($r.router | .rule = ("Host(`" + $nh + "`)" + $r.pathrule)) | .services[$r.service_key] = $r.service | .claimed[$nh] = $m.member
+                        .routers[$r.key] = ($r.router | .rule = ("Host(`" + $nh + "`)" + $r.pathrule)) | .services[$r.service_key] = $r.service | .claimed[$nh] = $m.member | withod($r; $m.member)
                         | .skipped += [{service: $r.name, member: $m.member, reason: ("renamed: host taken by " + $first), host: $nh}]
                       end
                 end))
@@ -21646,7 +21793,8 @@ _fleet_merge_feeds() {
     FLEET_FEED_SKIPPED=$(jq -c '.skipped // []' <<< "$extra"); [[ "$FLEET_FEED_SKIPPED" == \[* ]] || FLEET_FEED_SKIPPED='[]'
     mkdir -p "$(dirname "$FLEET_FEED_SKIPPED_FILE")" 2>/dev/null
     printf '%s\n' "$FLEET_FEED_SKIPPED" > "$FLEET_FEED_SKIPPED_FILE.tmp" 2>/dev/null && mv -f "$FLEET_FEED_SKIPPED_FILE.tmp" "$FLEET_FEED_SKIPPED_FILE" 2>/dev/null
-    jq -c --argjson e "$extra" '.http.routers += ($e.routers // {}) | .http.services += ($e.services // {})' <<< "$body"
+    jq -c --argjson e "$extra" '.http.routers += ($e.routers // {}) | .http.services += ($e.services // {})
+        | if (($e.middlewares // {}) | length) > 0 then .http.middlewares = ((.http.middlewares // {}) + $e.middlewares) else . end' <<< "$body"
 }
 
 # The members' routes for the hub's own Traefik: written as fleet-members.yml into the custom_routes directory the
@@ -21670,6 +21818,10 @@ _fleet_routes_write_local() {
     fi
     merged=$(_routes_apply_local_chain "$merged")
     merged=$(_fleet_themes_apply "$merged")
+    # a VM's container that starts on demand: the hub's Traefik needs the Sablier plugin declared (once; a restart reads it)
+    if jq -e '[(.http.middlewares // {})[] | .plugin // {} | keys[]] | length > 0' <<< "$merged" >/dev/null 2>&1; then
+        _traefik_ensure_plugin sablier "github.com/acouvreur/sablier" "v1.7.0-beta.15" || docker restart Traefik >/dev/null 2>&1 || true
+    fi
     local body; body=$(jq -S . <<< "$merged")
     if [[ -f "$f" ]] && [[ "$(cat "$f" 2>/dev/null)" == "$body" ]]; then return 0; fi
     # a router that is new, or whose host changed (a route renamed in a VM, an app deployed again under another name):
@@ -22050,7 +22202,8 @@ _routes_apply_local_chain() {  # JSON in, JSON out: the local chain, plus Authel
         # what the deploy sheet chose for a VM's service wins over the template's default
         bypass=$(jq -c --argjson ov "$(_fleet_auth_overrides)" '(. - [$ov | to_entries[] | select(.value == true) | .key]) + [$ov | to_entries[] | select(.value == false) | .key] | unique' <<< "$bypass")
     fi
-    jq -c --argjson c "$chain" --arg mw "$mw" --argjson b "$bypass" '.http.routers |= with_entries(. as $e | .value.middlewares = ($c + (if $mw != "" and (($b | index($e.key)) == null) then [$mw] else [] end)))' <<< "$1"
+    jq -c --argjson c "$chain" --arg mw "$mw" --argjson b "$bypass" '.http.routers |= with_entries(. as $e | .value.middlewares = ($c + (if $mw != "" and (($b | index($e.key)) == null) then [$mw] else [] end)
+        + [($e.value.middlewares // [])[] | select(endswith("-sablier"))]))' <<< "$1"
 }
 # New routes of the VMs that just reached the hub's Traefik: a DNS record (Cloudflare token known) and a Homarr tile (Homarr here)
 _fleet_routes_arrived() {
@@ -22438,16 +22591,14 @@ handle_fleet_proxy() {
 }
 
 # _fleet_deploy_for_member MEMBER TEMPLATE BODY — what the VM is asked to do when a template is deployed into it through the hub.
-# Sets FDP_BODY; on a refusal returns 1 with FDP_CODE and FDP_MSG. Authelia and Sablier are the hub's: the VM has neither, and it
-# refuses to protect a route it cannot see ("deploy the Authelia template first"). The hub's Traefik serves the VM's routes and
+# Sets FDP_BODY; on a refusal returns 1 with FDP_CODE and FDP_MSG. Authelia is the hub's: the VM has none, and it refuses to
+# protect a route it cannot see ("deploy the Authelia template first"). Start on demand goes to the VM as asked: it makes its
+# own Sablier, which the hub's proxy asks for the VM's containers. The hub's Traefik serves the VM's routes and
 # puts every one behind the hub's Authelia unless the template brings its own clients — the deploy sheet's per-service choice is
 # kept here (FLEET_AUTH_FILE, applied when the routes are written) and the VM gets a plain deploy.
 _fleet_deploy_for_member() {
     local member="$1" tpl="$2" body="$3" svc list mw explicit=false all_off=false svcs
     FDP_BODY="$body"; FDP_CODE=""; FDP_MSG=""
-    if [[ "$(jq -r '(.on_demand_services // []) | length' <<< "$body" 2>/dev/null)" =~ ^[1-9][0-9]*$ ]]; then
-        FDP_CODE=409; FDP_MSG="Start on demand works for the containers on the hub: Sablier runs here and cannot wake a container in a VM"; return 1
-    fi
     jq -e 'has("authelia_services")' <<< "$body" >/dev/null 2>&1 && explicit=true
     [[ "$(jq -r '.auth // true' <<< "$body" 2>/dev/null)" == "false" ]] && all_off=true
     list=$(jq -r '(.authelia_services // [])[]?' <<< "$body" 2>/dev/null)
@@ -22576,6 +22727,9 @@ handle_fleet_join() {
         fi
     fi
     where=$(jq -r 'if .vmid then " — guest " + (.vmid|tostring) + " on " + (.node // "?") + " (" + (.matched_by // "") + ")" else " — no guest matched yet" end' <<< "$m")
+    # a machine joining at an address another one had: the hub forgets the old host key (ssh learns the new one on first use)
+    local _mh; _mh=$(sed -E 's#^https?://##; s#[:/].*$##' <<< "$murl")
+    [[ -n "$_mh" && -s "$FLEET_SSH_DIR/known_hosts" ]] && ssh-keygen -R "$_mh" -f "$FLEET_SSH_DIR/known_hosts" >/dev/null 2>&1 && rm -f "$FLEET_SSH_DIR/known_hosts.old" 2>/dev/null
     _audit_log "fleet_member_joined" "member $mname ($murl) joined with a join code from $client_ip$where"
     _fire_notifications "fleet_member_joined" "member=$mname" "url=$murl" "message=DCS on $mname ($murl) joined this hub$where" 2>/dev/null
     local rt; rt=$(_fleet_relay_new); _fleet_relay_set "$(jq -r .id <<< "$m")" "$rt"
@@ -25693,29 +25847,13 @@ _fleet_move_data() {
     # its routes travel with it: the VM offers them to the hub's proxy from now on (same address, new target)
     rd=$(_find_traefik_routes_dir 2>/dev/null) || rd=""
     if [[ -n "$rd" && -d "$rd/$src" ]] && compgen -G "$rd/$src/*.yml" >/dev/null; then
-        # containers that start on demand here: Sablier is the hub's and cannot wake a container in a VM, so the VM's copy of
-        # the routes goes without that step and they run all the time there (the hub's own files stay as they are: a fallback
-        # finds them unchanged)
-        local _rt _od _n _f _mw
-        _rt=$(mktemp -d) || _rt=""
-        [[ -n "$_rt" ]] && command cp -f "$rd/$src"/*.yml "$_rt/" 2>/dev/null
-        _od=$(_fleet_stack_on_demand "$src")
-        if [[ -n "$_rt" && -n "$_od" ]]; then
-            while IFS= read -r _n; do
-                [[ -n "$_n" ]] || continue
-                while IFS=$'\t' read -r _f _mw _; do
-                    [[ -n "$_mw" ]] || continue
-                    for _f in "$_rt"/*.yml; do _sablier_block_remove "$_f" "$_mw"; done
-                done < <(_sablier_blocks_for "$_n")
-            done <<< "$_od"
-            _job_log "$id" "$(paste -sd',' <<< "$_od" | sed 's/,/, /g') start on demand on the hub: Sablier runs on the hub and cannot wake a container in a VM, so in the VM they run all the time"
-        fi
+        # containers that start on demand here keep doing so there: the VM runs its own Sablier and the hub's proxy asks it
+        local _od; _od=$(_fleet_stack_on_demand "$src")
+        [[ -n "$_od" ]] && _job_log "$id" "$(paste -sd',' <<< "$_od" | sed 's/,/, /g') start on demand: in the VM too (its own Sablier, which only the hub can reach)"
         # shellcheck disable=SC2088
-        if (cd "${_rt:-$rd/$src}" && tar -cf - ./*.yml 2>/dev/null) | _fleet_ssh "$ip" "mkdir -p ~/.Docker-Compose-Skeleton-AIO/.data/routes/$stack && tar -xf - -C ~/.Docker-Compose-Skeleton-AIO/.data/routes/$stack" 2>/dev/null; then
+        if (cd "$rd/$src" && tar -cf - ./*.yml 2>/dev/null) | _fleet_ssh "$ip" "mkdir -p ~/.Docker-Compose-Skeleton-AIO/.data/routes/$stack && tar -xf - -C ~/.Docker-Compose-Skeleton-AIO/.data/routes/$stack" 2>/dev/null; then
             _job_log "$id" "its $(find "$rd/$src" -maxdepth 1 -name '*.yml' | wc -l) route file(s) are in the VM: the same addresses will reach it there"
-            [[ -n "$_rt" ]] && rm -rf "$_rt"
         else
-            [[ -n "$_rt" ]] && rm -rf "$_rt"
             _job_log "$id" "! its route files could not be copied into the VM: the addresses get default routes there (rebuild or edit them on the Routes page)"
         fi
     fi
@@ -26083,6 +26221,9 @@ _fleet_job_run() {
         _pve_wait_task "$node" "$upid" 900 "$id" || { _job_fail "$id" create "$FLEET_JOB_ERR"; return 1; }
         if [[ "$kind" != iso ]]; then
             _job_log "$id" "VM $vmid $([[ -n "$tvmid" ]] && echo cloned || echo created); growing the disk to ${disk} GB"
+            # a new machine at an address an earlier VM had: the hub forgets that one's host key (the warning it would give
+            # on every ssh, and a key that no longer belongs to anything)
+            [[ -s "$FLEET_SSH_DIR/known_hosts" ]] && ssh-keygen -R "$ip" -f "$FLEET_SSH_DIR/known_hosts" >/dev/null 2>&1 && rm -f "$FLEET_SSH_DIR/known_hosts.old" 2>/dev/null
             PVE_TIMEOUT=60 _pve_call res PUT "/nodes/$node/qemu/$vmid/resize" "disk=scsi0" "size=${disk}G"
             [[ "$_PVE_HTTP" == 200 ]] || _job_log "$id" "disk resize answered HTTP $_PVE_HTTP (the VM keeps the image's size)"
             upid=$(jq -r '.data // ""' <<< "$res"); [[ "$upid" == UPID:* ]] && _pve_wait_task "$node" "$upid" 300 "$id"
@@ -26296,10 +26437,19 @@ _fleet_job_run() {
             if [[ "$_started" == true ]]; then
                 if [[ "$mv_job" == true ]]; then
                     mv_stopped=false      # it runs in the VM: the hub lets go
+                    local _odn _odr; _odn=$(_fleet_stack_on_demand "$src")   # read before the hub sets its Sablier blocks aside
                     _fleet_move_unlist "$src" && _job_log "$id" "$src is out of the hub's own list of stacks"
                     _fleet_move_retire_routes "$id" "$src"
                     _job_log "$id" "the hub's copy of the data stays in Stacks/$src (App-Data and volumes are not deleted): remove it yourself once you trust the VM"
                     _audit_log "fleet_stack_moved" "the stack $src of this server now runs in VM $vmid ($ip) with its data; the hub keeps its own copy"
+                    # its on-demand containers: the VM's Sablier is made now (not a minute later), and they go to sleep as they were
+                    if [[ -n "$_odn" ]]; then
+                        _fleet_call _odr "$mid" POST /sablier/repair '{}' 120 >/dev/null 2>&1 || true
+                        while IFS= read -r _n; do
+                            [[ -n "$_n" ]] && _fleet_call _odr "$mid" POST "/containers/$_n/stop" '{}' 60 >/dev/null 2>&1 || true
+                        done <<< "$_odn"
+                        _job_log "$id" "$(paste -sd',' <<< "$_odn" | sed 's/,/, /g') asleep in the VM: the first visit wakes them"
+                    fi
                 fi
                 _job_step "$id" stack "done" "started in the VM"; _job_log "$id" "✓ $stack started in VM $vmid"
                 # the hub keeps the stack's files: its Stacks/<stack> becomes what the VM runs (a join that came in while
@@ -31203,6 +31353,10 @@ start_server() {
                 if (( $(cut -d. -f1 /proc/uptime 2>/dev/null || echo 999999) > ${HEALTH_WATCH_BOOT_GRACE:-300} )) && _health_watch_wanted; then
                     ( unset 'QUERY_PARAMS[fleet]' 2>/dev/null; _api_success() { :; }; _api_error() { :; }; _api_response() { :; }; handle_health ) </dev/null >/dev/null 2>&1 || true
                 fi
+                # a VM with containers that start on demand runs its own Sablier (the hub's proxy asks it)
+                if _fleet_is_member && [[ -n "$(_sablier_names 2>/dev/null)" ]]; then _member_sablier_ensure >/dev/null 2>&1 || true; fi
+                # on-demand containers started some other way (the boot, a stack start, an update) go to sleep after their idle time
+                _sablier_track_running >/dev/null 2>&1 || true
                 # Proxmox VMs that stopped or started on their own
                 _pve_watch >/dev/null 2>&1 || true
                 # the fleet's tick (members down or back, relay tokens, the domain, the routes for every Traefik) runs in the

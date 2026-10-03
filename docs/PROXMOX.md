@@ -521,9 +521,9 @@ containers and volumes outside the stack, which would not travel.
 0.01 to 2.00*), and Compose then starts none of the stack. The sheet sets the VM's cores to the largest limit
 and memory to the stack's memory limits plus 1 GB; a request with fewer cores is refused with the service named.
 
-**Start on demand.** Sablier runs on the hub and cannot wake a container in a VM. Containers of the stack that
-start on demand on the hub run all the time in the VM: the VM's copy of the routes goes without the Sablier
-step, and after the move the hub sets its own Sablier blocks for them aside (`.data/moved-routes/<stack>-…-sablier`).
+**Start on demand.** Containers that start on demand on the hub keep doing so in the VM: the VM gets its own Sablier
+(see [Start on demand in a VM](#start-on-demand-in-a-vm)), and once the move is done they are put to sleep there as they
+were. The hub sets its own Sablier blocks for them aside (`.data/moved-routes/<stack>-…-sablier`).
 
 **Good to know** (shown in the sheet, nothing stops the move): ports the stack publishes open on the VM's
 address; services that use the Docker socket see the VM's containers; settings that reach other stacks by
@@ -544,6 +544,33 @@ the request is refused when the disk is too small.
 API: `GET /fleet/provision/move-check?stack=NAME` (what would go with it: `movable`, `blockers`, `min_cores`,
 `cpu_limits`, `memory_limits_mb`, `ports`, `devices`, `docker_socket`, `links_out`, `links_in`), and
 `{"move": true}` on a VM of `POST /fleet/provision`.
+
+### Start on demand in a VM
+
+A container in a VM can start on demand like one on the hub: the first visit wakes it, and it goes back to sleep after
+its idle time. *Start on demand* on the container's sheet (or the deploy sheet's switch, for a stack placed in a VM) works
+the same for both.
+
+The hub's Traefik serves the VM's routes, but the hub's Sablier cannot reach the VM's Docker. So the VM runs a Sablier of
+its own (container `Sablier`, made by DCS the first time one of its containers starts on demand), the VM tells the hub
+which of its routes start on demand (`GET /fleet/feed` → `dcs_on_demand`, `dcs_sablier_port`), and the hub puts a Sablier
+step on those routes that asks the VM's Sablier (`sablierUrl: http://<the VM>:10000`, last in the router's list, after
+sign-in). A sleeping container's route stays served: the hub reads its port from the container's own settings.
+
+**Only the hub can reach it.** Sablier has no login: whoever reaches it can start any container of the VM, and through a
+short session stop one. Its port answers the hub's address alone: a firewall rule in Docker's `DOCKER-USER` chain (marked
+`dcs-sablier`) drops every other source, and it fails closed. Without that rule Sablier is not started, one that runs is
+stopped, and after a reboot it starts only once the rule is back (it has no restart policy; DCS starts it a second after
+its API is up). The rule follows the hub's address when that changes. The VM needs `iptables` and sudo for the `dcs`
+user, which the DCS images have. `FLEET_SABLIER_PORT` (10000) is the port.
+
+Sablier stops a container only when a session for it ends, and a visit starts one. A container that starts on demand
+but was started some other way (the boot, *Start*, an image update, a move) is announced to Sablier once per start with
+its own idle time, on the hub and in every VM, so it falls asleep unless it is used. An app open in a browser tab stays
+awake: its page keeps asking the app, and that is use.
+
+Verified in the lab: the VM's Sablier answers the hub (200) and nothing else (the Proxmox host: no answer); a Sonarr in
+the VM slept after its idle minute, woke on the next request, slept again; after a reboot the rule was back before Sablier.
 
 ### Two machines: the hub here, Proxmox there
 

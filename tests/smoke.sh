@@ -477,6 +477,16 @@ check "health reports sleeping"             true "$(auth_request GET /health | b
 check "health score counts sleeping apart"      true "$(auth_request GET /health/score | body_of | jq -r '.factors.stacks | has("sleeping")' 2>/dev/null)"
 check "stacks say whether they sleep"          true "$(auth_request GET /stacks | body_of | jq -r '.stacks[0] | has("sleeping")' 2>/dev/null)"
 check "stacks count their sleeping containers"  true "$(auth_request GET /stacks | body_of | jq -r '.stacks[0] | (.sleeping_containers | type == "number") and (.hub_only | type == "boolean")' 2>/dev/null)"
+check "stack detail: every container, on demand or not" true "$(auth_request GET /stacks/demo | body_of | jq -r '(.sleeping_containers | type == "number") and ((.containers // []) | all(has("on_demand") and has("sleeping")))' 2>/dev/null)"
+# a VM's route to a container that starts on demand: the hub keeps the descriptor only when it is well formed and the
+# VM has a Sablier it can reach (its port)
+_ODF='{"http":{"routers":{"app-dcs":{"rule":"Host(`app.example.net`)","service":"app-dcs"}},"services":{"app-dcs":{"loadBalancer":{"servers":[{"url":"http://10.9.9.9:8080"}]}}}},"dcs_on_demand":{"app-dcs":{"names":["App"],"session":"5m","theme":"ghost","display_name":"App \"x<b>","show_details":false}},"dcs_sablier_port":10000}'
+check "vm on demand: kept, cleaned"         '{"names":["App"],"port":10000,"session":"5m","theme":"ghost","display_name":"App xb","show_details":false}' "$(_lib _fleet_feed_sanitize m1 10.9.9.9 '["10.9.9.9"]' '[]' <<< "$_ODF" | jq -c '.routes[0].od')"
+check "vm on demand: no Sablier port, none" null "$(_lib _fleet_feed_sanitize m1 10.9.9.9 '["10.9.9.9"]' '[]' <<< "$(jq -c 'del(.dcs_sablier_port)' <<< "$_ODF")" | jq -c '.routes[0].od')"
+check "vm on demand: a hostile name, none"  null "$(_lib _fleet_feed_sanitize m1 10.9.9.9 '["10.9.9.9"]' '[]' <<< "$(jq -c '.dcs_on_demand["app-dcs"].names = ["a;rm -rf /"]' <<< "$_ODF")" | jq -c '.routes[0].od')"
+check "vm on demand: a bad session, default" 30m "$(_lib _fleet_feed_sanitize m1 10.9.9.9 '["10.9.9.9"]' '[]' <<< "$(jq -c '.dcs_on_demand["app-dcs"].session = "forever"' <<< "$_ODF")" | jq -r '.routes[0].od.session')"
+check "vm on demand: the route still goes"  app.example.net "$(_lib _fleet_feed_sanitize m1 10.9.9.9 '["10.9.9.9"]' '[]' <<< "$(jq -c 'del(.dcs_sablier_port)' <<< "$_ODF")" | jq -r '.routes[0].host')"
+check "vm sablier: none on a server that is no VM" 1 "$(_lib _member_sablier_ensure; echo $?)"
 check "sablier toggle: unknown container"   404 "$(auth_request POST /containers/nope-zz/sablier '{"enabled":true}' | status_of)"
 check "sablier toggle: viewer denied"       403 "$(viewer_request POST /containers/nope-zz/sablier '{"enabled":true}' | status_of)"
 check "sablier settings: unknown container" 404 "$(auth_request GET /containers/nope-zz/sablier | status_of)"
@@ -487,6 +497,8 @@ check "sablier block: list name found"      multi-sablier "$(_lib _sablier_block
 check "sablier block: group size counted"   2 "$(_lib _sablier_blocks_for Plex | cut -f3)"
 check "sablier block: single block counted" 1 "$(_lib _sablier_blocks_for IT-Tools | cut -f3)"
 check "sablier block: file named"           "$_SBF" "$(_lib _sablier_blocks_for IT-Tools | cut -f1)"
+check "sablier block: its names (scalar)"   IT-Tools "$(_lib _sablier_block_names "$_SBF" ittools-sablier)"
+check "sablier block: its names (list)"     "Ollama,Plex" "$(_lib _sablier_block_names "$_SBF" multi-sablier)"
 check "sablier block: settings read"        "30m" "$(_lib _sablier_block_read "$_SBF" ittools-sablier | cut -d $'' -f1)"
 _lib _sablier_block_remove "$_SBF" ittools-sablier
 check "sablier block: removed from names"   "Ollama Plex" "$(_lib _sablier_names | tr '\n' ' ' | sed 's/ $//')"
@@ -2709,7 +2721,8 @@ PATH="$WORK/fakebin:$PATH" _lib _fleet_auth_set zz-vm bypass-tpl true
 check "vm deploy: a bypass template asked for it" 'traefik-chain compress-gzip authelia-forwardauth' "$(_fchain zz-vm-bypass-tpl-dcs)"
 PATH="$WORK/fakebin:$PATH" _lib _fleet_auth_set zz-vm bypass-tpl clear
 check "vm deploy: …and back to open"              'traefik-chain compress-gzip' "$(_fchain zz-vm-bypass-tpl-dcs)"
-check "vm deploy: on demand is the hub's"         409 "$(fake_request POST "$_MP" '{"target_stack":"zz-vm","on_demand_services":["routed-tpl"]}' | status_of)"
+# start on demand goes to the VM as asked (it makes its own Sablier): the hub no longer refuses it
+check "vm deploy: on demand goes to the VM"       no "$([[ "$(fake_request POST "$_MP" '{"target_stack":"zz-vm","on_demand_services":["routed-tpl"]}' | status_of)" == 409 ]] && echo yes || echo no)"
 rm -f "$WORK/fakebin/.authelia"
 check "vm deploy: no Authelia on the hub"         409 "$(fake_request POST "$_MP" '{"target_stack":"zz-vm","authelia_services":["routed-tpl"]}' | status_of)"
 _lib _fleet_update '.members |= map(select(.id != "zz-vm"))'; rm -f "$_FAJ"
