@@ -1532,7 +1532,7 @@ check "fleet: member listener up"       yes "$(curl -s -m 2 http://127.0.0.1:$FL
 MTOKEN=$(curl -s -m 5 -X POST "http://127.0.0.1:$FLEET_PORT/auth/login" -H 'Content-Type: application/json' -d '{"username":"admin","password":"correct horse battery"}' | jq -r '.token // empty' 2>/dev/null)
 member_request() { local m="$1" p="$2" b="${3:-}"; curl -s -m 20 -X "$m" "http://127.0.0.1:$FLEET_PORT$p" -H "Authorization: Bearer $MTOKEN" -H 'Content-Type: application/json' ${b:+-d "$b"}; }
 check "fleet: member login"             yes "$([[ ${#MTOKEN} -ge 32 ]] && echo yes || echo no)"
-check "fleet: standalone at first"      standalone "$(auth_request GET /fleet/status | body_of | jq -r '.role' 2>/dev/null)"
+check "fleet: a Proxmox link makes a hub at once" hub "$(auth_request GET /fleet/status | body_of | jq -r '.role' 2>/dev/null)"
 check "fleet: identity has ips"         true "$(member_request GET /fleet/identity | jq -r '.ips | type == "array"' 2>/dev/null)"
 JT=$(auth_request POST /fleet/join-tokens '{"ttl_hours":1}' | body_of | jq -r '.token // empty' 2>/dev/null)
 check "fleet: join code minted"         yes "$([[ "$JT" =~ ^[A-Z2-9]{4}-[A-Z2-9]{4}-[A-Z2-9]{4}$ ]] && echo yes || echo no)"
@@ -2126,6 +2126,10 @@ case "$*" in
   *"tar -xzf -"*)
     # the stack moving in: the VM's install dir is the stand-in's clone
     cmd="${*//\~\/.Docker-Compose-Skeleton-AIO/$SHIM_DIR}"; bash -c "$cmd" ;;
+  *dcs-relink*)
+    # the hub taking a VM back: the lock lifted, the VM joined again (a marker file makes the hub's key fail)
+    [[ -e "$SHIM_DIR/relink-fail" ]] && exit 255
+    echo "lock on 127.0.0.1 lifted"; echo "✓ Joined: member"; exit 0 ;;
   *authorized_keys*)
     # a key put on a VM, or taken off: the stand-in VM's home is a folder of its own
     mkdir -p "$SHIM_DIR/home"; cmd="${*//\~\//$SHIM_DIR/home/}"; bash -c "$cmd" ;;
@@ -2299,6 +2303,17 @@ check "ssh: the config again, direct"                  0 "$(auth_request GET "/s
 check "ssh: a key id is checked"                       400 "$(auth_request DELETE '/ssh/keys/../../x' | status_of)"
 check "ssh: removed"                                   200 "$(auth_request DELETE "/ssh/keys/$_SKID" | status_of)"
 check "ssh: …and gone from the VM"                     0 "$(grep -c "dcs-ssh:$_SKID" "$_SSHH" 2>/dev/null)"
+# relinking a VM whose password the hub lost: the VM joins again over the hub's ssh key; the hub keeps what it knew
+check "relink: a viewer cannot"                        403 "$(viewer_request POST /fleet/members/smoke-photos/relink | status_of)"
+check "relink: a member that does not exist"           404 "$(auth_request POST /fleet/members/nope/relink | status_of)"
+check "relink: done"                                   200 "$(auth_request POST /fleet/members/smoke-photos/relink | status_of)"
+check "relink: it keeps what the hub knew of it"       true "$(auth_request GET /fleet/members | body_of | jq -r '.members[] | select(.name == "smoke-photos") | .provisioned' 2>/dev/null)"
+_RLT=$(jq -r '(.join_tokens // []) | length' "$WORK/.data/fleet.json" 2>/dev/null)
+touch "$SHIM_DIR/relink-fail"
+_RL=$(auth_request POST /fleet/members/smoke-photos/relink | body_of)
+check "relink: no ssh key, the hub says what to run"   yes "$(jq -r '.message' <<< "$_RL" 2>/dev/null | grep -q -- '--join-hub' && echo yes || echo no)"
+check "relink: …and leaves no join code behind"        "$_RLT" "$(jq -r '(.join_tokens // []) | length' "$WORK/.data/fleet.json" 2>/dev/null)"
+rm -f "$SHIM_DIR/relink-fail"
 check "provision: secret copy logged"   yes "$(auth_request GET "/fleet/jobs/$JOB" | body_of | jq -r '.log[].text' 2>/dev/null | grep -q 'secret(s) the stack uses copied' && echo yes || echo no)"
 # the hub's own start.sh never starts a folder that lives in a VM, whatever DOCKER_STACKS says
 # shellcheck disable=SC2034  # COMPOSE_DIR is read by the function pulled out of run.sh

@@ -688,6 +688,24 @@ key), `GET /ssh/keys/<id>/config`, `DELETE /ssh/keys/<id>`; see the [API referen
 
 A VM you made yourself has its own users and keys: see below.
 
+### Taking a VM back when the hub lost its password
+
+The hub logs in to each VM as the account `dcs-hub`, with a password kept in the secret store as `FLEET_MEMBER_<NAME>_PASSWORD`.
+If that secret was deleted (the Secrets page lists it like any other), the hub says *holds no password for …*; a run of failed
+logins from the hub's address makes the VM answer *rate-limiting logins*, and an update round then fails for that VM with
+*see the fleet card*. **Relink** repairs both in one step: on the Proxmox page open the VM's menu (the three dots) and press
+*Relink to the hub*; on the Updates page the failed VM's line has the same link.
+
+What the hub does: it mints a one-hour join code, lifts its own lock-out on the VM, runs the VM's own `--join-hub` over its
+ssh key, and stores the new password the VM made for `dcs-hub`. The VM's stacks, placement, guest and settings stay as they
+were, and a VM running an older DCS works too (the join has been in every version with members). From a script:
+`POST /fleet/members/<id>/relink` (an admin session). A VM linked by address, which the hub has no ssh key for, answers with
+the one line to run on the VM itself:
+
+```bash
+cd ~/.Docker-Compose-Skeleton-AIO && DCS_MEMBER_URL=http://<vm>:9876 ./.scripts/api-server.sh --join-hub http://<hub>:9876 <join code> <name>
+```
+
 ### VMs you made yourself
 
 Any VM — one you installed from an ISO, a VM from before the hub, a machine that is not on

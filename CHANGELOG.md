@@ -5,6 +5,24 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [4.0.24] - 2026-10-03
+
+### Added
+
+- **Relink a VM the hub lost its password for.** Deleting the `FLEET_MEMBER_<NAME>_PASSWORD` secret left the hub unable to log in to
+  that VM, and a few failed tries made the VM *rate-limit logins* from the hub: updates then failed with *see the fleet card* and
+  nothing in the dashboard could mend it. `POST /fleet/members/<id>/relink` (admin session) lifts the hub's lock-out on the VM,
+  has the VM join the hub again over the hub's ssh key with a fresh one-hour code, and stores the new password; the VM's stacks,
+  placement and settings stay. It works on VMs running older versions. Without an ssh key it answers with the one line to run on
+  the VM. The Proxmox page's VM menu has **Relink to the hub**, and the Updates page offers it on a failed VM's line.
+  [Proxmox](docs/PROXMOX.md#taking-a-vm-back-when-the-hub-lost-its-password).
+
+### Changed
+
+- **A working Proxmox link makes a hub before the first VM exists.** The Stacks page's *New stack* menu (*In its own VM* / *On the
+  hub*) and the other hub pages appeared only once a VM or a join code existed. `GET /fleet/status` now says `hub` as soon as the
+  Proxmox token works (setup's choice and a joined hub still come first).
+
 ## [4.0.23] - 2026-10-03
 
 ### Added

@@ -4,7 +4,7 @@ Generated from the router in `.scripts/api-server.sh` by `.scripts/api-docs.sh` 
 Run `.scripts/api-docs.sh` after adding or changing a route; CI fails when this file is stale.
 
 The API listens on `API_BIND:API_PORT` (default `0.0.0.0:9876`) and answers JSON.
-Every endpoint below is `404` in total.
+Every endpoint below is `405` in total.
 
 ## Access levels
 
@@ -523,6 +523,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | POST | `/fleet/hub/domain` | admin | The hub hands this member the fleet's proxy domain {domain, force}: written as PROXY_DOMAIN when this DCS has none yet (or the example.com placeholder), so the routes it writes for its stacks carry the fleet's domain; a domain of its own (a Traefik here) is kept unless force is true |
 | POST | `/fleet/docker-engine/update` | admin | Bring the Docker Engine up to date on members {members: ["id", …] or "all"} (each VM the hub built has passwordless sudo, so no password travels); the answer says what each member started |
 | POST | `/fleet/jobs/{id}/retry` | admin | Run a failed VM job again from the step that failed |
+| POST | `/fleet/members/{id}/relink` | admin | Take a VM back after its password was lost (a deleted FLEET_MEMBER_*_PASSWORD secret, a changed dcs-hub account): the hub lifts its own lock-out on the VM, joins the VM again over ssh with a fresh join code, and keeps the new password; the VM's stacks, placement and settings stay as they were {} (admin session; answers manual_command when the hub's ssh key does not open the VM) |
 | POST | `/fleet/members/{id}/test` | admin | Log in to the member afresh, read its identity and version, and say which guest it matches |
 | POST | `/fleet/members/{id}/sync` | admin | Pull the files of every stack a VM runs into the hub's Stacks/ folders; {direction: "push"} sends the hub's copies into the VM instead; {stacks: [names]} limits it. The answer lists what moved and what failed |
 | POST | `/fleet/members/{id}/terminal/exec` | admin | Run a shell command inside a VM over the hub's ssh key {terminal_token, command, cwd?}: the hub's own Terminal session unlocks it; the same command guard, rate limit, 60 s limit and audit log as the host terminal |
