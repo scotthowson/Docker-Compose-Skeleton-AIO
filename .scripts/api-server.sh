@@ -23057,6 +23057,7 @@ _write_in_place() { local f="$1" tmp="$2"; cat "$tmp" > "$f" && rm -f "$tmp"; }
 # The wildcard certificates: the domains list of the websecure entrypoint gets one entry per domain. Without such a
 # list (certificates per host) nothing changes. Sets TRAEFIK_DOMAINS_CHANGED=true when the static config changed (a
 # Traefik restart reads it).
+# shellcheck disable=SC2120  # the file is optional: the server lets it find the proxy's own, the tests hand it one
 _traefik_domains_sync() {
     TRAEFIK_DOMAINS_CHANGED=false
     local line ad cfg="${1:-}" doms
