@@ -24,9 +24,7 @@ services:
       - ${TDARR_MEDIA:-./App-Data/Media}:/media
       # work in progress; a fast disk with room for the largest file
       - ${TDARR_TRANSCODE_CACHE:-./App-Data/Tdarr/transcode-cache}:/temp
-    # Intel or AMD graphics for hardware transcoding: uncomment when this server has /dev/dri
-    # devices:
-    #   - /dev/dri:/dev/dri
+    # hardware transcoding: pick this server's graphics card on the deploy sheet (Intel or AMD: its render node; NVIDIA: a GPU reservation)
     ports:
       - "${PORT_TDARR:-8265}:8265"
       - "${PORT_TDARR_SERVER:-8266}:8266"

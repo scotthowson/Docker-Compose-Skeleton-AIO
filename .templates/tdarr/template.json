@@ -49,5 +49,11 @@
       "default": "InternalNode",
       "required": false
     }
+  ],
+  "gpu": [
+    {
+      "service": "tdarr",
+      "use": "video"
+    }
   ]
 }

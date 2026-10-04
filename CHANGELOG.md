@@ -5,6 +5,41 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [4.0.30] - 2026-10-03
+
+### Added
+
+- **A graphics card on the deploy sheet.** A template lists the services that can use one (`"gpu": [{service, use, images}]`
+  in `template.json`); the sheet offers this server's cards and the deploy (`"gpu": "<PCI slot>"`) gives each service the
+  card: AMD and Intel their render node at the same path and the host's `video` and `render` groups (AMD for AI also
+  `/dev/kfd`), NVIDIA a GPU reservation; a template can swap the image per vendor. Compute picks the AMD or NVIDIA card by
+  default, video Intel's built-in one when there is one. Ollama and Open WebUI (`use: compute`, `ollama/ollama:rocm` on AMD),
+  Jellyfin, Plex, Emby, Tdarr, Frigate and PhotoPrism (`use: video`) carry it. [Templates](docs/TEMPLATES.md)
+- A stack whose services use this server's graphics card is not moved into a VM (move-check names them): a VM DCS builds
+  has no card, and the move would have stopped later on the missing `/dev/kfd` or `/dev/dri`.
+
+### Changed
+
+- **Ollama and Open WebUI templates:** Ollama's healthcheck was `curl`, which its image does not have, so it was never
+  healthy and Open WebUI (which waits for it) could not start on a fresh deploy: it is `ollama list` now.
+  `OLLAMA_CONTEXT_LENGTH` (8192) is a deploy variable; Open WebUI's `WEBUI_SECRET_KEY` is generated instead of blank, and its
+  healthcheck asks `/health`.
+
+### Fixed
+
+- **A UPS read through apcupsd no longer flickers.** apcupsd can take several seconds to answer while it is busy with a USB
+  UPS (up to ~15 on a VM's emulated USB), and the 6-second wait made every slow reading look like "the UPS did not answer".
+  The wait is now `UPS_APC_TIMEOUT` (15 s), and one failed reading keeps the last good one on the card until three in a row fail.
+- **A lost UPS is a problem, not "On mains".** When apcupsd answers but has lost the UPS (`COMMLOST`), the Power card says so
+  and why: the kernel has no USB drivers (Debian's cloud kernel), apcupsd.conf names a serial `DEVICE` for a USB UPS, no APC
+  UPS is on this machine's USB (on a VM: pass it through, or read it from the host over NUT), or restart apcupsd.
+- **DCS VM images (Debian, Ubuntu): a kernel update now boots.** `grub-common` has no `update-grub`, so nothing rewrote
+  `/boot/grub/grub.cfg` and a VM kept booting the kernel it was built with (and an autoremove of that kernel would have
+  left it unbootable). Kernel hooks now run `dcs-grubcfg` after every kernel install and removal; the initramfs lists
+  `ext4`, which Debian's full kernel (`linux-image-amd64`, the one with USB and GPU drivers) has as a module; of two kernels of
+  the same version the full one boots before the cloud one. A VM built from an older image gets the hooks and the `ext4` line
+  from its API at start (audit `IMAGE_BOOT_REPAIRED`). [VM images](docs/VM-IMAGES.md#hardware-you-pass-through)
+
 ## [4.0.29] - 2026-10-03
 
 ### Added

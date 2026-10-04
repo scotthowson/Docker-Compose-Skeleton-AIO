@@ -54,7 +54,8 @@ curl -s -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
 ```
 
 Other fields the deploy takes: `exclude_services`, `container_names` (`{service: name}`),
-`authelia_services`, `on_demand_services`, `add_to_homarr`, `replace_services`. `POST /templates/{name}/dry-run`
+`authelia_services`, `on_demand_services`, `add_to_homarr`, `replace_services`, `gpu` (a graphics card's PCI slot from
+`GET /status` → `system.gpus[].slot`, for templates with a `gpu` list). `POST /templates/{name}/dry-run`
 is the preview, `POST /templates/{name}/undeploy` the way back. [API reference](API.md#templates) has them all.
 
 ## Authelia per route
@@ -434,6 +435,7 @@ copied as it is.
 | `route_override` | `{subdomain, port, protocol, use_host_ip, container}` for an app whose routable service is not in the compose file (Nextcloud AIO). |
 | `singleton` | `true` when only one copy may run on a server (Traefik, Portainer, Watchtower…). |
 | `optional_services` | `[{service, label, description, default_enabled}]`: services the deploy sheet can leave out (`exclude_services` in the API). |
+| `gpu` | `[{service, use, images}]`: services that can use one of the server's graphics cards, picked on the deploy sheet. `use` is `compute` (AI: on AMD the service also gets `/dev/kfd`) or `video` (transcoding). AMD and Intel cards give the service their render node at the same path (`/dev/dri/renderD129`) and the host's `video` and `render` groups; NVIDIA a GPU reservation (the NVIDIA Container Toolkit must be installed). `images` swaps the image for a vendor, such as `{"amd": "ollama/ollama:rocm"}`. A stack whose services use the server's graphics card is not moved into a VM. |
 | `auth` | `"bypass"`: the app's own clients sign in directly, so its routes stay out of Authelia unless the deploy sheet says otherwise. `auth_note` explains why on the sheet. |
 
 Compose files use `${APP_DATA_DIR:-./App-Data}/<Name>/…` bind mounts, so *Nuke & reinstall*, backups and

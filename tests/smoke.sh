@@ -2329,6 +2329,61 @@ check "gpus: nvidia-smi's card once, with its readings, ahead of the rest" '[["n
 _GPATH=""; rm -rf "$_G/drm/card2"
 check "gpus: /feed/summary's gpu is the busiest card, gpus lists all" '["AMD Radeon RX 6800 XT",37,2]' "$(_gpus "_api_success() { printf '%s' \"\$1\"; }; handle_feed_summary" '.system | [.gpu.name, .gpu.percent, (.gpus | length)]')"
 check "gpus: no card, no gpu" '[null,[]]' "$(DCS_SYSFS_DRM="$WORK/nowhere" _lib eval "PATH=/usr/bin:/bin; _api_success() { printf '%s' \"\$1\"; }; handle_feed_summary" | jq -c '.system | [.gpu, .gpus]' 2>/dev/null)"
+# --- a template's services get the card picked on the deploy sheet (template.json "gpu")
+_TC='services:
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+  web:
+    image: nginx:alpine
+volumes:
+  ollama:'
+_GS='[{"service":"ollama","use":"compute","images":{"amd":"ollama/ollama:rocm"}}]'
+_gpa() { PATH="$_G/bin:${_GPATH:-}$PATH" DCS_SYSFS_DRM="$_G/drm" DCS_AMDGPU_IDS="$_G/amdgpu.ids" _lib _template_gpu_apply "$1" "$2" "$3"; }
+_GA_OUT=$(_gpa "$_TC" "$_GS" 0000:03:00.0)
+check "gpu deploy: AMD compute gets the render node and /dev/kfd" "- /dev/dri/renderD129:/dev/dri/renderD129|- /dev/kfd:/dev/kfd" "$(printf '%s\n' "$_GA_OUT" | grep -E '^      - /dev/' | sed 's/^ *//' | paste -sd'|')"
+check "gpu deploy: the ROCm image for AMD" "image: ollama/ollama:rocm" "$(printf '%s\n' "$_GA_OUT" | awk '/^  ollama:/{f=1} /^  web:/{f=0} f && /image:/{sub(/^ */,""); print}')"
+check "gpu deploy: the host's video and render groups" yes "$(printf '%s\n' "$_GA_OUT" | grep -q '^    group_add:' && echo yes || echo no)"
+check "gpu deploy: another service and a volume of the same name are left alone" "image: nginx:alpine|  ollama:" "$(printf '%s\n' "$_GA_OUT" | sed -n '/^  web:/,$p' | grep -E 'image:|^  ollama:' | sed 's/^    //' | paste -sd'|')"
+check "gpu deploy: Intel video gets its render node only" "- /dev/dri/renderD128:/dev/dri/renderD128" "$(_gpa "$_TC" '[{"service":"ollama","use":"video"}]' 0000:00:02.0 | grep -E '^      - /dev/' | sed 's/^ *//' | paste -sd'|')"
+_TC2='services:
+  ollama:
+    image: ollama/ollama:latest
+    devices:
+      - /dev/kfd:/dev/kfd
+      - /dev/ttyUSB0:/dev/ttyUSB0'
+check "gpu deploy: a devices list is added to, nothing twice" "- /dev/dri/renderD129:/dev/dri/renderD129|- /dev/kfd:/dev/kfd|- /dev/ttyUSB0:/dev/ttyUSB0" "$(_gpa "$_TC2" "$_GS" 0000:03:00.0 | grep -E '^      - /dev/' | sed 's/^ *//' | paste -sd'|')"
+check "gpu deploy: an unknown card is refused, and says why" "1 __error=There is no graphics card at 0000:99:00.0 on this server" "$(_o=$(_gpa "$_TC" "$_GS" 0000:99:00.0); echo "$? $_o")"
+mkdir -p "$_G/devices/0000:01:00.0/drm/renderD130" && echo 0x10de > "$_G/devices/0000:01:00.0/vendor" && mkdir -p "$_G/drm/card2" && ln -sfn ../../devices/0000:01:00.0 "$_G/drm/card2/device"
+_GPATH="$_G/nv:"
+_GN_OUT=$(_gpa "$_TC" '[{"service":"ollama","use":"video"}]' 0000:01:00.0)
+check "gpu deploy: NVIDIA gets a reservation with video, no devices or groups" "driver: nvidia|capabilities: [gpu, compute, utility, video]|0" "$(printf '%s\n' "$_GN_OUT" | grep -oE 'driver: nvidia|capabilities: \[[^]]*\]' | paste -sd'|')|$(printf '%s\n' "$_GN_OUT" | grep -cE '^    (devices|group_add):')"
+check "gpu deploy: NVIDIA keeps the image when the template names none for it" "image: ollama/ollama:latest" "$(printf '%s\n' "$_GN_OUT" | awk '/^  ollama:/{f=1} /^  web:/{f=0} f && /image:/{sub(/^ */,""); print}')"
+_GPATH=""; rm -rf "$_G/drm/card2"
+# --- UPS through apcupsd: a lost UPS (COMMLOST) is a problem with its cause, not "on mains"
+_P="$WORK/apc"; mkdir -p "$_P/bin" "$_P/usb/devices/2-1"
+printf '%s\n' '#!/bin/bash' 'printf "UPSNAME  : ups\nCABLE    : USB Cable\nSTATUS   : %s\n" "${FAKE_APC_STATUS:-ONLINE}"' '[[ "${FAKE_APC_STATUS:-ONLINE}" == ONLINE ]] && printf "MODEL    : Back-UPS ES 600M1\nBCHARGE  : 100.0 Percent\nTIMELEFT : 4.9 Minutes\nLOADPCT  : 52.0 Percent\nLINEV    : 120.0 Volts\n"' 'exit 0' > "$_P/bin/apcaccess"; chmod +x "$_P/bin/apcaccess"
+printf 'UPSCABLE usb\nUPSTYPE usb\nDEVICE\n' > "$_P/ok.conf"; printf 'UPSCABLE usb\nUPSTYPE usb\nDEVICE /dev/ttyS0\n' > "$_P/serial.conf"
+_apc() { PATH="$_P/bin:$PATH" UPS_SOURCE=apcupsd FAKE_APC_STATUS="$1" DCS_SYSFS_USB="$2" UPS_APCUPSD_CONF="$3" DCS_VIRT="${4:-none}" _lib _power_sample | jq -c "$5" 2>/dev/null; }
+check "ups: apcupsd online reads charge, runtime, load, model" '[true,"ONLINE",100,294,52,"Back-UPS ES 600M1",false]' "$(_apc ONLINE "$_P/usb" "$_P/ok.conf" none '[.ok, .status, .charge, .runtime_seconds, .load, .model, .on_battery]')"
+check "ups: COMMLOST is not ok" '[false,"COMMLOST"]' "$(_apc COMMLOST "$_P/usb" "$_P/ok.conf" none '[.ok, .status]')"
+check "ups: COMMLOST on a kernel without USB says so" true "$(_apc COMMLOST "$_P/nousb" "$_P/ok.conf" none '.error | test("no USB drivers")')"
+check "ups: COMMLOST with a serial DEVICE for a USB UPS names the line" true "$(_apc COMMLOST "$_P/usb" "$_P/serial.conf" none '.error | test("DEVICE /dev/ttyS0")')"
+check "ups: COMMLOST on a VM without the UPS on its USB says pass it through" true "$(_apc COMMLOST "$_P/usb" "$_P/ok.conf" kvm '.error | test("virtual machine.*pass it through")')"
+check "ups: COMMLOST on a machine without the UPS on its USB says check the cable" true "$(_apc COMMLOST "$_P/usb" "$_P/ok.conf" none '.error | test("check the cable")')"
+echo 051d > "$_P/usb/devices/2-1/idVendor"
+check "ups: COMMLOST with the UPS on USB says restart apcupsd" true "$(_apc COMMLOST "$_P/usb" "$_P/ok.conf" none '.error | test("restart apcupsd")')"
+# --- a VM from an older DCS image: the kernel hooks and ext4 are added once, nothing else is touched
+_IR="$WORK/imgroot"; mkdir -p "$_IR/usr/local/sbin" "$_IR/etc/initramfs-tools" "$_IR/etc/kernel/postinst.d"
+printf '#!/bin/bash\n' > "$_IR/usr/local/sbin/dcs-grubcfg"; chmod +x "$_IR/usr/local/sbin/dcs-grubcfg"
+: > "$_IR/etc/initramfs-tools/initramfs.conf"; printf '# disk\nvirtio_scsi\nvirtio_blk\nsd_mod\n' > "$_IR/etc/initramfs-tools/modules"
+check "image repair: says what it added" "  DCS image boot repair: kernel postinst.d hook kernel postrm.d hook ext4 in the initramfs" "$(DCS_IMAGE_ROOT="$_IR" _lib _image_boot_repair)"
+check "image repair: both hooks run dcs-grubcfg" "exec /usr/local/sbin/dcs-grubcfg >&2|exec /usr/local/sbin/dcs-grubcfg >&2" "$(grep -h '^exec' "$_IR/etc/kernel/postinst.d/zz-dcs-grubcfg" "$_IR/etc/kernel/postrm.d/zz-dcs-grubcfg" | paste -sd'|')"
+check "image repair: the hooks are executable" yes "$([[ -x "$_IR/etc/kernel/postinst.d/zz-dcs-grubcfg" && -x "$_IR/etc/kernel/postrm.d/zz-dcs-grubcfg" ]] && echo yes || echo no)"
+check "image repair: ext4 once, the old lines kept" "virtio_scsi virtio_blk sd_mod ext4" "$(grep -v '^#' "$_IR/etc/initramfs-tools/modules" | paste -sd' ')"
+check "image repair: a second start changes nothing" "" "$(DCS_IMAGE_ROOT="$_IR" _lib _image_boot_repair)"
+mkdir -p "$WORK/notimg/etc/initramfs-tools"; : > "$WORK/notimg/etc/initramfs-tools/initramfs.conf"
+check "image repair: not a DCS image, nothing done" "|no" "$(DCS_IMAGE_ROOT="$WORK/notimg" _lib _image_boot_repair)|$([[ -e "$WORK/notimg/etc/kernel" ]] && echo yes || echo no)"
 for _u in "0 50" "599 50" "600 75" "3599 75" "3600 90" "86399 90" "86400 100" "9999999 100"; do
     set -- $_u; check "health score: uptime $1 s scores $2" "$2" "$(_lib _health_uptime_score "$1")"
 done
@@ -2366,6 +2421,10 @@ check "move-check: the cores a cpus: limit needs"  "3 m" "$(auth_request GET '/f
 check "move: a VM with fewer cores is refused"     yes "$(auth_request POST /fleet/provision '{"node":"pve","storage":"local-lvm","gateway":"192.0.2.1","ip_start":"192.0.2.10","vms":[{"stack":"zz-move","move":true,"cores":2}]}' | body_of | jq -r '.message' | grep -q 'at least 3 cores' && echo yes || echo no)"
 check "move: the hub's own stacks never move"      "0 1" "$(_lib _fleet_hub_only core-infrastructure; a=$?; _lib _fleet_hub_only zz-move; echo "$a $?")"
 check "move: a hub-only stack is a blocker"        yes "$(_lib _fleet_move_blockers networking-security | grep -q 'part of the hub' && echo yes || echo no)"
+mkdir -p "$WORK/Stacks/zz-gpu"; printf 'services:\n  llm:\n    image: alpine:3\n    devices:\n      - /dev/kfd:/dev/kfd\n  tv:\n    image: alpine:3\n    deploy:\n      resources:\n        reservations:\n          devices:\n            - driver: nvidia\n              count: all\n              capabilities: [gpu]\n  zig:\n    image: alpine:3\n    devices:\n      - /dev/ttyUSB0:/dev/ttyUSB0\n' > "$WORK/Stacks/zz-gpu/docker-compose.yml"
+check "move: services on the graphics card are blockers, a USB stick is not" "llm tv" "$(_lib _fleet_move_blockers zz-gpu | grep 'graphics card' | awk '{print $1}' | paste -sd' ')"
+check "move: zz-move (no card) has no graphics blocker" 0 "$(_lib _fleet_move_blockers zz-move | grep -c 'graphics card')"
+rm -rf "$WORK/Stacks/zz-gpu"
 check "move: a move takes the stack's own name"    400 "$(auth_request POST /fleet/provision '{"node":"pve","storage":"local-lvm","gateway":"192.0.2.1","ip_start":"192.0.2.10","vms":[{"stack":"zz-move","source":"other","move":true}]}' | status_of)"
 check "move: a stack that is not there"            404 "$(auth_request POST /fleet/provision '{"node":"pve","storage":"local-lvm","gateway":"192.0.2.1","ip_start":"192.0.2.10","vms":[{"stack":"zz-nope","move":true}]}' | status_of)"
 _DS0=$(grep -m1 '^DOCKER_STACKS=' "$WORK/.env"); sed -i 's|^DOCKER_STACKS=.*|DOCKER_STACKS="demo zz-move demo2"|' "$WORK/.env"

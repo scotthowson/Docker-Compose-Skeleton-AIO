@@ -3,9 +3,7 @@ services:
     container_name: Emby
     image: lscr.io/linuxserver/emby:latest
     restart: unless-stopped
-    # Intel or AMD graphics for hardware transcoding (Emby Premiere): uncomment when this server has /dev/dri
-    # devices:
-    #   - /dev/dri:/dev/dri
+    # hardware transcoding: pick this server's graphics card on the deploy sheet (Intel or AMD: its render node; NVIDIA: a GPU reservation)
     environment:
       - PUID=${PUID:-1000}
       - PGID=${PGID:-1000}

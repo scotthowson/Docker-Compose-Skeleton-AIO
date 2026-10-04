@@ -64,5 +64,11 @@
     }
   ],
   "auth": "bypass",
-  "auth_note": "Not put behind Authelia: its own apps and clients sign in directly (the deploy sheet can still protect it)"
+  "auth_note": "Not put behind Authelia: its own apps and clients sign in directly (the deploy sheet can still protect it)",
+  "gpu": [
+    {
+      "service": "frigate",
+      "use": "video"
+    }
+  ]
 }

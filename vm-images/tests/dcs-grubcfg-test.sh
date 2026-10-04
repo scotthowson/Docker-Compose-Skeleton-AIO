@@ -25,6 +25,15 @@ check "the older ones are named"         "'DCS' 'DCS (kernel 6.12.41+deb13-cloud
 check "boots by label"                   1 "$(grep -c 'root=LABEL=dcs-root ro' "$T/deb/boot/grub/grub.cfg" | awk '$1 > 0 {print 1}')"
 check "the serial console is set up"     1 "$(grep -c 'serial --unit=0 --speed=115200' "$T/deb/boot/grub/grub.cfg" | awk '$1 > 0 {print 1}')"
 
+echo "dcs-grubcfg: Debian's standard kernel next to the cloud one (how a VM gets USB and GPU drivers)"
+mk "$T/deb2" 6.12.111+deb13-cloud-amd64 6.12.111+deb13-amd64
+gen "$T/deb2" >/dev/null
+check "same version: the standard kernel is the default" 6.12.111+deb13-amd64 "$(first "$T/deb2")"
+check "the cloud kernel stays as the second entry" "'DCS' 'DCS (kernel 6.12.111+deb13-cloud-amd64)'" "$(titles "$T/deb2")"
+mk "$T/deb3" 6.12.111+deb13-amd64 6.12.115+deb13-cloud-amd64
+gen "$T/deb3" >/dev/null
+check "a newer cloud kernel still wins over an older standard one" 6.12.115+deb13-cloud-amd64 "$(first "$T/deb3")"
+
 echo "dcs-grubcfg: Fedora names, a two-digit version against a one-digit one"
 mk "$T/fed" 6.9.12-200.fc44.x86_64 6.19.7-200.fc44.x86_64
 gen "$T/fed" >/dev/null

@@ -1,4 +1,7 @@
 # The disk and its file system are all the initramfs has to find: the rest of the drivers load from the root file system.
+# ext4 is built into the cloud and virtual kernels but a module in Debian's standard one (linux-image-amd64, the kernel with
+# USB and GPU drivers): listing it keeps that kernel bootable (a built-in one is skipped).
 virtio_scsi
 virtio_blk
 sd_mod
+ext4

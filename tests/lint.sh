@@ -120,6 +120,8 @@ echo "Template shapes"
 for f in .templates/*/template.json; do
     [[ -f "$f" ]] || continue
     jq -e '(.optional_services // []) | all(type == "object" and (.service | type == "string") and (.label | type == "string"))' "$f" >/dev/null 2>&1 || { echo "  optional_services must be [{service, label, ...}]: $f"; rc=1; }
+    jq -e '(.gpu // []) | type == "array" and all(type == "object" and (.service | type == "string") and ((.use // "video") | IN("compute", "video")) and ((.images // {}) | type == "object"))' "$f" >/dev/null 2>&1 || { echo "  gpu must be [{service, use: compute|video, images: {amd|nvidia|intel: image}}]: $f"; rc=1; }
+    for _gs in $(jq -r '(.gpu // [])[].service' "$f" 2>/dev/null); do grep -qE "^  ${_gs}:[[:space:]]*$" "${f%/template.json}/docker-compose.yml" 2>/dev/null || { echo "  gpu names a service the compose does not have ($_gs): $f"; rc=1; }; done
 done
 
 [[ $rc -eq 0 ]] && echo "lint: clean" || echo "lint: problems found"

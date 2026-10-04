@@ -5,21 +5,18 @@ services:
     restart: unless-stopped
     environment:
       - TZ=${TZ:-UTC}
+      # how much of a conversation a model keeps in mind (tokens): more takes more of the graphics card's memory
+      - OLLAMA_CONTEXT_LENGTH=${OLLAMA_CONTEXT_LENGTH:-8192}
     volumes:
       - ${APP_DATA_DIR:-./App-Data}/Ollama/data:/root/.ollama
     ports:
       - "${PORT_OLLAMA:-11434}:11434"
-    # Uncomment for NVIDIA GPU support:
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices:
-    #         - driver: nvidia
-    #           count: all
-    #           capabilities: [gpu]
+    # A graphics card is picked on the deploy sheet: AMD gets the ROCm build (ollama/ollama:rocm) with /dev/kfd and the
+    # card's render node, NVIDIA a GPU reservation (NVIDIA Container Toolkit). Without one, models run on the processor.
+    # The image has no curl or wget: `ollama list` asks the server itself.
     healthcheck:
-      test: ["CMD", "curl", "-fso", "/dev/null", "http://127.0.0.1:11434/"]
+      test: ["CMD", "ollama", "list"]
       interval: 30s
-      timeout: 5s
+      timeout: 10s
       retries: 3
-      start_period: 15s
+      start_period: 30s

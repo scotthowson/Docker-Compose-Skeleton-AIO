@@ -228,6 +228,7 @@ The rules themselves (which events, which targets) live on the Notifications pag
 | `UPS_PWRSTAT_BIN` | *(found by itself)* | Where `pwrstat` is, when it is not in `/usr/bin` |
 | `UPS_NUT_HOST`, `UPS_NUT_PORT`, `UPS_NAME` | `127.0.0.1`, `3493`, `ups` | The NUT server and the UPS name on it (the `nut-upsd` template serves a USB UPS) |
 | `UPS_POLL_INTERVAL` | `15` | Seconds between reads |
+| `UPS_APC_TIMEOUT` | `15` | Seconds to wait for `apcaccess` (apcupsd can take several seconds on a USB UPS, more on a VM's emulated USB); a slow or failed read keeps the last good one on the card until three in a row fail |
 | `UPS_SHUTDOWN_CHARGE`, `UPS_SHUTDOWN_RUNTIME` | `20`, `300` | On battery, below this charge (%) or runtime (s) the stacks stop |
 | `UPS_ON_BATTERY_ACTION` | `stop-stacks` | What happens at the threshold |
 | `UPS_HOST_SHUTDOWN_CMD` | *(empty)* | A command to run after the stacks stopped, such as a sudo rule for `shutdown -h` |

@@ -32,7 +32,7 @@ Needs Docker, and for `--test` QEMU with KVM, OVMF and genisoimage. The tools co
 GPT: partition 1 is a 1 MiB **BIOS boot partition** (GRUB's core image, for SeaBIOS), 2 an **EFI system partition** (one
 standalone GRUB, for OVMF), 3 the root file system, labelled `dcs-root`. Both loaders find the root by label and read
 `/boot/grub/grub.cfg` from it, so a kernel update inside the VM never touches the loaders. The file is written by
-`update-grub` on Debian and Ubuntu, and by `dcs-grubcfg` on Fedora (called from `/etc/kernel/install.d/95-dcs-boot.install`) and on Arch (called from the pacman hook `99-dcs-grubcfg.hook`, after mkinitcpio's own hook has copied the kernel to `/boot`). The newest kernel is the default entry on every distribution.
+`dcs-grubcfg` everywhere: on Debian and Ubuntu from the kernel hooks `/etc/kernel/postinst.d/zz-dcs-grubcfg` and `postrm.d/zz-dcs-grubcfg` (`grub-common` has no `update-grub`), on Fedora (called from `/etc/kernel/install.d/95-dcs-boot.install`) and on Arch (called from the pacman hook `99-dcs-grubcfg.hook`, after mkinitcpio's own hook has copied the kernel to `/boot`). The newest kernel is the default entry on every distribution.
 The kernel command line comes from `/etc/default/grub.d/*.cfg` in the image (`05-dcs.cfg` common, `10-lsm.cfg` per distribution).
 
 ## Adding a distribution

@@ -1,10 +1,10 @@
 {
   "name": "open-webui",
   "title": "Open WebUI + Ollama",
-  "description": "ChatGPT-style interface for local LLMs. Run AI models entirely on your hardware \u2014 no cloud, no API keys, complete privacy. Supports Ollama, OpenAI API, RAG, voice, and vision.",
+  "description": "ChatGPT-style chat for local models: Open WebUI with Ollama, entirely on your hardware (no cloud, no API keys). Pick this server's graphics card on the deploy sheet (AMD through ROCm, NVIDIA) to run the models on it. The first account you create is the admin.",
   "category": "ai",
   "target_stack": "development-tools",
-  "icon": "\ud83e\udd16",
+  "icon": "🤖",
   "tags": [
     "ai",
     "llm",
@@ -21,6 +21,30 @@
       "description": "Port to expose Open WebUI on",
       "default": "3100",
       "required": false
+    },
+    {
+      "name": "WEBUI_SECRET_KEY",
+      "label": "Session secret",
+      "description": "Signs the sign-in sessions; generated when left empty",
+      "type": "password",
+      "required": false,
+      "generate": "hex64"
+    },
+    {
+      "name": "OLLAMA_CONTEXT_LENGTH",
+      "label": "Context length",
+      "description": "How much of a conversation a model keeps in mind, in tokens (8192 suits a 12 GB card; 16384 or more on 16 GB)",
+      "default": "8192",
+      "required": false
+    }
+  ],
+  "gpu": [
+    {
+      "service": "ollama",
+      "use": "compute",
+      "images": {
+        "amd": "ollama/ollama:rocm"
+      }
     }
   ]
 }

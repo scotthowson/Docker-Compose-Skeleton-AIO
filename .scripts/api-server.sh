@@ -2408,6 +2408,70 @@ _gpu_list() {
     fi
 }
 
+# A graphics card for a template's services. The template says which services can use one and how, in template.json:
+#   "gpu": [{"service": "ollama", "use": "compute", "images": {"amd": "ollama/ollama:rocm"}}]
+# "use" is compute (AI: AMD needs /dev/kfd as well) or video (transcoding); "images" swaps the image for that vendor. The
+# card is the one at PCI slot $3 (_gpu_list). Into each service of the compose ($1) go: AMD and Intel → the card's render
+# node (the same path inside, so an app setting such as /dev/dri/renderD129 holds) and the host's video and render groups;
+# NVIDIA → a device reservation for the NVIDIA Container Toolkit. Entries a service already has are not repeated. Prints
+# the compose; when there is no such card, or it has no render node, prints one `__error=<why>` line and returns 1 (the
+# reason cannot travel through a variable: this runs in a command substitution).
+_template_gpu_apply() {
+    local compose="$1" spec="$2" slot="$3" card vendor render gids="" g id
+    card=$(_gpu_list | jq -c --arg s "$slot" 'map(select(.slot == $s)) | first // empty' 2>/dev/null)
+    [[ -n "$card" ]] || { printf '__error=%s\n' "There is no graphics card at $slot on this server"; return 1; }
+    vendor=$(jq -r '.vendor // ""' <<< "$card"); render=$(jq -r '.render // ""' <<< "$card")
+    [[ "$vendor" == nvidia || "$render" =~ ^renderD[0-9]+$ ]] || { printf '__error=%s\n' "$(jq -r '.name' <<< "$card") has no render node (/dev/dri/renderD…): is its driver loaded?"; return 1; }
+    for g in video render; do id=$(getent group "$g" 2>/dev/null | cut -d: -f3); [[ "$id" =~ ^[0-9]+$ ]] && gids+="${gids:+,}$id"; done
+    local svc use img devs grps nv out="$compose"
+    while IFS=$'\t' read -r svc use img; do
+        [[ "$svc" =~ ^[A-Za-z_][A-Za-z0-9_.-]*$ ]] || continue
+        [[ -z "$img" || "$img" =~ ^[A-Za-z0-9][A-Za-z0-9._/:@-]*$ ]] || img=""
+        devs=""; grps="$gids"; nv=""
+        case "$vendor" in
+            amd)    devs="/dev/dri/$render:/dev/dri/$render"; [[ "$use" == compute ]] && devs+=",/dev/kfd:/dev/kfd" ;;
+            intel)  devs="/dev/dri/$render:/dev/dri/$render" ;;
+            nvidia) grps=""; nv="gpu, compute, utility"; [[ "$use" == video ]] && nv+=", video" ;;
+        esac
+        out=$(printf '%s\n' "$out" | awk -v svc="$svc" -v img="$img" -v devs="$devs" -v grps="$grps" -v nv="$nv" '
+            function items(list, quote, blk,   k, a, j, v) {
+                k = split(list, a, ",")
+                for (j = 1; j <= k; j++) { v = a[j]; if (v == "") continue; if (quote) v = "\"" v "\""; if (blk != "" && index(blk, a[j])) continue; print "      - " v }
+            }
+            function flush(   i, blk, hasdev, hasgrp, hasdep, line) {
+                if (!n) return
+                blk = ""; hasdev = hasgrp = hasdep = 0
+                for (i = 1; i <= n; i++) { blk = blk "\n" buf[i]; if (buf[i] ~ /^    devices:/) hasdev = 1; if (buf[i] ~ /^    group_add:/) hasgrp = 1; if (buf[i] ~ /^    deploy:/) hasdep = 1 }
+                for (i = 1; i <= n; i++) {
+                    line = buf[i]
+                    if (img != "" && line ~ /^    image:/) line = "    image: " img
+                    print line
+                    if (line ~ /^    devices:/) items(devs, 0, blk)
+                    if (line ~ /^    group_add:/) items(grps, 1, blk)
+                    if (i == 1) {
+                        if (devs != "" && !hasdev) { print "    devices:"; items(devs, 0, "") }
+                        if (grps != "" && !hasgrp) { print "    group_add:"; items(grps, 1, "") }
+                        if (nv != "" && !hasdep) {
+                            print "    deploy:"; print "      resources:"; print "        reservations:"; print "          devices:"
+                            print "            - driver: nvidia"; print "              count: all"; print "              capabilities: [" nv "]"
+                        }
+                    }
+                }
+                n = 0
+            }
+            /^[A-Za-z]/ { flush(); insvc = 0; section = $1 }
+            section == "services:" && /^  [A-Za-z0-9_.-]+:[ \t]*$/ {
+                flush(); cur = $1; sub(/:$/, "", cur)
+                if (cur == svc) { insvc = 1; n = 1; buf[1] = $0; next }
+                insvc = 0
+            }
+            insvc { buf[++n] = $0; next }
+            { print }
+            END { flush() }')
+    done < <(jq -r --arg v "$vendor" '.[]? | [.service // "", (.use // "video"), (.images[$v] // "")] | @tsv' <<< "$spec" 2>/dev/null)
+    printf '%s\n' "$out"
+}
+
 # GET /status — Host and Docker overview: containers, images, stacks, load, memory, disk, the graphics cards (NVIDIA, AMD, Intel)
 handle_status() {
     # PERFORMANCE: Use docker system info for counts (single command) + parallel for the rest
@@ -9851,10 +9915,11 @@ _power_nut_vars() {
     ) 2>/dev/null
 }
 
-# apcupsd: "KEY : value" lines from apcaccess, lower-cased keys
+# apcupsd: "KEY : value" lines from apcaccess, lower-cased keys. apcupsd answers slowly while it is busy with a USB UPS
+# (seconds, up to ~15 on a VM's emulated USB), so the wait is long: the watch loop runs in the background, nobody waits on it.
 _power_apc_vars() {
     command -v apcaccess >/dev/null 2>&1 || return 1
-    timeout 6 apcaccess status 2>/dev/null | awk -F' *: *' 'NF >= 2 { k=tolower($1); gsub(/[[:space:]]+$/, "", k); v=$2; sub(/[[:space:]]+$/, "", v); print k "=" v }'
+    timeout "$(_api_int_or "${UPS_APC_TIMEOUT:-15}" 15)" apcaccess status 2>/dev/null | awk -F' *: *' 'NF >= 2 { k=tolower($1); gsub(/[[:space:]]+$/, "", k); v=$2; sub(/[[:space:]]+$/, "", v); print k "=" v }'
 }
 
 # CyberPower (PowerPanel Linux): "Key..........  value" lines from `pwrstat -status`, keys lower-cased with underscores
@@ -9891,6 +9956,34 @@ _power_pwrstat_vars() {
                     k = tolower(k); gsub(/[^a-z0-9]+/, "_", k); if (k != "") print k "=" v }'
 }
 
+# Why apcupsd lost the UPS (COMMLOST), as the end of a sentence: the kernel has no USB at all (Debian's cloud kernel), the
+# config names a serial device for a USB UPS, or no UPS is on this machine's USB (a VM it was not passed through to).
+# DCS_SYSFS_USB, UPS_APCUPSD_CONF and DCS_VIRT point the tests elsewhere.
+_power_apc_lost_why() {
+    local usb="${DCS_SYSFS_USB:-/sys/bus/usb}" conf="${UPS_APCUPSD_CONF:-/etc/apcupsd/apcupsd.conf}" type="" dev="" v found=false virt=""
+    if [[ ! -d "$usb" ]]; then
+        printf '%s' ": this server's kernel has no USB drivers (Debian's cloud kernel has none): install linux-image-amd64, see docs/VM-IMAGES.md"; return
+    fi
+    if [[ -r "$conf" ]]; then
+        type=$(awk 'toupper($1) == "UPSTYPE" {print tolower($2); exit}' "$conf" 2>/dev/null)
+        dev=$(awk 'toupper($1) == "DEVICE" {print $2; exit}' "$conf" 2>/dev/null)
+        if [[ "$type" == usb && -n "$dev" ]]; then
+            printf ': %s names DEVICE %s for a USB UPS: leave DEVICE empty and restart apcupsd' "$conf" "$dev"; return
+        fi
+    fi
+    for v in "$usb"/devices/*/idVendor; do [[ -r "$v" && "$(cat "$v" 2>/dev/null)" == 051d ]] && { found=true; break; }; done
+    if [[ "$found" == false ]]; then
+        virt="${DCS_VIRT:-$(systemd-detect-virt 2>/dev/null)}"
+        if [[ -n "$virt" && "$virt" != none ]]; then
+            printf '%s' ": no APC UPS on this virtual machine's USB: pass it through (Proxmox: Hardware, Add, USB Device) or read it from the host over NUT (UPS_SOURCE=nut, UPS_NUT_HOST)"
+        else
+            printf '%s' ": no APC UPS on this machine's USB: check the cable"
+        fi
+        return
+    fi
+    printf '%s' ": the UPS is on USB, so restart apcupsd (sudo systemctl restart apcupsd) and check its log"
+}
+
 # One reading as JSON (also the shape of .data/power.json without the loop fields)
 _power_sample() {
     local source="${UPS_SOURCE:-auto}" ups_vars="" used="none" err=""
@@ -9924,6 +10017,8 @@ _power_sample() {
         model=$(printf '%s\n' "$ups_vars" | awk -F= '$1=="model" {print $2; exit}')
         [[ "$status" == *ONBATT* ]] && on_batt=true
         [[ "$status" == *LOWBATT* ]] && low=true
+        # apcupsd answers but has lost the UPS: no reading at all, which is a problem and not "on mains"
+        if [[ "$status" == *COMMLOST* ]]; then ok=false; err="apcupsd cannot talk to the UPS (COMMLOST)$(_power_apc_lost_why)"; fi
     elif [[ "$used" == "pwrstat" ]]; then
         local _g; _g() { printf '%s\n' "$ups_vars" | awk -F= -v k="$1" '$1 == k { sub(/^[^=]*=/, ""); print; exit }'; }
         status=$(_g state)
@@ -9981,7 +10076,7 @@ _power_notify() { _notify_send "$1" "$2" "${3:-high}" "${4:-zap}" "power" "$(jq 
 
 _dcs_power_loop() {
     trap 'kill "${_sleep_pid:-}" 2>/dev/null; exit 0' TERM INT
-    local interval prev_on_batt="" stopped=false sample on_batt low charge runtime ok host_name event=""
+    local interval prev_on_batt="" stopped=false sample on_batt low charge runtime ok host_name event="" misses=0 had_good=false
     interval="${UPS_POLL_INTERVAL:-15}"; [[ "$interval" =~ ^[0-9]+$ && "$interval" -ge 5 ]] || interval=15
     host_name=$(_hostname dcs)
     local thr_charge thr_runtime
@@ -9991,6 +10086,7 @@ _dcs_power_loop() {
         sample=$(_power_sample)
         ok=$(printf '%s' "$sample" | jq -r '.ok')
         if [[ "$ok" == "true" ]]; then
+            misses=0; had_good=true
             on_batt=$(printf '%s' "$sample" | jq -r '.on_battery')
             low=$(printf '%s' "$sample" | jq -r '.low_battery')
             charge=$(printf '%s' "$sample" | jq -r '.charge // 100')
@@ -10030,7 +10126,12 @@ _dcs_power_loop() {
                 fi
             fi
         fi
-        _power_write_state "$sample" "$stopped" "$event"
+        # one slow or failed reading does not blank the card: the last good one stays until three in a row fail
+        # (GET /power marks it stale after 3 intervals + 30 s, which comes first only when a reading takes very long)
+        if [[ "$ok" != "true" ]]; then misses=$((misses + 1)); fi
+        if [[ "$ok" == "true" || "$had_good" != true || $misses -ge 3 ]]; then
+            _power_write_state "$sample" "$stopped" "$event"
+        fi
         sleep "$interval" & _sleep_pid=$!
         wait "$_sleep_pid" || true
     done
@@ -16087,6 +16188,34 @@ _route_mw_has() { awk -v mw="$2" '{ l=$0; sub(/\r$/, "", l); sub(/^[ \t]*/, "", 
 # loaded yet), a rewrite that does not bring the route back is undone. Where Traefik does not
 # answer here (a boot) the declared name is what it will load. Runs when the API starts (in the
 # background), before every theme change and after DCS restarts Traefik; prints the changes made.
+# A VM built from a DCS image (Debian, Ubuntu) before 4.0.30: grub-common has no update-grub and nothing else rewrote
+# /boot/grub/grub.cfg, so a kernel update never booted (and an autoremove of the old kernel left the VM unbootable); and
+# the initramfs module list lacked ext4, which Debian's full kernel (linux-image-amd64: USB, GPUs) has as a module, so that
+# kernel could not mount its disk. Adds the two kernel hooks and the ext4 line, once, as root or through passwordless sudo
+# (every DCS image has it); anything else is left alone. Only on a DCS image (dcs-grubcfg is there). DCS_IMAGE_ROOT: tests.
+_image_boot_repair() {
+    local R="${DCS_IMAGE_ROOT:-}" d f did=()
+    local gen=/usr/local/sbin/dcs-grubcfg mods="$R/etc/initramfs-tools/modules"
+    [[ -x "$R$gen" && -f "$R/etc/initramfs-tools/initramfs.conf" ]] || return 0
+    local -a S=()
+    if [[ -z "$R" && "$(id -u)" -ne 0 ]]; then sudo -n true 2>/dev/null || return 0; S=(sudo -n); fi
+    for d in postinst.d postrm.d; do
+        f="$R/etc/kernel/$d/zz-dcs-grubcfg"
+        [[ -e "$f" ]] && continue
+        "${S[@]}" mkdir -p "$R/etc/kernel/$d" 2>/dev/null || continue
+        printf '#!/bin/sh\n# DCS: /boot/grub/grub.cfg follows the kernels in /boot (this image has no update-grub)\nexec %s >&2\n' "$gen" \
+            | "${S[@]}" tee "$f" >/dev/null 2>&1 && "${S[@]}" chmod 755 "$f" 2>/dev/null && did+=("kernel $d hook")
+    done
+    if [[ -f "$mods" ]] && ! grep -qx 'ext4' "$mods" 2>/dev/null; then
+        printf 'ext4\n' | "${S[@]}" tee -a "$mods" >/dev/null 2>&1 && did+=("ext4 in the initramfs")
+    fi
+    if (( ${#did[@]} )); then
+        echo "  DCS image boot repair: ${did[*]}"
+        _audit_log "IMAGE_BOOT_REPAIRED" "${did[*]}" 2>/dev/null || true
+    fi
+    return 0
+}
+
 _theme_files_repair() {
     local dir key f n=0 own other defs mw cur host s ref orig
     dir=$(_find_traefik_routes_dir 2>/dev/null); [[ -n "$dir" && -d "$dir" ]] || { echo 0; return 0; }
@@ -17011,6 +17140,23 @@ handle_template_deploy() {
             }
             { print }
         ')
+    fi
+
+    # A graphics card chosen on the deploy sheet: {"gpu": "<PCI slot>"} (GET /status → system.gpus[].slot), for the
+    # services the template names in its "gpu" list
+    local _gpu_slot _gpu_json=null
+    _gpu_slot=$(printf '%s' "$body" | jq -r '.gpu // empty | strings' 2>/dev/null)
+    if [[ -n "$_gpu_slot" && "$_gpu_slot" != none ]]; then
+        local _gpu_spec _gpu_out
+        _gpu_spec=$(printf '%s' "$meta" | jq -c '.gpu // [] | if type == "array" then . else [] end' 2>/dev/null) || _gpu_spec='[]'
+        if [[ "$_gpu_spec" != "[]" ]]; then
+            if ! _gpu_out=$(_template_gpu_apply "$template_compose" "$_gpu_spec" "$_gpu_slot"); then
+                _api_error 400 "$(printf '%s\n' "$_gpu_out" | sed -n 's/^__error=//p' | head -1 | grep . || echo "The graphics card could not be given to $name")"; return
+            fi
+            template_compose="$_gpu_out"
+            _gpu_json=$(_gpu_list | jq -c --arg s "$_gpu_slot" 'map(select(.slot == $s)) | first | {vendor, name, slot, render}' 2>/dev/null) || _gpu_json=null
+            [[ -n "$_gpu_json" ]] || _gpu_json=null
+        fi
     fi
 
     # SECURITY: Scan the resolved template compose for dangerous Docker features.
@@ -18478,7 +18624,7 @@ print('\n'.join(result))
     # Authelia just arrived: the services deployed before it go behind the portal too
     local _auth_protected=0
     [[ "$name" == "authelia" ]] && _auth_protected=$(_authelia_protect_existing_routes 2>/dev/null || echo 0)
-    _api_success "{\"success\": true, \"authelia_protected\": ${_auth_protected:-0}, \"target_stack\": \"$(_api_json_escape "$target_stack")\", \"services_added\": $services_json, \"on_demand\": $(_upd_json_list ${_od_services[@]+"${_od_services[@]}"}), \"traefik_restarted\": $_od_traefik_restarted, \"sablier\": $_sablier_json, \"addons\": ${TRAEFIK_ADDONS_JSON:-null}, \"started\": $started, \"containers\": $_containers_json, \"activity_id\": \"$(_api_json_escape "$activity_id")\", \"warning\": \"$(_api_json_escape "$deploy_warning")\", \"backup_file\": \"docker-compose.yml.bak.${timestamp}\", \"message\": \"Template services merged into $target_stack successfully\"}"
+    _api_success "{\"success\": true, \"authelia_protected\": ${_auth_protected:-0}, \"target_stack\": \"$(_api_json_escape "$target_stack")\", \"services_added\": $services_json, \"on_demand\": $(_upd_json_list ${_od_services[@]+"${_od_services[@]}"}), \"traefik_restarted\": $_od_traefik_restarted, \"sablier\": $_sablier_json, \"addons\": ${TRAEFIK_ADDONS_JSON:-null}, \"started\": $started, \"containers\": $_containers_json, \"activity_id\": \"$(_api_json_escape "$activity_id")\", \"gpu\": ${_gpu_json:-null}, \"warning\": \"$(_api_json_escape "$deploy_warning")\", \"backup_file\": \"docker-compose.yml.bak.${timestamp}\", \"message\": \"Template services merged into $target_stack successfully\"}"
 }
 
 # POST /templates/{template}/dry-run — Preview a deployment: conflicts, ports, variables and policy findings
@@ -26845,6 +26991,12 @@ _fleet_move_blockers() {
     cfg=$(_fleet_stack_cfg_json "$stack"); [[ "$cfg" == \{* ]] || return 0
     jq -r '.services // {} | to_entries[] | select((.value.image // "") | test("nextcloud/all-in-one|nextcloud-releases/all-in-one"))
            | "\(.key) (Nextcloud All-in-One) creates its own containers and data volumes outside the stack: they would not travel, and Nextcloud would start empty in the VM"' <<< "$cfg" 2>/dev/null
+    # a graphics card (an AI model on it, hardware transcoding) stays in this machine: a VM DCS builds has none
+    jq -r '.services // {} | to_entries[]
+           | select(([(.value.devices // [])[] | (.source // (tostring | split(":")[0]))] | any(test("^/dev/(dri|kfd)")))
+                    or ([(.value.deploy.resources.reservations.devices // [])[] | .driver // ""] | any(. == "nvidia"))
+                    or ((.value.runtime // "") == "nvidia"))
+           | "\(.key) uses this machine'"'"'s graphics card: a VM has none, so it would lose it (keep the stack here, or move the other services to another stack first)"' <<< "$cfg" 2>/dev/null
     return 0
 }
 # _fleet_move_facts STACK — {devices, ports, socket}: what the VM must offer for the stack to run as it does here
@@ -32523,6 +32675,9 @@ start_server() {
     # theme files an older DCS wrote under a plugin name this Traefik does not know (the route answered 404);
     # in the background: a broken route is probed again after Traefik reloads
     ( _theme_files_repair >/dev/null 2>&1 ) </dev/null >/dev/null 2>&1 &
+
+    # a VM from a DCS image older than 4.0.30: kernel changes rewrite its boot menu, and Debian's full kernel can find its disk
+    ( _image_boot_repair ) </dev/null &
 
     # A hub that updated itself with "then update the VMs": the round runs now, on the new code, in the background
     if [[ -f "$BASE_DIR/.data/fleet-update-pending" ]]; then

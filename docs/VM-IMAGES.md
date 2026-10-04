@@ -107,11 +107,22 @@ the drivers of real devices. If you pass a device through to a VM, check this ta
 | Intel and AMD GPUs (`i915`, `xe`, `amdgpu`, `nouveau`): video transcoding, machine learning | – | ✓ | ✓ | ✓ |
 | USB serial adapters (`cp210x`, `ftdi_sio`, `ch341`, `cdc_acm`): Zigbee, Z-Wave, Coral | – | ✓ | ✓ | ✓ |
 | USB storage | – | ✓ | ✓ | ✓ |
+| A UPS on USB (`usbhid`, `hiddev`: apcupsd, NUT) | – | ✓ | ✓ | ✓ |
 | Physical network cards (`igb`, `ixgbe`, `e1000e`, `r8169`, `mlx5`) | `mlx5` | ✓ | ✓ | ✓ |
 | Wi-Fi, Bluetooth, sound, TV tuners | – | ✓ | ✓ | ✓ |
 | VirtIO, `vfio`, WireGuard, Btrfs, XFS, NFS, SMB, overlayfs, netfilter | ✓ | ✓ | ✓ | ✓ |
 
-A Debian VM that needs one of these can switch kernels (`sudo apt install linux-image-amd64`, reboot); the image stays otherwise as it is. The *New VM* sheet of the dashboard shows the same fact under the operating system, from the `hardware` line of each image in `vm-images/images.json`.
+A Debian VM that needs one of these can switch to Debian's full kernel; the image stays otherwise as it is:
+
+```bash
+sudo apt install linux-image-amd64 && sudo apt purge linux-image-cloud-amd64 'linux-image-*-cloud-amd64'
+```
+
+then reboot. The kernel hooks rewrite the boot menu (the full kernel is the default) and the initramfs carries `ext4`, which is
+a module in that kernel. A VM built from an older image gets both from DCS 4.0.30 when its API starts (it needs passwordless
+`sudo`, which every DCS image has); on one without them the full kernel cannot find its disk, so update DCS first.
+
+The *New VM* sheet of the dashboard shows the same fact under the operating system, from the `hardware` line of each image in `vm-images/images.json`.
 
 ### Faster boots on Proxmox
 

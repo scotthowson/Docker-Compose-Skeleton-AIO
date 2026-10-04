@@ -22,8 +22,11 @@ sortkey() {
     done
     echo "$n"
 }
-kernels=(); while IFS= read -r k; do kernels+=("${k#*|}"); done < <(
-    for f in "$R"/boot/vmlinuz-*; do [[ -f $f ]] || continue; n=${f##*/vmlinuz-}; printf '%s|%s\n' "$(sortkey "$n")" "$n"; done | sort -V -r -t'|' -k1,1)
+# Of two kernels with the same version, the full one goes before the cloud one (Debian): installing linux-image-amd64 next to
+# linux-image-cloud-amd64 is how a VM gets USB and GPU drivers, so it is the one meant to boot.
+kernels=(); while IFS= read -r k; do kernels+=("${k##*|}"); done < <(
+    for f in "$R"/boot/vmlinuz-*; do [[ -f $f ]] || continue; n=${f##*/vmlinuz-}; key=$(sortkey "$n")
+        printf '%s|%s|%s\n' "${key/-cloud-/-}" "$([[ $n == *-cloud-* ]] && echo 0 || echo 1)" "$n"; done | sort -t'|' -k1,1Vr -k2,2nr)
 [[ ${#kernels[@]} -gt 0 ]] || { echo "dcs-grubcfg: no kernel in $R/boot" >&2; exit 1; }
 
 {
