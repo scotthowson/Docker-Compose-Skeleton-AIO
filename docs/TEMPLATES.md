@@ -408,8 +408,8 @@ MQTT, DNS), *Optional* services can be left out.
 | 🌐 **LibreTranslate**<br>[`libretranslate`](../.templates/libretranslate) | LibreTranslate is a translation API and web page that runs entirely on your server (Argos models, no Google) | 5100 | `development-tools` |  |
 | ⛏️ **Minecraft Server**<br>[`minecraft`](../.templates/minecraft) | A Minecraft Java server (Paper by default, or Vanilla, Fabric, Forge, Purpur) from the itzg image | 25565 | `entertainment-personal` | Not routed: `minecraft` |
 | ⌨️ **MonkeyType**<br>[`monkeytype`](../.templates/monkeytype) | Self-hosted typing test application with customizable themes, multiple test modes, and detailed statistics tracking | 5001 | `entertainment-personal` |  |
-| 🦙 **Ollama (Standalone)**<br>[`ollama`](../.templates/ollama) | Run large language models locally with a single command | 11434 | `development-tools` |  |
-| 🤖 **Open WebUI + Ollama**<br>[`open-webui`](../.templates/open-webui) | ChatGPT-style interface for local LLMs | 3100 | `development-tools` |  |
+| 🦙 **Ollama (Standalone)**<br>[`ollama`](../.templates/ollama) | Run large language models locally: Gemma, Qwen, Llama, Mistral and hundreds more, with a REST API for any app | 11434 | `development-tools` |  |
+| 🤖 **Open WebUI + Ollama**<br>[`open-webui`](../.templates/open-webui) | ChatGPT-style chat for local models: Open WebUI with Ollama, entirely on your hardware (no cloud, no API keys) | 3100 | `development-tools` |  |
 | 🎮 **Pelican Panel + Wings**<br>[`pelican`](../.templates/pelican) | Open-source game server management panel with a companion Wings daemon | 8005 | `entertainment-personal` |  |
 | 🕹️ **RomM**<br>[`romm`](../.templates/romm) | RomM is a ROM manager and web player for your retro game library | 8495 | `entertainment-personal` |  |
 | 🪓 **Valheim Server**<br>[`valheim`](../.templates/valheim) | A dedicated Valheim server that installs and updates itself from Steam, with automatic world backups | 2456 | `entertainment-personal` | Not routed: `valheim` |
