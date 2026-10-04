@@ -27,6 +27,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **The graphics card readings (4.0.29) never end the request.** The API runs with errexit and pipefail: an AMD card without
+  one of the optional sensor files (fan, power cap, busy), a server without `lspci` (minimal VM images) or without a `render`
+  group could end `GET /status` and the dashboard feed instead of leaving that reading out. Every read is guarded now.
 - **A UPS read through apcupsd no longer flickers.** apcupsd can take several seconds to answer while it is busy with a USB
   UPS (up to ~15 on a VM's emulated USB), and the 6-second wait made every slow reading look like "the UPS did not answer".
   The wait is now `UPS_APC_TIMEOUT` (15 s), and one failed reading keeps the last good one on the card until three in a row fail.

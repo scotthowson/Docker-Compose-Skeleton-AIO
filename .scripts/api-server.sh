@@ -2331,10 +2331,12 @@ handle_version() {
 # fan_rpm, power_w, power_cap_w, asleep}; a reading the card does not give is null. A card the driver has put to sleep
 # (runtime power management, common for a card with no screen) is not woken to read it: 0 % busy, no temperature or power. DCS_SYSFS_DRM and DCS_AMDGPU_IDS point the tests at a fake tree.
 _gpu_name_lspci() {
-    local d; d=$(lspci -vmm -s "$1" 2>/dev/null | awk -F'\t' '$1 == "Device:" {print $2; exit}')
+    local d; d=$(lspci -vmm -s "$1" 2>/dev/null | awk -F'\t' '$1 == "Device:" {print $2; exit}') || d=""
     [[ "$d" =~ \[([^]]+)\] ]] && d=${BASH_REMATCH[1]}
     printf '%s' "$d"
 }
+# one sysfs value, or nothing: a card without the file (no fan, no power cap) must not end the caller (errexit, pipefail)
+_gpu_rd() { cat "$1" 2>/dev/null || true; }
 _gpu_list() {
     local drm=${DCS_SYSFS_DRM:-/sys/class/drm} ids=${DCS_AMDGPU_IDS:-/usr/share/libdrm/amdgpu.ids}
     local -a rows=() nv_slots=()
@@ -2360,24 +2362,24 @@ _gpu_list() {
         case "$vendor" in
             0x1002)
                 local did rev hw="" asleep=false busy="" mu="" mt="" t1="" t2="" fr="" pw="" pm="" pc="" p=""
-                did=$(tr '[:lower:]' '[:upper:]' < "$c/device/device" 2>/dev/null); did=${did#0X}
-                rev=$(tr '[:lower:]' '[:upper:]' < "$c/device/revision" 2>/dev/null); rev=${rev#0X}
+                did=$(_gpu_rd "$c/device/device" | tr '[:lower:]' '[:upper:]'); did=${did#0X}
+                rev=$(_gpu_rd "$c/device/revision" | tr '[:lower:]' '[:upper:]'); rev=${rev#0X}
                 name=""
-                [[ -r "$ids" && -n "$did" ]] && name=$(awk -F',[ \t]*' -v d="$did" -v r="$rev" 'toupper($1) == d && toupper($2) == r {print $3; exit}' "$ids" 2>/dev/null)
+                [[ -r "$ids" && -n "$did" ]] && name=$(awk -F',[ \t]*' -v d="$did" -v r="$rev" 'toupper($1) == d && toupper($2) == r {print $3; exit}' "$ids" 2>/dev/null) || name=""
                 [[ -z "$name" && -r "$c/device/product_name" ]] && name=$(<"$c/device/product_name")
                 if [[ -z "$name" ]]; then name=$(_gpu_name_lspci "$slot"); [[ -n "$name" ]] && name="AMD $name"; fi
-                [[ "$(cat "$c/device/power/runtime_status" 2>/dev/null)" == "suspended" ]] && asleep=true
+                [[ "$(_gpu_rd "$c/device/power/runtime_status")" == "suspended" ]] && asleep=true
                 # the memory figures are the driver's own bookkeeping (no wake-up); a sleeping card is idle by definition
-                mu=$(cat "$c/device/mem_info_vram_used" 2>/dev/null); mt=$(cat "$c/device/mem_info_vram_total" 2>/dev/null)
+                mu=$(_gpu_rd "$c/device/mem_info_vram_used"); mt=$(_gpu_rd "$c/device/mem_info_vram_total")
                 if [[ "$asleep" == true ]]; then
                     busy=0
                 else
-                    busy=$(cat "$c/device/gpu_busy_percent" 2>/dev/null)
+                    busy=$(_gpu_rd "$c/device/gpu_busy_percent")
                     for p in "$c"/device/hwmon/hwmon*; do [[ -d "$p" ]] && { hw=$p; break; }; done
                     if [[ -n "$hw" ]]; then
-                        t1=$(cat "$hw/temp1_input" 2>/dev/null); t2=$(cat "$hw/temp2_input" 2>/dev/null)
-                        fr=$(cat "$hw/fan1_input" 2>/dev/null); pw=$(cat "$hw/pwm1" 2>/dev/null); pm=$(cat "$hw/pwm1_max" 2>/dev/null)
-                        p=$(cat "$hw/power1_average" 2>/dev/null || cat "$hw/power1_input" 2>/dev/null); pc=$(cat "$hw/power1_cap" 2>/dev/null)
+                        t1=$(_gpu_rd "$hw/temp1_input"); t2=$(_gpu_rd "$hw/temp2_input")
+                        fr=$(_gpu_rd "$hw/fan1_input"); pw=$(_gpu_rd "$hw/pwm1"); pm=$(_gpu_rd "$hw/pwm1_max")
+                        p=$(_gpu_rd "$hw/power1_average"); [[ -n "$p" ]] || p=$(_gpu_rd "$hw/power1_input"); pc=$(_gpu_rd "$hw/power1_cap")
                     fi
                 fi
                 line=$(jq -nc --arg name "${name:-AMD GPU}" --arg slot "$slot" --arg render "$render" --argjson asleep "$asleep" \
@@ -2422,7 +2424,7 @@ _template_gpu_apply() {
     [[ -n "$card" ]] || { printf '__error=%s\n' "There is no graphics card at $slot on this server"; return 1; }
     vendor=$(jq -r '.vendor // ""' <<< "$card"); render=$(jq -r '.render // ""' <<< "$card")
     [[ "$vendor" == nvidia || "$render" =~ ^renderD[0-9]+$ ]] || { printf '__error=%s\n' "$(jq -r '.name' <<< "$card") has no render node (/dev/dri/renderD…): is its driver loaded?"; return 1; }
-    for g in video render; do id=$(getent group "$g" 2>/dev/null | cut -d: -f3); [[ "$id" =~ ^[0-9]+$ ]] && gids+="${gids:+,}$id"; done
+    for g in video render; do id=$(getent group "$g" 2>/dev/null | cut -d: -f3) || id=""; [[ "$id" =~ ^[0-9]+$ ]] && gids+="${gids:+,}$id"; done
     local svc use img devs grps nv out="$compose"
     while IFS=$'\t' read -r svc use img; do
         [[ "$svc" =~ ^[A-Za-z_][A-Za-z0-9_.-]*$ ]] || continue
@@ -2541,7 +2543,7 @@ handle_status() {
 
     # the graphics cards: "gpu" stays the busiest one in the shape older dashboards read, "gpus" lists them all
     local gpus_json gpu_json
-    gpus_json=$(_gpu_list); [[ "$gpus_json" == \[* ]] || gpus_json='[]'
+    gpus_json=$(_gpu_list) || gpus_json='[]'; [[ "$gpus_json" == \[* ]] || gpus_json='[]'
     gpu_json=$(jq -c 'map(select(.utilization != null)) | first // null | if . == null then null else . + {fan_speed: (.fan_speed // 0)} end' <<< "$gpus_json" 2>/dev/null) || gpu_json=null
     [[ -n "$gpu_json" ]] || gpu_json=null
 
@@ -9973,7 +9975,8 @@ _power_apc_lost_why() {
     fi
     for v in "$usb"/devices/*/idVendor; do [[ -r "$v" && "$(cat "$v" 2>/dev/null)" == 051d ]] && { found=true; break; }; done
     if [[ "$found" == false ]]; then
-        virt="${DCS_VIRT:-$(systemd-detect-virt 2>/dev/null)}"
+        # (systemd-detect-virt prints "none" and exits 1 on bare metal: that must not end the caller under errexit)
+        virt="${DCS_VIRT:-}"; [[ -n "$virt" ]] || virt=$(systemd-detect-virt 2>/dev/null) || true
         if [[ -n "$virt" && "$virt" != none ]]; then
             printf '%s' ": no APC UPS on this virtual machine's USB: pass it through (Proxmox: Hardware, Add, USB Device) or read it from the host over NUT (UPS_SOURCE=nut, UPS_NUT_HOST)"
         else
@@ -27988,7 +27991,7 @@ handle_feed_summary() {
     cpu=$(awk -v a="$s1" -v b="$s2" 'BEGIN{split(a,x," "); split(b,y," "); dt=y[1]-x[1]; di=y[2]-x[2]; if (dt > 0) printf "%d", (dt-di)*100/dt+0.5; else print 0}' 2>/dev/null) || cpu=0
     mt=$(awk '/^MemTotal:/{printf "%d", $2/1024; exit}' /proc/meminfo 2>/dev/null) || mt=0
     ma=$(awk '/^MemAvailable:/{printf "%d", $2/1024; exit}' /proc/meminfo 2>/dev/null) || ma=0
-    gpus=$(_gpu_list); [[ "$gpus" == \[* ]] || gpus='[]'
+    gpus=$(_gpu_list) || gpus='[]'; [[ "$gpus" == \[* ]] || gpus='[]'
     gpus=$(jq -c 'map({vendor, name, percent: .utilization, memory_used_mb, memory_total_mb, temperature, power_w, asleep})' <<< "$gpus" 2>/dev/null) || gpus='[]'
     gpu=$(jq -c 'map(select(.percent != null)) | first // null' <<< "$gpus" 2>/dev/null) || gpu=null
     [[ "$gpu" == \{* ]] || gpu=null

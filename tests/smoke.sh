@@ -2360,6 +2360,15 @@ _GN_OUT=$(_gpa "$_TC" '[{"service":"ollama","use":"video"}]' 0000:01:00.0)
 check "gpu deploy: NVIDIA gets a reservation with video, no devices or groups" "driver: nvidia|capabilities: [gpu, compute, utility, video]|0" "$(printf '%s\n' "$_GN_OUT" | grep -oE 'driver: nvidia|capabilities: \[[^]]*\]' | paste -sd'|')|$(printf '%s\n' "$_GN_OUT" | grep -cE '^    (devices|group_add):')"
 check "gpu deploy: NVIDIA keeps the image when the template names none for it" "image: ollama/ollama:latest" "$(printf '%s\n' "$_GN_OUT" | awk '/^  ollama:/{f=1} /^  web:/{f=0} f && /image:/{sub(/^ */,""); print}')"
 _GPATH=""; rm -rf "$_G/drm/card2"
+# under the API's errexit and pipefail: a host without a "render" group (Debian containers), without lspci (minimal VM
+# images), an AMD card without fan, power or busy files, and a bare-metal systemd-detect-virt (prints none, exits 1)
+mkdir -p "$_G/nogrp"; printf '#!/bin/bash\nexit 2\n' > "$_G/nogrp/getent"; chmod +x "$_G/nogrp/getent"
+check "gpu deploy: no video or render group on the host, the devices still go in" "- /dev/dri/renderD129:/dev/dri/renderD129|- /dev/kfd:/dev/kfd|0" "$(_o=$(_GPATH="$_G/nogrp:" _gpa "$_TC" "$_GS" 0000:03:00.0); printf '%s\n' "$_o" | grep -E '^      - /dev/' | sed 's/^ *//' | paste -sd'|')|$(printf '%s\n' "$_o" | grep -c '^    group_add:')"
+mkdir -p "$_G/nolspci"; printf '#!/bin/bash\nexit 127\n' > "$_G/nolspci/lspci"; chmod +x "$_G/nolspci/lspci"
+check "gpus: without lspci the Intel chip is still listed" '"Intel GPU"' "$(PATH="$_G/nolspci:$PATH" DCS_SYSFS_DRM="$_G/drm" DCS_AMDGPU_IDS="$_G/amdgpu.ids" _lib _gpu_list | jq -c 'map(select(.vendor == "intel")) | .[0].name' 2>/dev/null)"
+command mv "$_GA/hwmon" "$_GA/hwmon.off"; command mv "$_GA/gpu_busy_percent" "$_GA/gpu_busy.off"
+check "gpus: an AMD card without sensors is listed, its readings null" '["AMD Radeon RX 6800 XT",null,null,1024]' "$(_gpus _gpu_list '.[] | select(.vendor == "amd") | [.name, .utilization, .power_w, .memory_used_mb]')"
+command mv "$_GA/hwmon.off" "$_GA/hwmon"; command mv "$_GA/gpu_busy.off" "$_GA/gpu_busy_percent"
 # --- UPS through apcupsd: a lost UPS (COMMLOST) is a problem with its cause, not "on mains"
 _P="$WORK/apc"; mkdir -p "$_P/bin" "$_P/usb/devices/2-1"
 printf '%s\n' '#!/bin/bash' 'printf "UPSNAME  : ups\nCABLE    : USB Cable\nSTATUS   : %s\n" "${FAKE_APC_STATUS:-ONLINE}"' '[[ "${FAKE_APC_STATUS:-ONLINE}" == ONLINE ]] && printf "MODEL    : Back-UPS ES 600M1\nBCHARGE  : 100.0 Percent\nTIMELEFT : 4.9 Minutes\nLOADPCT  : 52.0 Percent\nLINEV    : 120.0 Volts\n"' 'exit 0' > "$_P/bin/apcaccess"; chmod +x "$_P/bin/apcaccess"
@@ -2371,6 +2380,8 @@ check "ups: COMMLOST on a kernel without USB says so" true "$(_apc COMMLOST "$_P
 check "ups: COMMLOST with a serial DEVICE for a USB UPS names the line" true "$(_apc COMMLOST "$_P/usb" "$_P/serial.conf" none '.error | test("DEVICE /dev/ttyS0")')"
 check "ups: COMMLOST on a VM without the UPS on its USB says pass it through" true "$(_apc COMMLOST "$_P/usb" "$_P/ok.conf" kvm '.error | test("virtual machine.*pass it through")')"
 check "ups: COMMLOST on a machine without the UPS on its USB says check the cable" true "$(_apc COMMLOST "$_P/usb" "$_P/ok.conf" none '.error | test("check the cable")')"
+printf '#!/bin/bash\necho none\nexit 1\n' > "$_P/bin/systemd-detect-virt"; chmod +x "$_P/bin/systemd-detect-virt"
+check "ups: bare metal (systemd-detect-virt says none, exit 1) still gets the whole reason" true "$(PATH="$_P/bin:$PATH" UPS_SOURCE=apcupsd FAKE_APC_STATUS=COMMLOST DCS_SYSFS_USB="$_P/usb" UPS_APCUPSD_CONF="$_P/ok.conf" _lib _power_sample | jq -c '.error | test("check the cable")' 2>/dev/null)"
 echo 051d > "$_P/usb/devices/2-1/idVendor"
 check "ups: COMMLOST with the UPS on USB says restart apcupsd" true "$(_apc COMMLOST "$_P/usb" "$_P/ok.conf" none '.error | test("restart apcupsd")')"
 # --- a VM from an older DCS image: the kernel hooks and ext4 are added once, nothing else is touched
