@@ -59,7 +59,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 | Method | Path | Access | Description |
 |--------|------|--------|-------------|
 | GET | `/` | public | API name, version, authentication mode, role (hub or node) and the endpoint list |
-| GET | `/status` | user | Host and Docker overview: containers, images, stacks, load, memory, disk, GPU |
+| GET | `/status` | user | Host and Docker overview: containers, images, stacks, load, memory, disk, the graphics cards (NVIDIA, AMD, Intel) |
 | GET | `/health` | user | # GET /health?fleet=1 on a hub: the members' containers ride along (member, member_name, vmid on each row), the summary and the status cover the fleet, members[] says how each DCS is doing |
 | GET | `/config` | user | Effective configuration (secrets masked) |
 | GET | `/system` | user | Host resources: CPU, memory, uptime, kernel |
@@ -460,7 +460,7 @@ Rate limiting answers `429`; a fresh install answers `401` with a message pointi
 
 | Method | Path | Access | Description |
 |--------|------|--------|-------------|
-| GET | `/feed/summary` | public | The server at a glance, for a dashboard: version, stacks and containers (running of total, per stack), and the machine's load (processor, memory, disk, the NVIDIA card when there is one, the UPS when it is watched) and the last backup. Needs the dashboard feed's token (?token= or Bearer) |
+| GET | `/feed/summary` | public | The server at a glance, for a dashboard: version, stacks and containers (running of total, per stack), and the machine's load (processor, memory, disk, the graphics cards, the UPS when it is watched) and the last backup. Needs the dashboard feed's token (?token= or Bearer) |
 | GET | `/feed/crowdsec` | public | What CrowdSec has been seeing, for a dashboard: detections over time, the countries, the scenarios and the map points (window=24h\|7d\|30d). Needs the dashboard feed's token (?token= or Bearer) |
 | GET | `/ping` | public | Liveness probe: no auth, no Docker call, a tiny body. The dashboard's heartbeat uses it, so the latency it shows is the round trip alone. |
 | GET | `/fleet/bundle` | public | The hub's own DCS code as a tar.gz for a VM being bootstrapped (needs ?token= — a valid join code, or the bundle code an update round minted for the member it names); never includes data, accounts, secrets, stacks or logs |

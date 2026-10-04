@@ -2302,6 +2302,33 @@ check "disks: data disk, / stays out of /system/metrics" '["/mnt/data"]' "$(_dis
 check "disks: only /, so /disks reports it"            '[1,["/"]]'    "$(_disks root handle_disks '[.total, [.disks[].mount]]')"
 check "disks: data disk, / stays out of /disks"        '[1,["/mnt/data"]]' "$(_disks data handle_disks '[.total, [.disks[].mount]]')"
 check "storage: an older member's sizes in bytes" '{"device":"/dev/sda3","mount":"/","fstype":"","total":1610612736,"used":536870912,"avail":1099511627776}' "$(_lib eval 'jq -nc "$_storage_bytes_jq"" {device: \"/dev/sda3\", mount: \"/\", total: \"1.5G\", used: \"512M\", available: \"1T\"} | drive"')"
+# --- graphics cards: AMD read from the amdgpu sysfs files, Intel by name, NVIDIA from nvidia-smi (its sysfs card not listed twice)
+_G="$WORK/gpu"
+mkdir -p "$_G/devices/0000:00:02.0/drm/renderD128" "$_G/devices/0000:03:00.0/drm/renderD129" "$_G/devices/0000:03:00.0/power" "$_G/devices/0000:03:00.0/hwmon/hwmon3" "$_G/drm/card1-HDMI-A-1"
+echo 0x8086 > "$_G/devices/0000:00:02.0/vendor"
+_GA="$_G/devices/0000:03:00.0"; printf '%s\n' 0x1002 > "$_GA/vendor"; echo 0x73bf > "$_GA/device"; echo 0xc1 > "$_GA/revision"; echo 37 > "$_GA/gpu_busy_percent"
+echo 1073741824 > "$_GA/mem_info_vram_used"; echo 17163091968 > "$_GA/mem_info_vram_total"; echo active > "$_GA/power/runtime_status"
+for _kv in temp1_input=45000 temp2_input=52000 fan1_input=1200 pwm1=102 pwm1_max=255 power1_average=31500000 power1_cap=255000000; do echo "${_kv#*=}" > "$_GA/hwmon/hwmon3/${_kv%%=*}"; done
+mkdir -p "$_G/drm/card0" "$_G/drm/card1" && ln -sfn ../../devices/0000:00:02.0 "$_G/drm/card0/device" && ln -sfn ../../devices/0000:03:00.0 "$_G/drm/card1/device"
+printf '73BF,\tC0,\tAMD Radeon RX 6900 XT\n73BF,\tC1,\tAMD Radeon RX 6800 XT\n' > "$_G/amdgpu.ids"
+mkdir -p "$_G/bin" "$_G/nv"
+printf '%s\n' '#!/bin/bash' '[[ "$*" == *00:02.0* ]] && printf "Slot:\t00:02.0\nDevice:\tCoffeeLake-S GT2 [UHD Graphics 630]\n"' '[[ "$*" == *01:00.0* ]] && printf "Slot:\t01:00.0\nDevice:\tGM204 [GeForce GTX 970]\n"' 'exit 0' > "$_G/bin/lspci"
+printf '%s\n' '#!/bin/bash' 'echo "NVIDIA GeForce GTX 970, 00000000:01:00.0, 12, 512, 4096, 40, 30, 25.31, 170.00"' > "$_G/nv/nvidia-smi"; chmod +x "$_G/bin/lspci" "$_G/nv/nvidia-smi"
+_gpus() { PATH="$_G/bin:${_GPATH:-}$PATH" DCS_SYSFS_DRM="$_G/drm" DCS_AMDGPU_IDS="$_G/amdgpu.ids" _lib eval "$1" | jq -c "$2" 2>/dev/null; }
+check "gpus: the AMD card first, then the Intel chip; a screen connector is not a card" '["amd","intel"]' "$(_gpus _gpu_list 'map(.vendor)')"
+check "gpus: the AMD card named from amdgpu.ids (device + revision)" '"AMD Radeon RX 6800 XT"' "$(_gpus _gpu_list '.[0].name')"
+check "gpus: the AMD readings" '[37,1024,16368,45,52,40,1200,31.5,255,"renderD129",false]' "$(_gpus _gpu_list '.[0] | [.utilization, .memory_used_mb, .memory_total_mb, .temperature, .temperature_hotspot, .fan_speed, .fan_rpm, .power_w, .power_cap_w, .render, .asleep]')"
+check "gpus: the Intel chip by name, no readings" '["Intel UHD Graphics 630",null,"renderD128"]' "$(_gpus _gpu_list '.[1] | [.name, .utilization, .render]')"
+echo suspended > "$_GA/power/runtime_status"
+check "gpus: a sleeping AMD card is idle and not woken (memory still read)" '[true,0,1024,null,null]' "$(_gpus _gpu_list '.[0] | [.asleep, .utilization, .memory_used_mb, .temperature, .power_w]')"
+echo active > "$_GA/power/runtime_status"
+mkdir -p "$_G/devices/0000:01:00.0/drm/renderD130" && echo 0x10de > "$_G/devices/0000:01:00.0/vendor" && mkdir -p "$_G/drm/card2" && ln -sfn ../../devices/0000:01:00.0 "$_G/drm/card2/device"
+check "gpus: an NVIDIA card without its driver is listed by name" '"NVIDIA GeForce GTX 970 (no driver)"' "$(_gpus _gpu_list 'map(select(.vendor == "nvidia")) | .[0].name')"
+_GPATH="$_G/nv:"
+check "gpus: nvidia-smi's card once, with its readings, ahead of the rest" '[["nvidia","amd","intel"],[12,512,4096,40,30,25.3,170,"0000:01:00.0"]]' "$(_gpus _gpu_list '[map(.vendor), (.[0] | [.utilization, .memory_used_mb, .memory_total_mb, .temperature, .fan_speed, .power_w, .power_cap_w, .slot])]')"
+_GPATH=""; rm -rf "$_G/drm/card2"
+check "gpus: /feed/summary's gpu is the busiest card, gpus lists all" '["AMD Radeon RX 6800 XT",37,2]' "$(_gpus "_api_success() { printf '%s' \"\$1\"; }; handle_feed_summary" '.system | [.gpu.name, .gpu.percent, (.gpus | length)]')"
+check "gpus: no card, no gpu" '[null,[]]' "$(DCS_SYSFS_DRM="$WORK/nowhere" _lib eval "PATH=/usr/bin:/bin; _api_success() { printf '%s' \"\$1\"; }; handle_feed_summary" | jq -c '.system | [.gpu, .gpus]' 2>/dev/null)"
 for _u in "0 50" "599 50" "600 75" "3599 75" "3600 90" "86399 90" "86400 100" "9999999 100"; do
     set -- $_u; check "health score: uptime $1 s scores $2" "$2" "$(_lib _health_uptime_score "$1")"
 done

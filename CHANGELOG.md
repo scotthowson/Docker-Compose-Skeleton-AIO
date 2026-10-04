@@ -5,6 +5,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [4.0.29] - 2026-10-03
+
+### Added
+
+- **AMD graphics cards.** `GET /status` and the dashboard feed (`GET /feed/summary`) read AMD cards from the amdgpu driver
+  (no ROCm or Mesa on the host): how busy, video memory, temperature and hotspot, fan, power. Intel's built-in graphics are
+  listed by name, and an NVIDIA card whose driver is missing says so. A new `system.gpus` lists every card, busiest kind
+  first; `system.gpu` stays the busiest one in its old shape. A card the driver has put to sleep (common for a card with
+  no screen) is shown asleep and is not woken to read it.
+
 ## [4.0.28] - 2026-10-03
 
 ### Added
